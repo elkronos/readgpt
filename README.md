@@ -172,7 +172,7 @@ The five `default_on` steps are exactly the `"standard"` preset. Note what is
 **off**: `remove_numbers` (which makes every figure, date and percentage
 unanswerable), `captions` (which destroys table-heavy documents), and `urls`
 (URLs are often the answer). Presets: `none`, `minimal`, `standard` (default),
-`academic`, `scan`, `legacy_v1`.
+`academic`, `scan`, `legacy`.
 
 `doc$stats$clean_log` reports characters removed per step, so you can see when
 cleaning ate more than you expected.
@@ -317,7 +317,7 @@ cause:
 | `NOT_IN_DOCUMENT`, but you can see the answer in the file | `nrow(ans$evidence)`, then `gr_chunk_stats()` | the chunk holding it never reached the model. Lower `max_tokens`, raise `top_k`, or switch to a reader whose `signature` starts `all\|` |
 | the answer is right but thin | `ans$notes$chunks` vs `length(ans$chunks_used)` | most chunks answered `NOT_IN_DOCUMENT`. That is usually correct; if not, the boundaries are cutting the evidence in half — add `overlap_tokens` |
 | `ans$partial` is `TRUE` | `ans$notes`, then `print(ans$trace)` | `failed_calls` (transport), `dropped_chunks` (did not fit), `call_cap_reached`, or a merge that degraded to concatenation |
-| figures, dates or percentages are missing | `doc$stats$clean_log` | a cleaning step removed them. `remove_numbers` is off by default; the `legacy_v1` preset turns it on deliberately |
+| figures, dates or percentages are missing | `doc$stats$clean_log` | a cleaning step removed them. `remove_numbers` is off by default; the `legacy` preset turns it on deliberately |
 | a scanned PDF comes back nearly empty | `doc$stats$chars` per page, and any `gr_ocr_unavailable` warning | OCR did not run or is not installed. Force it with `gr_ingest_spec(ocr = "always")`, and check `tesseract` and `magick` are present |
 | every chunk is the whole document | `nrow(doc$blocks)` | the file has no blank lines between paragraphs, so there is nothing to split on. Use `method = "sentence"` or `"fixed"` |
 | the run costs far more than expected | `gr_readers()$cost_calls` | the reader is `O(N)` in chunks and your `max_tokens` is small. `gr_chunk_stats()` first; it is free |
@@ -344,7 +344,7 @@ do.call(rbind, lapply(names(gr_recipes()), function(n) {
 #> 7    scanned       page       rerank
 #> 8   research structural    iterative
 #> 9  consensus  recursive     ensemble
-#> 10 legacy_v1  paragraph   map_reduce
+#> 10    legacy  paragraph   map_reduce
 ```
 
 | your document | start with |
@@ -362,7 +362,7 @@ do.call(rbind, lapply(names(gr_recipes()), function(n) {
 `answer_document()` defaults to `"thorough"` — `map_reduce`, so its cost scales
 with chunk count. Use `"fast"` or `"needle"` when that matters.
 
-`legacy_v1` deliberately reproduces the previous release's behaviour — digit
+`legacy` deliberately reproduces the previous release's behaviour — digit
 stripping, 3000-token paragraph chunks, no overlap — so you can measure the
 difference rather than assume it.
 
@@ -511,9 +511,9 @@ Three behaviour changes are deliberate and will alter your results:
 reproduced because it could never run — it called a `search_text()` function
 that was never defined anywhere in the repository.
 
-The v1 source is preserved under `legacy_v1/` for reference and A/B
+The v1 source is preserved under `legacy/` for reference and A/B
 comparison. It is not loaded by the package; to reproduce its ingestion and
-chunking under the current code, use the `legacy_v1` recipe.
+chunking under the current code, use the `legacy` recipe.
 
 The regression suite in `tests/testthat/` reproduces each of these defects
 against the current code, so the claims above are checked rather than asserted.

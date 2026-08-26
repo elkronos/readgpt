@@ -18,7 +18,7 @@ gr_ingest_spec(
 }
 \arguments{
 \item{clean}{A preset name (\code{"none"}, \code{"minimal"}, \code{"standard"},
-\code{"academic"}, \code{"scan"}, \code{"legacy_v1"}) or a character vector of cleaner
+\code{"academic"}, \code{"scan"}, \code{"legacy"}) or a character vector of cleaner
 names from \code{gr_cleaners()}.}
 
 \item{ocr}{\code{"auto"} (OCR pages with no text layer), \code{"always"}, or \code{"never"}.}

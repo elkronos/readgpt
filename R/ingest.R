@@ -23,7 +23,7 @@
 #' Describe an ingestion configuration
 #'
 #' @param clean A preset name (`"none"`, `"minimal"`, `"standard"`,
-#'   `"academic"`, `"scan"`, `"legacy_v1"`) or a character vector of cleaner
+#'   `"academic"`, `"scan"`, `"legacy"`) or a character vector of cleaner
 #'   names from `gr_cleaners()`.
 #' @param ocr `"auto"` (OCR pages with no text layer), `"always"`, or `"never"`.
 #' @param ocr_lang Tesseract language code.

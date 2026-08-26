@@ -61,7 +61,7 @@ high stakes, want cross-checking \tab \code{"consensus"} \cr
 short, and you want every sentence weighed \tab \code{"precise"} \cr
 }
 
-\code{"legacy_v1"} is the tenth: it reproduces the previous release's ingestion
+\code{"legacy"} is the tenth: it reproduces the previous release's ingestion
 and chunking deliberately, so a change in behaviour can be measured against
 old results rather than assumed.
 

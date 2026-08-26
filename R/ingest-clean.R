@@ -320,7 +320,7 @@ register_builtin_cleaners <- function() {
   # Reproduces the previous release's behaviour, digit-stripping and all, so a
   # old pipeline can be A/B'd against the new one rather than assumed
   # equivalent.
-  legacy_v1 = c("page_numbers", "captions", "urls", "emails", "references",
+  legacy = c("page_numbers", "captions", "urls", "emails", "references",
                 "remove_numbers", "collapse_whitespace")
 )
 

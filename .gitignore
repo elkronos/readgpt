@@ -58,4 +58,4 @@ REVIEW.md
 COMMIT_MSG.txt
 migrate.sh
 _old_gptread/
-legacy_v1/_scratch/
+legacy/_scratch/

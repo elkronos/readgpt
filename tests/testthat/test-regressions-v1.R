@@ -80,7 +80,7 @@ test_that("digits survive ingestion by default", {
   expect_true(grepl("45", doc$text))
   expect_true(grepl("2019", doc$text))
   legacy <- gr_ingest("Acme reported revenue of 45 million dollars in 2019 and 87 million in 2020.",
-                      "legacy_v1")
+                      "legacy")
   expect_false(grepl("45", legacy$text))
 })
 
@@ -113,7 +113,7 @@ test_that("the ingestion cache key covers every option that changes the output",
   f <- withr::local_tempfile(fileext = ".txt")
   writeLines(c("Alpha 123 para.", "", "Beta 456 para."), f)
   a <- gr_ingest(f, gr_ingest_spec(clean = "standard"))
-  b <- gr_ingest(f, gr_ingest_spec(clean = "legacy_v1"))
+  b <- gr_ingest(f, gr_ingest_spec(clean = "legacy"))
   expect_false(identical(a$text, b$text))
   expect_true(grepl("123", a$text))
   expect_false(grepl("123", b$text))

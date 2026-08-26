@@ -94,7 +94,7 @@ ui <- fluidPage(
       h4("1. Ingest"),
       selectInput("clean_preset", "Cleaning preset",
                   choices = c("standard", "minimal", "academic", "scan", "none", "custom",
-                              "legacy_v1 (reproduces v1, strips digits)" = "legacy_v1"),
+                              "legacy (reproduces the pre-0.2 defaults, strips digits)" = "legacy"),
                   selected = "standard"),
       conditionalPanel("input.clean_preset == 'custom'",
         checkboxGroupInput("clean_steps", NULL, choices = clean_choices,

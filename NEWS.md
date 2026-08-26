@@ -50,7 +50,7 @@ you twice for two recipes that resolve to the same work.
 ## Behaviour changes that will alter results
 
 Three are deliberate. If you need the old behaviour for comparison, the
-`"legacy_v1"` recipe reproduces it.
+`"legacy"` recipe reproduces it.
 
 * `mode` no longer defaults to running all five modes. `answer_question(f, q)`
   ran 41 API calls; it now runs one pipeline.

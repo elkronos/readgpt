@@ -119,8 +119,8 @@ gr_recipes <- function(name = NULL) {
       read = list(reader = "ensemble", members = c("retrieve", "map_reduce", "refine"))),
     # Reproduces the old defaults -- digit-stripping, word-count budgeting, no
     # overlap -- so the change in behaviour can be measured rather than asserted.
-    legacy_v1 = gr_recipe("legacy_v1",
-      ingest = list(clean = "legacy_v1"),
+    legacy = gr_recipe("legacy",
+      ingest = list(clean = "legacy"),
       segment = list(method = "paragraph", max_tokens = 3000, overlap_tokens = 0),
       read = list(reader = "map_reduce"))
   )

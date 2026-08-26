@@ -26,7 +26,7 @@ Superseded by \code{\link[=gr_read]{gr_read()}} with \code{reader = "map_reduce"
 keep running; it warns once per session and does \strong{not} reproduce v1's
 unbounded merge prompt, which produced HTTP 400s once the per-chunk answers
 outgrew the context window. For v1's actual behaviour, use
-\code{recipe = "legacy_v1"}.
+\code{recipe = "legacy"}.
 }
 \examples{
 cl <- gr_mock_client(function(m, p) "45.2 million dollars")
@@ -42,7 +42,7 @@ gr_read(ch, "What was revenue?", gr_mock_client(function(m, p) "45.2 million dol
 }
 \seealso{
 \code{\link[=gr_read]{gr_read()}} and \code{reader = "map_reduce"}, \code{\link[=gr_readers]{gr_readers()}},
-\code{\link[=answer_document]{answer_document()}}, \code{\link[=gr_recipes]{gr_recipes()}} for \code{"legacy_v1"}
+\code{\link[=answer_document]{answer_document()}}, \code{\link[=gr_recipes]{gr_recipes()}} for \code{"legacy"}
 
 Other v1 compatibility: 
 \code{\link{answer_question}()},

@@ -41,13 +41,13 @@ question <- "What was revenue in fiscal 2024?"
 
 # ---------------------------------------------------------------------------
 rule("AXIS 1 -- ingest: cleaning presets change what the model ever sees")
-for (p in c("none", "standard", "academic", "legacy_v1")) {
+for (p in c("none", "standard", "academic", "legacy")) {
   d <- gr_ingest(doc_text, p)
   cat(sprintf("  %-10s %2d blocks, %4d tokens, %3d chars removed | %s\n",
               p, d$stats$blocks, d$stats$tokens, d$stats$chars_removed,
               substr(d$blocks$text[2], 1, 52)))
 }
-cat("\n  Note `legacy_v1` (v1's defaults): every digit is gone, so no question\n",
+cat("\n  Note `legacy` (v1's defaults): every digit is gone, so no question\n",
     " about revenue, headcount or a date can be answered at all.\n", sep = "")
 
 # ---------------------------------------------------------------------------

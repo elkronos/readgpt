@@ -3,7 +3,7 @@
 # These keep old scripts running while making the behaviour change visible. Each
 # shim warns once per session, maps onto the new pipeline, and -- importantly --
 # does NOT reproduce the v1 bugs. If you want v1's actual behaviour for an A/B
-# comparison, use `recipe = "legacy_v1"`, which reproduces the old cleaning and
+# comparison, use `recipe = "legacy"`, which reproduces the old cleaning and
 # chunking deliberately rather than by accident.
 
 .warn_once <- local({
@@ -163,7 +163,7 @@ parse_text <- function(file_path, chunk_token_limit = 3000, chunk_method = c("na
 #' keep running; it warns once per session and does **not** reproduce v1's
 #' unbounded merge prompt, which produced HTTP 400s once the per-chunk answers
 #' outgrew the context window. For v1's actual behaviour, use
-#' `recipe = "legacy_v1"`.
+#' `recipe = "legacy"`.
 #'
 #' @param chunks Character vector of chunks, or a `gr_chunks`.
 #' @param question The question.
@@ -173,7 +173,7 @@ parse_text <- function(file_path, chunk_token_limit = 3000, chunk_method = c("na
 #' @return A single string when `return_json` is `FALSE`; otherwise a
 #'   `json`-classed string holding the answer, its notes and the full trace.
 #' @seealso [gr_read()] and `reader = "map_reduce"`, [gr_readers()],
-#'   [answer_document()], [gr_recipes()] for `"legacy_v1"`
+#'   [answer_document()], [gr_recipes()] for `"legacy"`
 #' @family v1 compatibility
 #' @export
 #' @examples

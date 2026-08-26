@@ -25,7 +25,7 @@
 #    to the reactive flush. The progress bar here is driven by withProgress.
 
 library(shiny)
-library(gptread)
+library(readgpt)
 
 ALLOWED_ROOTS <- local({
   env <- Sys.getenv("GPTREAD_DOC_ROOTS")
@@ -82,7 +82,7 @@ ui <- fluidPage(
     .chat{border:1px solid #ddd;padding:12px;height:460px;overflow-y:auto;background:#fafafa}
     .knob-help{font-size:11px;color:#777;margin:-8px 0 10px 0}
   "))),
-  titlePanel("gptread - document Q&A with explicit control over ingest, chunking and reading"),
+  titlePanel("readgpt - document Q&A with explicit control over ingest, chunking and reading"),
   sidebarLayout(
     sidebarPanel(
       width = 4,
@@ -304,7 +304,7 @@ server <- function(input, output, session) {
   })
 
   output$dl <- downloadHandler(
-    filename = function() sprintf("gptread_history_%s.json", Sys.Date()),
+    filename = function() sprintf("readgpt_history_%s.json", Sys.Date()),
     content = function(file) {
       h <- lapply(history(), function(e) list(
         question = e$question, asked_at = e$asked_at, document = e$document,

@@ -4,7 +4,7 @@
 # strategies are distinct by counting the prompts each one actually sends.
 # Run with:  Rscript inst/examples/demo.R
 
-library(gptread)
+library(readgpt)
 gr_options(verbose = FALSE, model = "gpt-4o", max_cost_usd = NULL)
 
 doc_text <- paste(

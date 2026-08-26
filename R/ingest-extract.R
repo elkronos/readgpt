@@ -217,7 +217,7 @@ extract_docx <- function(path, opts) {
   if (!requireNamespace("xml2", quietly = TRUE)) {
     gr_abort("Reading DOCX needs the 'xml2' package.", class = "gr_missing_dep")
   }
-  dir <- tempfile("gptread_docx_")
+  dir <- tempfile("readgpt_docx_")
   # The old code never removed its unzip directory; temp files leaked for the
   # life of the session.
   on.exit(unlink(dir, recursive = TRUE, force = TRUE), add = TRUE)

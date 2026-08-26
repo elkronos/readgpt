@@ -43,8 +43,8 @@ src/*.dll
 # ---------------------------------------------------------------------------
 # Package runtime output
 # ---------------------------------------------------------------------------
-gptread.log
-gptread_history_*.json
+readgpt.log
+readgpt_history_*.json
 
 # ---------------------------------------------------------------------------
 # One-time migration scaffolding. These exist to get from the previous release

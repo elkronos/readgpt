@@ -265,7 +265,7 @@ test_that("a mistyped file path is an error, not a document", {
 })
 
 test_that("enforcing the token cap preserves page and section provenance", {
-  doc <- gr_ingest(gptread_example())
+  doc <- gr_ingest(readgpt_example())
   ch <- gr_segment(doc, list(method = "structural", max_tokens = 60))
   expect_true(any(!is.na(ch$chunks$section)))
   # The cap-enforcement path rebuilds chunks; provenance must survive it.
@@ -273,7 +273,7 @@ test_that("enforcing the token cap preserves page and section provenance", {
 })
 
 test_that("every provenance-carrying segmenter actually carries it", {
-  doc <- gr_ingest(gptread_example())
+  doc <- gr_ingest(readgpt_example())
   cl <- mock_echo()
   for (m in c("paragraph", "sentence", "structural", "semantic", "contextual")) {
     ch <- quiet(gr_segment(doc, list(method = m, max_tokens = 120), client = cl))
@@ -290,7 +290,7 @@ test_that("every provenance-carrying segmenter actually carries it", {
 test_that("contextual reports the context source it actually used", {
   # Requesting llm blurbs without a client fell back to metadata but still
   # recorded context_source = "llm" -- the trace claimed work never done.
-  doc <- gr_ingest(gptread_example())
+  doc <- gr_ingest(readgpt_example())
   call <- function() gr_segment(doc, list(method = "contextual", context_source = "llm",
                                           max_tokens = 200), client = NULL)
   expect_warning(call(), class = "gr_segment_fallback")
@@ -302,7 +302,7 @@ test_that("contextual reports the context source it actually used", {
 
 test_that("the stuff overflow error names a real option value", {
   local_registries()
-  doc <- gr_ingest(gptread_example())
+  doc <- gr_ingest(readgpt_example())
   ch <- gr_segment(doc, list(method = "sentence", max_tokens = 40))
   # No prices, so the cost cap cannot be checked -- which the package says out
   # loud. Assert that warning rather than letting it float, or a real regression
@@ -335,8 +335,8 @@ test_that("out-of-range reader settings are clamped loudly, like segment setting
 })
 
 test_that("the bundled example document exists and ingests", {
-  expect_true(file.exists(gptread_example()))
-  doc <- gr_ingest(gptread_example())
+  expect_true(file.exists(readgpt_example()))
+  doc <- gr_ingest(readgpt_example())
   expect_gt(doc$stats$tokens, 100L)
   expect_true(any(!is.na(doc$blocks$section)))
   # Digits must survive -- the whole point of the v1 remove_numbers fix.
@@ -345,9 +345,9 @@ test_that("the bundled example document exists and ingests", {
 
 test_that("every exported function has a help topic with a value section", {
   # Cheap guard against documentation drifting away from the exports.
-  exported <- setdiff(getNamespaceExports("gptread"), "%||%")
+  exported <- setdiff(getNamespaceExports("readgpt"), "%||%")
   for (fn in exported) {
-    topic <- utils::help((fn), package = "gptread", try.all.packages = FALSE)
+    topic <- utils::help((fn), package = "readgpt", try.all.packages = FALSE)
     expect_gt(length(topic), 0L, label = sprintf("help topic for '%s'", fn))
   }
 })

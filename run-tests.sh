@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# run-tests.sh -- install gptread and run its test suite.
+# run-tests.sh -- install readgpt and run its test suite.
 #
 # Works from the package directory or from the repository root (it finds
-# DESCRIPTION either here or in ./gptread). Nothing it does touches the network
+# DESCRIPTION either here or in ./readgpt). Nothing it does touches the network
 # except installing missing R packages, and it asks before doing that.
 #
 #   bash run-tests.sh              # install deps if needed, install pkg, run tests
@@ -26,9 +26,9 @@ done
 
 # --- locate the package ----------------------------------------------------
 if   [ -f DESCRIPTION ];         then PKG="$PWD"
-elif [ -f gptread/DESCRIPTION ]; then PKG="$PWD/gptread"
+elif [ -f readgpt/DESCRIPTION ]; then PKG="$PWD/readgpt"
 else
-  echo "ERROR: no DESCRIPTION here or in ./gptread." >&2
+  echo "ERROR: no DESCRIPTION here or in ./readgpt." >&2
   echo "       Run this from the package directory or the repository root." >&2
   exit 1
 fi
@@ -51,7 +51,7 @@ fi
 echo "R:       $(Rscript -e 'cat(R.version.string)')"
 
 # R >= 4.1 is required (the package uses the native |> era baseline).
-Rscript -e 'if (getRversion() < "4.1.0") { cat("ERROR: gptread needs R >= 4.1.0; you have", as.character(getRversion()), "\n"); quit(status = 1) }'
+Rscript -e 'if (getRversion() < "4.1.0") { cat("ERROR: readgpt needs R >= 4.1.0; you have", as.character(getRversion()), "\n"); quit(status = 1) }'
 
 # --- a writable library ----------------------------------------------------
 # On macOS the system library often is not writable, which is the single most
@@ -59,7 +59,7 @@ Rscript -e 'if (getRversion() < "4.1.0") { cat("ERROR: gptread needs R >= 4.1.0;
 LIB=$(Rscript -e '
   p <- Sys.getenv("R_LIBS_USER")
   p <- strsplit(p, .Platform$path.sep)[[1]][1]
-  if (!nzchar(p) || is.na(p)) p <- file.path(path.expand("~"), "R", "gptread-lib")
+  if (!nzchar(p) || is.na(p)) p <- file.path(path.expand("~"), "R", "readgpt-lib")
   dir.create(p, recursive = TRUE, showWarnings = FALSE)
   cat(normalizePath(p))')
 echo "Library: $LIB"
@@ -95,10 +95,10 @@ echo "Deps:    ok"
 
 # --- install the package ---------------------------------------------------
 echo
-echo "Installing gptread..."
-R CMD INSTALL "$PKG" -l "$LIB" --no-byte-compile >/tmp/gptread-install.log 2>&1 || {
-  echo "ERROR: install failed. Last 25 lines of /tmp/gptread-install.log:" >&2
-  tail -25 /tmp/gptread-install.log >&2
+echo "Installing readgpt..."
+R CMD INSTALL "$PKG" -l "$LIB" --no-byte-compile >/tmp/readgpt-install.log 2>&1 || {
+  echo "ERROR: install failed. Last 25 lines of /tmp/readgpt-install.log:" >&2
+  tail -25 /tmp/readgpt-install.log >&2
   exit 1
 }
 echo "Installed."
@@ -122,10 +122,10 @@ echo "Running the test suite..."
 echo
 Rscript -e "
   .libPaths(c('$LIB', .libPaths()))
-  suppressPackageStartupMessages({ library(gptread); library(testthat) })
+  suppressPackageStartupMessages({ library(readgpt); library(testthat) })
   gr_options(verbose = FALSE)
   res <- as.data.frame(testthat::test_dir(file.path('$PKG', 'tests', 'testthat'),
-                                          package = 'gptread',
+                                          package = 'readgpt',
                                           reporter = 'progress',
                                           stop_on_failure = FALSE))
   cat('\n----------------------------------------\n')

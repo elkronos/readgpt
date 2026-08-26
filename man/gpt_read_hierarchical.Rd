@@ -34,11 +34,11 @@ once and overflowed past roughly 32 chunks.
 }
 \examples{
 cl <- gr_mock_client(function(m, p) "45.2 million dollars")
-chunks <- suppressWarnings(parse_text(gptread_example(), chunk_token_limit = 200))
+chunks <- suppressWarnings(parse_text(readgpt_example(), chunk_token_limit = 200))
 suppressWarnings(gpt_read_hierarchical(chunks, "What was revenue?", client = cl))
 
 # The modern equivalent.
-ch <- gr_segment(gptread_example(), list(method = "paragraph", max_tokens = 200))
+ch <- gr_segment(readgpt_example(), list(method = "paragraph", max_tokens = 200))
 gr_read(ch, "What was revenue?", gr_mock_client(function(m, p) "45.2 million dollars"),
         "hierarchical")$reader
 }

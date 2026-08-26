@@ -1,4 +1,4 @@
-Package: gptread
+Package: readgpt
 Title: Fine-Grained Control Over How LLMs Ingest, Segment, and Read Documents
 Version: 0.2.0
 Authors@R:
@@ -13,8 +13,8 @@ Description: A composable framework for document question answering with large
     a structured run trace, and every stage is registry-based so users can add
     their own extractors, cleaners, segmenters, and readers without editing the
     package.
-URL: https://github.com/elkronos/gpt_read
-BugReports: https://github.com/elkronos/gpt_read/issues
+URL: https://github.com/elkronos/readgpt
+BugReports: https://github.com/elkronos/readgpt/issues
 License: MIT + file LICENSE
 Encoding: UTF-8
 Depends:

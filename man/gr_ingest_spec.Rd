@@ -48,7 +48,7 @@ Describe an ingestion configuration
 \examples{
 # What each preset costs you, on a real document, before any model call.
 vapply(c("none", "minimal", "standard", "academic", "scan"),
-       function(p) gr_ingest(gptread_example(), gr_ingest_spec(clean = p))$stats$chars,
+       function(p) gr_ingest(readgpt_example(), gr_ingest_spec(clean = p))$stats$chars,
        integer(1))
 
 # Or name the steps yourself; see gr_cleaners() for what is available.

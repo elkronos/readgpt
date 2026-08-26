@@ -234,15 +234,15 @@ test_that("min_tokens merges runt chunks instead of billing for them", {
   # Mutation survivor: deleting the runt-merge loop changed nothing any test
   # asserted on.
   units <- c(strrep("alpha ", 25), strrep("beta ", 25), "tiny bit")
-  loose <- gptread:::pack_units(units, max_tokens = 30, min_tokens = 0)
-  tight <- gptread:::pack_units(units, max_tokens = 30, min_tokens = 10)
+  loose <- readgpt:::pack_units(units, max_tokens = 30, min_tokens = 0)
+  tight <- readgpt:::pack_units(units, max_tokens = 30, min_tokens = 10)
   expect_lt(length(tight$text), length(loose$text))
   expect_lte(max(gr_count_tokens(tight$text)), 30)
 
   # The invariant, not just the one example: a chunk may sit below the minimum
   # only when absorbing it would have broken the cap.
   for (mt in c(30L, 45L, 60L)) {
-    out <- gptread:::pack_units(units, max_tokens = mt, min_tokens = as.integer(mt / 2))
+    out <- readgpt:::pack_units(units, max_tokens = mt, min_tokens = as.integer(mt / 2))
     toks <- gr_count_tokens(out$text)
     expect_lte(max(toks), mt)
     for (i in seq_along(toks)[-1]) {
@@ -321,7 +321,7 @@ test_that("an ensemble refuses members that share a signature", {
   # methodology under two names -- exactly the Chunked/Semantic collapse v1 had.
   gr_register_reader("clone_of_stuff",
     function(chunks, question, client, spec, trace) {
-      gptread:::registry_get("readers", "stuff", "readers")$fn(chunks, question, client, spec, trace)
+      readgpt:::registry_get("readers", "stuff", "readers")$fn(chunks, question, client, spec, trace)
     }, signature = "all|1|none")
   expect_error(
     quiet(gr_read(ch, "q", mock_echo(),
@@ -445,7 +445,7 @@ test_that("merging a finding larger than the whole budget terminates and stays b
   big <- paste(rep("The quarterly revenue figure was reported in the filing.", 20000),
                collapse = " ")
   cl <- mock_dead()
-  out <- quiet(gptread:::tree_merge(cl, "What was revenue?",
+  out <- quiet(readgpt:::tree_merge(cl, "What was revenue?",
                                     c(big, "Small finding one.", "Small finding two."),
                                     spec, gr_trace()))
   expect_lte(out$levels, 3L)
@@ -456,7 +456,7 @@ test_that("merging a finding larger than the whole budget terminates and stays b
 test_that("merging a single finding short-circuits without a call", {
   spec <- gr_read_spec(model = "gpt-4o-mini")
   cl <- mock_echo()
-  out <- gptread:::tree_merge(cl, "q", "the only finding", spec, gr_trace())
+  out <- readgpt:::tree_merge(cl, "q", "the only finding", spec, gr_trace())
   expect_identical(out$text, "the only finding")
   expect_equal(length(cl$calls()), 0L)
 })
@@ -510,7 +510,7 @@ test_that("as_json survives every object that embeds a trace", {
     expect_true(nzchar(as.character(j)))
     expect_type(jsonlite::fromJSON(as.character(j), simplifyVector = FALSE), "list")
   }
-  j <- quiet(answer_question(gptread_example(), "What was revenue?", mode = "Chunked",
+  j <- quiet(answer_question(readgpt_example(), "What was revenue?", mode = "Chunked",
                              return_json = TRUE, client = mock_echo()))
   parsed <- jsonlite::fromJSON(as.character(j), simplifyVector = FALSE)
   expect_true(all(c("answers", "summary", "trace") %in% names(parsed)))
@@ -525,29 +525,29 @@ test_that("as_json preserves an explicit null rather than dropping the field", {
 })
 
 test_that("a deprecation warning survives a handler that turns it into an error", {
-  gptread:::.warn_once_reset()
-  on.exit(gptread:::.warn_once_reset(), add = TRUE)
+  readgpt:::.warn_once_reset()
+  on.exit(readgpt:::.warn_once_reset(), add = TRUE)
   # Marking the id BEFORE emitting meant options(warn = 2) consumed the one and
   # only notice: the user saw a failure, fixed the handler, and got silence.
-  expect_error(withr::with_options(list(warn = 2), gptread:::.warn_once("t", "boom")))
-  expect_warning(gptread:::.warn_once("t", "boom"), class = "gr_deprecated")
-  expect_silent(gptread:::.warn_once("t", "boom"))
+  expect_error(withr::with_options(list(warn = 2), readgpt:::.warn_once("t", "boom")))
+  expect_warning(readgpt:::.warn_once("t", "boom"), class = "gr_deprecated")
+  expect_silent(readgpt:::.warn_once("t", "boom"))
 })
 
 test_that("every v1 shim runs and does not reproduce the v1 bug it replaced", {
   # Mutation survivor: the whole of compat.R could be deleted without a failure.
-  gptread:::.warn_once_reset()
-  on.exit(gptread:::.warn_once_reset(), add = TRUE)
-  expect_warning(answer_question(gptread_example(), "What was revenue?",
+  readgpt:::.warn_once_reset()
+  on.exit(readgpt:::.warn_once_reset(), add = TRUE)
+  expect_warning(answer_question(readgpt_example(), "What was revenue?",
                                  mode = "Chunked", client = mock_echo()),
                  class = "gr_deprecated")
-  a <- quiet(answer_question(gptread_example(), "What was revenue?",
+  a <- quiet(answer_question(readgpt_example(), "What was revenue?",
                              mode = "Chunked", client = mock_echo()))
   expect_type(a, "character")
 
   # v1 stripped every digit by default, so no question about a figure could be
   # answered. parse_text() must not do that any more.
-  chunks <- quiet(parse_text(gptread_example(), chunk_token_limit = 200))
+  chunks <- quiet(parse_text(readgpt_example(), chunk_token_limit = 200))
   expect_type(chunks, "character")
   expect_gt(length(chunks), 1L)
   expect_true(any(grepl("[0-9]", chunks)))
@@ -667,7 +667,7 @@ test_that("merging is bounded on the call-cap path too, not only on failure", {
   pieces <- vapply(1:5, function(i)
     paste(rep(sprintf("Finding %d about the quarterly revenue figure.", i), 120), collapse = " "),
     character(1))
-  out <- quiet(gptread:::tree_merge(mock_echo(), "q", pieces, spec, tr))
+  out <- quiet(readgpt:::tree_merge(mock_echo(), "q", pieces, spec, tr))
   expect_false(out$ok)
   expect_lt(gr_count_tokens(out$text), sum(gr_count_tokens(pieces)))
   expect_lte(gr_count_tokens(out$text), 3L * 300L + 50L)
@@ -808,23 +808,23 @@ test_that("backoff delays are actually jittered across processes", {
   # The seed was a pure function of `attempt`, so every client retrying attempt
   # N slept for the identical duration -- labelled jitter, with none, so a
   # rate-limited fleet re-collided on every round.
-  d <- vapply(1:200, function(i) gptread:::backoff_delay(1, 3), numeric(1))
+  d <- vapply(1:200, function(i) readgpt:::backoff_delay(1, 3), numeric(1))
   expect_gt(length(unique(d)), 1L)
   expect_true(all(d >= 0 & d <= 60))
   # Still exponential, and still capped.
-  expect_lt(mean(vapply(1:50, function(i) gptread:::backoff_delay(1, 1), numeric(1))),
-            mean(vapply(1:50, function(i) gptread:::backoff_delay(1, 4), numeric(1))))
-  expect_lte(max(vapply(1:50, function(i) gptread:::backoff_delay(1, 30), numeric(1))), 60)
+  expect_lt(mean(vapply(1:50, function(i) readgpt:::backoff_delay(1, 1), numeric(1))),
+            mean(vapply(1:50, function(i) readgpt:::backoff_delay(1, 4), numeric(1))))
+  expect_lte(max(vapply(1:50, function(i) readgpt:::backoff_delay(1, 30), numeric(1))), 60)
 })
 
 test_that("gr_hash does not shadow utils::str for the rest of the package", {
   # A `str()` shim in the package namespace would resolve every internal call to
   # it, not just gr_hash's one use.
-  expect_null(gptread:::gr_state$str)
-  expect_false("str" %in% ls(asNamespace("gptread")))
+  expect_null(readgpt:::gr_state$str)
+  expect_false("str" %in% ls(asNamespace("readgpt")))
   # And the hash still works, and still distinguishes.
-  expect_false(identical(gptread:::gr_hash(list(a = 1)), gptread:::gr_hash(list(a = 2))))
-  expect_identical(gptread:::gr_hash(list(a = 1)), gptread:::gr_hash(list(a = 1)))
+  expect_false(identical(readgpt:::gr_hash(list(a = 1)), readgpt:::gr_hash(list(a = 2))))
+  expect_identical(readgpt:::gr_hash(list(a = 1)), readgpt:::gr_hash(list(a = 1)))
 })
 
 test_that("every export has a help topic with an example", {
@@ -832,10 +832,10 @@ test_that("every export has a help topic with an example", {
   # run from the installed package, where there is no source NAMESPACE two
   # directories up. Reading the file passed in a checkout and failed in check --
   # the one place this test actually needs to run.
-  all_exp <- getNamespaceExports("gptread")
+  all_exp <- getNamespaceExports("readgpt")
   exports <- grep("^(print|as_json)\\.", all_exp, value = TRUE, invert = TRUE)
   skip_if(!length(exports))
-  rd <- tools::Rd_db("gptread")
+  rd <- tools::Rd_db("readgpt")
   aliases <- unlist(lapply(rd, function(x)
     unlist(lapply(x[vapply(x, function(e) identical(attr(e, "Rd_tag"), "\\alias"), logical(1))],
                   function(e) trimws(paste(unlist(e), collapse = ""))))))
@@ -883,10 +883,10 @@ test_that("a document passed as text is never handed to basename()", {
 test_that("source_label refuses anything that is not a real, short path", {
   f <- withr::local_tempfile(fileext = ".txt")
   writeLines("hello", f)
-  expect_identical(gptread:::source_label(f), basename(f))
+  expect_identical(readgpt:::source_label(f), basename(f))
   for (x in list(strrep("a", 2000), "two\nlines", NA_character_, character(0),
                  c("a", "b"), 42, NULL, "/no/such/file.txt")) {
-    expect_identical(gptread:::source_label(x), "<inline text>")
+    expect_identical(readgpt:::source_label(x), "<inline text>")
   }
 })
 
@@ -920,7 +920,7 @@ test_that("token counts depend on the bytes, not on the encoding label", {
 test_that("to_utf8 labels valid UTF-8 instead of re-encoding it", {
   s <- "Northwind Instruments — Annual Report 2024"
   raw_bytes <- s; Encoding(raw_bytes) <- "unknown"
-  out <- gptread:::to_utf8(raw_bytes)
+  out <- readgpt:::to_utf8(raw_bytes)
   expect_identical(Encoding(out), "UTF-8")
   expect_true(validUTF8(out))
   # The bytes must survive untouched -- this is where they were being corrupted.
@@ -933,17 +933,17 @@ test_that("ingestion and segmentation are identical under a C locale", {
   on.exit(suppressWarnings(Sys.setlocale("LC_CTYPE", old)), add = TRUE)
 
   measure <- function() {
-    d <- gr_ingest(gptread_example())
+    d <- gr_ingest(readgpt_example())
     ch <- gr_segment(d, list(method = "structural", max_tokens = 120))
     list(tokens = d$stats$tokens, chars = d$stats$chars,
          text = d$text, totals = sum(ch$chunks$tokens))
   }
-  gptread:::gr_cache_clear()
+  readgpt:::gr_cache_clear()
   utf8 <- measure()
 
   ok <- suppressWarnings(Sys.setlocale("LC_CTYPE", "C"))
   skip_if(!nzchar(ok), "cannot switch to the C locale here")
-  gptread:::gr_cache_clear()
+  readgpt:::gr_cache_clear()
   c_loc <- measure()
 
   expect_identical(c_loc$tokens, utf8$tokens)

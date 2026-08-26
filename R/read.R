@@ -30,7 +30,7 @@
 #'   \item{`spec`}{A [gr_read_spec()]. Honour at least `model`,
 #'     `max_answer_tokens` and `temperature`.}
 #'   \item{`trace`}{Pass it to every [gr_call()] so your calls are counted, and
-#'     check `gptread:::trace_can_call(trace)` before each one so the run cap is
+#'     check `readgpt:::trace_can_call(trace)` before each one so the run cap is
 #'     respected.}
 #' }
 #' Return [new_answer()]. Budget your prompt with [gr_budget()] rather than
@@ -53,7 +53,7 @@
 #'     new_answer(res$text, "longest", question, d$chunk_id[i], trace)
 #'   })
 #'
-#' ch <- gr_segment(gptread_example(), list(method = "sentence", max_tokens = 120))
+#' ch <- gr_segment(readgpt_example(), list(method = "sentence", max_tokens = 120))
 #' gr_read(ch, "What was revenue?", gr_mock_client(function(m, p) "45.2 million"),
 #'         "longest")$answer
 gr_register_reader <- function(name, fn, signature, description = "", cost_calls = "") {
@@ -230,7 +230,7 @@ gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL
 #' @family reading functions
 #' @export
 #' @examples
-#' ch <- gr_segment(gptread_example(), list(method = "sentence", max_tokens = 120))
+#' ch <- gr_segment(readgpt_example(), list(method = "sentence", max_tokens = 120))
 #'
 #' # The same chunks, two strategies, two very different call patterns. Each gets
 #' # its own client and trace, so the call counts are comparable.

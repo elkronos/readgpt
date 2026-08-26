@@ -49,10 +49,10 @@ cl <- gr_mock_client(function(m, p) "45.2 million dollars")
 
 # v1 style, still works, warns once.
 suppressWarnings(
-  answer_question(gptread_example(), "What was revenue?", mode = "Chunked", client = cl))
+  answer_question(readgpt_example(), "What was revenue?", mode = "Chunked", client = cl))
 
 # The modern equivalent.
-answer_document(gptread_example(), "What was revenue?", "thorough",
+answer_document(readgpt_example(), "What was revenue?", "thorough",
                 client = cl, return = "text")
 }
 \seealso{

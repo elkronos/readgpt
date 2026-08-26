@@ -49,5 +49,5 @@ gr_lapply <- function(x, fn, parallel = NULL, workers = NULL, key = NULL, label 
     fn(item)
   }
   future.apply::future_lapply(x, wrapped, future.seed = TRUE,
-                              future.globals = TRUE, future.packages = "gptread")
+                              future.globals = TRUE, future.packages = "readgpt")
 }

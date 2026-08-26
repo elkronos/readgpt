@@ -1,4 +1,4 @@
-# gptread 0.2.0
+# readgpt 0.2.0
 
 A rewrite. The package is now a proper R package with three independent,
 registry-based axes — **ingest**, **segment**, **read** — instead of five

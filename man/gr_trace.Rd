@@ -23,7 +23,7 @@ Create a run trace
 \examples{
 tr <- gr_trace(meta = list(purpose = "demo"))
 cl <- gr_mock_client(function(m, p) "an answer")
-ch <- gr_segment(gptread_example(), list(method = "sentence", max_tokens = 150))
+ch <- gr_segment(readgpt_example(), list(method = "sentence", max_tokens = 150))
 invisible(gr_read(ch, "What was revenue?", cl, "map_reduce", trace = tr))
 print(tr)
 }

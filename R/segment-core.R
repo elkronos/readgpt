@@ -324,7 +324,7 @@ print.gr_chunks <- function(x, ...) {
 #' @family segmentation functions
 #' @export
 #' @examples
-#' doc <- gr_ingest(gptread_example())
+#' doc <- gr_ingest(readgpt_example())
 #'
 #' # What overlap actually costs, before any model call.
 #' do.call(rbind, lapply(c(0, 30, 60), function(ov)

@@ -118,7 +118,7 @@
 #' gr_register_model("my-local-llama", context_window = 32768, max_output = 4096)
 #' gr_model_info("my-local-llama")[c("context_window", "source", "certain")]
 #'
-#' # Without prices, the cost cap cannot be checked -- gptread says so rather
+#' # Without prices, the cost cap cannot be checked -- readgpt says so rather
 #' # than assuming the run is free.
 #' is.na(gr_estimate_cost("my-local-llama", 1000, 500))
 gr_register_model <- function(id, context_window, max_output,

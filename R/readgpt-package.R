@@ -1,4 +1,4 @@
-#' gptread: control how a language model reads a document
+#' readgpt: control how a language model reads a document
 #'
 #' Document question answering, with the three decisions that actually drive
 #' answer quality pulled apart into independent, swappable axes:
@@ -24,7 +24,7 @@
 #' Sys.setenv(OPENAI_API_KEY = "sk-...")
 #'
 #' # No key yet? Everything below works offline against gr_mock_client() and the
-#' # bundled document at gptread_example().
+#' # bundled document at readgpt_example().
 #'
 #' # One question, one pipeline.
 #' ans <- answer_document("report.pdf", "What was Q3 revenue?", recipe = "needle")
@@ -140,7 +140,7 @@
 #' @seealso [gr_read()], [answer_document()], [as_json()]
 #' @examples
 #' cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
-#' ans <- answer_document(gptread_example(), "What was revenue?", "fast", client = cl)
+#' ans <- answer_document(readgpt_example(), "What was revenue?", "fast", client = cl)
 #' ans$partial
 #' ans$evidence[, c("chunk_id", "page", "score")]
 NULL
@@ -174,7 +174,7 @@ NULL
 #' @name gr_chunks
 #' @seealso [gr_segment()], [gr_chunk_stats()], [gr_segmenters()]
 #' @examples
-#' ch <- gr_segment(gptread_example(), list(method = "sentence", max_tokens = 120))
+#' ch <- gr_segment(readgpt_example(), list(method = "sentence", max_tokens = 120))
 #' ch$method
 #' head(ch$chunks[, c("chunk_id", "tokens", "section")])
 NULL
@@ -209,7 +209,7 @@ NULL
 #' @name gr_document
 #' @seealso [gr_ingest()], [gr_ingest_spec()], [gr_cleaners()]
 #' @examples
-#' doc <- gr_ingest(gptread_example())
+#' doc <- gr_ingest(readgpt_example())
 #' doc$stats$tokens
 #' vapply(doc$stats$clean_log, function(s) s$chars_removed, integer(1))
 NULL
@@ -256,7 +256,7 @@ NULL
 #' @return Absolute path to the file.
 #' @export
 #' @examples
-#' gr_ingest(gptread_example())
-gptread_example <- function() {
-  system.file("extdata", "annual_report.md", package = "gptread", mustWork = TRUE)
+#' gr_ingest(readgpt_example())
+readgpt_example <- function() {
+  system.file("extdata", "annual_report.md", package = "readgpt", mustWork = TRUE)
 }

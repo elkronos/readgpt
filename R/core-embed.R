@@ -54,7 +54,7 @@
 #'
 #' # The semantic segmenter records the same thing, so a degraded run stays
 #' # visible after the fact.
-#' gr_segment(gptread_example(), list(method = "semantic", max_tokens = 200),
+#' gr_segment(readgpt_example(), list(method = "semantic", max_tokens = 200),
 #'            client = cl)$extra$embedding_source
 gr_embed <- function(client, texts, model = NULL, batch_size = 64L, cache = NULL,
                      trace = NULL, fallback = c("lexical", "error", "none")) {

@@ -27,7 +27,7 @@
 
 #' Resolve the API key
 #'
-#' Looks in `key`, then the `gptread.api_key` option, then `OPENAI_API_KEY`.
+#' Looks in `key`, then the `readgpt.api_key` option, then `OPENAI_API_KEY`.
 #' Never prints or logs the key.
 #'
 #' @param key Optional explicit key.
@@ -57,10 +57,10 @@
 #' # Restore. Sys.setenv(x = NA) would leave the variable set to "NA", not unset.
 #' if (!is.na(previous)) Sys.setenv(OPENAI_API_KEY = previous)
 gr_api_key <- function(key = NULL) {
-  k <- as_chr1(key %||% getOption("gptread.api_key", "") %||% "")
+  k <- as_chr1(key %||% getOption("readgpt.api_key", "") %||% "")
   if (!nzchar(k)) k <- as_chr1(Sys.getenv("OPENAI_API_KEY"))
   if (!nzchar(k)) {
-    gr_abort(paste0("No API key. Set OPENAI_API_KEY, or options(gptread.api_key = '...'), ",
+    gr_abort(paste0("No API key. Set OPENAI_API_KEY, or options(readgpt.api_key = '...'), ",
                     "or pass `api_key` to gr_client()."), class = "gr_auth_error")
   }
   k
@@ -143,10 +143,9 @@ gr_client <- function(model = NULL, api = NULL, api_key = NULL, base_url = NULL,
 #'   with one row per input.
 #' @return An object of class `gr_client`, with `$calls()`, `$embeds()` and
 #'   `$reset()`.
-#' @seealso [gr_client()], [gr_call()], [gr_result]
-#' @export
-#' @seealso [gr_client()], [gr_call()], [gr_result], [gptread_example()] for a
+#' @seealso [gr_client()], [gr_call()], [gr_result], [readgpt_example()] for a
 #'   document to run against
+#' @export
 #' @examples
 #' cl <- gr_mock_client(function(messages, params) "mock answer")
 #' gr_call(cl, list(list(role = "user", content = "hi")))$text
@@ -154,7 +153,7 @@ gr_client <- function(model = NULL, api = NULL, api_key = NULL, base_url = NULL,
 #' # `$calls()` is how you prove two reading strategies differ: it records the
 #' # exact prompts each one sent.
 #' cl$reset()
-#' ch <- gr_segment(gptread_example(), list(method = "paragraph", max_tokens = 150))
+#' ch <- gr_segment(readgpt_example(), list(method = "paragraph", max_tokens = 150))
 #' invisible(gr_read(ch, "What was revenue?", cl, "skim"))
 #' table(vapply(cl$calls(), function(x) x$label, character(1)))
 gr_mock_client <- function(handler = NULL, embed_handler = NULL) {

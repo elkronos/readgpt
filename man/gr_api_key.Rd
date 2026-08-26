@@ -13,7 +13,7 @@ gr_api_key(key = NULL)
 The key string. Raises a \code{gr_auth_error} if none is found.
 }
 \description{
-Looks in \code{key}, then the \code{gptread.api_key} option, then \code{OPENAI_API_KEY}.
+Looks in \code{key}, then the \code{readgpt.api_key} option, then \code{OPENAI_API_KEY}.
 Never prints or logs the key.
 }
 \section{No key set}{

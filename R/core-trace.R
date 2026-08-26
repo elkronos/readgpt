@@ -24,7 +24,7 @@
 #' @examples
 #' tr <- gr_trace(meta = list(purpose = "demo"))
 #' cl <- gr_mock_client(function(m, p) "an answer")
-#' ch <- gr_segment(gptread_example(), list(method = "sentence", max_tokens = 150))
+#' ch <- gr_segment(readgpt_example(), list(method = "sentence", max_tokens = 150))
 #' invisible(gr_read(ch, "What was revenue?", cl, "map_reduce", trace = tr))
 #' print(tr)
 gr_trace <- function(run_id = NULL, meta = list()) {
@@ -123,7 +123,7 @@ trace_can_call <- function(trace, n = 1L) {
 #' @export
 #' @examples
 #' cl <- gr_mock_client(function(m, p) "45.2 million dollars")
-#' ans <- answer_document(gptread_example(), "What was revenue?", "thorough", client = cl)
+#' ans <- answer_document(readgpt_example(), "What was revenue?", "thorough", client = cl)
 #' gr_trace_summary(ans$trace)
 #' gr_estimate_cost("gpt-4o", ans$trace$tokens_in, ans$trace$tokens_out)
 gr_trace_summary <- function(trace) {
@@ -175,7 +175,7 @@ print.gr_trace <- function(x, ...) {
 #' @export
 #' @examples
 #' cl <- gr_mock_client(function(m, p) "45.2 million dollars")
-#' ans <- answer_document(gptread_example(), "What was revenue?", "fast", client = cl)
+#' ans <- answer_document(readgpt_example(), "What was revenue?", "fast", client = cl)
 #'
 #' # The answer plus every prompt and response from the same single run.
 #' txt <- as_json(ans)

@@ -36,10 +36,10 @@ Deprecated: parse a document into text chunks
 }
 \examples{
 # v1 style, still works, warns once.
-length(suppressWarnings(parse_text(gptread_example(), chunk_token_limit = 200)))
+length(suppressWarnings(parse_text(readgpt_example(), chunk_token_limit = 200)))
 
 # The modern equivalent, which also reports what it did.
-gr_chunk_stats(gr_segment(gr_ingest(gptread_example()),
+gr_chunk_stats(gr_segment(gr_ingest(readgpt_example()),
                           list(method = "paragraph", max_tokens = 200)))
 }
 \seealso{

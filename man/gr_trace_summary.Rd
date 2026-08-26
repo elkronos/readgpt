@@ -19,7 +19,7 @@ Summarise a trace
 }
 \examples{
 cl <- gr_mock_client(function(m, p) "45.2 million dollars")
-ans <- answer_document(gptread_example(), "What was revenue?", "thorough", client = cl)
+ans <- answer_document(readgpt_example(), "What was revenue?", "thorough", client = cl)
 gr_trace_summary(ans$trace)
 gr_estimate_cost("gpt-4o", ans$trace$tokens_in, ans$trace$tokens_out)
 }

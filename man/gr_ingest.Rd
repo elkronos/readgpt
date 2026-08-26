@@ -28,7 +28,7 @@ cleaning, which is what lets \code{ans$evidence} point back at where an answer
 came from.
 }
 \examples{
-doc <- gr_ingest(gptread_example())
+doc <- gr_ingest(readgpt_example())
 
 # Provenance survives cleaning; this is what `ans$evidence` points back at.
 head(doc$blocks[, c("block_id", "page", "section", "kind")], 4)
@@ -37,7 +37,7 @@ head(doc$blocks[, c("block_id", "page", "section", "kind")], 4)
 vapply(doc$stats$clean_log, function(s) s$chars_removed, integer(1))
 
 # Cleaning is a choice, not a default -- compare before committing to it.
-raw <- gr_ingest(gptread_example(), gr_ingest_spec(clean = "none"))
+raw <- gr_ingest(readgpt_example(), gr_ingest_spec(clean = "none"))
 c(standard = doc$stats$chars, none = raw$stats$chars)
 }
 \seealso{

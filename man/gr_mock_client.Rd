@@ -40,13 +40,11 @@ gr_call(cl, list(list(role = "user", content = "hi")))$text
 # `$calls()` is how you prove two reading strategies differ: it records the
 # exact prompts each one sent.
 cl$reset()
-ch <- gr_segment(gptread_example(), list(method = "paragraph", max_tokens = 150))
+ch <- gr_segment(readgpt_example(), list(method = "paragraph", max_tokens = 150))
 invisible(gr_read(ch, "What was revenue?", cl, "skim"))
 table(vapply(cl$calls(), function(x) x$label, character(1)))
 }
 \seealso{
-\code{\link[=gr_client]{gr_client()}}, \code{\link[=gr_call]{gr_call()}}, \link{gr_result}
-
-\code{\link[=gr_client]{gr_client()}}, \code{\link[=gr_call]{gr_call()}}, \link{gr_result}, \code{\link[=gptread_example]{gptread_example()}} for a
+\code{\link[=gr_client]{gr_client()}}, \code{\link[=gr_call]{gr_call()}}, \link{gr_result}, \code{\link[=readgpt_example]{readgpt_example()}} for a
 document to run against
 }

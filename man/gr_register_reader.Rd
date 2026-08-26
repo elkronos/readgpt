@@ -43,7 +43,7 @@ Your function receives:
 \item{\code{spec}}{A \code{\link[=gr_read_spec]{gr_read_spec()}}. Honour at least \code{model},
 \code{max_answer_tokens} and \code{temperature}.}
 \item{\code{trace}}{Pass it to every \code{\link[=gr_call]{gr_call()}} so your calls are counted, and
-check \code{gptread:::trace_can_call(trace)} before each one so the run cap is
+check \code{readgpt:::trace_can_call(trace)} before each one so the run cap is
 respected.}
 }
 Return \code{\link[=new_answer]{new_answer()}}. Budget your prompt with \code{\link[=gr_budget]{gr_budget()}} rather than
@@ -63,7 +63,7 @@ gr_register_reader("longest", signature = "one|1|none", cost_calls = "1",
     new_answer(res$text, "longest", question, d$chunk_id[i], trace)
   })
 
-ch <- gr_segment(gptread_example(), list(method = "sentence", max_tokens = 120))
+ch <- gr_segment(readgpt_example(), list(method = "sentence", max_tokens = 120))
 gr_read(ch, "What was revenue?", gr_mock_client(function(m, p) "45.2 million"),
         "longest")$answer
 }

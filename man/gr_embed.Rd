@@ -56,7 +56,7 @@ round(e \%*\% t(e), 3)
 
 # The semantic segmenter records the same thing, so a degraded run stays
 # visible after the fact.
-gr_segment(gptread_example(), list(method = "semantic", max_tokens = 200),
+gr_segment(readgpt_example(), list(method = "semantic", max_tokens = 200),
            client = cl)$extra$embedding_source
 }
 \seealso{

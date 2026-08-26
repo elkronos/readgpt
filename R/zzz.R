@@ -28,15 +28,15 @@
                     c("pdftools", "tesseract", "magick", "xml2"))
   if (length(missing)) {
     packageStartupMessage(sprintf(
-      "gptread: optional packages not installed: %s. PDF, OCR and HTML ingestion need them; everything else works without them.",
+      "readgpt: optional packages not installed: %s. PDF, OCR and HTML ingestion need them; everything else works without them.",
       paste(missing, collapse = ", ")))
   }
 }
 
 # Development helper: source every R file in dependency order, for working on a
 # checkout without installing. Deliberately NOT exported -- a user who has the
-# package installed should use `library(gptread)`, and a developer working from
-# a checkout can reach this as `gptread:::gr_load_all()`. It exists because the
+# package installed should use `library(readgpt)`, and a developer working from
+# a checkout can reach this as `readgpt:::gr_load_all()`. It exists because the
 # v1 repository was a set of `source()`d scripts with hard-coded `../R/...`
 # paths that resolved from exactly one working directory.
 #' @noRd
@@ -46,6 +46,6 @@ gr_load_all <- function(dir = "R") {
   files <- c(file.path(dir, order_first[file.exists(file.path(dir, order_first))]),
              setdiff(files, file.path(dir, order_first)))
   for (f in files) source(f, local = FALSE)
-  .onLoad(NULL, "gptread")
+  .onLoad(NULL, "readgpt")
   invisible(files)
 }

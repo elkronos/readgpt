@@ -1,8 +1,7 @@
-# gptread
+# readgpt
 
-<!-- Badges assume github.com/elkronos/gpt_read -- adjust the owner/repo if yours differs. -->
-[![R-CMD-check](https://github.com/elkronos/gpt_read/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/elkronos/gpt_read/actions/workflows/R-CMD-check.yaml)
-[![tests](https://github.com/elkronos/gpt_read/actions/workflows/tests.yaml/badge.svg)](https://github.com/elkronos/gpt_read/actions/workflows/tests.yaml)
+[![R-CMD-check](https://github.com/elkronos/readgpt/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/elkronos/readgpt/actions/workflows/R-CMD-check.yaml)
+[![tests](https://github.com/elkronos/readgpt/actions/workflows/tests.yaml/badge.svg)](https://github.com/elkronos/readgpt/actions/workflows/tests.yaml)
 
 Fine-grained control over how a language model ingests, segments, and reads a
 document.
@@ -40,13 +39,13 @@ and `jsonlite`.
 
 ```r
 # install.packages("remotes")
-remotes::install_github("elkronos/gpt_read")
+remotes::install_github("elkronos/readgpt")
 ```
 
 Or from a local checkout:
 
 ```r
-remotes::install_local("path/to/gpt_read")
+remotes::install_local("path/to/readgpt")
 ```
 
 Optional, each checked at the point of use:
@@ -69,11 +68,11 @@ pages empty.
 
 ```r
 Sys.setenv(OPENAI_API_KEY = "sk-...")   # or
-options(gptread.api_key = "sk-...")     # or
+options(readgpt.api_key = "sk-...")     # or
 cl <- gr_client(api_key = "sk-...")     # per-client, for multi-user Shiny
 ```
 
-Resolution order is explicit argument → `gptread.api_key` option →
+Resolution order is explicit argument → `readgpt.api_key` option →
 `OPENAI_API_KEY`.
 
 **Without a key nothing raises.** Every model call fails, you get
@@ -97,7 +96,7 @@ OPENAI_API_KEY=sk-...
 ## Quick start
 
 ```r
-library(gptread)
+library(readgpt)
 
 ans <- answer_document("report.pdf", "What was Q3 revenue?", recipe = "needle")
 ans$answer
@@ -113,7 +112,7 @@ extraction is shared across all of them:
 
 ```r
 cl  <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
-cmp <- gr_compare(gptread_example(), "What was revenue in fiscal 2024?",
+cmp <- gr_compare(readgpt_example(), "What was revenue in fiscal 2024?",
                   c("fast", "needle", "thorough", "survey"), client = cl)
 cmp$summary
 #>     recipe  segmenter chunks       reader         signature partial chunks_used
@@ -218,7 +217,7 @@ merges across section boundaries.
 Compare chunkings for free, before spending anything on reading:
 
 ```r
-doc <- gr_ingest(gptread_example())
+doc <- gr_ingest(readgpt_example())
 do.call(rbind, lapply(c("fixed", "paragraph", "sentence", "structural"),
   function(m) gr_chunk_stats(gr_segment(doc, list(method = m, max_tokens = 120)))))
 #>       method n total_tokens min median  mean max over_cap
@@ -234,7 +233,7 @@ do.call(rbind, lapply(c("fixed", "paragraph", "sentence", "structural"),
 What overlap actually costs, in duplicated tokens:
 
 ```r
-doc <- gr_ingest(gptread_example())
+doc <- gr_ingest(readgpt_example())
 do.call(rbind, lapply(c(0, 30, 60), function(ov)
   gr_chunk_stats(gr_segment(doc, list(method = "sentence", max_tokens = 120,
                                       overlap_tokens = ov)))))
@@ -429,7 +428,7 @@ gr_register_reader("longest", signature = "one|1|none", cost_calls = "1",
 ## Shiny app
 
 ```r
-shiny::runApp(system.file("shiny", package = "gptread"))
+shiny::runApp(system.file("shiny", package = "readgpt"))
 ```
 
 Every axis is exposed as a control: cleaning preset or individual cleaners,
@@ -464,7 +463,7 @@ requests are made**. By hand:
 
 ```bash
 R CMD INSTALL . --no-byte-compile
-Rscript -e 'library(gptread); testthat::test_dir("tests/testthat", package = "gptread")'
+Rscript -e 'library(readgpt); testthat::test_dir("tests/testthat", package = "readgpt")'
 ```
 
 ## Continuous integration

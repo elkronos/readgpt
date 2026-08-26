@@ -56,7 +56,7 @@ cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
 
 # Three pipelines over one document. Extraction is shared, so this costs one
 # extraction, not three; only the segmentation and the reader vary.
-cmp <- gr_compare(gptread_example(), "What was revenue?",
+cmp <- gr_compare(readgpt_example(), "What was revenue?",
                   c("fast", "precise", "needle"), client = cl)
 cmp$summary[, c("recipe", "segmenter", "chunks", "reader", "signature", "chunks_used")]
 

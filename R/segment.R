@@ -87,7 +87,7 @@ gr_segment_spec <- function(method = "paragraph", max_tokens = 1200L,
 #' @family segmentation functions
 #' @export
 #' @examples
-#' doc <- gr_ingest(gptread_example())
+#' doc <- gr_ingest(readgpt_example())
 #'
 #' # The same document, three boundary hypotheses. No API calls.
 #' do.call(rbind, lapply(c("fixed", "paragraph", "sentence", "structural"),

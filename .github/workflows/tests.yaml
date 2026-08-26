@@ -48,9 +48,9 @@ jobs:
       - name: Run test suite
         run: |
           Rscript -e '
-            suppressPackageStartupMessages({library(gptread); library(testthat)})
+            suppressPackageStartupMessages({library(readgpt); library(testthat)})
             gr_options(verbose = FALSE)
-            res <- as.data.frame(test_dir("tests/testthat", package = "gptread",
+            res <- as.data.frame(test_dir("tests/testthat", package = "readgpt",
                                           reporter = "summary", stop_on_failure = FALSE))
             cat(sprintf("\nPASS %d  FAIL %d  ERROR %d\n",
                         sum(res$passed), sum(res$failed), sum(res$error)))
@@ -71,7 +71,7 @@ jobs:
           Rscript -e '
             lines  <- readLines("README.md", warn = FALSE)
             fences <- grep("^```", lines)
-            suppressPackageStartupMessages(library(gptread))
+            suppressPackageStartupMessages(library(readgpt))
             gr_options(verbose = FALSE, max_cost_usd = NULL,
                        api_base = Sys.getenv("GPTREAD_API_BASE"), max_retries = 0L)
             ran <- 0; skipped <- 0; failed <- character(0)
@@ -96,7 +96,7 @@ jobs:
               # Lazy: only the blocks that actually reference `ans` pay for it.
               delayedAssign("ans", {
                 cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
-                answer_document(gptread_example(), "What was revenue?", "needle", client = cl)
+                answer_document(readgpt_example(), "What was revenue?", "needle", client = cl)
               }, assign.env = env)
               # withCallingHandlers, NOT tryCatch(warning=). A warning handler in
               # tryCatch UNWINDS: the block stops at its first warning and is then
@@ -120,7 +120,7 @@ jobs:
       - name: Verify README output blocks still match real output
         run: |
           Rscript -e '
-            suppressPackageStartupMessages(library(gptread))
+            suppressPackageStartupMessages(library(readgpt))
             gr_options(verbose = FALSE, max_cost_usd = NULL)
             lines <- readLines("README.md", warn = FALSE); fences <- grep("^```", lines)
             starts <- fences[grepl("^```[rR]$", lines[fences])]
@@ -160,7 +160,7 @@ jobs:
       - name: Verify documented counts match the registries
         run: |
           Rscript -e '
-            suppressPackageStartupMessages(library(gptread))
+            suppressPackageStartupMessages(library(readgpt))
             readme <- paste(readLines("README.md", warn = FALSE), collapse = "\n")
             claims <- list(extractors = nrow(gr_extractors()),
                            cleaners   = nrow(gr_cleaners()),

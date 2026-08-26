@@ -1,4 +1,4 @@
 library(testthat)
-library(gptread)
+library(readgpt)
 
-test_check("gptread")
+test_check("readgpt")

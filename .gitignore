@@ -1,0 +1,61 @@
+# ---------------------------------------------------------------------------
+# Secrets. First, because this package reads an API key from the environment.
+#
+# .Rprofile is here because the README documents it as a place to put
+# OPENAI_API_KEY. A project .Rprofile is otherwise a perfectly normal thing to
+# commit, so if you use one for settings rather than secrets, keep the key in
+# .Renviron and un-ignore this line.
+# ---------------------------------------------------------------------------
+.Renviron
+.Rprofile
+.Rprofile.local
+.env
+*.pem
+.httr-oauth
+.secrets
+
+# ---------------------------------------------------------------------------
+# R build and check output
+# ---------------------------------------------------------------------------
+*.Rcheck/
+*.tar.gz
+*.tgz
+*.Rout
+.Rhistory
+.RData
+.Rproj.user/
+.Ruserdata
+*.Rproj
+src/*.o
+src/*.so
+src/*.dll
+
+# ---------------------------------------------------------------------------
+# macOS and editor noise
+# ---------------------------------------------------------------------------
+.DS_Store
+._*
+.vscode/
+.idea/
+*~
+\#*\#
+
+# ---------------------------------------------------------------------------
+# Package runtime output
+# ---------------------------------------------------------------------------
+gptread.log
+gptread_history_*.json
+
+# ---------------------------------------------------------------------------
+# One-time migration scaffolding. These exist to get from the previous release
+# to this one; they are not part of the package and do not belong in history.
+# Delete them once the migration commit is in.
+#
+# Note `run-tests.sh` and `.github/` are deliberately NOT here -- they are
+# ongoing development tooling and should be committed.
+# ---------------------------------------------------------------------------
+REVIEW.md
+COMMIT_MSG.txt
+migrate.sh
+_old_gptread/
+legacy_v1/_scratch/

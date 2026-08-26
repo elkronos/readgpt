@@ -1,0 +1,10 @@
+^.*\.Rproj$
+^\.Rproj\.user$
+^\.git
+^\.github$
+^migrate\.sh$
+^run-tests\.sh$
+^COMMIT_MSG\.txt$
+^REVIEW\.md$
+^legacy_v1$
+^.*\.Rcheck$

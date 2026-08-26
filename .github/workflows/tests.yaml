@@ -1,0 +1,186 @@
+name: tests
+
+# A fast signal on every push: install, run the suite, and assert the three
+# claims the package makes about itself. Runs in well under a minute, so it
+# fails before the full R-CMD-check matrix finishes.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A second push supersedes the first; there is no value in finishing a run for
+# a commit nobody will look at.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+      OPENAI_API_KEY: ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: 'release'
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          dependencies: '"hard"'
+          extra-packages: |
+            any::testthat
+            any::withr
+
+      - name: Install package
+        run: R CMD INSTALL . --no-byte-compile
+        shell: bash
+
+      - name: Run test suite
+        run: |
+          Rscript -e '
+            suppressPackageStartupMessages({library(gptread); library(testthat)})
+            gr_options(verbose = FALSE)
+            res <- as.data.frame(test_dir("tests/testthat", package = "gptread",
+                                          reporter = "summary", stop_on_failure = FALSE))
+            cat(sprintf("\nPASS %d  FAIL %d  ERROR %d\n",
+                        sum(res$passed), sum(res$failed), sum(res$error)))
+            if (sum(res$failed) + sum(res$error) > 0) quit(status = 1)
+          '
+        shell: bash
+
+      - name: Verify every README code block runs
+        env:
+          # Any block that reaches a real endpoint is a bug in the README, not a
+          # thing to pay for. Point the client at a closed local port so an
+          # accidental live call fails in milliseconds instead of billing an
+          # account, and give it a syntactically valid but useless key so the
+          # failure is a connection refusal rather than a missing-key abort.
+          OPENAI_API_KEY: 'sk-ci-not-a-real-key'
+          GPTREAD_API_BASE: 'http://127.0.0.1:9/v1'
+        run: |
+          Rscript -e '
+            lines  <- readLines("README.md", warn = FALSE)
+            fences <- grep("^```", lines)
+            suppressPackageStartupMessages(library(gptread))
+            gr_options(verbose = FALSE, max_cost_usd = NULL,
+                       api_base = Sys.getenv("GPTREAD_API_BASE"), max_retries = 0L)
+            ran <- 0; skipped <- 0; failed <- character(0)
+            starts <- fences[grepl("^```[rR]$", lines[fences])]
+            for (s in starts) {
+              e <- fences[fences > s][1]
+              if (is.na(e)) {
+                failed <- c(failed, sprintf("unterminated code fence at line %d", s)); next
+              }
+              if (e <= s + 1) { skipped <- skipped + 1; next }
+              code <- lines[(s + 1):(e - 1)]
+              txt <- paste(code[!grepl("^#>", code)], collapse = "\n")
+              # Skip blocks that need files or services CI does not have. A block
+              # that would issue a REAL model call is skipped too: the point of
+              # this step is that the documented code parses and runs, not that
+              # OpenAI is reachable.
+              if (grepl("report\\.pdf|thesis\\.pdf|install_local|runApp|sk-\\.\\.\\.", txt) ||
+                  (grepl("gr_client\\(", txt) && !grepl("gr_mock_client", txt))) {
+                skipped <- skipped + 1; next
+              }
+              env <- new.env(parent = globalenv())
+              # Lazy: only the blocks that actually reference `ans` pay for it.
+              delayedAssign("ans", {
+                cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
+                answer_document(gptread_example(), "What was revenue?", "needle", client = cl)
+              }, assign.env = env)
+              # withCallingHandlers, NOT tryCatch(warning=). A warning handler in
+              # tryCatch UNWINDS: the block stops at its first warning and is then
+              # recorded as having run to completion, so a block that warned and
+              # would then have errored counted as a pass.
+              ok <- tryCatch(
+                withCallingHandlers({ eval(parse(text = txt), envir = env); TRUE },
+                                    warning = function(w) invokeRestart("muffleWarning")),
+                error = function(e) {
+                  failed <<- c(failed, sprintf("line %d: %s", s, conditionMessage(e))); FALSE
+                })
+              if (isTRUE(ok)) ran <- ran + 1
+            }
+            cat(sprintf("README blocks: %d ran, %d skipped, %d failed\n",
+                        ran, skipped, length(failed)))
+            if (ran == 0) { cat("No README block ran -- the extractor is broken.\n"); quit(status = 1) }
+            if (length(failed)) { cat(paste0("  ", failed, collapse = "\n"), "\n"); quit(status = 1) }
+          '
+        shell: bash
+
+      - name: Verify README output blocks still match real output
+        run: |
+          Rscript -e '
+            suppressPackageStartupMessages(library(gptread))
+            gr_options(verbose = FALSE, max_cost_usd = NULL)
+            lines <- readLines("README.md", warn = FALSE); fences <- grep("^```", lines)
+            starts <- fences[grepl("^```[rR]$", lines[fences])]
+            cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
+            checked <- 0; bad_blocks <- 0
+            for (s in starts) {
+              e <- fences[fences > s][1]
+              if (is.na(e) || e <= s + 1) next
+              code <- lines[(s + 1):(e - 1)]
+              if (!any(grepl("^#>", code))) next
+              txt <- paste(code[!grepl("^#>", code)], collapse = "\n")
+              if (!nzchar(trimws(txt))) next
+              # Skip blocks whose output is inherently non-deterministic (run ids,
+              # timings) or that need files/services CI does not have.
+              if (grepl("report\\.pdf|thesis\\.pdf|install_local|runApp|sk-\\.\\.\\.|gr_trace_summary|run_id", txt)) next
+              if (grepl("gr_client\\(", txt) && !grepl("gr_mock_client", txt)) next
+              env <- new.env(parent = globalenv()); assign("cl", cl, envir = env)
+              got <- tryCatch(capture.output(print(eval(parse(text = txt), envir = env))),
+                              error = function(e) paste("ERROR:", conditionMessage(e)))
+              want <- sub("^#> ?", "", code[grepl("^#>", code)])
+              want <- want[!grepl("^\\.\\.\\.$", want)]
+              n <- min(length(want), length(got)); checked <- checked + 1
+              differ <- which(trimws(want[seq_len(n)]) != trimws(got[seq_len(n)]))
+              if (length(differ)) {
+                bad_blocks <- bad_blocks + 1
+                cat(sprintf("\nREADME block at line %d is out of date:\n", s))
+                for (i in head(differ, 5))
+                  cat(sprintf("  documented: %s\n  actual    : %s\n", want[i], got[i]))
+              }
+            }
+            cat(sprintf("\n%d README output block(s) checked, %d stale\n", checked, bad_blocks))
+            if (checked == 0) { cat("No block was checked -- the extractor is broken.\n"); quit(status = 1) }
+            if (bad_blocks) quit(status = 1)
+          '
+        shell: bash
+
+      - name: Verify documented counts match the registries
+        run: |
+          Rscript -e '
+            suppressPackageStartupMessages(library(gptread))
+            readme <- paste(readLines("README.md", warn = FALSE), collapse = "\n")
+            claims <- list(extractors = nrow(gr_extractors()),
+                           cleaners   = nrow(gr_cleaners()),
+                           segmenters = nrow(gr_segmenters()),
+                           readers    = nrow(gr_readers()))
+            want <- sprintf("%d extractors + %d individually toggleable cleaners",
+                            claims$extractors, claims$cleaners)
+            bad <- character(0)
+            if (!grepl(want, readme, fixed = TRUE))
+              bad <- c(bad, sprintf("README diagram should read: %s", want))
+            if (!grepl(sprintf("%d segmenters", claims$segmenters), readme, fixed = TRUE))
+              bad <- c(bad, sprintf("README should say %d segmenters", claims$segmenters))
+            if (!grepl(sprintf("%d strategies", claims$readers), readme, fixed = TRUE))
+              bad <- c(bad, sprintf("README should say %d strategies", claims$readers))
+            # Every reader signature must still be unique -- the packages core claim.
+            sigs <- gr_readers()$signature
+            if (anyDuplicated(sigs))
+              bad <- c(bad, paste("duplicate reader signatures:",
+                                  paste(sigs[duplicated(sigs)], collapse = ", ")))
+            if (length(bad)) { cat(paste0("  ", bad, collapse = "\n"), "\n"); quit(status = 1) }
+            cat("Documented counts match the registries.\n")
+          '
+        shell: bash

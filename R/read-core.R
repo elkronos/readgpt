@@ -1,0 +1,360 @@
+# read-core.R -- AXIS 3 machinery: the answer object, prompt building, evidence.
+#
+# WHY THIS FILE EXISTS
+# In the old repository the five "modes" were not five methodologies. Traced
+# through `main.R`:
+#
+#   * "Chunked" and "Semantic" called `gpt_read_chunked(chunks, question,
+#     use_parallel = use_parallel, ...)` -- the same function with the same
+#     arguments on the same already-sorted `chunks` object. Running both issued
+#     14 API calls where 7 would do, and `identical(res$Chunked, res$Semantic)`
+#     was TRUE.
+#   * "MultiPass" re-executed Retrieval and Chunked verbatim, so selecting
+#     Retrieval + Chunked + MultiPass ran each of them twice.
+#   * "Hierarchical" was map-then-single-reduce, i.e. `map_reduce` with a
+#     summarise prompt instead of an answer prompt -- one level, never
+#     recursive, and it blew the context window the moment N x 512 summary
+#     tokens exceeded the model's limit.
+#   * `chunk_method` was decided once for the whole run, so ticking "Semantic"
+#     silently changed the chunking -- and therefore the answer -- of every
+#     other mode in the same run.
+#
+# Distinctness is now a property the package can *check*. Every reader declares
+# a `signature`: the shape of its traversal (how chunks are selected, how many
+# calls it makes, whether state flows forward). `gr_compare()` refuses to bill
+# you twice for two recipes that resolve to the same ingestion, the same
+# segmentation AND the same read spec -- the signature alone is not the test,
+# because two recipes can share a signature and still differ in `top_k`,
+# `min_score` or a token cap, all of which change what the model sees.
+
+#' Build a `gr_answer`, the object every reader must return
+#'
+#' Exported because it is part of the extension API: [gr_read()] rejects
+#' anything that does not inherit `"gr_answer"`, so a custom reader registered
+#' with [gr_register_reader()] cannot be written without this. Using it also
+#' means your reader reports `partial`, `evidence` and `notes` the same way the
+#' built-ins do, so [gr_compare()] can put it in the same table.
+#'
+#' @param text The answer string. Use `"NOT_IN_DOCUMENT"` when the chunks did
+#'   not contain the answer; [gr_compare()] counts that separately from a
+#'   failure.
+#' @param reader Your reader's name, as registered.
+#' @param question The question, carried through for the record.
+#' @param chunks_used Integer `chunk_id`s that CONTRIBUTED to the answer -- not
+#'   every chunk you sent.
+#' @param trace The `gr_trace` passed to your reader. Pass it through; do not
+#'   create a new one, or your calls will not appear in the run's totals.
+#' @param evidence Optional data frame of supporting spans; build it with the
+#'   columns `chunk_id`, `text`, `page`, `section`, `score`.
+#' @param partial `TRUE` if anything degraded -- a failed call, a dropped chunk,
+#'   a truncated prompt. Callers are told to check this before trusting
+#'   `$answer`, so setting it honestly matters more than it looks.
+#' @param notes Named list of whatever your reader wants to report.
+#' @return A [gr_answer].
+#' @seealso [gr_register_reader()], [gr_answer], [gr_read()], [new_chunks()]
+#' @family reading functions
+#' @export
+#' @examples
+#' # The minimum a custom reader has to return.
+#' tr <- gr_trace()
+#' a <- new_answer("Revenue was 45.2 million.", "my_reader", "What was revenue?",
+#'                 chunks_used = 1L, trace = tr, notes = list(strategy = "first chunk"))
+#' a$partial
+#' a$notes$strategy
+new_answer <- function(text, reader, question, chunks_used, trace, evidence = NULL,
+                       partial = FALSE, notes = list()) {
+  structure(list(
+    answer = as_chr1(text),
+    reader = as_chr1(reader),
+    question = as_chr1(question),
+    evidence = evidence,
+    chunks_used = chunks_used,
+    partial = isTRUE(partial),
+    notes = notes,
+    trace = trace
+  ), class = "gr_answer")
+}
+
+#' @export
+print.gr_answer <- function(x, ...) {
+  cat(sprintf("<gr_answer> reader=%s%s\n", x$reader, if (x$partial) " (PARTIAL)" else ""))
+  cat(sprintf("  Q: %s\n", substr(x$question, 1, 160)))
+  if (!is.null(x$trace)) {
+    s <- gr_trace_summary(x$trace)
+    cat(sprintf("  %d model call(s), %d in / %d out tokens, %d error(s)\n",
+                s$calls, s$tokens_in, s$tokens_out, s$errors))
+  }
+  cat("  ---\n")
+  cat(x$answer, "\n")
+  if (!is.null(x$evidence) && nrow(x$evidence)) {
+    cat(sprintf("  ---\n  %d evidence span(s) from chunk(s): %s\n",
+                nrow(x$evidence), paste(utils::head(unique(x$evidence$chunk_id), 12), collapse = ", ")))
+  }
+  invisible(x)
+}
+
+#' @export
+as_json.gr_answer <- function(x, pretty = TRUE, ...) {
+  as_json.default(list(
+    answer = x$answer, reader = x$reader, question = x$question,
+    partial = x$partial, chunks_used = x$chunks_used, notes = x$notes,
+    evidence = x$evidence,
+    trace = trace_as_list(x$trace)
+  ), pretty = pretty, ...)
+}
+
+# ---------------------------------------------------------------------------
+# Prompt construction
+# ---------------------------------------------------------------------------
+
+.gr_prompts <- list(
+  answer_system = paste0(
+    "You answer questions using only the supplied document excerpts. ",
+    "If the excerpts do not contain the answer, say exactly: NOT_IN_DOCUMENT. ",
+    "Never use outside knowledge. Quote figures, dates and names exactly as written."),
+  answer_system_cited = paste0(
+    "You answer questions using only the supplied document excerpts. ",
+    "If the excerpts do not contain the answer, say exactly: NOT_IN_DOCUMENT. ",
+    "Never use outside knowledge. Quote figures, dates and names exactly as written. ",
+    "Cite the excerpt you relied on for each claim using its bracketed id, e.g. [chunk 3]."),
+  extract_system = paste0(
+    "You extract evidence, not answers. Copy out the passages of the excerpt that bear on ",
+    "the question, verbatim and without commentary. If nothing in the excerpt is relevant, ",
+    "reply with exactly: NONE."),
+  summarise_system = paste0(
+    "You compress text while preserving everything that could bear on the question. ",
+    "Keep all specific figures, dates, names and qualifications. Drop only material that ",
+    "cannot possibly relate to the question."),
+  merge_system = paste0(
+    "You consolidate partial findings into one answer. Resolve contradictions by preferring ",
+    "the finding with concrete supporting detail, and say so when findings genuinely conflict. ",
+    "Do not introduce anything absent from the findings. If none of them answer the question, ",
+    "say exactly: NOT_IN_DOCUMENT."),
+  refine_system = paste0(
+    "You revise a draft answer using a new excerpt. Add what the excerpt supports, correct what ",
+    "it contradicts, and leave the rest of the draft alone. Return the complete revised answer, ",
+    "not a description of your edits.")
+)
+
+#' Sentinel the readers use to mark "this chunk had nothing".
+#' @noRd
+.NOT_FOUND <- "NOT_IN_DOCUMENT"
+
+#' Did the model report that the document does not contain the answer?
+#'
+#' Every reader is instructed to reply with exactly `"NOT_IN_DOCUMENT"` when the
+#' excerpts do not answer the question. Use this rather than
+#' `grepl("NOT_IN_DOCUMENT", ans$answer)`: a real answer can quote the sentinel
+#' ("the log said NOT_IN_DOCUMENT, but revenue was 45.2 million"), and models do
+#' not reproduce the token byte-exactly -- they wrap it in quotes, bold it, or
+#' add a full stop. This matches the sentinel *alone*, modulo that decoration,
+#' and treats a blank answer as not-found too.
+#'
+#' The v1 test was `grepl("not found|no information|not applicable", ...)` over
+#' the whole response, which threw away every answer that happened to contain
+#' one of those phrases.
+#'
+#' @param x An answer string, or `ans$answer`.
+#' @return `TRUE` if the string is the not-found sentinel (or blank).
+#' @seealso [gr_answer], [gr_compare()], whose `summary$not_found` column is
+#'   this predicate applied per recipe
+#' @family reading functions
+#' @export
+#' @examples
+#' is_not_found("NOT_IN_DOCUMENT")
+#' is_not_found("**NOT_IN_DOCUMENT.**")     # models decorate it
+#' is_not_found("")                          # nothing came back
+#'
+#' # A real answer that merely mentions the sentinel is NOT not-found.
+#' is_not_found("The log said NOT_IN_DOCUMENT, but revenue was 45.2 million.")
+is_not_found <- function(x) {
+  x <- trimws(as_chr1(x))
+  if (!nzchar(x)) return(TRUE)
+  # The sentinel alone, modulo surrounding punctuation and formatting. Models do
+  # not reproduce it byte-exactly, so accept the common trailing punctuation and
+  # a space instead of the underscores; anything longer is a real answer.
+  grepl("^[\"'`*_ ]*NOT[ _]IN[ _]DOCUMENT[\"'`*_.!:;, ]*$", x, ignore.case = TRUE)
+}
+
+#' A model call that succeeded but returned nothing usable.
+#'
+#' A blank completion is not an answer and must not be reported as one, nor
+#' spliced into a downstream prompt as evidence.
+#' @noRd
+usable_text <- function(res) {
+  isTRUE(res$ok) && nzchar(trimws(as_chr1(res$text)))
+}
+
+#' Render chunks into a labelled block for a prompt.
+#' @noRd
+render_chunks <- function(df, ids = NULL) {
+  if (!nrow(df)) return("")
+  ids <- ids %||% df$chunk_id
+  paste(vapply(seq_len(nrow(df)), function(i) {
+    loc <- c(if (!is.na(df$page[i])) sprintf("p.%d", df$page[i]),
+             if (!is.na(df$section[i])) sprintf("\u00a7 %s", df$section[i]))
+    hdr <- sprintf("[chunk %s%s]", ids[i], if (length(loc)) paste0(" ", paste(loc, collapse = ", ")) else "")
+    paste0(hdr, "\n", df$text[i])
+  }, character(1)), collapse = "\n\n")
+}
+
+#' Build the standard question-answering message list.
+#' @noRd
+answer_messages <- function(question, body, cite = FALSE, label = "Excerpts") {
+  list(
+    list(role = "system", content = if (cite) .gr_prompts$answer_system_cited else .gr_prompts$answer_system),
+    list(role = "user", content = paste0("<", tolower(label), ">\n", body, "\n</", tolower(label), ">")),
+    list(role = "user", content = paste0("Question: ", question))
+  )
+}
+
+#' Greedily fit as many chunks as the budget allows, in the order given. A chunk
+#' that would overflow is skipped, not truncated. Returns the indices used and
+#' the rendered body.
+#'
+#' The multi-chunk readers (`stuff`, `retrieve`, `rerank`) go through this; the
+#' rest bound their prompts with `gr_truncate_tokens()` or `tree_merge()`. Every
+#' path is bounded one way or the other -- that is the failure mode that produced
+#' unbounded merge prompts and HTTP 400s in `gpt_read_chunked()` and
+#' `gpt_read_hierarchical()`.
+#' @noRd
+fit_chunks <- function(df, budget_tokens, order = NULL) {
+  idx <- order %||% seq_len(nrow(df))
+  used <- integer(0); total <- 0L
+  for (i in idx) {
+    t <- gr_count_tokens(render_chunks(df[i, , drop = FALSE]))
+    if (total + t > budget_tokens) next
+    used <- c(used, i); total <- total + t
+  }
+  list(idx = used, tokens = total, dropped = setdiff(idx, used))
+}
+
+#' Standard overhead accounting for a reader's prompt.
+#' @noRd
+prompt_overhead <- function(question, system_prompt) {
+  sum(gr_count_tokens(c(as_chr1(question), as_chr1(system_prompt)))) + 64L
+}
+
+#' Turn per-chunk extraction results into an evidence table.
+#' @noRd
+evidence_table <- function(chunk_ids, texts, pages = NA_integer_, sections = NA_character_,
+                           scores = NA_real_) {
+  n <- length(texts)
+  if (!n) {
+    return(data.frame(chunk_id = integer(0), text = character(0), page = integer(0),
+                      section = character(0), score = numeric(0), stringsAsFactors = FALSE))
+  }
+  df <- data.frame(chunk_id = rep(chunk_ids, length.out = n),
+                   text = vapply(texts, as_chr1, character(1), USE.NAMES = FALSE),
+                   page = rep(pages, length.out = n),
+                   section = rep(sections, length.out = n),
+                   score = rep(scores, length.out = n),
+                   stringsAsFactors = FALSE)
+  df[has_content(df$text), , drop = FALSE]
+}
+
+#' Merge a set of partial findings into one answer, tree-wise so the merge
+#' prompt itself can never exceed the context window.
+#' @noRd
+tree_merge <- function(client, question, pieces, spec, trace, label = "merge",
+                       system_prompt = NULL, kind = "findings") {
+  system_prompt <- system_prompt %||% .gr_prompts$merge_system
+  pieces <- pieces[has_content(pieces)]
+  if (!length(pieces)) return(list(text = .NOT_FOUND, ok = FALSE, levels = 0L))
+  if (length(pieces) == 1L) return(list(text = pieces[[1]], ok = TRUE, levels = 0L))
+
+  level <- 0L
+  truncated <- 0L
+  prev_n <- length(pieces) + 1L
+  repeat {
+    level <- level + 1L
+    overhead <- prompt_overhead(question, system_prompt)
+    bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
+
+    # A single finding larger than the whole merge budget cannot be reduced by
+    # grouping: it lands alone in its group, a one-element group is returned
+    # unchanged, and the loop spins through every level doing nothing before
+    # concatenating the lot. Truncate it once, and say so, so each level makes
+    # real progress.
+    over <- gr_count_tokens(pieces) > bud$input
+    if (any(over)) {
+      gr_msg(sprintf("Merge: %d finding(s) exceed the %d-token merge budget; truncating them.",
+                     sum(over), bud$input))
+      pieces[over] <- vapply(pieces[over], gr_truncate_tokens, character(1),
+                             n = bud$input, USE.NAMES = FALSE)
+      truncated <- truncated + sum(over)
+    }
+
+    groups <- list(); buf <- character(0); tks <- 0L
+    for (p in pieces) {
+      pt <- gr_count_tokens(p)
+      if (length(buf) && tks + pt > bud$input) { groups[[length(groups) + 1L]] <- buf; buf <- character(0); tks <- 0L }
+      buf <- c(buf, p); tks <- tks + pt
+    }
+    if (length(buf)) groups[[length(groups) + 1L]] <- buf
+
+    if (length(groups) == 1L && length(groups[[1]]) == length(pieces)) {
+      body <- paste(sprintf("<%s %d>\n%s\n</%s %d>", kind, seq_along(pieces), pieces,
+                            kind, seq_along(pieces)), collapse = "\n\n")
+      if (!trace_can_call(trace)) {
+        # The call cap stopped us before the final merge. This path used to
+        # return unbounded concatenation -- an "answer" the size of every
+        # finding put together -- while the failure path two lines down was
+        # carefully capped. Same degradation, same bound.
+        return(list(text = merge_giveup(pieces, spec), ok = FALSE, levels = level,
+                    truncated = truncated, error = "call cap reached before merging"))
+      }
+      res <- gr_call(client, list(
+        list(role = "system", content = system_prompt),
+        list(role = "user", content = body),
+        list(role = "user", content = paste0("Question: ", question))
+      ), model = spec$model, max_output = spec$max_answer_tokens, temperature = spec$temperature,
+         trace = trace, label = label)
+      if (!res$ok) {
+        # Concatenation is a documented, visible degradation -- not a silent one.
+        return(list(text = merge_giveup(pieces, spec), ok = FALSE, levels = level,
+                    truncated = truncated, error = res$error))
+      }
+      return(list(text = res$text, ok = TRUE, levels = level, truncated = truncated))
+    }
+
+    gr_msg(sprintf("Merge level %d: %d finding(s) -> %d group(s).", level, length(pieces), length(groups)))
+    pieces <- unlist(gr_lapply(groups, function(g) {
+      if (length(g) == 1L) return(g)
+      if (!trace_can_call(trace)) return(merge_giveup(g, spec))
+      body <- paste(sprintf("<%s>\n%s\n</%s>", kind, g, kind), collapse = "\n\n")
+      res <- gr_call(client, list(
+        list(role = "system", content = system_prompt),
+        list(role = "user", content = body),
+        list(role = "user", content = paste0("Question: ", question))
+      ), model = spec$model, max_output = spec$max_answer_tokens, temperature = spec$temperature,
+         trace = trace, label = paste0(label, ".level", level))
+      if (res$ok) res$text else paste(g, collapse = "\n\n")
+    }, parallel = spec$parallel, label = "merge group"), use.names = FALSE)
+    pieces <- pieces[has_content(pieces)]
+
+    # Progress guard. If a level did not shrink the pile, another level will not
+    # either -- every input to it is the same. Stop now with a bounded answer
+    # rather than burning six more rounds of calls to reach the same place.
+    if (!length(pieces)) return(list(text = .NOT_FOUND, ok = FALSE, levels = level,
+                                     truncated = truncated))
+    if (length(pieces) >= prev_n || level > 6L) {
+      return(list(text = merge_giveup(pieces, spec), ok = FALSE, levels = level,
+                  truncated = truncated,
+                  error = if (level > 6L) "merge depth cap reached" else "merge made no progress"))
+    }
+    prev_n <- length(pieces)
+  }
+}
+
+#' The bounded fallback when merging fails.
+#'
+#' Returning `paste(pieces, collapse=)` unbounded handed the caller an "answer"
+#' that could be the size of the whole document. Cap it at a generous multiple of
+#' the answer budget and mark the cut.
+#' @noRd
+merge_giveup <- function(pieces, spec) {
+  cap <- as.integer(clamp((spec$max_answer_tokens %||% 800L) * 3L, 200L, 8000L))
+  gr_truncate_tokens(paste(pieces, collapse = "\n\n---\n\n"), cap,
+                     "\n\n...[merge failed; findings above are truncated]")
+}

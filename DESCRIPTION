@@ -1,0 +1,43 @@
+Package: gptread
+Title: Fine-Grained Control Over How LLMs Ingest, Segment, and Read Documents
+Version: 0.2.0
+Authors@R:
+    person("Justin", "Chase", email = "jchase.msu@gmail.com",
+           role = c("aut", "cre", "cph"))
+Author: Justin Chase [aut, cre, cph]
+Maintainer: Justin Chase <jchase.msu@gmail.com>
+Description: A composable framework for document question answering with large
+    language models. Ingestion (extraction and cleaning), segmentation
+    (chunking), and reading (answering strategy) are three independent,
+    pluggable axes. Every stage is configurable, every stage is inspectable via
+    a structured run trace, and every stage is registry-based so users can add
+    their own extractors, cleaners, segmenters, and readers without editing the
+    package.
+URL: https://github.com/elkronos/gpt_read
+BugReports: https://github.com/elkronos/gpt_read/issues
+License: MIT + file LICENSE
+Encoding: UTF-8
+Depends:
+    R (>= 4.1.0)
+Imports:
+    digest,
+    httr,
+    jsonlite,
+    stats,
+    tools,
+    utils
+Suggests:
+    reticulate,
+    future,
+    future.apply,
+    magick,
+    pdftools,
+    readtext,
+    shiny,
+    testthat (>= 3.0.0),
+    tesseract,
+    withr,
+    xml2
+Config/testthat/edition: 3
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2

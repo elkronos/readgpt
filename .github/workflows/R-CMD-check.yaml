@@ -1,0 +1,66 @@
+name: R-CMD-check
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  R-CMD-check:
+    runs-on: ${{ matrix.config.os }}
+    name: ${{ matrix.config.os }} (R ${{ matrix.config.r }})
+
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - {os: macos-latest,   r: 'release'}
+          - {os: ubuntu-latest,  r: 'release'}
+          - {os: ubuntu-latest,  r: 'oldrel-1'}
+
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+      R_KEEP_PKG_SOURCE: yes
+      # Optional packages (pdftools, tesseract, magick, xml2, ...) gate features
+      # the test suite does not exercise. Requiring them would mean installing
+      # poppler, leptonica and ImageMagick on every runner for no coverage gain.
+      _R_CHECK_FORCE_SUGGESTS_: false
+      # No key on CI: every test uses the offline mock client, so a leaked or
+      # missing key must never change the outcome.
+      OPENAI_API_KEY: ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: ${{ matrix.config.r }}
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          # Hard dependencies only, plus what the suite itself needs.
+          dependencies: '"hard"'
+          extra-packages: |
+            any::testthat
+            any::withr
+            any::rcmdcheck
+
+      - uses: r-lib/actions/check-r-package@v2
+        with:
+          upload-snapshots: true
+          args: 'c("--no-manual", "--no-build-vignettes")'
+          # NOTEs are tolerated (the only one is "suggested packages not
+          # available", which is expected given dependencies: "hard"). If a
+          # runner ever produces an environment-specific WARNING you do not
+          # care about, relax this to '"error"'.
+          error-on: '"warning"'

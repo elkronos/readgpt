@@ -40,7 +40,13 @@ and `jsonlite`.
 
 ```r
 # install.packages("remotes")
-remotes::install_local("path/to/gptread")
+remotes::install_github("elkronos/gpt_read")
+```
+
+Or from a local checkout:
+
+```r
+remotes::install_local("path/to/gpt_read")
 ```
 
 Optional, each checked at the point of use:
@@ -80,6 +86,13 @@ ans$notes$error    # "No API key available."
 
 Always check `ans$partial` before trusting an answer. Call `gr_api_key()`
 yourself if you would rather fail fast.
+
+Keep the key out of the repository. `.Renviron` and `.Rprofile` are both
+gitignored here for that reason — `.Renviron` is the usual home for it:
+
+```
+OPENAI_API_KEY=sk-...
+```
 
 ## Quick start
 
@@ -460,54 +473,15 @@ Two GitHub Actions workflows run on every push and pull request:
 
 | workflow | what it does |
 |---|---|
-| `tests.yaml` | installs, runs the suite, executes every README code block, and asserts the documented counts still match the registries and that no two readers share a traversal signature |
-| `R-CMD-check.yaml` | full `R CMD check` on macOS and Ubuntu, current R and previous release |
+| `.github/workflows/tests.yaml` | installs, runs the suite, executes every README code block, diffs its documented output against real output, and asserts the documented counts still match the registries and that no two readers share a traversal signature |
+| `.github/workflows/R-CMD-check.yaml` | full `R CMD check` on macOS and Ubuntu, current R and previous release |
 
-`tests.yaml` is the fast signal — under a minute — so a broken change fails
-before the check matrix finishes. Neither workflow needs a secret;
+The `tests` workflow is the fast signal — under a minute — so a broken change fails
+before the check matrix finishes. Its output diff is not cosmetic: it is what
+caught the same document producing different token counts on different
+machines, which 613 passing tests in one locale did not. Neither workflow needs a secret;
 `OPENAI_API_KEY` is explicitly set empty so a missing or leaked key can never
 change a result.
-
-## What gets committed
-
-`.gitignore` governs git; `.Rbuildignore` governs the tarball `R CMD build`
-produces. They are different files with different jobs, and **a file excluded
-from the tarball is still committed unless git is told otherwise**.
-
-Committed: the package itself, plus `run-tests.sh` and `.github/` as ongoing
-development tooling.
-
-Ignored: `REVIEW.md`, `COMMIT_MSG.txt` and `migrate.sh` (one-time migration
-scaffolding), `_old_gptread/`, `*.tar.gz`, `*.Rcheck/`, `.DS_Store`, editor
-directories, and -- first in the file, because this package reads a key from
-the environment -- `.Renviron`, `.Rprofile`, `.env`, `*.pem` and `.secrets`.
-
-`.Rprofile` is ignored because the API-key section above documents it as a place
-to put `OPENAI_API_KEY`. A project `.Rprofile` holding only settings is a
-perfectly normal thing to commit; if that is yours, keep the key in `.Renviron`
-instead and remove the line.
-
-Check before you commit, not after:
-
-```bash
-bash migrate.sh --preflight
-```
-
-It lists what git would include, then greps that list for the usual mistakes
-(archives, `.Rcheck` output, `.DS_Store`, `.Renviron`, `.Rprofile`, anything
-matching an API key) and says, for each one, whether it is untracked — where a
-`.gitignore` line fixes it — or **already tracked**, where it does not:
-`.gitignore` never untracks anything, so a file that was committed before the
-rule existed keeps being committed until you `git rm --cached` it. If such a
-file held a real key, rotate the key; it is in the history either way.
-
-It exits non-zero if it finds anything, so it drops straight into a pre-commit
-hook:
-
-```bash
-printf '#!/bin/sh\nbash migrate.sh --preflight\n' > .git/hooks/pre-commit
-chmod +x .git/hooks/pre-commit
-```
 
 ## Migrating from v1
 
@@ -537,6 +511,10 @@ Three behaviour changes are deliberate and will alter your results:
 `v1`'s `refine = TRUE` is mapped to citations only. Its verification pass is not
 reproduced because it could never run — it called a `search_text()` function
 that was never defined anywhere in the repository.
+
+The v1 source is preserved under `legacy_v1/` for reference and A/B
+comparison. It is not loaded by the package; to reproduce its ingestion and
+chunking under the current code, use the `legacy_v1` recipe.
 
 The regression suite in `tests/testthat/` reproduces each of these defects
 against the current code, so the claims above are checked rather than asserted.

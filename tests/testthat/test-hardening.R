@@ -889,3 +889,68 @@ test_that("source_label refuses anything that is not a real, short path", {
     expect_identical(gptread:::source_label(x), "<inline text>")
   }
 })
+
+# ---------------------------------------------------------------------------
+# Locale independence
+#
+# The same document must produce the same tokens, the same chunks and the same
+# cost estimate on every machine. It did not: `enc2utf8()` treats an UNMARKED
+# string as native, so in a non-UTF-8 locale it re-encoded bytes that were
+# already valid UTF-8. Downstream, the ligature and smart-quote cleaners stopped
+# matching and `utf8ToInt()` fell back to counting bytes -- charging a
+# one-codepoint em dash as three characters. CI caught it as a README output
+# diff; the cause was a 50% token swing on the affected line.
+# ---------------------------------------------------------------------------
+
+test_that("token counts depend on the bytes, not on the encoding label", {
+  s <- "Northwind Instruments — Annual Report 2024"
+  labelled <- s;   Encoding(labelled) <- "UTF-8"
+  unlabelled <- s; Encoding(unlabelled) <- "unknown"
+  expect_identical(gr_count_tokens(labelled), gr_count_tokens(unlabelled))
+
+  # And across the scripts the estimator special-cases.
+  for (txt in c("café résumé", "中文字", "\U0001F600\U0001F600",
+                "مرحبا", "plain ascii only")) {
+    a <- txt; Encoding(a) <- "UTF-8"
+    b <- txt; Encoding(b) <- "unknown"
+    expect_identical(gr_count_tokens(a), gr_count_tokens(b), label = sprintf("%s", txt))
+  }
+})
+
+test_that("to_utf8 labels valid UTF-8 instead of re-encoding it", {
+  s <- "Northwind Instruments — Annual Report 2024"
+  raw_bytes <- s; Encoding(raw_bytes) <- "unknown"
+  out <- gptread:::to_utf8(raw_bytes)
+  expect_identical(Encoding(out), "UTF-8")
+  expect_true(validUTF8(out))
+  # The bytes must survive untouched -- this is where they were being corrupted.
+  expect_identical(charToRaw(out), charToRaw(s))
+})
+
+test_that("ingestion and segmentation are identical under a C locale", {
+  old <- Sys.getlocale("LC_CTYPE")
+  skip_if(!nzchar(old), "no LC_CTYPE to restore")
+  on.exit(suppressWarnings(Sys.setlocale("LC_CTYPE", old)), add = TRUE)
+
+  measure <- function() {
+    d <- gr_ingest(gptread_example())
+    ch <- gr_segment(d, list(method = "structural", max_tokens = 120))
+    list(tokens = d$stats$tokens, chars = d$stats$chars,
+         text = d$text, totals = sum(ch$chunks$tokens))
+  }
+  gptread:::gr_cache_clear()
+  utf8 <- measure()
+
+  ok <- suppressWarnings(Sys.setlocale("LC_CTYPE", "C"))
+  skip_if(!nzchar(ok), "cannot switch to the C locale here")
+  gptread:::gr_cache_clear()
+  c_loc <- measure()
+
+  expect_identical(c_loc$tokens, utf8$tokens)
+  expect_identical(c_loc$chars, utf8$chars)
+  expect_identical(c_loc$totals, utf8$totals)
+  # The em dash in the bundled title must be normalised by `ligatures` either
+  # way; leaving it meant the cleaner had silently stopped matching.
+  expect_false(grepl("—", c_loc$text, useBytes = TRUE))
+  expect_false(grepl("—", utf8$text, useBytes = TRUE))
+})

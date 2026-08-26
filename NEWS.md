@@ -91,6 +91,15 @@ The ones most likely to have affected real runs:
   anywhere in the repository.
 * The Shiny app stored the API key process-wide, so two browser sessions in one
   R process billed each other, and exposed the entire filesystem to the browser.
+* **The same document produced different results on different machines.**
+  `enc2utf8()` treats an *unmarked* string as native, so in a non-UTF-8 locale
+  it re-encoded bytes that were already valid UTF-8. Downstream, the ligature
+  and smart-quote cleaners stopped matching and `utf8ToInt()` fell back to
+  counting bytes -- charging a one-codepoint em dash as three characters, a 50%
+  token swing on the affected line. Token counts, chunk boundaries, budgets and
+  cost estimates all varied with the locale R happened to start in. Text is now
+  labelled before any conversion, and a test asserts that ingestion and
+  segmentation are byte-identical under a C locale.
 * `answer_document()` and `gr_compare()` called `basename()` on whatever was
   passed as `source`. Raw document text is a length-1 character vector, so the
   whole document went to `basename()` -- which is bounded by `PATH_MAX` and
@@ -99,6 +108,6 @@ The ones most likely to have affected real runs:
 
 ## Testing
 
-613 tests, all offline against a recording mock client, plus GitHub Actions
+627 tests, all offline against a recording mock client, plus GitHub Actions
 running `R CMD check` on three platforms and a fast suite that also executes
 every README code block and diffs its documented output against real output.

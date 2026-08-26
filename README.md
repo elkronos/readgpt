@@ -113,7 +113,7 @@ cmp$summary
 #> ...
 ```
 
-(The bundled example is deliberately small — 523 tokens by `gr_count_tokens()`
+(The bundled example is deliberately small — 573 tokens by `gr_count_tokens()`
 — so `fast` and `thorough` fit it in one chunk. On a real report they would not.)
 
 Build a pipeline by hand:
@@ -209,10 +209,10 @@ doc <- gr_ingest(gptread_example())
 do.call(rbind, lapply(c("fixed", "paragraph", "sentence", "structural"),
   function(m) gr_chunk_stats(gr_segment(doc, list(method = m, max_tokens = 120)))))
 #>       method n total_tokens min median  mean max over_cap
-#> 1      fixed 5          536  57  120.0 107.2 120        0
-#> 2  paragraph 6          540  47   94.0  90.0 116        0
-#> 3   sentence 6          540  47   94.5  90.0 106        0
-#> 4 structural 8          556  25   75.0  69.5 101        0
+#> 1      fixed 5          528  49  120.0 105.6 120        0
+#> 2  paragraph 6          532  47   90.0  88.7 116        0
+#> 3   sentence 6          532  47   92.5  88.7 106        0
+#> 4 structural 8          562  31   75.0  70.2 101        0
 ```
 
 `semantic` needs a client for its embedding pass, so pass one (a
@@ -226,9 +226,9 @@ do.call(rbind, lapply(c(0, 30, 60), function(ov)
   gr_chunk_stats(gr_segment(doc, list(method = "sentence", max_tokens = 120,
                                       overlap_tokens = ov)))))
 #>     method n total_tokens min median mean max over_cap
-#> 1 sentence 6          540  47   94.5 90.0 106        0
-#> 2 sentence 7          674  74   99.0 96.3 106        0
-#> 3 sentence 9          868  79   96.0 96.4 109        0
+#> 1 sentence 6          532  47   92.5 88.7 106        0
+#> 2 sentence 7          666  74   99.0 95.1 106        0
+#> 3 sentence 9          860  79   94.0 95.6 109        0
 ```
 
 ## Axis 3 — read

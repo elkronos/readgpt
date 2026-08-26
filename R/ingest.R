@@ -166,7 +166,7 @@ gr_ingest <- function(source, spec = NULL, cache = NULL, trace = NULL) {
   cleaned <- gr_clean(blocks$text, steps = steps,
                       opts = utils::modifyList(as.list(spec), spec$cleaner_opts %||% list()))
   clean_log <- attr(cleaned, "gr_clean_log")
-  blocks$text <- as.character(cleaned)
+  blocks$text <- mark_utf8(as.character(cleaned))
   blocks <- blocks[has_content(blocks$text), , drop = FALSE]
   rownames(blocks) <- NULL
 
@@ -185,7 +185,7 @@ gr_ingest <- function(source, spec = NULL, cache = NULL, trace = NULL) {
   blocks$block_id <- seq_len(nrow(blocks))
   doc <- structure(list(
     blocks = blocks,
-    text = paste(blocks$text, collapse = "\n\n"),
+    text = mark_utf8(paste(blocks$text, collapse = "\n\n")),
     source = src,
     spec = spec,
     stats = list(blocks = nrow(blocks), chars = sum(nchar(blocks$text)),

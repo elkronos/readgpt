@@ -128,11 +128,18 @@ gr_count_tokens <- function(text, model = NULL) {
 #'   * CJK:                  ~1.0 tokens/char
 #' @noRd
 tok_heuristic <- function(text) {
+  # Label valid UTF-8 as UTF-8 BEFORE decoding. `enc2utf8()` on an unlabelled
+  # string is a no-op in a non-UTF-8 locale, so `utf8ToInt()` failed and the
+  # byte fallback below charged a 1-codepoint em dash as 3 characters. The same
+  # document then produced different token counts on different machines -- and
+  # therefore different budgets, different chunk boundaries and different cost
+  # estimates -- purely from the locale R happened to start in. Measured: 16
+  # tokens labelled versus 24 unlabelled, for identical bytes.
+  text <- mark_utf8(text)
   vapply(text, function(x) {
-    x <- enc2utf8(x)
     if (is.na(x) || !nzchar(trimws(x))) return(0L)
     # Work on code points, so multibyte text is measured rather than its byte
-    # length, and so a non-UTF-8 locale cannot make this throw.
+    # length. The byte fallback now fires only for genuinely undecodable input.
     cp <- tryCatch(utf8ToInt(x), error = function(e) NULL)
     if (is.null(cp) || anyNA(cp)) cp <- as.integer(charToRaw(x))
     n <- length(cp); if (!n) return(0L)

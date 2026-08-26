@@ -122,6 +122,14 @@ gr_cleaners <- function() {
 gr_clean <- function(text, steps = NULL, opts = list()) {
   text <- vapply(text %||% character(0), as_chr1, character(1), USE.NAMES = FALSE)
   if (!length(text)) return(text)
+  # Several cleaners match UTF-8 literals -- the ligatures, the smart quotes, the
+  # en/em dashes in `page_numbers`, the zero-width characters in `control_chars`.
+  # A pattern marked UTF-8 does not match unmarked bytes in a non-UTF-8 locale,
+  # so those steps silently did nothing on some machines: the SAME document came
+  # out 8 tokens longer, chunked differently, and cost a different amount purely
+  # because of the locale R started in. Label once, here, so every step below
+  # sees the same text everywhere.
+  text <- mark_utf8(text)
   reg <- gr_state$cleaners
   if (is.null(steps)) {
     steps <- names(reg)[vapply(reg, function(e) isTRUE(e$default_on), logical(1))]

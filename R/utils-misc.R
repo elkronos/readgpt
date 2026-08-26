@@ -178,6 +178,23 @@ hash_fallback <- function(s) {
            class = "gr_missing_dep")
 }
 
+#' Label bytes that ARE valid UTF-8 as UTF-8, without converting anything.
+#'
+#' `enc2utf8()` is a no-op on an unlabelled string in a non-UTF-8 locale, and
+#' `validUTF8()` then trusts the absent label -- the same trap that made
+#' `to_utf8()`'s transcoding path dead code. Anything that decodes code points
+#' (`utf8ToInt`, a `(*UCP)` regex) needs the label to be right, or it silently
+#' falls back to counting bytes and gives a different answer on a different
+#' machine. Cheap: it touches only the strings that need it.
+#' @noRd
+mark_utf8 <- function(x) {
+  if (!length(x)) return(x)
+  x <- as.character(x)
+  need <- !is.na(x) & Encoding(x) != "UTF-8" & validUTF8(x)
+  if (any(need)) { tmp <- x[need]; Encoding(tmp) <- "UTF-8"; x[need] <- tmp }
+  x
+}
+
 #' Coerce text to valid UTF-8, whatever it arrived as.
 #'
 #' Latin-1 and CP1252 exports are common in the documents this package targets,
@@ -188,15 +205,22 @@ hash_fallback <- function(s) {
 to_utf8 <- function(x) {
   if (!length(x)) return(character(0))
   x <- as.character(x)
-  out <- enc2utf8(x)          # correct for anything R has already labelled
-  out[is.na(out)] <- ""
 
-  # Decide on the ORIGINAL bytes. `enc2utf8()` on an unlabelled string is a
-  # no-op in a UTF-8 locale, and `validUTF8()` then trusts the (absent) label
-  # and returns TRUE for bytes that are not UTF-8 at all -- so checking after
-  # the conversion said "already fine" for every latin1 file and the whole
-  # transcoding path below was dead code.
-  bad <- which(is.na(x) | (Encoding(x) %in% c("unknown", "bytes") & !validUTF8(x)))
+  # LABEL FIRST. `enc2utf8()` treats an UNMARKED string as *native*, so in a
+  # non-UTF-8 locale it re-encodes bytes that were already perfectly valid
+  # UTF-8 -- corrupting them, and leaving the result neither valid UTF-8 nor
+  # labelled. Everything downstream then diverged by locale: the ligature and
+  # smart-quote cleaners stopped matching, `utf8ToInt()` fell back to counting
+  # bytes, and the SAME document produced a different token count, different
+  # chunk boundaries and a different cost estimate on a different machine.
+  out <- mark_utf8(x)
+
+  # Anything R has explicitly labelled latin1 is converted, not just relabelled.
+  lat <- which(Encoding(out) == "latin1")
+  if (length(lat)) out <- mark_utf8(replace(out, lat, enc2utf8(out[lat])))
+
+  # Whatever is still not valid UTF-8 is genuinely mis-encoded bytes.
+  bad <- which(is.na(out) | !validUTF8(out))
   if (length(bad)) {
     pending <- x[bad]
     fixed <- rep(NA_character_, length(bad))
@@ -208,8 +232,8 @@ to_utf8 <- function(x) {
       todo <- which(is.na(fixed))
       if (!length(todo)) break
       cand <- suppressWarnings(iconv(pending[todo], from = from, to = "UTF-8"))
-      ok <- !is.na(cand) & validUTF8(cand)
-      if (any(ok)) fixed[todo[ok]] <- cand[ok]
+      good <- !is.na(cand) & validUTF8(cand)
+      if (any(good)) fixed[todo[good]] <- cand[good]
     }
     # Last resort: drop the bytes that cannot be interpreted at all. Lossy, but
     # a document with three mangled characters beats an aborted run.
@@ -218,15 +242,13 @@ to_utf8 <- function(x) {
       cand <- suppressWarnings(iconv(pending[todo], from = "UTF-8", to = "UTF-8", sub = ""))
       fixed[todo] <- ifelse(is.na(cand), "", cand)
     }
-    out[bad] <- fixed
+    out <- replace(out, bad, fixed)
   }
-  out <- normalise_newlines(out)
-  # Label the result. On Windows the native encoding is not UTF-8, so an
-  # unlabelled-but-valid UTF-8 string is re-interpreted in the system codepage
-  # by every regex that touches it.
-  ok <- validUTF8(out)
-  if (any(ok)) { tmp <- out[ok]; Encoding(tmp) <- "UTF-8"; out[ok] <- tmp }
-  out
+  out[is.na(out)] <- ""
+  # Label again, then normalise newlines, then label once more: every base-R
+  # string operation between here and the caller can drop the mark in a
+  # non-UTF-8 locale.
+  mark_utf8(normalise_newlines(mark_utf8(out)))
 }
 
 #' Normalise CRLF and lone CR to LF.
@@ -268,7 +290,10 @@ paragraphs_of <- function(text) {
   if (!nzchar(trimws(text))) return(character(0))
   p <- unlist(strsplit(text, "\n[ \t]*\n[ \t\n]*", perl = TRUE), use.names = FALSE)
   p <- trimws(p, which = "right")
-  p[nzchar(trimws(p))]
+  # Re-label. In a non-UTF-8 locale `paste`, `strsplit` and `trimws` all return
+  # unmarked strings even when the input was marked UTF-8, and every downstream
+  # UTF-8 pattern then silently stops matching.
+  mark_utf8(p[nzchar(trimws(p))])
 }
 
 #' Split text into sentences using a conservative abbreviation-aware regex.

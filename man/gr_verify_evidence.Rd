@@ -16,7 +16,8 @@ they can be checked without it.}
 }
 \value{
 A data frame with one row per evidence span: \code{chunk_id}, \code{kind}
-(\code{"verbatim"}, \code{"extracted"}, \code{"answer"} or \code{"mixed"}), \code{verified},
+(\code{"verbatim"}, \code{"extracted"} or \code{"answer"}, \strong{per row} -- an \code{ensemble}
+mixes them in one table), \code{verified},
 \code{match} and \code{span} (the first 60 characters). \code{verified} is \code{NA} where the
 question does not apply -- a \code{map_reduce} evidence row is a per-chunk
 \emph{answer}, not a quotation, and asking whether it appears in the chunk is a
@@ -55,7 +56,7 @@ were never sent, whatever this function is called with; the result is
 # A model that quotes faithfully.
 honest <- gr_mock_client(function(messages, params) {
   txt <- messages[[length(messages)]]$content
-  if (grepl("Extract", messages[[1]]$content, fixed = TRUE)) {
+  if (grepl("You extract evidence", messages[[1]]$content, fixed = TRUE)) {
     return("Revenue rose to 45.2 million dollars.")
   }
   "Revenue was 45.2 million dollars."
@@ -69,7 +70,7 @@ gr_verify_evidence(ans)
 # A model that invents one. The span is fluent, plausible, and not in the
 # document -- which is exactly the case a reader cannot catch by eye.
 liar <- gr_mock_client(function(messages, params) {
-  if (grepl("Extract", messages[[1]]$content, fixed = TRUE)) {
+  if (grepl("You extract evidence", messages[[1]]$content, fixed = TRUE)) {
     return("Revenue rose to 88.9 billion dollars on record demand.")
   }
   "Revenue was 88.9 billion dollars."

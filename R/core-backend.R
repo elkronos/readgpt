@@ -96,6 +96,29 @@ gr_backend_client <- function(handler, embed = NULL, model = "backend-model",
     retry_pause_base = 0,
     timeout = clamp(timeout %||% gr_options("request_timeout"), 1, 3600),
     extra_body = list(),
+    # A per-instance identity, and the cache key depends on it.
+    #
+    # Named `.client_id` and NOT `.cache_id`: `$` on a list partial-matches, so
+    # with a field called `.cache_id` the expression `client$.cache` -- which is
+    # how every caller asks whether a cache is attached -- would silently return
+    # this id string for any client that has no cache. That is the same
+    # partial-matching trap that made `parsed$output` return `output_text` in the
+    # previous release, and the only reliable defence is not to create a name
+    # that is a prefix of another.
+    #
+    # For gr_client() the key can be made of api, base_url and model, because
+    # those fully describe what will answer: two clients with the same three
+    # give the same answers, in this session or next week, which is what makes a
+    # durable cache safe. For a backend they describe nothing -- every backend
+    # client is api="backend", base_url="backend://", model="backend-model" --
+    # and the thing that actually answers is an R closure. Two different
+    # handlers therefore shared cache entries and silently traded answers.
+    #
+    # Hashing the closure is not the fix: two handlers can share a body and
+    # differ in what they captured. Identity is, and identity is per-session by
+    # construction -- which is correct, because nothing about an R closure is
+    # reproducible across sessions anyway.
+    .client_id = gr_new_id("backend"),
     handler = handler, embed_handler = embed, .log = log,
     calls  = function() log$calls,
     embeds = function() log$embeds,
@@ -136,6 +159,14 @@ print.gr_backend_client <- function(x, ...) {
 #'   the context window is what sizes your chunks, so a wrong one is not cosmetic.
 #' @return A [gr_backend_client()].
 #'
+#' @section Requirements on the chat:
+#' The adapter calls `$chat()`, `$clone()`, `$set_turns()` and
+#' `$set_system_prompt()`, and refuses a chat missing any of them
+#' (`gr_bad_backend`). The last two are not conveniences: this package puts its
+#' instructions in the system prompt, and it clears turns so that one chunk's
+#' call cannot leak into the next. A chat that silently dropped either would
+#' produce unconstrained answers with nothing to show for it.
+#'
 #' @section What does not carry over:
 #' Two things, both worth knowing before you rely on them.
 #'
@@ -172,17 +203,8 @@ gr_ellmer_client <- function(chat, embed = NULL, model = NULL) {
              class = "gr_missing_dep")
   }
   # Duck-typed, not class-checked. ellmer's Chat is an R6 object whose class
-  # names are its business; what this adapter actually requires is the three
-  # methods it calls.
-  needed <- c("chat", "clone", "set_turns")
-  missing <- needed[!vapply(needed, function(m) is.function(chat[[m]]), logical(1))]
-  if (length(missing)) {
-    gr_abort(sprintf(paste0("`chat` does not look like an ellmer Chat: it has no %s method(s). ",
-                            "Pass the result of ellmer::chat_openai(), chat_anthropic(), ",
-                            "chat_ollama() or similar."),
-                     paste(sprintf("`%s()`", missing), collapse = ", ")),
-             class = "gr_bad_backend")
-  }
+  # names are its business; what this adapter requires is the methods it calls.
+  check_chat_methods(chat)
 
   model <- as_chr1(model %||% tryCatch(as_chr1(chat$get_model()), error = function(e) NULL) %||%
                      "ellmer-model")
@@ -212,8 +234,18 @@ gr_ellmer_client <- function(chat, embed = NULL, model = NULL) {
     one <- chat$clone(deep = TRUE)
     # Turns first, then the system prompt: a fresh call must not inherit the
     # history of the previous chunk's call, and must not append to the caller's.
-    try(one$set_turns(list()), silent = TRUE)
-    if (nzchar(sys)) try(one$set_system_prompt(sys), silent = TRUE)
+    #
+    # These were `try(..., silent = TRUE)`. Both failures are silent and both are
+    # severe: unclearable turns leak one chunk's conversation into the next (and
+    # inflate the token counts read back from get_tokens()), and a dropped system
+    # prompt removes every instruction the answer depends on. A chat that cannot
+    # do either cannot honour this adapter's contract, so it fails loudly.
+    hard <- function(expr, what) tryCatch(expr, error = function(e)
+      gr_abort(sprintf(paste0("The ellmer chat could not %s: %s. This adapter cannot keep calls ",
+                              "independent or instructed without it."), what, conditionMessage(e)),
+               class = "gr_bad_backend"))
+    hard(one$set_turns(list()), "have its turns cleared")
+    if (nzchar(sys)) hard(one$set_system_prompt(sys), "accept a system prompt")
 
     txt <- if (is.null(params$schema)) {
       one$chat(user, echo = "none")
@@ -229,12 +261,54 @@ gr_ellmer_client <- function(chat, embed = NULL, model = NULL) {
                                       auto_unbox = TRUE, null = "null"))
       }
     }
-    gr_result(TRUE, text = as_chr1(txt), model = model,
-              usage = ellmer_usage(one, params, txt))
+    ellmer_result(txt, model, ellmer_usage(one, params, txt))
   }
 
   gr_backend_client(handler, embed = embed, model = model,
                     embedding_model = paste0(model, "-embed"))
+}
+
+#' The methods this adapter actually calls, and the check that they are there.
+#'
+#' Separated out so the requirement can be tested without ellmer installed --
+#' which matters, because it is a requirement about ellmer.
+#'
+#' `set_system_prompt` is required, not optional. In this package the system
+#' prompt IS the contract: "answer only from the excerpt", "reply exactly
+#' NOT_IN_DOCUMENT", "copy passages verbatim", "rate 0 to 10". A chat that
+#' cannot take one would send the user turn alone and report `ok = TRUE` -- an
+#' unconstrained answer with nothing anywhere to say it was unconstrained.
+#' @noRd
+.gr_ellmer_methods <- c("chat", "clone", "set_turns", "set_system_prompt")
+
+#' @noRd
+check_chat_methods <- function(chat) {
+  missing <- .gr_ellmer_methods[
+    !vapply(.gr_ellmer_methods, function(m) is.function(chat[[m]]), logical(1))]
+  if (length(missing)) {
+    gr_abort(sprintf(paste0("`chat` does not look like an ellmer Chat: it has no %s method(s). ",
+                            "Pass the result of ellmer::chat_openai(), chat_anthropic(), ",
+                            "chat_ollama() or similar."),
+                     paste(sprintf("`%s()`", missing), collapse = ", ")),
+             class = "gr_bad_backend")
+  }
+  invisible(TRUE)
+}
+
+#' Turn an ellmer reply into a `gr_result`, honouring the empty-completion rule.
+#'
+#' The same invariant `handler_result()` enforces for every other handler: an
+#' empty reply is a refusal, a content filter or a tool call, not an answer.
+#' Building the `gr_result` inside the handler bypassed that check, so a run in
+#' which every call was refused reported zero errors and billed them as paid.
+#' @noRd
+ellmer_result <- function(txt, model, usage) {
+  txt <- as_chr1(txt)
+  if (!nzchar(trimws(txt))) {
+    return(gr_result(FALSE, text = "", error = "empty completion", model = model,
+                     finish_reason = "empty", usage = usage))
+  }
+  gr_result(TRUE, text = txt, model = model, usage = usage)
 }
 
 #' Split readgpt messages into ellmer's two slots.

@@ -216,6 +216,7 @@ tok_tiktoken <- function(text, model = NULL) {
 #' gr_truncate_tokens("short enough already", 100)
 gr_truncate_tokens <- function(text, n, marker = " ...[truncated]") {
   text <- as_chr1(text)
+  force(n)   # see clamp(): forcing inside suppressWarnings() eats the caller's warnings
   n <- suppressWarnings(as.numeric(n)[1])
   if (is.na(n)) n <- 0
   if (is.infinite(n) && n > 0) return(text)          # Inf used to crash

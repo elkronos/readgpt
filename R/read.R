@@ -212,7 +212,11 @@ gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL
     max_summary_tokens = clamp_warn(max_summary_tokens, 16, 1e6, "max_summary_tokens"),
     top_k = clamp_warn(top_k, 1, 1e4, "top_k"),
     min_score = min_score,
-    mmr = clamp_warn(mmr, 0, 1, "mmr", integer = FALSE),
+    # NA falls back to the DEFAULT, not to the bottom of the range. clamp_warn()
+    # maps NA to `lo`, which for this setting is 0 -- pure diversity, documented
+    # as "will happily pick irrelevant chunks because they are different". A
+    # missing value must not select the most destructive end of a scale.
+    mmr = clamp_warn(na_default(mmr, 1, "mmr"), 0, 1, "mmr", integer = FALSE),
     context_order = context_order,
     rerank_candidates = clamp_warn(rerank_candidates, 1, 1e4, "rerank_candidates"),
     rerank_min_score = clamp_warn(rerank_min_score, 0, 10, "rerank_min_score", integer = FALSE),

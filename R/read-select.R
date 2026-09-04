@@ -57,6 +57,20 @@ mmr_select <- function(rel, emb, k, lambda = 1) {
     return(eligible[order(rel[eligible], decreasing = TRUE)][seq_len(k)])
   }
 
+  # A non-finite row poisons everything downstream of it: one NaN reaches every
+  # candidate through `pmax()`, every score becomes NaN, `which.max()` returns
+  # integer(0), `sel` stops growing and the `while` NEVER TERMINATES. Not an
+  # error and not a crash -- a hang, which is the worst failure a library can
+  # hand you. A zero vector L2-normalised is 0/0, so any chunk an embedder finds
+  # no words in produces one. Such rows cannot participate in a similarity
+  # comparison at all, so they are dropped from selection here.
+  finite_row <- is.finite(rowSums(emb))
+  eligible <- eligible[finite_row[eligible]]
+  if (!length(eligible)) {
+    return(which(is.finite(rel))[order(rel[is.finite(rel)], decreasing = TRUE)][seq_len(k)])
+  }
+  k <- min(k, length(eligible))
+
   sel <- eligible[which.max(rel[eligible])]
   best_sim <- rep(-Inf, n)
   while (length(sel) < k) {
@@ -65,7 +79,11 @@ mmr_select <- function(rel, emb, k, lambda = 1) {
     cand <- setdiff(eligible, sel)
     if (!length(cand)) break
     score <- lambda * rel[cand] - (1 - lambda) * best_sim[cand]
-    sel <- c(sel, cand[which.max(score)])
+    nxt <- cand[which.max(score)]
+    # Belt as well as braces: which.max() on an all-NA vector is integer(0), and
+    # appending nothing would leave the loop condition unchanged forever.
+    if (!length(nxt)) break
+    sel <- c(sel, nxt)
   }
   sel
 }

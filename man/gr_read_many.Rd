@@ -41,7 +41,10 @@ other hundred and ninety-nine.}
 
 \item{max_total_usd}{Stop once the run has spent this much, marking the
 remaining documents \code{"skipped"}. This is a \emph{corpus} ceiling and is separate
-from \code{gr_options(max_cost_usd =)}, which is a per-document pre-flight check.}
+from \code{gr_options(max_cost_usd =)}, which is a per-document pre-flight check.
+It needs a model with a registered price: against one without, cost is
+\emph{unknown} rather than zero, the ceiling cannot be enforced, and you get a
+\code{gr_corpus_cost_unknown} warning instead of a silent free pass.}
 
 \item{keep_answers}{Keep every \link{gr_answer} in the result. Set \code{FALSE} for a
 large corpus, where holding every trace and evidence table is the thing that

@@ -286,17 +286,25 @@ rbind_evidence <- function(tables) {
 
 #' @noRd
 evidence_table <- function(chunk_ids, texts, pages = NA_integer_, sections = NA_character_,
-                           scores = NA_real_, source_text = NULL) {
+                           scores = NA_real_, source_text = NULL,
+                           kind = c("verbatim", "extracted", "answer")) {
+  kind <- match.arg(kind)
   n <- length(texts)
   if (!n) {
     return(data.frame(chunk_id = integer(0), text = character(0), page = integer(0),
-                      section = character(0), score = numeric(0), stringsAsFactors = FALSE))
+                      section = character(0), score = numeric(0), kind = character(0),
+                      stringsAsFactors = FALSE))
   }
   df <- data.frame(chunk_id = rep(chunk_ids, length.out = n),
                    text = vapply(texts, as_chr1, character(1), USE.NAMES = FALSE),
                    page = rep(pages, length.out = n),
                    section = rep(sections, length.out = n),
                    score = rep(scores, length.out = n),
+                   # PER ROW, not per answer. `ensemble` combines evidence from
+                   # several readers, so one kind for the whole table said
+                   # "mixed" and then string-matched a map_reduce ANSWER against
+                   # its chunk -- reporting a correct run as fabricated evidence.
+                   kind = kind,
                    stringsAsFactors = FALSE)
   # Only readers whose evidence is MODEL-WRITTEN carry their sources. For the
   # readers that put verbatim chunk text here, source and span are the same

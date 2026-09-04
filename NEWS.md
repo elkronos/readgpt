@@ -183,6 +183,14 @@ twice.
   compare unequal. Both cache and replay keys normalise text the same way, which
   is what lets a saved trace replay on a different machine.
 
+* **Warnings raised while evaluating a setting were silently swallowed.**
+  `clamp()` did `x <- suppressWarnings(as.numeric(x))`, and `x` arrives as a
+  promise -- so forcing it inside `suppressWarnings()` discarded everything
+  raised while *evaluating the argument*, not merely the coercion warning that
+  call exists to quiet. Every `clamp(f(...))` in the package lost `f()`'s
+  warnings, across `gr_read_spec()`, `gr_segment_spec()` and `gr_ingest_spec()`.
+  The argument is now forced first. Present in 0.2.0.
+
 * **`gr_options()` did not compose with `on.exit()`, which is the one thing its
   documentation promised.** The "old" value it returns was built with
   `modifyList()`, which deletes a key whose value is `NULL` -- so once an option

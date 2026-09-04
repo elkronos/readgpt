@@ -52,11 +52,17 @@ normalise_for_match <- function(x) {
 #' content, and a quotation that changed one is exactly what this is for.
 #' @noRd
 trim_quote_edges <- function(x) {
-  # `-` last, unescaped: "\\-" inside an R string literal is not a valid escape
-  # and the file would not parse. A hyphen at the end of a bracket class is
-  # literal, which is what is wanted.
-  edge <- "[\"'\u2026.,;:[:space:]-]+"
-  trimws(gsub(paste0("^", edge, "|", edge, "$"), "", x, perl = TRUE))
+  edge <- "[\"'\u2026.,;:[:space:]]+"
+  strip <- function(s) gsub(paste0("^", edge, "|", edge, "$"), "", s, perl = TRUE)
+  x <- strip(x)
+  # Dashes are the awkward case. A trailing one is always typographic -- an em
+  # dash the model appended, normalised to a hyphen. A LEADING one may be a
+  # minus sign, and a minus sign is content: "-5%" and "5%" are opposite claims,
+  # and folding them together let a sign-flipped quotation verify as exact. So a
+  # leading dash goes only when what follows is not a number.
+  x <- sub("^-+(?![0-9.])", "", x, perl = TRUE)
+  x <- sub("-+$", "", x, perl = TRUE)
+  trimws(strip(x))
 }
 
 #' The longest run of consecutive words from `span` that appears in `source`.
@@ -154,7 +160,8 @@ cited_chunks <- function(text) {
 #'   span claims to come from. `skim` answers already carry their sources, so
 #'   they can be checked without it.
 #' @return A data frame with one row per evidence span: `chunk_id`, `kind`
-#'   (`"verbatim"`, `"extracted"`, `"answer"` or `"mixed"`), `verified`,
+#'   (`"verbatim"`, `"extracted"` or `"answer"`, **per row** -- an `ensemble`
+#'   mixes them in one table), `verified`,
 #'   `match` and `span` (the first 60 characters). `verified` is `NA` where the
 #'   question does not apply -- a `map_reduce` evidence row is a per-chunk
 #'   *answer*, not a quotation, and asking whether it appears in the chunk is a
@@ -179,7 +186,7 @@ cited_chunks <- function(text) {
 #' # A model that quotes faithfully.
 #' honest <- gr_mock_client(function(messages, params) {
 #'   txt <- messages[[length(messages)]]$content
-#'   if (grepl("Extract", messages[[1]]$content, fixed = TRUE)) {
+#'   if (grepl("You extract evidence", messages[[1]]$content, fixed = TRUE)) {
 #'     return("Revenue rose to 45.2 million dollars.")
 #'   }
 #'   "Revenue was 45.2 million dollars."
@@ -193,7 +200,7 @@ cited_chunks <- function(text) {
 #' # A model that invents one. The span is fluent, plausible, and not in the
 #' # document -- which is exactly the case a reader cannot catch by eye.
 #' liar <- gr_mock_client(function(messages, params) {
-#'   if (grepl("Extract", messages[[1]]$content, fixed = TRUE)) {
+#'   if (grepl("You extract evidence", messages[[1]]$content, fixed = TRUE)) {
 #'     return("Revenue rose to 88.9 billion dollars on record demand.")
 #'   }
 #'   "Revenue was 88.9 billion dollars."
@@ -208,18 +215,30 @@ gr_verify_evidence <- function(answer, chunks = NULL) {
                       match = numeric(0), span = character(0), stringsAsFactors = FALSE)
   if (is.null(ev) || !nrow(ev)) return(empty)
 
-  kind <- unname(.gr_evidence_kind[as_chr1(answer$reader, "")])
-  if (is.na(kind)) kind <- "verbatim"
+  # Per row, falling back to the reader only for an answer built before evidence
+  # tables carried a kind. An `ensemble` has no single kind -- its members
+  # contribute verbatim spans and per-chunk answers to one table -- and treating
+  # the whole table as one kind is what made a correct map_reduce member report
+  # its answers as fabricated quotations.
+  kind <- if (!is.null(ev$kind)) as.character(ev$kind) else {
+    k <- unname(.gr_evidence_kind[as_chr1(answer$reader, "")])
+    rep(if (is.na(k)) "verbatim" else k, nrow(ev))
+  }
 
   sources <- if (!is.null(ev$source_text)) ev$source_text
              else if (inherits(chunks, "gr_chunks")) {
                chunks$chunks$text[match(ev$chunk_id, chunks$chunks$chunk_id)]
              } else NULL
 
-  res <- if (identical(kind, "answer") || is.null(sources)) {
-    data.frame(verified = rep(NA, nrow(ev)), match = rep(NA_real_, nrow(ev)))
-  } else {
-    verify_spans(ev$text, sources)
+  res <- data.frame(verified = rep(NA, nrow(ev)), match = rep(NA_real_, nrow(ev)))
+  # "answer" rows are that chunk's answer, not a quotation from it. Asking
+  # whether one appears in the chunk is a category error, and reporting FALSE
+  # would mark every correct run unverified.
+  checkable <- kind != "answer" & !is.na(kind)
+  if (!is.null(sources) && any(checkable)) {
+    got <- verify_spans(ev$text[checkable], sources[checkable])
+    res$verified[checkable] <- got$verified
+    res$match[checkable] <- got$match
   }
 
   data.frame(chunk_id = ev$chunk_id, kind = kind,

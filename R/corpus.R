@@ -100,6 +100,9 @@ gr_trace_cost <- function(trace) {
 #' @param max_total_usd Stop once the run has spent this much, marking the
 #'   remaining documents `"skipped"`. This is a *corpus* ceiling and is separate
 #'   from `gr_options(max_cost_usd =)`, which is a per-document pre-flight check.
+#'   It needs a model with a registered price: against one without, cost is
+#'   *unknown* rather than zero, the ceiling cannot be enforced, and you get a
+#'   `gr_corpus_cost_unknown` warning instead of a silent free pass.
 #' @param keep_answers Keep every [gr_answer] in the result. Set `FALSE` for a
 #'   large corpus, where holding every trace and evidence table is the thing that
 #'   runs you out of memory.
@@ -179,6 +182,7 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
   answers <- list()
   spent <- 0
   stopped <- FALSE
+  warned_unpriced <- NULL
 
   for (i in seq_along(sources)) {
     src <- sources[[i]]
@@ -226,7 +230,11 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
 
     trace_absorb(trace, sub)
     secs <- round(as.numeric(difftime(Sys.time(), started, units = "secs")), 2)
-    cost <- sum(gr_trace_cost(sub)$usd, na.rm = TRUE)
+    # NOT na.rm = TRUE. gr_trace_cost() returns NA for a model with no registered
+    # price precisely so that a total cannot quietly omit it; dropping the NA here
+    # turned "we do not know what this cost" into "$0.0000", which then made
+    # `max_total_usd` unenforceable while the run reported itself free.
+    cost <- sum(gr_trace_cost(sub)$usd)
     spent <- spent + cost
 
     if (inherits(out, "condition")) {
@@ -239,7 +247,19 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
       if (!is.null(key)) corpus_save(store, key, rows[[i]], out)
     }
 
-    if (!is.null(max_total_usd) && is.finite(max_total_usd) && spent >= max_total_usd) {
+    # A ceiling on a cost nobody can compute is not a ceiling. Say so once,
+    # rather than letting an unpriced model run past a limit the user set.
+    if (!is.null(max_total_usd) && is.finite(max_total_usd) && is.na(spent) &&
+        is.null(warned_unpriced)) {
+      warned_unpriced <- TRUE
+      gr_warn(paste0("`max_total_usd` cannot be enforced: at least one model in this run has no ",
+                     "registered price, so what it costs is unknown rather than zero. Register ",
+                     "the price with gr_register_model(input_usd =, output_usd =), or drop the ",
+                     "ceiling. The run continues, uncapped."),
+              class = "gr_corpus_cost_unknown")
+    }
+    if (!is.null(max_total_usd) && is.finite(max_total_usd) && !is.na(spent) &&
+        spent >= max_total_usd) {
       stopped <- TRUE
       if (i < length(sources)) {
         gr_warn(sprintf(paste0("Stopped after %d of %d documents: the run has spent about ",
@@ -268,10 +288,13 @@ print.gr_corpus <- function(x, ...) {
                 sum(s$partial[done], na.rm = TRUE)))
   }
   cost <- gr_trace_cost(x$trace)
+  total <- if (nrow(cost)) sum(cost$usd) else 0
   cat(sprintf("  this run: %d model call(s), %s\n", x$trace$calls,
               if (!nrow(cost)) "no cost recorded"
-              else sprintf("$%.4f across %s", sum(cost$usd, na.rm = TRUE),
-                           paste(cost$model, collapse = ", "))))
+              else if (is.na(total))
+                sprintf("cost unknown (no registered price for %s)",
+                        paste(cost$model[is.na(cost$usd)], collapse = ", "))
+              else sprintf("$%.4f across %s", total, paste(cost$model, collapse = ", "))))
   if (!is.null(x$store)) cat(sprintf("  store: %s\n", x$store))
   invisible(x)
 }
@@ -362,7 +385,11 @@ corpus_key <- function(src, question, rec, client) {
   gr_hash(list("readgpt-corpus-v1", ident, key_text(question),
                unclass(rec$ingest), unclass(rec$segment), unclass(rec$read),
                as_chr1(client$model, "?"), as_chr1(client$api, "?"),
-               as_chr1(client$base_url, "?")))
+               as_chr1(client$base_url, "?"),
+               # As in cache_key(): for a closure-backed client the transport
+               # fields are identical constants, so without this a store restored
+               # one client's answers for a different client's run.
+               as_chr1(client$.client_id, "<url-addressed>")))
 }
 
 #' @noRd

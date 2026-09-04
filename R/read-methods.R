@@ -49,7 +49,8 @@ read_stuff <- function(chunks, question, client, spec, trace) {
                  temperature = spec$temperature, trace = trace, label = "stuff.answer")
   ok <- usable_text(res)
   new_answer(if (ok) res$text else .NOT_FOUND, "stuff", question, sub$chunk_id, trace,
-             evidence = evidence_table(sub$chunk_id, sub$text, sub$page, sub$section),
+             evidence = evidence_table(sub$chunk_id, sub$text, sub$page, sub$section,
+                                       kind = "verbatim"),
              partial = !ok || length(fit$dropped) > 0,
              notes = list(dropped_chunks = length(fit$dropped), error = res$error))
 }
@@ -92,8 +93,11 @@ read_map_reduce <- function(chunks, question, client, spec, trace) {
   }
   merged <- tree_merge(client, question, texts[useful], spec, trace, label = "reduce")
   new_answer(merged$text, "map_reduce", question, d$chunk_id[useful], trace,
+             # These are the model's ANSWER for each chunk, not quotations
+             # from it, which is why verification reports NA for them.
              evidence = evidence_table(d$chunk_id[useful], texts[useful],
-                                       d$page[useful], d$section[useful]),
+                                       d$page[useful], d$section[useful],
+                                       kind = "answer"),
              partial = n_failed > 0 || !merged$ok,
              notes = list(chunks = nrow(d), answered = sum(useful), failed_calls = n_failed,
                           merge_levels = merged$levels, merge_ok = merged$ok))
@@ -189,7 +193,7 @@ read_skim <- function(chunks, question, client, spec, trace) {
   # `skim` is the one reader whose evidence is written by the model rather than
   # copied out of the document, so it is the one that has to prove its quotes.
   ev <- evidence_table(d$chunk_id[keep], txt[keep], d$page[keep], d$section[keep],
-                       source_text = d$text[keep])
+                       source_text = d$text[keep], kind = "extracted")
   overhead <- prompt_overhead(question, .gr_prompts$answer_system)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   body <- paste(sprintf("[chunk %d]\n%s", ev$chunk_id, ev$text), collapse = "\n\n")
@@ -263,7 +267,7 @@ read_retrieve <- function(chunks, question, client, spec, trace) {
                  temperature = spec$temperature, trace = trace, label = "retrieve.answer")
   new_answer(if (res$ok) res$text else .NOT_FOUND, "retrieve", question, sub$chunk_id, trace,
              evidence = evidence_table(sub$chunk_id, sub$text, sub$page, sub$section,
-                                       scores[fit$idx]),
+                                       scores[fit$idx], kind = "verbatim"),
              partial = !res$ok || length(fit$dropped) > 0,
              notes = list(chunks = nrow(d), top_k = k, used = nrow(sub),
                           embedding_source = src, mmr = lambda,
@@ -356,7 +360,7 @@ read_rerank <- function(chunks, question, client, spec, trace) {
   } else gr_result(FALSE, error = "call cap reached before the answer step")
   new_answer(if (res$ok) res$text else .NOT_FOUND, "rerank", question, sub$chunk_id, trace,
              evidence = evidence_table(sub$chunk_id, sub$text, sub$page, sub$section,
-                                       sc[match(fit$idx, ii)]),
+                                       sc[match(fit$idx, ii)], kind = "verbatim"),
              partial = !res$ok || degraded,
              notes = list(chunks = nrow(d), candidates = m, used = nrow(sub),
                           scoring_failures = n_failed, degraded_to_bm25 = degraded))
@@ -504,7 +508,8 @@ read_iterative <- function(chunks, question, client, spec, trace) {
       return(new_answer(as_chr1(out$value$answer, .NOT_FOUND), "iterative", question,
                         d$chunk_id[seen], trace,
                         evidence = evidence_table(d$chunk_id[seen], d$text[seen],
-                                                  d$page[seen], d$section[seen]),
+                                                  d$page[seen], d$section[seen],
+                                                  kind = "verbatim"),
                         notes = list(rounds = rounds, chunks_seen = length(seen),
                                      queries = queries, stop_reason = "model satisfied")))
     }
@@ -527,7 +532,8 @@ read_iterative <- function(chunks, question, client, spec, trace) {
             temperature = spec$temperature, trace = trace, label = "iterative.final")
   } else gr_result(FALSE, error = "call cap reached before the answer step")
   new_answer(if (res$ok) res$text else .NOT_FOUND, "iterative", question, sub$chunk_id, trace,
-             evidence = evidence_table(sub$chunk_id, sub$text, sub$page, sub$section),
+             evidence = evidence_table(sub$chunk_id, sub$text, sub$page, sub$section,
+                                       kind = "verbatim"),
              partial = TRUE,
              notes = list(rounds = rounds, chunks_seen = length(seen), queries = queries,
                           stop_reason = done_reason))

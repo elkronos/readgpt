@@ -186,6 +186,8 @@ gr_mock_client <- function(handler = NULL, embed_handler = NULL) {
   structure(list(
     model = "mock-model", api = "mock", base_url = "mock://", embedding_model = "mock-embed",
     max_retries = 0L, retry_pause_base = 0, timeout = 1, extra_body = list(),
+    # See gr_backend_client() for why a closure-backed client carries an id.
+    .client_id = gr_new_id("mock"),
     handler = handler, embed_handler = embed_handler, .log = log,
     calls  = function() log$calls,
     embeds = function() log$embeds,

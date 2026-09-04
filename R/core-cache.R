@@ -218,6 +218,10 @@ cache_key <- function(client, messages, model, max_output, temperature,
     "readgpt-cache-v1",
     as_chr1(client$api, "?"),
     as_chr1(client$base_url, "?"),
+    # Present only on clients whose behaviour is an R closure rather than a URL.
+    # Without it two different mock or backend clients shared entries, because
+    # api, base_url and model are identical constants for all of them.
+    as_chr1(client$.client_id, "<url-addressed>"),
     as_chr1(model, "?"),
     format(as.integer(max_output)),
     if (is.null(temperature)) "<null>" else format(temperature, digits = 15L),

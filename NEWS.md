@@ -71,6 +71,27 @@ This release is the second one.
 
   The reader behind it is `screen`, traversal `head|1|none`.
 
+* **Synthesis.** `gr_synthesise()` writes the review up from the extraction
+  table, one section per call, against the outline the protocol fixed in advance
+  — so the structure is not shaped by whatever happened to be found, and a
+  section can be rewritten without redoing the rest.
+
+  Every section is written with `[study 3]` markers, and the markers are parsed
+  back out and checked against the rows that exist. A citation to a row that is
+  not there is reported and marks the section partial — the same check
+  `new_answer()` runs on `[chunk 3]`, for the same reason. `$citations` resolves
+  every marker to its `document` and `document_id`.
+
+  Duplicates and unread rows never reach the write-up: a study counted twice is
+  the error the rest of this release exists to prevent, and it is easiest to make
+  here, where the rows all look alike. A table too large for one prompt is
+  written in batches and merged rather than truncated.
+
+  That completes the chain: a sentence cites a study, the study's row cites a
+  quote, and the quote was checked against the page it is attributed to. None of
+  it proves the sentence is true. It makes every step of the way back to the
+  document short enough to walk.
+
 * **The same document is read once.** A source whose cleaned text repeats one
   already read this run is not read again: its row is filled in from the first
   copy, `status` is `"duplicate"` and the new `duplicate_of` column names the

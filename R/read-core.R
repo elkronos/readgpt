@@ -171,6 +171,13 @@ as_json.gr_answer <- function(x, pretty = TRUE, ...) {
     "You revise a draft answer using a new excerpt. Add what the excerpt supports, correct what ",
     "it contradicts, and leave the rest of the draft alone. Return the complete revised answer, ",
     "not a description of your edits."),
+  synthesise_system = paste0(
+    "You write the '%s' section of a review, using only the study records supplied. Cite the ",
+    "record behind every claim with its bracketed id, e.g. [study 3], and cite more than one ",
+    "where more than one supports it. Say where the records disagree and where they are silent; ",
+    "'not reported' is a finding and worth stating. Do not add studies, figures or conclusions ",
+    "that are not in the records, and do not cite an id that is not there. Write prose for the ",
+    "section only -- no heading, no preamble, no closing summary of what you just wrote."),
   screen_system = paste0(
     "You screen one document against a review's criteria, using only the excerpt supplied. ",
     "Answer 'include' only if the excerpt shows the document meets every inclusion criterion ",

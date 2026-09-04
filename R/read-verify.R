@@ -120,17 +120,23 @@ verify_spans <- function(spans, sources) {
              stringsAsFactors = FALSE)
 }
 
-#' Chunk ids an answer claims to cite.
+#' Numbered ids a piece of generated text claims to cite.
 #'
-#' Matches the `[chunk 3]` form the cited answer prompt asks for.
+#' One regex, two callers: `[chunk 3]` in a cited answer and `[study 7]` in a
+#' synthesised section. They are the same check for the same reason -- a citation
+#' pointing at something that was never supplied is a fabrication, and the most
+#' convincing kind, because it looks like the thing that would let you check.
 #' @noRd
-cited_chunks <- function(text) {
-  m <- gregexpr("\\[chunk[[:space:]]+([0-9]+)\\]", as_chr1(text), perl = TRUE,
-                ignore.case = TRUE)
+cited_ids <- function(text, word) {
+  m <- gregexpr(sprintf("\\[%s[[:space:]]+([0-9]+)\\]", word), as_chr1(text),
+                perl = TRUE, ignore.case = TRUE)
   hits <- regmatches(as_chr1(text), m)[[1]]
   if (!length(hits)) return(integer(0))
   unique(as.integer(gsub("[^0-9]", "", hits)))
 }
+
+#' @noRd
+cited_chunks <- function(text) cited_ids(text, "chunk")
 
 #' What kind of thing a reader puts in `evidence$text`.
 #' @noRd

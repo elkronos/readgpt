@@ -42,6 +42,12 @@
 #' `tools::R_user_dir("readgpt", "cache")`, to keep entries across sessions and
 #' make a run resumable after a crash.
 #'
+#' Cross-session reuse needs a client that can say what it is. [gr_client()] and
+#' [gr_ellmer_client()] can -- an endpoint and a model describe what will answer
+#' next month as well as today. A bare [gr_backend_client()] cannot, because what
+#' answers is an R closure, so by default it gets a fresh identity per object and
+#' its entries are session-scoped. Give it a stable `id` to opt in.
+#'
 #' @param dir Directory for cache entries. Defaults to the `cache_dir` option.
 #'   Created on first write, not here.
 #' @param read,write Whether to read existing entries and write new ones. Set

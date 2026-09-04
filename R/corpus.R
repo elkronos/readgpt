@@ -46,9 +46,15 @@
 #' ans <- answer_document(readgpt_example(), "What was revenue?", "fast", client = cl)
 #' gr_trace_cost(ans$trace)
 #'
-#' # The mock is free, so this is zero. On a cached re-run it is zero for a
-#' # different reason: paid_calls falls to zero while calls does not.
-#' gr_trace_summary(ans$trace)[c("calls", "cached")]
+#' # Priced by the model on the STEP -- the recipe's model -- not by the mock
+#' # that answered. A cached re-run costs nothing for a different reason:
+#' # paid_calls falls to zero while calls does not.
+#' cache <- gr_cache(file.path(tempdir(), "readgpt-cost-example"))
+#' again <- answer_document(readgpt_example(), "What was revenue?", "fast",
+#'                          client = gr_cache_client(cl, cache))
+#' twice <- answer_document(readgpt_example(), "What was revenue?", "fast",
+#'                          client = gr_cache_client(cl, cache))
+#' gr_trace_cost(twice$trace)[c("calls", "paid_calls", "usd")]
 gr_trace_cost <- function(trace) {
   stopifnot(inherits(trace, "gr_trace"))
   steps <- Filter(function(s) !identical(s$kind, "local") && !is.null(s$tokens), trace$steps)
@@ -90,7 +96,9 @@ gr_trace_cost <- function(trace) {
 #' @param recipe One recipe, applied to every document.
 #' @param client A `gr_client`. Wrap it in [gr_cache_client()] for a long run:
 #'   with a durable cache directory, a restart pays for nothing it has already
-#'   answered.
+#'   answered. A closure-backed client -- [gr_backend_client()] or
+#'   [gr_mock_client()] -- reuses a cache or a `store` across sessions only if it
+#'   was given a stable `id`; see [gr_backend_client()] for why.
 #' @param store Optional directory. Each document's result is written there as
 #'   it completes and restored on a later run instead of being read again. This
 #'   is what makes a four-hour run survive being interrupted.

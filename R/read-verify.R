@@ -158,10 +158,18 @@ cited_chunks <- function(text) {
 #' @param chunks The [gr_chunks] the answer was read from. Needed for readers
 #'   whose evidence is verbatim, where the comparison is against the chunk the
 #'   span claims to come from. `skim` answers already carry their sources, so
-#'   they can be checked without it.
+#'   they can be checked without it -- and an `ensemble` needs it for the rows
+#'   its verbatim members contributed, even though its `skim` rows do not.
+#'
+#'   Pass the chunks the answer was actually read from. Chunk ids are positional,
+#'   so a *different* chunk set of the same size will match on id and compare
+#'   each span against unrelated text, reporting `verified = FALSE` for evidence
+#'   that is perfectly sound. An id the chunk set does not contain reports `NA`,
+#'   because there was nothing to compare against.
 #' @return A data frame with one row per evidence span: `chunk_id`, `kind`
 #'   (`"verbatim"`, `"extracted"` or `"answer"`, **per row** -- an `ensemble`
-#'   mixes them in one table), `verified`,
+#'   mixes them in one table, and the same value appears as the `kind` column on
+#'   `ans$evidence` itself), `verified`,
 #'   `match` and `span` (the first 60 characters). `verified` is `NA` where the
 #'   question does not apply -- a `map_reduce` evidence row is a per-chunk
 #'   *answer*, not a quotation, and asking whether it appears in the chunk is a
@@ -171,8 +179,16 @@ cited_chunks <- function(text) {
 #' `match` is 1 for an exact quotation once whitespace, quote marks, dashes and
 #' case are folded away -- the differences a faithful quotation introduces.
 #' Below 1 it is the fraction of the span's words carried by its longest
-#' consecutive run in the source, so 0.9 is a quotation with a word changed and
-#' 0.1 is a sentence sharing vocabulary and nothing else.
+#' consecutive **run** in the source.
+#'
+#' Read that number with its shape in mind. Because it measures a run, *where*
+#' the change falls matters as much as how much changed: altering the last word
+#' of a ten-word span leaves a run of nine and scores 0.9, while altering a word
+#' in the middle splits the span and scores about 0.5. So a mid-sentence change
+#' -- a swapped figure, the case this exists to catch -- lands near 0.5, not
+#' near 0.9. Below roughly 0.3 there is no quotation left at all, only shared
+#' vocabulary. A run measure is still the right one: word overlap cannot tell a
+#' quotation from a paraphrase assembled out of the same words.
 #'
 #' @section Citations:
 #' With `cite = TRUE` a reader asks the model to mark its sources as
@@ -225,15 +241,23 @@ gr_verify_evidence <- function(answer, chunks = NULL) {
     rep(if (is.na(k)) "verbatim" else k, nrow(ev))
   }
 
-  sources <- if (!is.null(ev$source_text)) ev$source_text
-             else if (inherits(chunks, "gr_chunks")) {
-               chunks$chunks$text[match(ev$chunk_id, chunks$chunks$chunk_id)]
-             } else NULL
+  # Per row, like `kind`. An ensemble's table has `source_text` for its `skim`
+  # rows and NA for everyone else, so taking the column as the whole answer left
+  # every verbatim row unverifiable even when `chunks` had been supplied.
+  sources <- if (!is.null(ev$source_text)) as.character(ev$source_text) else rep(NA_character_, nrow(ev))
+  if (inherits(chunks, "gr_chunks")) {
+    gap <- is.na(sources)
+    sources[gap] <- chunks$chunks$text[match(ev$chunk_id[gap], chunks$chunks$chunk_id)]
+  }
+  if (all(is.na(sources))) sources <- NULL
 
   res <- data.frame(verified = rep(NA, nrow(ev)), match = rep(NA_real_, nrow(ev)))
   # "answer" rows are that chunk's answer, not a quotation from it. Asking
   # whether one appears in the chunk is a category error, and reporting FALSE
   # would mark every correct run unverified.
+  # No `!is.na(sources)` term: span_match() already returns NA for an absent
+  # source, and a second guard that no test can distinguish from the first is
+  # a branch nothing exercises. The guarantee is tested where it lives.
   checkable <- kind != "answer" & !is.na(kind)
   if (!is.null(sources) && any(checkable)) {
     got <- verify_spans(ev$text[checkable], sources[checkable])

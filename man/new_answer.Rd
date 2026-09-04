@@ -12,7 +12,8 @@ new_answer(
   trace,
   evidence = NULL,
   partial = FALSE,
-  notes = list()
+  notes = list(),
+  chunks_sent = NULL
 )
 }
 \arguments{
@@ -38,6 +39,12 @@ a truncated prompt. Callers are told to check this before trusting
 \verb{$answer}, so setting it honestly matters more than it looks.}
 
 \item{notes}{Named list of whatever your reader wants to report.}
+
+\item{chunks_sent}{Chunk ids the reader actually put in front of the model,
+when that is more than \code{chunks_used}. Used only to tell a fabricated
+citation from a faithful one: a per-chunk reader drops the chunks that
+answered "not in this excerpt", and citing one of those is not an invention.
+Defaults to \code{chunks_used}.}
 }
 \value{
 A \link{gr_answer}.

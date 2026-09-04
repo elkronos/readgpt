@@ -94,6 +94,11 @@ test_that("the run measure separates quotation from paraphrase", {
 test_that("empty and degenerate inputs are NA, not TRUE", {
   expect_true(is.na(sm("", "some source")$verified))
   expect_true(is.na(sm("a span", "")$verified))
+  # An absent source is "nothing to compare against", not "does not match" --
+  # gr_verify_evidence() relies on this when a chunk set lacks an evidence id.
+  expect_true(is.na(sm("a span", NA)$verified))
+  expect_true(is.na(sm("a span", NA_character_)$match))
+  expect_true(is.na(sm(NA, "some source")$verified))
   expect_true(is.na(sm("...", "some source")$verified))    # nothing left after trimming
   expect_identical(nrow(readgpt:::verify_spans(character(0), character(0))), 0L)
 })

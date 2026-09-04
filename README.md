@@ -393,7 +393,7 @@ as_json(ans)    # answer plus every prompt and response, from the same single ru
 ```
 
 `ans$evidence` is a data frame with `chunk_id`, `text`, `page`, `section`,
-`score`. **What `text` holds depends on the reader**: verbatim chunk text for
+`score`, `kind`. **What `text` holds depends on the reader**: verbatim chunk text for
 `stuff`, `retrieve`, `rerank` and `iterative`; model-*extracted* passages for
 `skim`; per-chunk model *answers* for `map_reduce`. `refine` and `hierarchical`
 return `NULL`. `page` is populated only for PDF sources. `score` is set only by
@@ -414,9 +414,12 @@ gr_verify_evidence(ans)          # chunk_id, kind, verified, match, span
 
 `match` is 1 for an exact quotation once whitespace, quote marks, dashes and case
 are folded away — the differences a faithful quotation introduces. Below 1 it is
-the fraction of the span carried by its longest consecutive run in the source, so
-0.9 is a quote with a word changed and 0.1 is a sentence sharing vocabulary and
-nothing else. A span that does not verify sets `ans$notes$unverified_evidence`
+the fraction of the span carried by its longest consecutive **run** in the
+source, so *where* a change falls matters as much as how much changed: a changed
+last word leaves a run of nine in ten and scores 0.9, while a changed word in the
+middle splits the span and scores about 0.5. A swapped figure mid-sentence — the
+case this exists to catch — lands near 0.5. Below about 0.3 there is no quotation
+left, only shared vocabulary. A span that does not verify sets `ans$notes$unverified_evidence`
 and makes the answer `partial`.
 
 Citations are checked the same way, for every reader: an answer citing a chunk
@@ -511,7 +514,7 @@ continuing to spend. Both raise a classed error naming the option to change.
 
 `gr_budget()` is the single arithmetic chokepoint for context math and is
 incapable of returning a non-positive input budget — it raises an actionable
-error instead. `gr_options()` documents all 20 settings; see `?gr_options`.
+error instead. `gr_options()` documents all 21 settings; see `?gr_options`.
 
 ## Many documents
 
@@ -564,7 +567,9 @@ gr_read_many(file.path(tempdir(), "reports"), "What was revenue?", "thorough",
 
 The store is keyed on the document's path, size and mtime, the question, the
 whole pipeline and the model — so an edited document is a new job, not a stale
-hit.
+hit. A `gr_backend_client()` needs a stable `id` for a store or a cache to be
+reused by a *later session*; `gr_client()` and `gr_ellmer_client()` already know
+what they are.
 
 **You can see what it cost.** `gr_trace_cost()` prices a run using each step's
 own model and counts only the calls that were really issued:

@@ -183,6 +183,34 @@ twice.
   compare unequal. Both cache and replay keys normalise text the same way, which
   is what lets a saved trace replay on a different machine.
 
+* **A missing or unusable setting falls back to its documented default**, rather
+  than to whichever end of its range happens to be the lower bound.
+  `gr_read_spec(max_answer_tokens = NA)` used to give 16 -- truncating every
+  answer -- and `top_k = NA` gave 1, because `clamp()` maps an unusable value to
+  `lo`. That is right for a bound and wrong for a setting. Applies to `mmr`,
+  `top_k`, the three token caps, `rerank_candidates`, `rerank_min_score`,
+  `fan_in`, `max_levels`, `max_rounds` and the segmenter's `max_tokens`, and to
+  anything unusable, not only `NA`.
+
+* **An embedding that *fell back* now sets `partial`.** The documentation says
+  to check `partial` before trusting an answer and lists a lexical fallback as a
+  degradation; it was recorded in `$notes` but not in the one flag readers are
+  told to look at. A fallback is a degradation, and `gr_options(embedder =
+  "lexical")` is a choice -- the two are now distinguished, and only the first
+  sets the flag.
+
+* **A citation of a chunk that was sent but did not contribute is no longer
+  reported as a fabrication.** `notes$cited_unknown` compared citations against
+  `chunks_used`, which for a per-chunk reader holds only the chunks that
+  *answered* -- so a model faithfully citing a chunk that had replied "not in
+  this excerpt" was flagged as inventing it, and the answer was silently
+  downgraded to `partial`. A false positive in a hallucination check is the one
+  place a false positive is least affordable.
+
+* **`context_order = "document"` was a silent no-op below three chunks** -- the
+  common case for a top-k reader. Only `"edges"` needs a middle to bury the
+  weakest chunk in.
+
 * **Warnings raised while evaluating a setting were silently swallowed.**
   `clamp()` did `x <- suppressWarnings(as.numeric(x))`, and `x` arrives as a
   promise -- so forcing it inside `suppressWarnings()` discarded everything

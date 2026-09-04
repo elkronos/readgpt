@@ -43,8 +43,8 @@ as_chr1 <- function(x, default = "") {
 #' data-frame column goes through this.
 #' @noRd
 as_num1 <- function(x, default = NA_real_) {
-  if (is.null(x) || length(x) == 0L) return(default)
   force(x)   # see clamp(): forcing inside suppressWarnings() eats the caller's warnings
+  if (is.null(x) || length(x) == 0L) return(default)
   x <- suppressWarnings(as.numeric(x)[1])
   if (is.na(x)) default else x
 }
@@ -86,7 +86,12 @@ is_nonblank <- function(x) {
 #' wrong for a setting: it silently picks whichever extreme happens to be `lo`.
 #' @noRd
 na_default <- function(x, default, name) {
-  if (length(x) == 1L && !is.na(x)) return(x)
+  # Not just NA: anything that cannot become a number lands on `lo` too, and
+  # `gr_read_spec(mmr = "abc")` selecting pure diversity is the same defect as
+  # `mmr = NA` doing it.
+  usable <- length(x) == 1L && !is.na(x) &&
+    (is.numeric(x) || is.finite(suppressWarnings(as.numeric(x))))
+  if (usable) return(x)
   if (!identical(x, default)) {
     gr_warn(sprintf("`%s` is missing or not a single value; using the default (%s).",
                     name, format(default)), class = "gr_bad_setting")

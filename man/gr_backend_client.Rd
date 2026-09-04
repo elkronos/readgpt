@@ -9,6 +9,7 @@ gr_backend_client(
   embed = NULL,
   model = "backend-model",
   embedding_model = "backend-embed",
+  id = NULL,
   max_retries = 0L,
   timeout = NULL
 )
@@ -29,6 +30,25 @@ vectors and warn.}
 If \code{model} is not in the model registry you will get the usual unknown-model
 warning and a conservative context window; \code{\link[=gr_register_model]{gr_register_model()}} fixes that,
 and getting it right matters because it is what sizes your chunks.}
+
+\item{id}{Stable identity for this backend, used by \code{\link[=gr_cache]{gr_cache()}} and by
+\code{\link[=gr_read_many]{gr_read_many()}}'s \code{store}. \strong{Read this before setting up a durable cache.}
+
+For \code{\link[=gr_client]{gr_client()}} a cache key can be built from the API shape, base URL and
+model, because those completely describe what will answer: two clients with
+the same three give the same answers today and next month, which is what
+makes a cache safe to keep on disk. A backend has none of that -- every one
+of them is \code{api = "backend"}, \code{base_url = "backend://"} -- and the thing
+that actually answers is an R closure, whose behaviour this package cannot
+inspect.
+
+So the default is a fresh id per client object, which is \emph{safe}: two
+different handlers can never trade answers. It is also \emph{session-scoped}, so
+a cache or store will not be reused by a later session. Pass a stable \code{id}
+to get cross-session reuse -- and pass one \strong{only} when the handler really
+does answer the same way every time, because that is the assertion you are
+making. Hashing the closure would not do: two handlers can share a body and
+differ in what they captured.}
 
 \item{max_retries, timeout}{Recorded on the client for completeness. Retrying
 is the backend's business -- this package does not retry a handler, because

@@ -49,6 +49,11 @@
 #' @param partial `TRUE` if anything degraded -- a failed call, a dropped chunk,
 #'   a truncated prompt. Callers are told to check this before trusting
 #'   `$answer`, so setting it honestly matters more than it looks.
+#' @param chunks_sent Chunk ids the reader actually put in front of the model,
+#'   when that is more than `chunks_used`. Used only to tell a fabricated
+#'   citation from a faithful one: a per-chunk reader drops the chunks that
+#'   answered "not in this excerpt", and citing one of those is not an invention.
+#'   Defaults to `chunks_used`.
 #' @param notes Named list of whatever your reader wants to report.
 #' @return A [gr_answer].
 #' @seealso [gr_register_reader()], [gr_answer], [gr_read()], [new_chunks()]
@@ -62,15 +67,22 @@
 #' a$partial
 #' a$notes$strategy
 new_answer <- function(text, reader, question, chunks_used, trace, evidence = NULL,
-                       partial = FALSE, notes = list()) {
+                       partial = FALSE, notes = list(), chunks_sent = NULL) {
   text <- as_chr1(text)
 
   # A citation pointing at a chunk that was never sent is a fabrication, and the
   # most convincing kind there is: it looks like the thing that would let you
   # check. Parsing for it costs nothing and runs on every answer, including the
   # ones that never asked for citations, where it finds nothing.
+  #
+  # Compared against what was SENT, not against `chunks_used`. For the per-chunk
+  # readers `chunks_used` is only the chunks that CONTRIBUTED, so a model that
+  # faithfully cited a chunk which had answered "not in this excerpt" was
+  # reported as having fabricated the citation -- a false positive in a
+  # hallucination check, which is the one place a false positive is least
+  # affordable.
   cited <- cited_chunks(text)
-  unknown <- setdiff(cited, as.integer(chunks_used))
+  unknown <- setdiff(cited, as.integer(chunks_sent %||% chunks_used))
   if (length(unknown)) {
     notes$cited_unknown <- unknown
     partial <- TRUE

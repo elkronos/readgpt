@@ -24,7 +24,7 @@ were never sent, and \code{unverified_evidence}, the number of quoted spans
 that are not in the chunk they claim to come from. Either makes the answer
 \code{partial}.}
 \item{\code{evidence}}{Data frame or \code{NULL}, with columns \code{chunk_id}, \code{text},
-\code{page}, \code{section}, \code{score}. \strong{What \code{text} holds depends on the reader}:
+\code{page}, \code{section}, \code{score}, \code{kind}. \strong{What \code{text} holds depends on the reader}:
 verbatim chunk text for \code{stuff}, \code{retrieve}, \code{rerank} and \code{iterative};
 model-extracted passages for \code{skim}; per-chunk model answers for
 \code{map_reduce}. \code{refine} and \code{hierarchical} return \code{NULL}. \code{page} is
@@ -34,8 +34,10 @@ populated only for PDF sources; \code{score} only for \code{retrieve} (cosine) a
 claims to quote, plus \code{verified} and \code{match} from checking one against
 the other; see \code{\link[=gr_verify_evidence]{gr_verify_evidence()}}. Readers whose evidence is verbatim
 chunk text do not carry them, because the span and its source are the
-same string. A blank roxygen line inside a \verb{\\describe\{\}} item ends the
-item, which is why this is one paragraph.}
+same string. \code{kind} says what that row holds -- \code{"verbatim"},
+\code{"extracted"} or \code{"answer"} -- per row, because an \code{ensemble} mixes them.
+A blank roxygen line inside a \verb{\\describe\{\}} item ends the item, which is
+why this is one paragraph.}
 \item{\code{chunks_used}}{Integer vector of \code{chunk_id}s that CONTRIBUTED to the answer. For the
 per-chunk readers this is a subset of the chunks actually sent -- a chunk
 that answered \code{NOT_IN_DOCUMENT} was read and paid for but is not listed.

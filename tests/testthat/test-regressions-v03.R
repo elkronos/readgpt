@@ -23,11 +23,27 @@ test_that("mmr_select() cannot fail to terminate", {
   })
   expect_length(out, 3L)
   expect_false(anyNA(out))
-  expect_false(1L %in% out)              # and the unusable row is not selected
 
-  # Every row unusable: fall back to relevance order rather than looping.
+  # Every row unusable: still terminates, still returns k.
   allbad <- matrix(NaN, nrow = 3L, ncol = 3L)
-  expect_identical(mmr(c(0.5, 0.9, 0.1), allbad, 2, 0.5), c(2L, 1L))
+  expect_length(mmr(c(0.5, 0.9, 0.1), allbad, 2, 0.5), 2L)
+})
+
+test_that("an unusable embedding row is neutralised, not dropped from the answer", {
+  # The first fix EXCLUDED such rows from selection, which stopped the hang and
+  # introduced a quieter bug: cosine_against() maps a non-finite row to a
+  # relevance of 0, so the chunk is a legitimate if unpromising candidate that
+  # top-k will take. Excluding it meant `mmr < 1` silently returned FEWER chunks
+  # than top_k asked for while `mmr = 1` returned the full set -- a diversity
+  # setting shrinking the evidence with nothing in `notes` to say so.
+  mmr <- readgpt:::mmr_select
+  emb <- rbind(c(NaN, NaN, NaN), c(1, 0, 0), c(0, 1, 0))
+  rel <- c(0, 0.9, 0.8)                  # all finite, as cosine_against() delivers
+
+  expect_length(mmr(rel, emb, 3, 1), 3L)
+  expect_length(mmr(rel, emb, 3, 0.5), 3L)          # the same count, both ways
+  expect_setequal(mmr(rel, emb, 3, 0.5), 1:3)
+  expect_identical(mmr(rel, emb, 3, 0.5)[1], 2L)    # still starts with the best
 })
 
 test_that("two closure-backed clients do not share cache entries", {
@@ -214,8 +230,9 @@ test_that("a missing setting falls back to the default, not to the bottom of the
 
 test_that("the adapter requires every method its guarantees depend on", {
   check <- readgpt:::check_chat_methods
-  full <- list(chat = function(...) "x", clone = function(...) NULL,
-               set_turns = function(...) NULL, set_system_prompt = function(...) NULL)
+  full <- list(chat = function(...) "x", chat_structured = function(...) NULL,
+               clone = function(...) NULL, set_turns = function(...) NULL,
+               set_system_prompt = function(...) NULL)
   expect_true(check(full))
 
   # set_system_prompt is the one that matters most: this package puts its
@@ -225,6 +242,10 @@ test_that("the adapter requires every method its guarantees depend on", {
     expect_error(check(full[setdiff(names(full), drop)]), class = "gr_bad_backend")
   }
   expect_error(check(list(a = 1)), class = "gr_bad_backend")
+  # And the most likely wrong argument of all gets this function's own message
+  # rather than "object of type 'closure' is not subsettable".
+  expect_error(check(function(x) x), class = "gr_bad_backend")
+  expect_error(check("a string"), class = "gr_bad_backend")
 })
 
 test_that("an empty ellmer reply is a failure, as it is for every other handler", {
@@ -238,4 +259,186 @@ test_that("an empty ellmer reply is a failure, as it is for every other handler"
   good <- readgpt:::ellmer_result("an answer", "m", list(input = 5L, output = 2L))
   expect_true(good$ok)
   expect_identical(good$text, "an answer")
+})
+
+# ---------------------------------------------------------------------------
+# The sixth pass: defects introduced or missed by the fifth
+# ---------------------------------------------------------------------------
+
+test_that("a stable client id makes a cache and a store reusable across sessions", {
+  # The fix that stopped two closure-backed clients trading answers gave every
+  # one of them a fresh per-session identity -- which also broke the durable
+  # cache and the resumable store the documentation promises. A caller who knows
+  # their handler is stable must be able to say so.
+  local_registries()
+  gr_register_model("mock-model", context_window = 128000L, max_output = 4096L,
+                    input_usd = 0, output_usd = 0)
+  dir <- withr::local_tempdir()
+  h <- function(m, p) "Revenue was 45.2 million dollars."
+
+  anon1 <- gr_cache_client(gr_backend_client(h, model = "mock-model"), gr_cache(dir))
+  anon2 <- gr_cache_client(gr_backend_client(h, model = "mock-model"), gr_cache(dir))
+  invisible(gr_call(anon1, "q"))
+  expect_false(gr_call(anon2, "q")$cached)          # safe default: no sharing
+
+  named1 <- gr_cache_client(gr_backend_client(h, model = "mock-model", id = "my-provider"),
+                            gr_cache(dir))
+  named2 <- gr_cache_client(gr_backend_client(h, model = "mock-model", id = "my-provider"),
+                            gr_cache(dir))
+  invisible(gr_call(named1, "q2"))
+  expect_true(gr_call(named2, "q2")$cached)         # opted in: reuse works
+  expect_false(gr_call(
+    gr_cache_client(gr_backend_client(h, model = "mock-model", id = "other"), gr_cache(dir)),
+    "q2")$cached)                                   # a different id is a different client
+})
+
+test_that("a replay client is identified by its recording, not by its object", {
+  # gr_replay_client() was left out of the identity fix entirely, so a corpus
+  # store served one recording's answers while replaying a different one --
+  # exactly the failure the identity was introduced to prevent.
+  local_registries()
+  f <- withr::local_tempfile(fileext = ".txt")
+  writeLines("Revenue was 45.2 million dollars.", f)
+  runA <- quiet(gr_read_many(f, "Q?", "fast", client = gr_mock_client(function(m, p) "ANSWER-A")))
+  runB <- quiet(gr_read_many(f, "Q?", "fast", client = gr_mock_client(function(m, p) "ANSWER-B")))
+
+  store <- withr::local_tempdir()
+  quiet(gr_read_many(f, "Q?", "fast", client = gr_replay_client(runA$trace), store = store))
+  b <- quiet(gr_read_many(f, "Q?", "fast", client = gr_replay_client(runB$trace), store = store))
+  expect_identical(b$summary$answer, "ANSWER-B")
+  expect_identical(b$summary$status, "ok")
+
+  # Two replays of the SAME recording are the same thing, and do share.
+  again <- quiet(gr_read_many(f, "Q?", "fast", client = gr_replay_client(runA$trace),
+                              store = store))
+  expect_identical(again$summary$status, "restored")
+})
+
+test_that("a citation of a chunk that was sent but did not contribute is not a fabrication", {
+  # `chunks_used` holds only the chunks that CONTRIBUTED, so comparing citations
+  # against it reported a faithful citation of a chunk which had answered "not in
+  # this excerpt" as an invention -- a false positive in a hallucination check,
+  # which is the one place a false positive is least affordable.
+  local_registries()
+  # Each paragraph must be its own chunk, so size them near the cap: the
+  # paragraph segmenter packs short runs together, and three short lines under a
+  # 40-token cap come back as two chunks.
+  doc <- paste(c(
+    paste("Revenue was 45.2 million dollars in fiscal 2024 across every region the",
+          "company serves, before tax and before the restatement described later."),
+    paste("This paragraph concerns an entirely unrelated administrative matter of no",
+          "interest to the question and mentions no figures whatsoever anywhere."),
+    paste("Headcount grew to 1,204 employees across nine clinical sites in total,",
+          "with the largest increase recorded in the northern operating region.")),
+    collapse = "\n\n")
+  ch <- gr_segment(gr_ingest(doc), list(method = "paragraph", max_tokens = 40))
+  expect_identical(nrow(ch$chunks), 3L)
+
+  n <- 0L
+  faithful <- gr_mock_client(function(m, p) {
+    n <<- n + 1L
+    if (n <= nrow(ch$chunks)) (if (n == 2L) "NOT_IN_DOCUMENT" else "a finding")
+    else "Merged, citing [chunk 2]."
+  })
+  a <- quiet(gr_read(ch, "What was revenue?", faithful, gr_read_spec("map_reduce", cite = TRUE)))
+  expect_false(2L %in% a$chunks_used)          # it did not contribute
+  expect_null(a$notes$cited_unknown)           # but it WAS sent, so this is honest
+  expect_false(a$partial)
+
+  n <- 0L
+  inventing <- gr_mock_client(function(m, p) {
+    n <<- n + 1L
+    if (n <= nrow(ch$chunks)) "a finding" else "Merged, citing [chunk 99]."
+  })
+  b <- quiet(gr_read(ch, "What was revenue?", inventing, gr_read_spec("map_reduce", cite = TRUE)))
+  expect_identical(b$notes$cited_unknown, 99L)
+  expect_true(b$partial)
+})
+
+test_that("an embedding that fell back sets partial; one that was chosen does not", {
+  # The vignette tells readers `partial` is TRUE "whenever anything degraded --
+  # ... an embedding fell back to lexical vectors". It was not. The distinction
+  # that matters is fallback versus choice: being dropped onto lexical vectors
+  # because the real embedder failed is a degradation; asking for them is not.
+  local_registries()
+  doc <- paste(c("Revenue was 45.2 million dollars in fiscal 2024 across all regions.",
+                 "Headcount grew to 1,204 employees across nine clinical sites."),
+               collapse = "\n\n")
+  ch <- gr_segment(gr_ingest(doc), list(method = "paragraph", max_tokens = 40))
+
+  gr_register_model("mock-model", context_window = 128000L, max_output = 4096L,
+                    input_usd = 0, output_usd = 0)
+  no_embedder <- gr_backend_client(function(m, p) "Revenue was 45.2 million.",
+                                   model = "mock-model")
+  fell <- suppressWarnings(quiet(gr_read(ch, "What was revenue?", no_embedder,
+                                         gr_read_spec("retrieve", top_k = 2))))
+  expect_true(fell$notes$embedding_fallback)
+  expect_true(fell$partial)
+
+  gr_options(embedder = "lexical")
+  chose <- quiet(gr_read(ch, "What was revenue?", mock_echo("Revenue was 45.2 million."),
+                         gr_read_spec("retrieve", top_k = 2)))
+  expect_identical(chose$notes$embedding_source, "lexical")
+  expect_false(chose$notes$embedding_fallback)
+  expect_false(chose$partial)
+})
+
+test_that("context_order = 'document' applies however few chunks were selected", {
+  # The length guard sat above the "document" branch, so it was a silent no-op
+  # below three chunks -- which is the common case for a top-k reader.
+  arr <- readgpt:::arrange_context
+  expect_identical(arr(c(5L, 1L), "document"), c(1L, 5L))
+  expect_identical(arr(c(9L, 2L, 7L), "document"), c(2L, 7L, 9L))
+  expect_identical(arr(c(5L, 1L), "edges"), c(5L, 1L))    # nothing to bury in a pair
+  expect_identical(arr(1:6, "edges"), c(1L, 3L, 5L, 6L, 4L, 2L))
+})
+
+test_that("an ensemble's verbatim rows verify when the chunks are supplied", {
+  # `kind` was made per row but `sources` was not, so rbind_evidence()'s NA fill
+  # in the source_text column made every non-skim row unverifiable even with
+  # `chunks` in hand.
+  local_registries()
+  gr_options(embedder = "lexical")
+  doc <- paste(c("Revenue rose to 45.2 million dollars in fiscal 2024.",
+                 "Headcount grew to 1,204 employees worldwide this year.",
+                 "Operating margin fell 5 percent year over year overall."), collapse = "\n\n")
+  ch <- gr_segment(gr_ingest(doc), list(method = "paragraph", max_tokens = 40))
+  a <- quiet(gr_read(ch, "What was revenue?",
+                     mock_echo("Revenue rose to 45.2 million dollars in fiscal 2024."),
+                     list(reader = "ensemble", members = c("skim", "retrieve"))))
+
+  v <- gr_verify_evidence(a, ch)
+  expect_true(any(v$kind == "verbatim"))
+  expect_true(all(v$verified[v$kind == "verbatim"]))    # not NA
+
+  # An id the supplied chunks do not contain reports NA rather than FALSE: there
+  # was nothing to compare against, which is not evidence of fabrication.
+  # (Ids are positional, so a chunk set that HAS the id compares against
+  # whatever text sits there -- see the note on `chunks` in ?gr_verify_evidence.)
+  one <- gr_segment(gr_ingest("A single short paragraph and nothing else at all."),
+                    list(method = "paragraph", max_tokens = 400))
+  expect_identical(nrow(one$chunks), 1L)
+  w <- gr_verify_evidence(a, one)
+  missing_ids <- w$kind == "verbatim" & !(w$chunk_id %in% one$chunks$chunk_id)
+  expect_true(any(missing_ids))
+  expect_true(all(is.na(w$verified[missing_ids])))
+})
+
+test_that("an unusable setting falls back to its default, whatever kind of unusable", {
+  # na_default() covered NA only, so `mmr = "abc"` still clamped to 0 -- pure
+  # diversity -- and every other setting still clamped to its own destructive
+  # `lo`: max_answer_tokens to 16, top_k to 1, fan_in to 2.
+  for (bad in list(NA, "abc", "", c(1, 2), character(0))) {
+    s <- suppressWarnings(gr_read_spec(mmr = bad, top_k = bad, max_answer_tokens = bad,
+                                       fan_in = bad, rerank_candidates = bad))
+    expect_identical(s$mmr, 1, info = paste(format(bad), collapse = ","))
+    expect_identical(s$top_k, 6L)
+    expect_identical(s$max_answer_tokens, 1500L)
+    expect_identical(s$fan_in, 5L)
+    expect_identical(s$rerank_candidates, 20L)
+  }
+  expect_identical(suppressWarnings(gr_segment_spec("paragraph", max_tokens = NA))$max_tokens, 800L)
+  # A usable value is still honoured, including one at the destructive extreme.
+  expect_identical(gr_read_spec(mmr = 0)$mmr, 0)
+  expect_identical(suppressWarnings(gr_read_spec(top_k = 1))$top_k, 1L)
 })

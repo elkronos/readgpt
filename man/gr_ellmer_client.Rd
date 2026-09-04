@@ -34,9 +34,11 @@ package that needs it.
 }
 \section{Requirements on the chat}{
 
-The adapter calls \verb{$chat()}, \verb{$clone()}, \verb{$set_turns()} and
-\verb{$set_system_prompt()}, and refuses a chat missing any of them
-(\code{gr_bad_backend}). The last two are not conveniences: this package puts its
+The adapter calls \verb{$chat()}, \verb{$chat_structured()}, \verb{$clone()}, \verb{$set_turns()}
+and \verb{$set_system_prompt()}, and refuses a chat missing any of them
+(\code{gr_bad_backend}). \verb{$chat_structured()} is used by every schema-bearing call
+-- each \code{rerank} score and each \code{iterative} round -- so a chat without it
+would have failed mid-run rather than at construction. The last two are not conveniences: this package puts its
 instructions in the system prompt, and it clears turns so that one chunk's
 call cannot leak into the next. A chat that silently dropped either would
 produce unconstrained answers with nothing to show for it.

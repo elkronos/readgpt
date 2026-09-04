@@ -62,14 +62,17 @@ mmr_select <- function(rel, emb, k, lambda = 1) {
   # integer(0), `sel` stops growing and the `while` NEVER TERMINATES. Not an
   # error and not a crash -- a hang, which is the worst failure a library can
   # hand you. A zero vector L2-normalised is 0/0, so any chunk an embedder finds
-  # no words in produces one. Such rows cannot participate in a similarity
-  # comparison at all, so they are dropped from selection here.
-  finite_row <- is.finite(rowSums(emb))
-  eligible <- eligible[finite_row[eligible]]
-  if (!length(eligible)) {
-    return(which(is.finite(rel))[order(rel[is.finite(rel)], decreasing = TRUE)][seq_len(k)])
-  }
-  k <- min(k, length(eligible))
+  # no words in produces one.
+  #
+  # Neutralise the ROW, do not drop the CANDIDATE. `cosine_against()` already
+  # maps such a row to a relevance of 0, so the chunk is a legitimate if
+  # unpromising choice and top-k will happily take it. Dropping it here instead
+  # meant `mmr < 1` quietly returned fewer chunks than `top_k` asked for while
+  # `mmr = 1` returned the full set -- a diversity setting silently shrinking
+  # the evidence. A zero vector contributes zero similarity, which is the right
+  # answer for "we cannot tell how redundant this is".
+  bad_row <- !is.finite(rowSums(emb))
+  if (any(bad_row)) emb[bad_row, ] <- 0
 
   sel <- eligible[which.max(rel[eligible])]
   best_sim <- rep(-Inf, n)
@@ -97,8 +100,13 @@ mmr_select <- function(rel, emb, k, lambda = 1) {
 #' @noRd
 arrange_context <- function(idx, how = "relevance") {
   how <- as_chr1(how, "relevance")
-  if (length(idx) < 3L || identical(how, "relevance")) return(idx)
+  if (identical(how, "relevance")) return(idx)
+  # Document order is meaningful for two chunks; only "edges" needs a middle to
+  # bury anything in. The length guard used to sit above this branch, so
+  # `context_order = "document"` was a silent no-op whenever fewer than three
+  # chunks were selected -- which is the common case for a top-k reader.
   if (identical(how, "document")) return(sort(idx))
+  if (length(idx) < 3L) return(idx)
   if (!identical(how, "edges")) return(idx)
   # Ranks 1,2,3,4,5,6 become 1,3,5,6,4,2: the best chunk first, the second best
   # last, and the weakest buried in the middle where attention is thinnest.

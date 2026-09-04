@@ -29,7 +29,9 @@ registered extractor claims -- so which files are picked up follows
 
 \item{client}{A \code{gr_client}. Wrap it in \code{\link[=gr_cache_client]{gr_cache_client()}} for a long run:
 with a durable cache directory, a restart pays for nothing it has already
-answered.}
+answered. A closure-backed client -- \code{\link[=gr_backend_client]{gr_backend_client()}} or
+\code{\link[=gr_mock_client]{gr_mock_client()}} -- reuses a cache or a \code{store} across sessions only if it
+was given a stable \code{id}; see \code{\link[=gr_backend_client]{gr_backend_client()}} for why.}
 
 \item{store}{Optional directory. Each document's result is written there as
 it completes and restored on a later run instead of being read again. This

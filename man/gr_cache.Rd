@@ -31,6 +31,12 @@ writes nothing to your filesystem you did not ask for -- but it is not what
 you want for a long experiment. Pass a real directory, or
 \code{tools::R_user_dir("readgpt", "cache")}, to keep entries across sessions and
 make a run resumable after a crash.
+
+Cross-session reuse needs a client that can say what it is. \code{\link[=gr_client]{gr_client()}} and
+\code{\link[=gr_ellmer_client]{gr_ellmer_client()}} can -- an endpoint and a model describe what will answer
+next month as well as today. A bare \code{\link[=gr_backend_client]{gr_backend_client()}} cannot, because what
+answers is an R closure, so by default it gets a fresh identity per object and
+its entries are session-scoped. Give it a stable \code{id} to opt in.
 }
 \section{What is stored}{
 

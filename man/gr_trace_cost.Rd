@@ -31,9 +31,15 @@ cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
 ans <- answer_document(readgpt_example(), "What was revenue?", "fast", client = cl)
 gr_trace_cost(ans$trace)
 
-# The mock is free, so this is zero. On a cached re-run it is zero for a
-# different reason: paid_calls falls to zero while calls does not.
-gr_trace_summary(ans$trace)[c("calls", "cached")]
+# Priced by the model on the STEP -- the recipe's model -- not by the mock
+# that answered. A cached re-run costs nothing for a different reason:
+# paid_calls falls to zero while calls does not.
+cache <- gr_cache(file.path(tempdir(), "readgpt-cost-example"))
+again <- answer_document(readgpt_example(), "What was revenue?", "fast",
+                         client = gr_cache_client(cl, cache))
+twice <- answer_document(readgpt_example(), "What was revenue?", "fast",
+                         client = gr_cache_client(cl, cache))
+gr_trace_cost(twice$trace)[c("calls", "paid_calls", "usd")]
 }
 \seealso{
 \code{\link[=gr_trace_summary]{gr_trace_summary()}}, \code{\link[=gr_estimate_cost]{gr_estimate_cost()}}, \code{\link[=gr_cache]{gr_cache()}},

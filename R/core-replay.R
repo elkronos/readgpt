@@ -77,14 +77,22 @@ gr_trace_save <- function(trace, path) {
 #' returned in the order they were produced. Once they are exhausted the last
 #' one repeats.
 #'
+#' @section Embeddings:
+#' Embeddings are not model calls and are not recorded in a trace, so whether a
+#' replay reproduces a run's chunk *ranking* depends on how the run embedded --
+#' and that is checked rather than assumed. The ranking reproduces exactly when
+#' the recording used a **deterministic** embedder and the replay uses the
+#' **same** one; both conditions, because replaying an API-embedded run with a
+#' deterministic local embedder would compute vectors the original never saw
+#' while looking exact. Anything else falls back to hashed lexical vectors and
+#' warns with class `gr_replay_no_embeddings`; every recorded answer is still
+#' reproduced, but the ranking may differ. Record a run you intend to publish
+#' with `gr_options(embedder = "lexical")`, or with your own embedder registered
+#' as `deterministic = TRUE`.
+#'
 #' @section What does not replay:
-#' Embeddings are not model calls and are not recorded in a trace, so readers
-#' that embed (`retrieve`, and the `semantic` segmenter) fall back to hashed
-#' lexical vectors under replay and warn with class `gr_replay_no_embeddings`.
-#' Their chunk *ranking* may therefore differ from the original run even though
-#' every recorded answer is reproduced exactly. Traces also do not record the
-#' JSON schema a call requested, so two calls that differ only by schema share a
-#' recording.
+#' Traces do not record the JSON schema a call requested, so two calls that
+#' differ only by schema share a recording.
 #'
 #' @seealso [gr_trace_save()], [gr_cache()] for making future runs cheap,
 #'   [gr_mock_client()] for invented answers rather than recorded ones
@@ -140,6 +148,13 @@ gr_replay_client <- function(source, strict = TRUE) {
     embedding_model = "replay-embed", max_retries = 0L, retry_pause_base = 0,
     timeout = 1, extra_body = list(),
     strict = isTRUE(strict), .idx = idx,
+    # Derived from the recording, not from this object: two replays of the same
+    # trace are the same thing and should share a store, while replays of
+    # DIFFERENT recordings must not -- without this a corpus store served one
+    # recording's answers while replaying another, which is exactly the failure
+    # the client identity was introduced to prevent.
+    .client_id = paste0("replay-", gr_hash(lapply(steps, function(s)
+      c(s$model, s$response, unlist(lapply(s$prompt, function(m) m$content)))))),
     # Which embedder the RECORDING used, so a replay can tell an embedding it
     # can reproduce from one it cannot. See gr_embed().
     embed_source = embed_source,

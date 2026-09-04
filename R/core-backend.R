@@ -43,6 +43,24 @@
 #'   matrix with one row per input. Without it, readers that embed
 #'   (`retrieve`, and the `semantic` segmenter) fall back to hashed lexical
 #'   vectors and warn.
+#' @param id Stable identity for this backend, used by [gr_cache()] and by
+#'   [gr_read_many()]'s `store`. **Read this before setting up a durable cache.**
+#'
+#'   For [gr_client()] a cache key can be built from the API shape, base URL and
+#'   model, because those completely describe what will answer: two clients with
+#'   the same three give the same answers today and next month, which is what
+#'   makes a cache safe to keep on disk. A backend has none of that -- every one
+#'   of them is `api = "backend"`, `base_url = "backend://"` -- and the thing
+#'   that actually answers is an R closure, whose behaviour this package cannot
+#'   inspect.
+#'
+#'   So the default is a fresh id per client object, which is *safe*: two
+#'   different handlers can never trade answers. It is also *session-scoped*, so
+#'   a cache or store will not be reused by a later session. Pass a stable `id`
+#'   to get cross-session reuse -- and pass one **only** when the handler really
+#'   does answer the same way every time, because that is the assertion you are
+#'   making. Hashing the closure would not do: two handlers can share a body and
+#'   differ in what they captured.
 #' @param model,embedding_model Model ids reported to the rest of the package.
 #'   If `model` is not in the model registry you will get the usual unknown-model
 #'   warning and a conservative context window; [gr_register_model()] fixes that,
@@ -77,7 +95,7 @@
 #' invisible(gr_call(cl, "again", trace = tr))
 #' gr_trace_summary(tr)[c("calls", "tokens_in", "tokens_out")]
 gr_backend_client <- function(handler, embed = NULL, model = "backend-model",
-                              embedding_model = "backend-embed",
+                              embedding_model = "backend-embed", id = NULL,
                               max_retries = 0L, timeout = NULL) {
   if (!is.function(handler)) {
     gr_abort("`handler` must be a function of (messages, params).")
@@ -96,7 +114,7 @@ gr_backend_client <- function(handler, embed = NULL, model = "backend-model",
     retry_pause_base = 0,
     timeout = clamp(timeout %||% gr_options("request_timeout"), 1, 3600),
     extra_body = list(),
-    # A per-instance identity, and the cache key depends on it.
+    # The identity the cache and corpus-store keys depend on. See `id` above.
     #
     # Named `.client_id` and NOT `.cache_id`: `$` on a list partial-matches, so
     # with a field called `.cache_id` the expression `client$.cache` -- which is
@@ -105,20 +123,7 @@ gr_backend_client <- function(handler, embed = NULL, model = "backend-model",
     # partial-matching trap that made `parsed$output` return `output_text` in the
     # previous release, and the only reliable defence is not to create a name
     # that is a prefix of another.
-    #
-    # For gr_client() the key can be made of api, base_url and model, because
-    # those fully describe what will answer: two clients with the same three
-    # give the same answers, in this session or next week, which is what makes a
-    # durable cache safe. For a backend they describe nothing -- every backend
-    # client is api="backend", base_url="backend://", model="backend-model" --
-    # and the thing that actually answers is an R closure. Two different
-    # handlers therefore shared cache entries and silently traded answers.
-    #
-    # Hashing the closure is not the fix: two handlers can share a body and
-    # differ in what they captured. Identity is, and identity is per-session by
-    # construction -- which is correct, because nothing about an R closure is
-    # reproducible across sessions anyway.
-    .client_id = gr_new_id("backend"),
+    .client_id = as_chr1(id %||% gr_new_id("backend")),
     handler = handler, embed_handler = embed, .log = log,
     calls  = function() log$calls,
     embeds = function() log$embeds,
@@ -160,9 +165,11 @@ print.gr_backend_client <- function(x, ...) {
 #' @return A [gr_backend_client()].
 #'
 #' @section Requirements on the chat:
-#' The adapter calls `$chat()`, `$clone()`, `$set_turns()` and
-#' `$set_system_prompt()`, and refuses a chat missing any of them
-#' (`gr_bad_backend`). The last two are not conveniences: this package puts its
+#' The adapter calls `$chat()`, `$chat_structured()`, `$clone()`, `$set_turns()`
+#' and `$set_system_prompt()`, and refuses a chat missing any of them
+#' (`gr_bad_backend`). `$chat_structured()` is used by every schema-bearing call
+#' -- each `rerank` score and each `iterative` round -- so a chat without it
+#' would have failed mid-run rather than at construction. The last two are not conveniences: this package puts its
 #' instructions in the system prompt, and it clears turns so that one chunk's
 #' call cannot leak into the next. A chat that silently dropped either would
 #' produce unconstrained answers with nothing to show for it.
@@ -264,8 +271,23 @@ gr_ellmer_client <- function(chat, embed = NULL, model = NULL) {
     ellmer_result(txt, model, ellmer_usage(one, params, txt))
   }
 
+  # Unlike a bare backend, an ellmer chat wraps something addressable and
+  # stable: a provider, a model, an endpoint. So this one CAN say what it is,
+  # and a durable cache or a resumable store works across sessions -- which for
+  # the real transport is the whole point of having them.
   gr_backend_client(handler, embed = embed, model = model,
-                    embedding_model = paste0(model, "-embed"))
+                    embedding_model = paste0(model, "-embed"),
+                    id = ellmer_identity(chat, model))
+}
+
+#' A stable identity for an ellmer chat: what will answer, not which object asked.
+#' @noRd
+ellmer_identity <- function(chat, model) {
+  provider <- tryCatch(chat$get_provider(), error = function(e) NULL)
+  bits <- c("readgpt-ellmer-v1", as_chr1(model, "?"),
+            as_chr1(class(provider)[1], "?"),
+            as_chr1(tryCatch(as_chr1(provider@base_url), error = function(e) NULL), "?"))
+  paste0("ellmer-", gr_hash(bits))
 }
 
 #' The methods this adapter actually calls, and the check that they are there.
@@ -279,10 +301,20 @@ gr_ellmer_client <- function(chat, embed = NULL, model = NULL) {
 #' cannot take one would send the user turn alone and report `ok = TRUE` -- an
 #' unconstrained answer with nothing anywhere to say it was unconstrained.
 #' @noRd
-.gr_ellmer_methods <- c("chat", "clone", "set_turns", "set_system_prompt")
+.gr_ellmer_methods <- c("chat", "chat_structured", "clone", "set_turns",
+                        "set_system_prompt")
 
 #' @noRd
 check_chat_methods <- function(chat) {
+  # A closure is not subsettable, and passing the wrong thing here is the most
+  # likely mistake. Say so in this function's own language rather than letting
+  # `[[` raise "object of type 'closure' is not subsettable".
+  if (!is.list(chat) && !is.environment(chat)) {
+    gr_abort(paste0("`chat` must be an ellmer Chat object, not a ", class(chat)[1],
+                    ". Pass the result of ellmer::chat_openai(), chat_anthropic(), ",
+                    "chat_ollama() or similar."),
+             class = "gr_bad_backend")
+  }
   missing <- .gr_ellmer_methods[
     !vapply(.gr_ellmer_methods, function(m) is.function(chat[[m]]), logical(1))]
   if (length(missing)) {

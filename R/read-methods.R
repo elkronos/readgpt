@@ -93,6 +93,7 @@ read_map_reduce <- function(chunks, question, client, spec, trace) {
   }
   merged <- tree_merge(client, question, texts[useful], spec, trace, label = "reduce")
   new_answer(merged$text, "map_reduce", question, d$chunk_id[useful], trace,
+             chunks_sent = d$chunk_id,
              # These are the model's ANSWER for each chunk, not quotations
              # from it, which is why verification reports NA for them.
              evidence = evidence_table(d$chunk_id[useful], texts[useful],
@@ -212,7 +213,7 @@ read_skim <- function(chunks, question, client, spec, trace) {
             temperature = spec$temperature, trace = trace, label = "skim.answer")
   } else gr_result(FALSE, error = "call cap reached before the synthesis step")
   new_answer(if (usable_text(res2)) res2$text else .NOT_FOUND, "skim", question, ev$chunk_id, trace,
-             evidence = ev, partial = any(!ok) || !res2$ok,
+             chunks_sent = d$chunk_id, evidence = ev, partial = any(!ok) || !res2$ok,
              notes = list(chunks = nrow(d), with_evidence = nrow(ev),
                           failed_calls = sum(!ok), evidence_consolidated = dropped > 0,
                           evidence_verified = sum(isTRUE_vec(ev$verified))))
@@ -229,6 +230,7 @@ read_retrieve <- function(chunks, question, client, spec, trace) {
   d <- chunks$chunks
   emb <- gr_embed(client, c(question, d$text), trace = trace)
   src <- attr(emb, "embedding_source") %||% "api"
+  degraded_embed <- isTRUE(attr(emb, "embedding_fallback"))
   scores <- if (nrow(emb) >= 2L) cosine_against(emb[-1, , drop = FALSE], emb[1, ]) else rep(0, nrow(d))
   if (identical(src, "lexical")) {
     # Blend in BM25 so the offline path is at least a real lexical retriever.
@@ -268,9 +270,10 @@ read_retrieve <- function(chunks, question, client, spec, trace) {
   new_answer(if (res$ok) res$text else .NOT_FOUND, "retrieve", question, sub$chunk_id, trace,
              evidence = evidence_table(sub$chunk_id, sub$text, sub$page, sub$section,
                                        scores[fit$idx], kind = "verbatim"),
-             partial = !res$ok || length(fit$dropped) > 0,
+             partial = !res$ok || length(fit$dropped) > 0 || degraded_embed,
              notes = list(chunks = nrow(d), top_k = k, used = nrow(sub),
-                          embedding_source = src, mmr = lambda,
+                          embedding_source = src, embedding_fallback = degraded_embed,
+                          mmr = lambda,
                           context_order = as_chr1(spec$context_order, "relevance"),
                           error = res$error))
 }
@@ -450,6 +453,7 @@ read_hierarchical <- function(chunks, question, client, spec, trace) {
 read_iterative <- function(chunks, question, client, spec, trace) {
   d <- chunks$chunks
   emb <- gr_embed(client, d$text, trace = trace)
+  degraded_embed <- isTRUE(attr(emb, "embedding_fallback"))
   seen <- integer(0); gathered <- character(0); queries <- as_chr1(question)
   rounds <- 0L; done_reason <- "max rounds"
 
@@ -510,8 +514,10 @@ read_iterative <- function(chunks, question, client, spec, trace) {
                         evidence = evidence_table(d$chunk_id[seen], d$text[seen],
                                                   d$page[seen], d$section[seen],
                                                   kind = "verbatim"),
+                        partial = degraded_embed,
                         notes = list(rounds = rounds, chunks_seen = length(seen),
-                                     queries = queries, stop_reason = "model satisfied")))
+                                     queries = queries, stop_reason = "model satisfied",
+                                     embedding_fallback = degraded_embed)))
     }
     nq <- as_chr1(out$value$next_query)
     if (!nzchar(nq) || nq %in% queries) { done_reason <- "query loop"; break }
@@ -536,7 +542,7 @@ read_iterative <- function(chunks, question, client, spec, trace) {
                                        kind = "verbatim"),
              partial = TRUE,
              notes = list(rounds = rounds, chunks_seen = length(seen), queries = queries,
-                          stop_reason = done_reason))
+                          stop_reason = done_reason, embedding_fallback = degraded_embed))
 }
 
 # ---------------------------------------------------------------------------

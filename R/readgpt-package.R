@@ -112,7 +112,7 @@
 #'     that are not in the chunk they claim to come from. Either makes the answer
 #'     `partial`.}
 #'   \item{`evidence`}{Data frame or `NULL`, with columns `chunk_id`, `text`,
-#'     `page`, `section`, `score`. **What `text` holds depends on the reader**:
+#'     `page`, `section`, `score`, `kind`. **What `text` holds depends on the reader**:
 #'     verbatim chunk text for `stuff`, `retrieve`, `rerank` and `iterative`;
 #'     model-extracted passages for `skim`; per-chunk model answers for
 #'     `map_reduce`. `refine` and `hierarchical` return `NULL`. `page` is
@@ -122,8 +122,10 @@
 #'     claims to quote, plus `verified` and `match` from checking one against
 #'     the other; see [gr_verify_evidence()]. Readers whose evidence is verbatim
 #'     chunk text do not carry them, because the span and its source are the
-#'     same string. A blank roxygen line inside a `\describe{}` item ends the
-#'     item, which is why this is one paragraph.}
+#'     same string. `kind` says what that row holds -- `"verbatim"`,
+#'     `"extracted"` or `"answer"` -- per row, because an `ensemble` mixes them.
+#'     A blank roxygen line inside a `\describe{}` item ends the item, which is
+#'     why this is one paragraph.}
 #'   \item{`chunks_used`}{Integer vector of `chunk_id`s that CONTRIBUTED to the answer. For the
 #'     per-chunk readers this is a subset of the chunks actually sent -- a chunk
 #'     that answered `NOT_IN_DOCUMENT` was read and paid for but is not listed.

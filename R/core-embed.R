@@ -74,7 +74,13 @@ gr_embed <- function(client, texts, model = NULL, batch_size = 64L, cache = NULL
     if (identical(fallback, "error")) gr_abort(msg, class = "gr_embed_error")
     if (identical(fallback, "none")) return(matrix(numeric(0), nrow = 0, ncol = 0))
     gr_warn(msg, class = class)
-    finish_embedding(lexical_embed(texts), "lexical", trace, length(texts))
+    # Marked as a FALLBACK, not merely as lexical. Choosing
+    # gr_options(embedder = "lexical") is a decision; being dropped onto it
+    # because the real embedder failed is a degradation, and the readers OR that
+    # into `partial` -- which the documentation tells people to check first.
+    out <- finish_embedding(lexical_embed(texts), "lexical", trace, length(texts))
+    attr(out, "embedding_fallback") <- TRUE
+    out
   }
 
   # A trace records model calls, not embedding vectors. So a replay can only

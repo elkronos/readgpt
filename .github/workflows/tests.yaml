@@ -165,6 +165,36 @@ jobs:
           '
         shell: bash
 
+      - name: Verify the vignette runs with no key and no network
+        env:
+          OPENAI_API_KEY: ''
+        run: |
+          Rscript -e '
+            if (!requireNamespace("knitr", quietly = TRUE)) {
+              cat("knitr not available; skipping\n"); quit(status = 0)
+            }
+            # Knit rather than render: this step is about whether the CODE runs
+            # offline, not about pandoc. A vignette that quietly degraded --
+            # every call failing for want of a key -- would still knit, so the
+            # output is then checked for the sentinels that degradation leaves.
+            knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+            md <- tempfile(fileext = ".md")
+            ok <- tryCatch({ knitr::knit("vignettes/readgpt.Rmd", output = md, quiet = TRUE); TRUE },
+                           error = function(e) { cat("vignette failed:", conditionMessage(e), "\n"); FALSE })
+            if (!isTRUE(ok)) quit(status = 1)
+            out <- grep("^#>", readLines(md, warn = FALSE), value = TRUE)
+            if (!length(out)) { cat("The vignette produced no output at all.\n"); quit(status = 1) }
+            bad <- grep("NOT_IN_DOCUMENT|No API key available|Transport error|HTTP [0-9]{3}",
+                        out, value = TRUE)
+            if (length(bad)) {
+              cat("The vignette degraded rather than running clean:\n")
+              cat(paste0("  ", utils::head(bad, 5), collapse = "\n"), "\n")
+              quit(status = 1)
+            }
+            cat(sprintf("Vignette ran offline: %d output line(s), no degradation.\n", length(out)))
+          '
+        shell: bash
+
       - name: Verify documented counts match the registries
         run: |
           Rscript -e '

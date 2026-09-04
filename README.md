@@ -29,6 +29,10 @@ for OpenAI-compatible endpoints, and `gr_ellmer_client()` hands the transport to
 [ellmer](https://ellmer.tidyverse.org/) — so Anthropic, Google, Bedrock, Azure,
 Ollama and Hugging Face all work with every strategy below.
 
+`vignette("readgpt")` is the guided tour: the three axes, what each decision
+changes, and how to make a run cheap and reproducible. It builds and runs
+offline, so you can follow it without a key.
+
 Every console block below is real output from the bundled example document,
 produced with `gr_mock_client()` standing in for the API, so you can reproduce
 all of it without a key. Blocks that show an answer set

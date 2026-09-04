@@ -28,17 +28,20 @@ Imports:
     utils
 Suggests:
     ellmer,
-    reticulate,
     future,
     future.apply,
+    knitr,
     magick,
     pdftools,
     readtext,
+    reticulate,
+    rmarkdown,
     shiny,
-    testthat (>= 3.0.0),
     tesseract,
+    testthat (>= 3.0.0),
     withr,
     xml2
+VignetteBuilder: knitr
 Config/testthat/edition: 3
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.2

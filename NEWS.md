@@ -21,6 +21,12 @@ twice.
   disappears with the session; set `gr_options(cache_dir = ...)` to keep entries
   across sessions and make a long run resumable.
 
+* **A vignette**, `vignette("readgpt")`. It walks through the three axes and the
+  decision each one represents, then through comparing recipes, the cost rails,
+  caching, replay and reading a corpus. It builds against `gr_mock_client()` with
+  `gr_options(embedder = "lexical")`, so it compiles offline, deterministically
+  and with no API key -- on your machine and on CRAN's alike.
+
 * **`mmr` and `context_order` on the read spec**, both off by default.
 
   `mmr` below 1 selects chunks by maximal marginal relevance -- relevance traded

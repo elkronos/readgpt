@@ -23,8 +23,9 @@ gr_extract(
 \arguments{
 \item{sources}{As \code{\link[=gr_read_many]{gr_read_many()}}: file paths, a directory, or raw text.}
 
-\item{fields}{A \code{\link[=gr_fields]{gr_fields()}} schema. This is the goal; the argument below is
-only framing.}
+\item{fields}{A \code{\link[=gr_fields]{gr_fields()}} schema, or a \code{\link[=gr_protocol]{gr_protocol()}} -- a protocol
+carries its own schema, question and recipe, so passing one is the same as
+passing its three parts and it is the shorter way to say it.}
 
 \item{goal}{One sentence of context for the extraction -- "screening trials
 for a review of statins in primary prevention". It sharpens judgement calls
@@ -159,6 +160,6 @@ x$table[, c("document", "design", "n", "n_unverified", "status")]
 x$evidence[, c("field", "quote", "verified")]
 }
 \seealso{
-\code{\link[=gr_fields]{gr_fields()}}, \code{\link[=gr_read_many]{gr_read_many()}}, \code{\link[=gr_verify_evidence]{gr_verify_evidence()}},
-\code{\link[=gr_trace_cost]{gr_trace_cost()}}
+\code{\link[=gr_fields]{gr_fields()}}, \code{\link[=gr_protocol]{gr_protocol()}}, \code{\link[=gr_read_many]{gr_read_many()}},
+\code{\link[=gr_verify_evidence]{gr_verify_evidence()}}, \code{\link[=gr_trace_cost]{gr_trace_cost()}}
 }

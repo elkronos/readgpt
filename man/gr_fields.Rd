@@ -38,5 +38,5 @@ fields
 names(fields)
 }
 \seealso{
-\code{\link[=gr_field]{gr_field()}}, \code{\link[=gr_extract]{gr_extract()}}
+\code{\link[=gr_field]{gr_field()}}, \code{\link[=gr_extract]{gr_extract()}}, \code{\link[=gr_protocol]{gr_protocol()}}
 }

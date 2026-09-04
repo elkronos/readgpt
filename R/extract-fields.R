@@ -76,7 +76,7 @@ print.gr_field <- function(x, ...) {
 #' most extraction disagreements come from an ambiguous field description rather
 #' than from the model.
 #'
-#' @seealso [gr_field()], [gr_extract()]
+#' @seealso [gr_field()], [gr_extract()], [gr_protocol()]
 #' @export
 #' @examples
 #' fields <- gr_fields(

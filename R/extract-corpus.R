@@ -25,8 +25,9 @@
 #' per field, with a separate long table saying where every value came from.
 #'
 #' @param sources As [gr_read_many()]: file paths, a directory, or raw text.
-#' @param fields A [gr_fields()] schema. This is the goal; the argument below is
-#'   only framing.
+#' @param fields A [gr_fields()] schema, or a [gr_protocol()] -- a protocol
+#'   carries its own schema, question and recipe, so passing one is the same as
+#'   passing its three parts and it is the shorter way to say it.
 #' @param goal One sentence of context for the extraction -- "screening trials
 #'   for a review of statins in primary prevention". It sharpens judgement calls
 #'   about what counts as the primary outcome; it does not decide what is
@@ -119,8 +120,8 @@
 #' `gr_fields(title = , authors = , year = , doi = )` -- and each comes back with
 #' the sentence it was taken from and a check that the sentence is really there.
 #'
-#' @seealso [gr_fields()], [gr_read_many()], [gr_verify_evidence()],
-#'   [gr_trace_cost()]
+#' @seealso [gr_fields()], [gr_protocol()], [gr_read_many()],
+#'   [gr_verify_evidence()], [gr_trace_cost()]
 #' @export
 #' @examples
 #' fields <- gr_fields(
@@ -146,8 +147,25 @@ gr_extract <- function(sources, fields, goal = NULL, recipe = "research",
                        require_quote = FALSE, on_error = c("continue", "stop"),
                        max_total_usd = NULL, keep_answers = FALSE,
                        recursive = FALSE, ...) {
+  # A protocol is a schema plus the two things a schema cannot say: what the
+  # reading is FOR, and how to read it. Unpacked here rather than made a separate
+  # argument, because `gr_extract(papers, my_protocol)` reads the way people
+  # describe the task, and a `protocol =` argument beside `fields =` would invite
+  # passing both and disagreeing.
+  if (inherits(fields, "gr_protocol")) {
+    p <- fields
+    if (is.null(p$fields)) {
+      gr_abort(sprintf(paste0("Protocol '%s' has no `fields`, so there is nothing to extract. ",
+                              "Add a schema with gr_protocol(fields = gr_fields(...))."), p$name),
+               class = "gr_no_fields")
+    }
+    if (is.null(goal)) goal <- p$question
+    if (missing(recipe)) recipe <- p$recipe %||% recipe
+    fields <- p$fields
+  }
   if (!inherits(fields, "gr_fields")) {
-    gr_abort("`fields` must come from gr_fields().", class = "gr_no_fields")
+    gr_abort("`fields` must come from gr_fields(), or be a gr_protocol().",
+             class = "gr_no_fields")
   }
   resolve <- match.arg(resolve)
   goal <- if (is.null(goal)) {

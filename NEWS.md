@@ -31,6 +31,23 @@ This release is the second one.
   failing; `require_quote = TRUE` makes it a policy for a protocol that needs
   one.
 
+* **Protocols.** `gr_protocol()` writes down the three decisions a review must
+  not make while it reads: which documents count (`include`/`exclude`), what to
+  collect from them (a `gr_fields()` schema), and what the write-up has to cover
+  (`outline`). Not because a model cannot infer them, but because a criterion
+  invented while reading is a criterion fitted to what was found.
+
+  It is the seventh registry: `gr_protocols()` lists what is available,
+  `gr_register_protocol()` adds your own, and `gr_protocol_save()` /
+  `gr_protocol_read()` round-trip one through a JSON file so it can be shared,
+  diffed and cited alongside the results. Three templates ship —
+  `bibliography`, `evidence_table` and `systematic_review` — as starting points,
+  not standards: the package knows the shape a protocol has, not what your
+  criteria should be.
+
+  `gr_extract()` takes a protocol wherever it takes a schema, using its question
+  and recipe unless you say otherwise.
+
 * **The same document is read once.** A source whose cleaned text repeats one
   already read this run is not read again: its row is filled in from the first
   copy, `status` is `"duplicate"` and the new `duplicate_of` column names the
@@ -72,6 +89,13 @@ This release is the second one.
 * `gr_call_json()` gains `allow_empty`, used only by `extract`, where a JSON
   object with no keys is a real answer — this excerpt supports none of the
   fields — rather than a broken one.
+
+* A field cannot be named `document`, `document_id`, `status`, `duplicate_of`,
+  `error`, `n_filled`, `n_unverified`, `conflicts`, `field`, `chunk_id`, `page`,
+  `section`, `quote`, `verified` or `match`: those are the extraction table's own
+  columns, and a field with one of those names would be silently overwritten.
+  Nor may a name end in `__quote`, which collides with the companion span every
+  field gets.
 
 * `gr_read_many()`'s summary gains `document_id` and `duplicate_of`. A `store`
   written by 0.3.0 still resumes; its rows have neither, and both are filled

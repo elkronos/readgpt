@@ -70,6 +70,21 @@ gr_embed <- function(client, texts, model = NULL, batch_size = 64L, cache = NULL
     return(finish_embedding(m, "api", trace, length(texts)))
   }
 
+  # A trace records model calls, not embeddings, so a replay has nothing to
+  # return here. Say so and take the lexical path rather than issuing a doomed
+  # request to "replay://" and reporting it as a network failure -- the user
+  # needs to know their ranking is approximate, not that a URL did not resolve.
+  if (inherits(client, "gr_replay_client")) {
+    msg <- paste0("Replaying a run cannot reproduce embeddings: a trace records model ",
+                  "calls, not embedding vectors. Falling back to hashed lexical vectors, ",
+                  "so chunk ranking may differ from the original run even though every ",
+                  "recorded answer is reproduced exactly.")
+    if (identical(fallback, "error")) gr_abort(msg, class = "gr_embed_error")
+    if (identical(fallback, "none")) return(matrix(numeric(0), nrow = 0, ncol = 0))
+    gr_warn(msg, class = "gr_replay_no_embeddings")
+    return(finish_embedding(lexical_embed(texts), "lexical", trace, length(texts)))
+  }
+
   keys <- vapply(texts, function(t) gr_hash(list(model, t)), character(1), USE.NAMES = FALSE)
   out <- vector("list", length(texts))
   todo <- seq_along(texts)

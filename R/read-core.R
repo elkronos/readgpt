@@ -81,8 +81,9 @@ print.gr_answer <- function(x, ...) {
   cat(sprintf("  Q: %s\n", substr(x$question, 1, 160)))
   if (!is.null(x$trace)) {
     s <- gr_trace_summary(x$trace)
-    cat(sprintf("  %d model call(s), %d in / %d out tokens, %d error(s)\n",
-                s$calls, s$tokens_in, s$tokens_out, s$errors))
+    cat(sprintf("  %d model call(s)%s, %d in / %d out tokens, %d error(s)\n",
+                s$calls, if (s$cached > 0L) sprintf(" (%d cached)", s$cached) else "",
+                s$tokens_in, s$tokens_out, s$errors))
   }
   cat("  ---\n")
   cat(x$answer, "\n")

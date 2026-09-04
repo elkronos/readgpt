@@ -1,3 +1,81 @@
+# readgpt 0.3.0
+
+Two additions, one theme: the model call is the only part of this package that
+costs money or fails to repeat itself, and neither of those had to be true
+twice.
+
+## New
+
+* **A response cache.** `gr_cache()` stores each successful model response,
+  keyed on the exact request, and `gr_cache_client()` attaches it to any
+  client. A repeated request is free and byte-identical, so iterating on a
+  prompt, resuming after a crash, or re-running an analysis whose last step
+  changed no longer re-bills every earlier call. The key covers the messages,
+  model, output cap, temperature, JSON schema, API shape and base URL — and
+  nothing else, because nothing else reaches the model. Failures are never
+  cached: a rate limit or a refusal is a property of the moment, and storing one
+  would make a blip permanent. `gr_cache_stats()` and `gr_cache_clear()` report
+  on and empty a cache.
+
+  The default directory is under `tempdir()`, so a cache costs nothing and
+  disappears with the session; set `gr_options(cache_dir = ...)` to keep entries
+  across sessions and make a long run resumable.
+
+* **Reproducible replay.** `gr_trace_save()` writes a run's trace to a file
+  and `gr_replay_client()` answers from it, so a recorded run can be re-run
+  exactly by someone with no API key and no budget. A trace already held every
+  prompt and every response; it was write-only. Now a published result is
+  something a reader can check rather than trust, and a bug report can be a
+  re-runnable recording instead of a description.
+
+  A prompt with no recorded response raises `gr_replay_miss` rather than
+  inventing an answer — silent divergence would produce a result that looks like
+  the original and is not. Embeddings are not model calls and are not recorded,
+  so `retrieve` and the `semantic` segmenter fall back to lexical vectors under
+  replay and warn (`gr_replay_no_embeddings`).
+
+* **Cached calls are accounted separately.** `gr_trace` gains a `cached`
+  counter, and `gr_trace_summary()` a `cached` column, so `calls - cached` is
+  what a run actually paid for. `gr_result` gains `$cached`. Without this a
+  fully cached run reported the same token totals as a fully paid one and
+  `gr_estimate_cost()` quietly overstated the bill.
+
+## Fixes
+
+* `gr_cache_clear()` was two different functions. An internal helper of that
+  name in `R/core-state.R` cleared the in-memory document and embedding caches,
+  and R collates that file after `R/core-cache.R`, so the internal definition
+  silently replaced the exported one — the package would have shipped the wrong
+  implementation under the right documentation. The internal helper is now
+  `gr_flush_caches()`, and a test asserts the shadowing has not returned.
+
+* **A trace could not survive being written to a file.** `jsonlite` escapes
+  bytes it cannot interpret in the *current locale*, so an unmarked string
+  holding UTF-8 bytes came out of `as_json()` as the literal text
+  `"caf<c3><a9>"` on any machine whose locale is not UTF-8. The bytes were
+  always right; nothing had told R what they were. `trace_record()` now labels
+  prompt, response and error text -- `mark_utf8()`, which labels and converts
+  nothing, never `enc2utf8()`, which corrupts valid UTF-8 in exactly this
+  situation. This was present in 0.2.0 and is the same defect class as the
+  locale-dependent tokenizer fixed there: correct bytes, absent label, one
+  locale in the test matrix.
+
+* **`gr_result$text` is now always labelled.** An unlabelled response was at the
+  mercy of the session locale the moment anything serialised, compared or
+  counted characters in it, so two runs that produced identical bytes could
+  compare unequal. Both cache and replay keys normalise text the same way, which
+  is what lets a saved trace replay on a different machine.
+
+* `gr_call()` had two exits, each recording its own trace entry. Anything that
+  needed to sit between a request and its response had to be written twice and
+  kept in step by hand. It now dispatches once and records once.
+
+## Behaviour changes
+
+* `gr_trace_summary()` returns an extra `cached` column, between `calls` and
+  `steps`. Code that indexes its result by position rather than by name will
+  need updating.
+
 # readgpt 0.2.0
 
 A rewrite. The package is now a proper R package with three independent,

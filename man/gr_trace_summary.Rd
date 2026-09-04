@@ -10,9 +10,16 @@ gr_trace_summary(trace)
 \item{trace}{A \code{gr_trace}.}
 }
 \value{
-A one-row data frame: \code{run_id}, \code{calls}, \code{steps}, \code{tokens_in},
-\code{tokens_out}, \code{errors}, \code{elapsed_s}. There is no cost column -- combine
-\code{tokens_in}/\code{tokens_out} with \code{\link[=gr_estimate_cost]{gr_estimate_cost()}} for that.
+A one-row data frame: \code{run_id}, \code{calls}, \code{cached}, \code{steps},
+\code{tokens_in}, \code{tokens_out}, \code{errors}, \code{elapsed_s}. There is no cost column
+-- combine \code{tokens_in}/\code{tokens_out} with \code{\link[=gr_estimate_cost]{gr_estimate_cost()}} for that.
+
+\code{cached} is how many of those calls were answered from a \code{\link[=gr_cache]{gr_cache()}} or a
+\code{\link[=gr_replay_client]{gr_replay_client()}}. Their tokens are still counted in \code{tokens_in} and
+\code{tokens_out}, because that is how large the prompts and replies were; they
+were simply not paid for again. A run with \code{cached == calls} cost nothing,
+so feeding its token counts to \code{\link[=gr_estimate_cost]{gr_estimate_cost()}} gives you what the run
+\emph{would} have cost, not what it did.
 }
 \description{
 Summarise a trace
@@ -24,5 +31,5 @@ gr_trace_summary(ans$trace)
 gr_estimate_cost("gpt-4o", ans$trace$tokens_in, ans$trace$tokens_out)
 }
 \seealso{
-\code{\link[=gr_trace]{gr_trace()}}, \code{\link[=as_json]{as_json()}}, \code{\link[=gr_estimate_cost]{gr_estimate_cost()}}
+\code{\link[=gr_trace]{gr_trace()}}, \code{\link[=as_json]{as_json()}}, \code{\link[=gr_estimate_cost]{gr_estimate_cost()}}, \code{\link[=gr_cache]{gr_cache()}}
 }

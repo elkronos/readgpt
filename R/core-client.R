@@ -85,8 +85,9 @@ gr_api_key <- function(key = NULL) {
 #'   Constructing one makes no request and does not require a key -- the key is
 #'   resolved at call time by [gr_api_key()].
 #' @seealso [gr_call()] to use it, [gr_mock_client()] to work offline,
-#'   [gr_api_key()] for key resolution, [gr_options()] for the defaults,
-#'   [gr_result] for what a call returns
+#'   [gr_cache_client()] to make repeat calls free, [gr_replay_client()] to
+#'   re-run a recorded run, [gr_api_key()] for key resolution, [gr_options()]
+#'   for the defaults, [gr_result] for what a call returns
 #' @export
 #' @examples
 #' # A client is a value, not a global. Two of them, two keys, one R process --
@@ -194,24 +195,36 @@ gr_mock_client <- function(handler = NULL, embed_handler = NULL) {
 #' @noRd
 gr_result <- function(ok, text = "", error = NULL, status = NA_integer_,
                       usage = list(input = 0L, output = 0L), model = NA_character_,
-                      finish_reason = NA_character_, retryable = FALSE, raw = NULL) {
+                      finish_reason = NA_character_, retryable = FALSE, raw = NULL,
+                      cached = FALSE) {
   structure(list(
     ok = isTRUE(ok),
-    text = as_chr1(text),          # ALWAYS character(1); never NULL/character(0)
+    # ALWAYS character(1); never NULL/character(0). And always LABELLED: bytes
+    # arrive correct but unmarked from plenty of sources, and an unmarked string
+    # is at the mercy of the session locale the moment anything serialises,
+    # compares or counts characters in it. mark_utf8() labels, it does not
+    # convert, so this cannot corrupt a response the way enc2utf8() would.
+    text = mark_utf8(as_chr1(text)),
     error = error,
     status = status,
     usage = usage,
     model = model,
     finish_reason = finish_reason,
     retryable = isTRUE(retryable),
-    raw = raw
+    raw = raw,
+    # TRUE when the response came from a cache or a recording rather than the
+    # network. `usage` still reports the real token counts of the original call,
+    # so the trace can say how big the prompt was; `cached` is what stops those
+    # tokens from being counted as money spent this run.
+    cached = isTRUE(cached)
   ), class = "gr_result")
 }
 
 #' @export
 print.gr_result <- function(x, ...) {
-  cat(sprintf("<gr_result> ok=%s model=%s in=%s out=%s%s\n",
+  cat(sprintf("<gr_result> ok=%s model=%s in=%s out=%s%s%s\n",
               x$ok, as_chr1(x$model, "?"), x$usage$input %||% 0, x$usage$output %||% 0,
+              if (isTRUE(x$cached)) " cached" else "",
               if (!x$ok) paste0(" error=", as_chr1(x$error)) else ""))
   if (nzchar(x$text)) cat(substr(x$text, 1, 400), if (nchar(x$text) > 400) " ..." else "", "\n")
   invisible(x)
@@ -236,8 +249,10 @@ print.gr_result <- function(x, ...) {
 #' @return A [gr_result]. **Never** `NULL`; `$text` is always a single string,
 #'   `""` on failure. A successful HTTP call that returned no text (a refusal, a
 #'   content filter) is reported as `ok = FALSE`, so an empty completion is never
-#'   passed downstream as evidence.
-#' @seealso [gr_client()], [gr_mock_client()], [gr_result], [gr_budget()]
+#'   passed downstream as evidence. `$cached` is `TRUE` when the response came
+#'   from a [gr_cache()] or a [gr_replay_client()] instead of the network.
+#' @seealso [gr_client()], [gr_mock_client()], [gr_result], [gr_budget()],
+#'   [gr_cache_client()], [gr_replay_client()]
 #' @export
 #' @examples
 #' cl <- gr_mock_client(function(messages, params) "The answer is 42.")
@@ -273,46 +288,87 @@ gr_call <- function(client, messages, model = NULL, max_output = NULL,
   params <- list(model = model, max_output = max_output, temperature = temperature,
                  schema_name = schema_name, prompt_tokens = prompt_tokens)
 
-  if (inherits(client, "gr_mock_client")) {
-    out <- tryCatch(client$handler(messages, params), error = function(e) e)
-    res <- if (inherits(out, "gr_result")) {
-      # Re-normalise: a hand-built gr_result from a user handler can violate the
-      # character(1) contract that every caller downstream relies on.
-      gr_result(out$ok, text = out$text, error = out$error, status = out$status %||% NA_integer_,
-                usage = out$usage %||% list(input = 0L, output = 0L),
-                model = out$model %||% model, finish_reason = out$finish_reason %||% NA_character_,
-                retryable = isTRUE(out$retryable), raw = out$raw)
-    }
-    else if (inherits(out, "error")) gr_result(FALSE, error = conditionMessage(out), model = model)
-    else {
-      # A handler that returns "" is the mock's version of the API returning
-      # `content: null` -- a refusal, a content filter, a tool-call response. The
-      # real client reports that as ok = FALSE, and `gr_result`'s documented
-      # invariant says so. Reporting it as a successful empty answer here made
-      # the mock disagree with production on the one case readers most need to
-      # handle, and made the invariant untestable offline.
-      txt <- as_chr1(out)
-      if (!nzchar(trimws(txt))) {
-        gr_result(FALSE, text = "", error = "empty completion", model = model,
-                  finish_reason = "empty",
-                  usage = list(input = prompt_tokens, output = 0L))
-      } else {
-        gr_result(TRUE, text = txt, model = model,
-                  usage = list(input = prompt_tokens, output = sum(gr_count_tokens(txt))))
-      }
-    }
-    client$.log$calls <- c(client$.log$calls, list(list(messages = messages, params = params,
-                                                        result = res, label = label)))
-    trace_record(trace, label, messages, res, params)
-    return(res)
+  # One dispatch, one exit, one trace entry. The mock and HTTP paths each used
+  # to `return()` after recording their own trace entry, so every feature that
+  # had to sit between the request and the response -- caching, replay -- would
+  # have had to be written twice and kept in step by hand.
+  res <- client_dispatch(client, messages, model, max_output, temperature,
+                         schema, schema_name, info, params, label, list(...))
+  trace_record(trace, label, messages, res, params)
+  res
+}
+
+#' Where a prepared request actually goes.
+#'
+#' Order matters. A replay client never reaches the network at all. A cache is
+#' consulted before the request is issued and written only after it succeeds --
+#' a failure is a property of the moment, not of the request, and caching one
+#' would make a transient blip permanent.
+#' @noRd
+client_dispatch <- function(client, messages, model, max_output, temperature,
+                            schema, schema_name, info, params, label, extra) {
+  if (inherits(client, "gr_replay_client")) {
+    return(replay_lookup(client, messages, model, params))
   }
 
-  body <- build_request_body(client, messages, model, max_output, temperature, schema,
-                             schema_name, info, list(...))
-  url <- paste0(client$base_url, if (identical(client$api, "responses")) "/responses" else "/chat/completions")
-  res <- http_call(client, url, body)
-  res$model <- model
-  trace_record(trace, label, messages, res, params)
+  cache <- client$.cache
+  key <- NULL
+  if (inherits(cache, "gr_cache")) {
+    key <- cache_key(client, messages, model, max_output, temperature,
+                     schema, schema_name, extra)
+    hit <- cache_get(cache, key)
+    if (!is.null(hit)) return(hit)
+  }
+
+  res <- if (inherits(client, "gr_mock_client")) {
+    mock_dispatch(client, messages, model, params, label)
+  } else {
+    body <- build_request_body(client, messages, model, max_output, temperature,
+                              schema, schema_name, info, extra)
+    url <- paste0(client$base_url,
+                  if (identical(client$api, "responses")) "/responses" else "/chat/completions")
+    out <- http_call(client, url, body)
+    out$model <- model
+    out
+  }
+
+  if (inherits(cache, "gr_cache") && isTRUE(res$ok)) cache_put(cache, key, res)
+  res
+}
+
+#' Run a mock client's handler and normalise whatever it returned.
+#' @noRd
+mock_dispatch <- function(client, messages, model, params, label) {
+  prompt_tokens <- as_int1(params$prompt_tokens, 0L)
+  out <- tryCatch(client$handler(messages, params), error = function(e) e)
+  res <- if (inherits(out, "gr_result")) {
+    # Re-normalise: a hand-built gr_result from a user handler can violate the
+    # character(1) contract that every caller downstream relies on.
+    gr_result(out$ok, text = out$text, error = out$error, status = out$status %||% NA_integer_,
+              usage = out$usage %||% list(input = 0L, output = 0L),
+              model = out$model %||% model, finish_reason = out$finish_reason %||% NA_character_,
+              retryable = isTRUE(out$retryable), raw = out$raw, cached = isTRUE(out$cached))
+  }
+  else if (inherits(out, "error")) gr_result(FALSE, error = conditionMessage(out), model = model)
+  else {
+    # A handler that returns "" is the mock's version of the API returning
+    # `content: null` -- a refusal, a content filter, a tool-call response. The
+    # real client reports that as ok = FALSE, and `gr_result`'s documented
+    # invariant says so. Reporting it as a successful empty answer here made
+    # the mock disagree with production on the one case readers most need to
+    # handle, and made the invariant untestable offline.
+    txt <- as_chr1(out)
+    if (!nzchar(trimws(txt))) {
+      gr_result(FALSE, text = "", error = "empty completion", model = model,
+                finish_reason = "empty",
+                usage = list(input = prompt_tokens, output = 0L))
+    } else {
+      gr_result(TRUE, text = txt, model = model,
+                usage = list(input = prompt_tokens, output = sum(gr_count_tokens(txt))))
+    }
+  }
+  client$.log$calls <- c(client$.log$calls, list(list(messages = messages, params = params,
+                                                      result = res, label = label)))
   res
 }
 

@@ -46,7 +46,8 @@ models that reject it.}
 A \link{gr_result}. \strong{Never} \code{NULL}; \verb{$text} is always a single string,
 \code{""} on failure. A successful HTTP call that returned no text (a refusal, a
 content filter) is reported as \code{ok = FALSE}, so an empty completion is never
-passed downstream as evidence.
+passed downstream as evidence. \verb{$cached} is \code{TRUE} when the response came
+from a \code{\link[=gr_cache]{gr_cache()}} or a \code{\link[=gr_replay_client]{gr_replay_client()}} instead of the network.
 }
 \description{
 Call a model
@@ -61,5 +62,6 @@ bad <- gr_call(gr_mock_client(function(m, p) stop("network down")), "hi")
 c(ok = bad$ok, text = sprintf("<\%s>", bad$text), error = bad$error)
 }
 \seealso{
-\code{\link[=gr_client]{gr_client()}}, \code{\link[=gr_mock_client]{gr_mock_client()}}, \link{gr_result}, \code{\link[=gr_budget]{gr_budget()}}
+\code{\link[=gr_client]{gr_client()}}, \code{\link[=gr_mock_client]{gr_mock_client()}}, \link{gr_result}, \code{\link[=gr_budget]{gr_budget()}},
+\code{\link[=gr_cache_client]{gr_cache_client()}}, \code{\link[=gr_replay_client]{gr_replay_client()}}
 }

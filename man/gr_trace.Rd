@@ -14,8 +14,10 @@ gr_trace(run_id = NULL, meta = list())
 \value{
 A \code{gr_trace}. It is an environment, so it accumulates by reference:
 pass the same trace to several calls and they all record into it. Fields:
-\code{run_id}, \code{started}, \code{meta}, \code{steps}, \code{calls}, \code{tokens_in}, \code{tokens_out},
-\code{errors}, \code{budget_stop}.
+\code{run_id}, \code{started}, \code{meta}, \code{steps}, \code{calls}, \code{cached}, \code{tokens_in},
+\code{tokens_out}, \code{errors}, \code{budget_stop}. \code{cached} counts the calls answered
+from a \code{\link[=gr_cache]{gr_cache()}} or a \code{\link[=gr_replay_client]{gr_replay_client()}} rather than the network, so
+\code{calls - cached} is what the run actually paid for.
 }
 \description{
 Create a run trace
@@ -28,5 +30,5 @@ invisible(gr_read(ch, "What was revenue?", cl, "map_reduce", trace = tr))
 print(tr)
 }
 \seealso{
-\code{\link[=gr_trace_summary]{gr_trace_summary()}}, \code{\link[=as_json]{as_json()}}, \link{gr_answer}
+\code{\link[=gr_trace_summary]{gr_trace_summary()}}, \code{\link[=as_json]{as_json()}}, \link{gr_answer}, \code{\link[=gr_cache]{gr_cache()}}
 }

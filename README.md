@@ -278,8 +278,10 @@ ans$notes       # what: dropped_chunks, failed_calls, error, degraded_to_bm25, .
 ans$evidence    # what the answer rests on
 print(ans$trace)
 gr_trace_summary(ans$trace)
-#>                          run_id calls steps tokens_in tokens_out errors elapsed_s
-#> 1 run_20260825184837.437_4804a5     1     8       698         13      0      0.11
+#>                          run_id calls cached steps tokens_in tokens_out errors
+#> 1 run_20260904035101.469_68d50e     1      0     8       682         13      0
+#>   elapsed_s
+#> 1       0.3
 
 gr_estimate_cost("gpt-4o", ans$trace$tokens_in, ans$trace$tokens_out)
 as_json(ans)    # answer plus every prompt and response, from the same single run
@@ -381,7 +383,86 @@ continuing to spend. Both raise a classed error naming the option to change.
 
 `gr_budget()` is the single arithmetic chokepoint for context math and is
 incapable of returning a non-positive input budget — it raises an actionable
-error instead. `gr_options()` documents all 19 settings; see `?gr_options`.
+error instead. `gr_options()` documents all 20 settings; see `?gr_options`.
+
+## Paying once
+
+Every stage of this package except one is a pure function of its input.
+Extraction, cleaning, segmentation, ranking and merging give the same result
+every time, and `gr_chunk_stats()` lets you compare chunkings for nothing. The
+model call is the only step that costs money, the only step that can die halfway
+through a long run, and — above a temperature of zero — the only step that does
+not return the same thing twice.
+
+`gr_cache()` stores each successful response, keyed on the exact request. A
+repeat is free and *identical*:
+
+```r
+cache  <- gr_cache(file.path(tempdir(), "readgpt-cache"))
+cached <- gr_cache_client(cl, cache)
+
+first  <- answer_document(readgpt_example(), "What was revenue?", "thorough", client = cached)
+second <- answer_document(readgpt_example(), "What was revenue?", "thorough", client = cached)
+
+gr_trace_summary(second$trace)[c("calls", "cached", "tokens_in")]
+#>   calls cached tokens_in
+#> 1     1      1       609
+```
+
+`cached` counts the calls answered from the cache rather than the network, so
+`calls - cached` is what the run actually paid for. The token counts stay — that
+is how big the prompts were — but a run with `cached == calls` cost nothing, so
+do not hand its totals to `gr_estimate_cost()` and call the result a bill.
+
+The key covers everything that can change the reply: the messages, the model,
+the resolved output cap, the temperature, the JSON schema, the API shape and the
+base URL. It does **not** cover the key, the timeout or the retry policy, none
+of which the model sees. **Failures are never cached** — a rate limit or a
+refusal is a property of the moment, and storing one would make a blip
+permanent. At a temperature above zero a hit replays one sample instead of
+drawing a new one, which is the point, but it means a cached sweep does not
+explore; use a fresh directory when you want new draws.
+
+The default directory is under `tempdir()`, so a cache costs nothing and
+vanishes with the session. For a long run, point it somewhere real and the run
+becomes resumable — restart after a crash and every completed call is already
+paid for:
+
+```r
+gr_options(cache_dir = tools::R_user_dir("readgpt", "cache"))
+```
+
+## Replaying a run
+
+A trace already records every prompt and every response. That makes it a
+complete transcript of the only non-deterministic part of the pipeline — so a
+trace plus the source document is enough to reproduce a run exactly, with no key
+and no spend:
+
+```r
+run <- answer_document(readgpt_example(), "What was revenue?", "thorough", client = cl)
+gr_trace_save(run$trace, file.path(tempdir(), "run.json"))
+
+replayed <- answer_document(readgpt_example(), "What was revenue?", "thorough",
+                            client = gr_replay_client(file.path(tempdir(), "run.json")))
+identical(replayed$answer, run$answer)
+#> [1] TRUE
+```
+
+This is the difference between a result someone has to trust and one they can
+check. Ship the trace next to the paper and a reader reproduces the run instead
+of paying to approximate it. It is also the cheapest bug report there is: a
+trace file is a re-runnable recording of exactly what went wrong.
+
+A prompt with no recorded response raises `gr_replay_miss` rather than inventing
+an answer — a miss means the replay has diverged from the recording, and a
+result that looks like the original but is not is worse than no replay at all.
+Pass `strict = FALSE` to run a partial recording anyway. Two things do not
+replay: embeddings are not model calls and are not recorded, so `retrieve` and
+the `semantic` segmenter fall back to lexical vectors and warn
+(`gr_replay_no_embeddings`) — every recorded answer is still reproduced exactly,
+but chunk *ranking* may differ; and a trace does not record the JSON schema a
+call requested, so two calls differing only by schema share a recording.
 
 ## Extending it
 

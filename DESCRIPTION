@@ -1,6 +1,6 @@
 Package: readgpt
 Title: Fine-Grained Control Over How LLMs Ingest, Segment, and Read Documents
-Version: 0.2.0
+Version: 0.3.0
 Authors@R:
     person("Justin", "Chase", email = "jchase.msu@gmail.com",
            role = c("aut", "cre", "cph"))

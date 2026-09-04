@@ -36,6 +36,11 @@ gr_defaults <- list(
   min_output_tokens   = 256L,
   cache_documents     = TRUE,
   cache_embeddings    = TRUE,
+  # Where gr_cache() keeps model responses. NULL means a directory under
+  # tempdir(), resolved at call time -- a package must not write to a user's
+  # filesystem unasked, and a literal tempdir() here would be frozen at install
+  # time rather than evaluated per session.
+  cache_dir           = NULL,
   parallel            = FALSE,
   workers             = 4L,
   # Refuse to start a run whose *estimated* cost exceeds this (USD). NULL = off.
@@ -87,6 +92,11 @@ gr_defaults <- list(
 #'   \item{`cache_documents` (TRUE)}{Cache ingestion per file + settings. The key
 #'     covers file size, mtime and every option that changes the output.}
 #'   \item{`cache_embeddings` (TRUE)}{Cache embeddings per text + model.}
+#'   \item{`cache_dir` (NULL)}{Directory [gr_cache()] stores model responses in.
+#'     `NULL` means a per-session directory under `tempdir()`, which costs
+#'     nothing and disappears with the session. Set it to a real path, such as
+#'     `tools::R_user_dir("readgpt", "cache")`, to keep responses across
+#'     sessions and make a long run resumable.}
 #'   \item{`parallel` (FALSE)}{Run per-chunk calls concurrently. Needs the
 #'     future and future.apply packages; without them it warns and runs
 #'     sequentially.}
@@ -101,7 +111,7 @@ gr_defaults <- list(
 #' }
 #'
 #' @seealso [gr_register_model()] to correct a model's limits,
-#'   [gr_set_tokenizer()], [gr_budget()]
+#'   [gr_set_tokenizer()], [gr_budget()], [gr_cache()]
 #' @export
 #' @examples
 #' old <- gr_options(verbose = FALSE)
@@ -146,11 +156,19 @@ gr_options <- function(...) {
   invisible(old)
 }
 
-#' Clear package caches
+#' Clear the in-memory document and embedding caches.
+#'
+#' Not to be confused with [gr_cache_clear()], which empties an on-disk cache of
+#' *model responses*. These two are different caches with nearly the same name,
+#' which is why this one is `gr_flush_caches()`: while it was called
+#' `gr_cache_clear()` it shadowed the exported function of that name -- R
+#' collates `R/core-state.R` after `R/core-cache.R`, so the internal definition
+#' silently won and the package exported this function under the other one's
+#' documentation.
 #' @param what One or more of "documents", "embeddings", "all".
 #' @return Invisibly, the names cleared.
 #' @noRd
-gr_cache_clear <- function(what = "all") {
+gr_flush_caches <- function(what = "all") {
   what <- match.arg(what, c("all", "documents", "embeddings"), several.ok = TRUE)
   if ("all" %in% what) what <- c("documents", "embeddings")
   if ("documents"  %in% what) gr_state$doc_cache   <- new.env(parent = emptyenv())

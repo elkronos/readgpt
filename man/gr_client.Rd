@@ -64,6 +64,7 @@ gr_call(cl, list(list(role = "user", content = "Say hi.")), max_output = 20)
 }
 \seealso{
 \code{\link[=gr_call]{gr_call()}} to use it, \code{\link[=gr_mock_client]{gr_mock_client()}} to work offline,
-\code{\link[=gr_api_key]{gr_api_key()}} for key resolution, \code{\link[=gr_options]{gr_options()}} for the defaults,
-\link{gr_result} for what a call returns
+\code{\link[=gr_cache_client]{gr_cache_client()}} to make repeat calls free, \code{\link[=gr_replay_client]{gr_replay_client()}} to
+re-run a recorded run, \code{\link[=gr_api_key]{gr_api_key()}} for key resolution, \code{\link[=gr_options]{gr_options()}}
+for the defaults, \link{gr_result} for what a call returns
 }

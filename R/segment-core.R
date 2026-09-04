@@ -135,7 +135,8 @@ pack_units <- function(units, max_tokens, overlap_tokens = 0L, min_tokens = 0L,
     # `lst[[k]] <- NULL` DELETES rather than appends, so with no meta the list
     # never grew and the runt-merge loop below indexed past its end. Store a
     # placeholder so positions stay aligned with `out`.
-    out_meta[[length(out) ]] <<- if (is.null(meta)) NA else meta[buf_start, , drop = FALSE]
+    out_meta[[length(out) ]] <<- if (is.null(meta)) NA else
+      meta_over(meta, buf_start, max(end_idx, buf_start))
     invisible(NULL)
   }
   i <- 1L
@@ -178,6 +179,11 @@ pack_units <- function(units, max_tokens, overlap_tokens = 0L, min_tokens = 0L,
       cand <- if (length(merged)) paste(merged[[length(merged)]], out[[j]], sep = joiner) else ""
       if (length(merged) && tks < min_tokens && gr_count_tokens(cand) <= max_tokens) {
         merged[[length(merged)]] <- cand
+        # The absorbed runt's provenance has to be folded in too. Keeping only
+        # the host chunk's meta made the merged chunk claim a page it now only
+        # partly comes from -- the same lie, arrived at from the other side.
+        mmeta[[length(merged)]] <- combine_meta(mmeta[[length(merged)]],
+                                                if (j <= length(out_meta)) out_meta[[j]] else NA)
       } else {
         merged[[length(merged) + 1L]] <- out[[j]]
         mmeta[[length(merged)]] <- if (j <= length(out_meta)) out_meta[[j]] else NA
@@ -194,6 +200,41 @@ pack_units <- function(units, max_tokens, overlap_tokens = 0L, min_tokens = 0L,
   # the provenance rather than emit a plausible-looking lie.
   if (!is.null(meta_out) && nrow(meta_out) != length(out)) meta_out <- NULL
   list(text = out, meta = meta_out)
+}
+
+#' Provenance for a chunk built from units `from:to`.
+#'
+#' A chunk that packs three paragraphs from two pages used to report the FIRST
+#' one's page, which is right for the opening sentence and wrong for everything
+#' after it -- and wrong in the most expensive way, because a citation that names
+#' a specific page is checked by turning to that page. Where the units agree the
+#' value stands; where they do not, the honest answer is that this chunk is not
+#' from one page, and `NA` says so.
+#'
+#' The precise answer -- which page a particular QUOTE is on -- needs the quote,
+#' and is resolved later by `resolve_evidence_pages()`. This is the fallback for
+#' everything that has no quote to work from.
+#' @noRd
+meta_over <- function(meta, from, to) {
+  row <- meta[from, , drop = FALSE]
+  if (to <= from) return(row)
+  span <- meta[from:to, , drop = FALSE]
+  for (nm in names(row)) {
+    v <- span[[nm]]
+    u <- unique(v[!is.na(v)])
+    if (length(u) > 1L) row[[nm]] <- NA
+  }
+  row
+}
+
+#' @noRd
+combine_meta <- function(a, b) {
+  if (!is.data.frame(a)) return(if (is.data.frame(b)) b else a)
+  if (!is.data.frame(b)) return(a)
+  for (nm in intersect(names(a), names(b))) {
+    if (!identical(a[[nm]], b[[nm]])) a[[nm]] <- NA
+  }
+  a
 }
 
 #' Split one oversized unit at the best available boundary.

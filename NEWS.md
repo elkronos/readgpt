@@ -1,3 +1,160 @@
+# readgpt 0.4.0
+
+Reading a corpus for an answer and reading it for a *table* are different jobs.
+This release is the second one.
+
+## New
+
+* **Extraction schemas.** `gr_fields()` describes what you want out of a
+  document as typed fields rather than as a sentence — `gr_field("Number of
+  participants randomised, not the number analysed", type = "integer")` — and
+  `gr_extract()` applies one schema to a whole corpus, returning one tidy row
+  per document and one column per field, of that field's type.
+
+  The point is joinability. A paragraph about one paper cannot be compared with
+  a paragraph about two hundred others; a table can be sorted, counted,
+  filtered and published.
+
+* **A new reader, `extract`.** Traversal signature `all|N+conflicts|none`:
+  every chunk is asked to fill what it can and to leave the rest null, and the
+  per-chunk answers are then reconciled. Reconciliation is arithmetic when the
+  chunks agree, so it costs a call only where a document genuinely contradicts
+  itself — `resolve = "model"` adjudicates those, `resolve = "first"` (the
+  default) takes the earlier value and records the disagreement.
+
+* **Every filled cell carries its provenance.** Each value is asked for the
+  sentence it came from, and that sentence is checked against the chunk it was
+  attributed to. `$evidence` is the long form of that — one row per supported
+  cell, with `verified` and `match` — and `n_unverified` in the table counts the
+  values that could not be tied to a verbatim span, whether because no quote was
+  given or because the quote is not in the document. Nothing is discarded for
+  failing; `require_quote = TRUE` makes it a policy for a protocol that needs
+  one.
+
+* **Protocols.** `gr_protocol()` writes down the three decisions a review must
+  not make while it reads: which documents count (`include`/`exclude`), what to
+  collect from them (a `gr_fields()` schema), and what the write-up has to cover
+  (`outline`). Not because a model cannot infer them, but because a criterion
+  invented while reading is a criterion fitted to what was found.
+
+  It is the seventh registry: `gr_protocols()` lists what is available,
+  `gr_register_protocol()` adds your own, and `gr_protocol_save()` /
+  `gr_protocol_read()` round-trip one through a JSON file so it can be shared,
+  diffed and cited alongside the results. Three templates ship —
+  `bibliography`, `evidence_table` and `systematic_review` — as starting points,
+  not standards: the package knows the shape a protocol has, not what your
+  criteria should be.
+
+  `gr_extract()` takes a protocol wherever it takes a schema, using its question
+  and recipe unless you say otherwise.
+
+* **Screening.** `gr_screen()` is the stage before extraction: one model call
+  per document, a decision and a reason for every one, and nothing dropped on the
+  way. Two hundred candidate papers extracted in full is two hundred times twenty
+  calls; screened, it is two hundred calls, and most of them end the document's
+  involvement.
+
+  Three properties it is built around. Every document gets a decision — there is
+  no retrieval step or relevance prefilter that could quietly remove a source
+  before one is recorded, and a document that could not be read is
+  `status = "failed"` with no decision rather than a silent absence. `"unclear"`
+  is an answer, not a failure: forcing a binary decision out of an excerpt that
+  does not settle the question is how automated screening loses studies, and
+  those documents are for a person. And every decision names the criterion that
+  produced it, because `table(x$table$criterion)` is what a flow diagram asks
+  for.
+
+  `screen_tokens =` caps what the model is shown, counted from the start of the
+  document, so title-and-abstract screening is available deliberately rather than
+  by accident; `truncated` and `seen_tokens` always say what was actually read.
+  `x$included` is the argument to hand to `gr_extract()`.
+
+  The reader behind it is `screen`, traversal `head|1|none`.
+
+* **Synthesis.** `gr_synthesise()` writes the review up from the extraction
+  table, one section per call, against the outline the protocol fixed in advance
+  — so the structure is not shaped by whatever happened to be found, and a
+  section can be rewritten without redoing the rest.
+
+  Every section is written with `[study 3]` markers, and the markers are parsed
+  back out and checked against the rows that exist. A citation to a row that is
+  not there is reported and marks the section partial — the same check
+  `new_answer()` runs on `[chunk 3]`, for the same reason. `$citations` resolves
+  every marker to its `document` and `document_id`.
+
+  Duplicates and unread rows never reach the write-up: a study counted twice is
+  the error the rest of this release exists to prevent, and it is easiest to make
+  here, where the rows all look alike. A table too large for one prompt is
+  written in batches and merged rather than truncated.
+
+  That completes the chain: a sentence cites a study, the study's row cites a
+  quote, and the quote was checked against the page it is attributed to. None of
+  it proves the sentence is true. It makes every step of the way back to the
+  document short enough to walk.
+
+* **The same document is read once.** A source whose cleaned text repeats one
+  already read this run is not read again: its row is filled in from the first
+  copy, `status` is `"duplicate"` and the new `duplicate_of` column names the
+  row it repeats. Nothing is dropped — every source you passed still has a row —
+  so `subset(x$summary, is.na(duplicate_of))` is the deduplicated set and
+  `sum(!is.na(x$summary$duplicate_of))` is the number to report as removed.
+
+  A response cache already made the second copy's calls free. What it could not
+  do was stop the duplicate appearing in the results as a second, independent
+  document, which is how one study gets counted twice in a synthesis. The hash
+  travels in the `store`, so a resumed run does not pay to rediscover it.
+
+* **A citable document id.** `document_id` is the hash of a document's cleaned
+  text, in the corpus summary, the extraction table and the evidence table.
+  `document` is a filename: it changes when the file is renamed, collides
+  between folders, and does not exist for a document passed as text. The id is
+  the same string for the same document in every run and on every machine — and
+  identical for two copies of it, which is the same fact as the duplicate
+  detection above.
+
+## Fixed
+
+* **A quote now cites the page it is actually on.** A chunk is packed from
+  several units, and a chunk packed from two pages reported the *first* one —
+  right for its opening sentence, wrong for everything after it, and wrong in
+  the most expensive way, because a citation that names a page is checked by
+  turning to that page. Two changes: a chunk whose units disagree about the page
+  (or the section) now reports `NA` rather than picking one, and an evidence span
+  is located in the document's own blocks, so it gets the page of the block that
+  contains it rather than the page of the chunk that carried it. A span found on
+  several pages, or not found at all, is left alone — the first hit would be a
+  guess dressed as a fact.
+
+  Same for a runt paragraph absorbed into the previous chunk, which used to keep
+  only the host's page.
+
+## Behaviour
+
+* `gr_call_json()` gains `allow_empty`, used only by `extract`, where a JSON
+  object with no keys is a real answer — this excerpt supports none of the
+  fields — rather than a broken one.
+
+* A field cannot be named `document`, `document_id`, `status`, `duplicate_of`,
+  `error`, `n_filled`, `n_unverified`, `conflicts`, `field`, `chunk_id`, `page`,
+  `section`, `quote`, `verified` or `match`: those are the extraction table's own
+  columns, and a field with one of those names would be silently overwritten.
+  Nor may a name end in `__quote`, which collides with the companion span every
+  field gets.
+
+* `gr_read_many()` returns `$sources`: the sources as they were actually read,
+  aligned row for row with `summary`. `summary$document` is a display label — a
+  basename, made unique with a suffix when two folders hold the same filename —
+  and there is no way back from it to a file, which is what any caller feeding
+  part of a corpus into the next stage needs.
+
+* `gr_read_many()`'s summary gains `document_id` and `duplicate_of`. A `store`
+  written by 0.3.0 still resumes; its rows have neither, and both are filled
+  with `NA` rather than being invented.
+
+* A field a document does not report comes back `NA` with `status` `"ok"`, not
+  `"failed"`. "Not reported" is a finding; the `status` column is what separates
+  it from a document that was never read.
+
 # readgpt 0.3.0
 
 Two additions, one theme: the model call is the only part of this package that

@@ -299,8 +299,13 @@ preflight <- function(chunks, spec, trace) {
   n <- nrow(chunks$chunks)
   est_calls <- switch(spec$reader,
     stuff = 1L, retrieve = 1L,
+    # `screen` reads the opening of the document in ONE call whatever its size.
+    # Falling through to the default `n` made the pre-flight warn about the cost
+    # of forty calls for a job that costs one, on every long document.
+    screen = 1L,
     map_reduce = n + ceiling(n / 5),
     refine = n, skim = n + 1L,
+    extract = n,
     rerank = min(spec$rerank_candidates, n) + 1L,
     hierarchical = n + ceiling(n / spec$fan_in) + 1L,
     iterative = spec$max_rounds * 2L,

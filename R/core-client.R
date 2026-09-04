@@ -652,7 +652,8 @@ is_refusal <- function(parsed) {
 
 #' Call a model and parse a JSON-schema response into a list
 #' @noRd
-gr_call_json <- function(client, messages, schema, schema_name = "result", ...) {
+gr_call_json <- function(client, messages, schema, schema_name = "result",
+                         allow_empty = FALSE, ...) {
   res <- gr_call(client, messages, schema = schema, schema_name = schema_name, ...)
   if (!res$ok) return(list(ok = FALSE, value = NULL, result = res))
   val <- tryCatch(jsonlite::fromJSON(res$text, simplifyVector = TRUE),
@@ -667,6 +668,14 @@ gr_call_json <- function(client, messages, schema, schema_name = "result", ...) 
   # index into `value` with `$`, which errors on an atomic vector, so anything
   # that is not a named list is treated as a parse failure and routed to the
   # reader's documented degraded path instead.
-  ok <- !is.null(val) && (is.list(val) || (is.data.frame(val))) && length(names(val)) > 0
+  #
+  # `allow_empty` is for the one caller where `{}` is a real answer rather than a
+  # broken one: `extract` asks each chunk what it can fill and an excerpt that
+  # can fill nothing is a finding. Without this the empty object was routed to
+  # the failure path, so a document that simply did not discuss the schema came
+  # back with every chunk counted as a failed call and the answer marked
+  # partial -- reporting "we could not read this" for "it does not say".
+  ok <- !is.null(val) && (is.list(val) || is.data.frame(val)) &&
+    (isTRUE(allow_empty) || length(names(val)) > 0)
   list(ok = ok, value = if (ok) val else NULL, result = res)
 }

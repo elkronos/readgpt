@@ -62,6 +62,10 @@ answer_document <- function(source, question, recipe = "thorough", client = NULL
   doc <- gr_ingest(source, rec$ingest, trace = trace)
   chunks <- gr_segment(doc, rec$segment, client = client, trace = trace)
   ans <- gr_read(chunks, question, client, rec$read, trace = trace)
+  # A quote is a sentence, and a sentence is on one page. The reader only sees
+  # chunks, which may span several; the document is in scope here, so this is
+  # where a citation stops being "somewhere in chunk 4" and becomes "page 7".
+  ans$evidence <- resolve_evidence_pages(ans$evidence, doc$blocks)
   ans$recipe <- rec$name
   ans$document <- list(source = doc$source, stats = doc$stats)
   ans$segmentation <- as.list(gr_chunk_stats(chunks))

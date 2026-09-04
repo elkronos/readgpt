@@ -231,3 +231,137 @@ test_that("gr_verify_evidence validates and handles nothing to verify", {
   expect_identical(nrow(v), 0L)
   expect_identical(names(v), c("chunk_id", "kind", "verified", "match", "span"))
 })
+
+# ---------------------------------------------------------------------------
+# Where a quote actually is.
+#
+# A citation that names a page is checked by turning to that page, so a page
+# number is the one piece of provenance that must not be approximately right.
+# Chunks are packed from units, and a chunk packed from two pages used to report
+# the FIRST one -- correct for its opening sentence, wrong for everything after
+# it, and wrong in a way nothing downstream could detect.
+# ---------------------------------------------------------------------------
+
+# A document whose blocks carry page numbers, the way a PDF's do.
+local_paged_doc <- function(texts, pages, sections = NA_character_,
+                            env = parent.frame()) {
+  local_registries(env)
+  gr_register_extractor("pagedoc", function(path, spec) {
+    data.frame(text = texts, page = pages, section = sections, kind = "body",
+               stringsAsFactors = FALSE)
+  }, extensions = "pagedoc")
+  f <- tempfile(fileext = ".pagedoc")
+  writeLines("placeholder", f)
+  f
+}
+
+test_that("a chunk packed from two pages does not claim to be from one", {
+  f <- local_paged_doc(
+    texts = c("Page one says revenue was 45.2 million dollars in total.",
+              "Page two says the trial enrolled 1,204 participants overall.",
+              "Page three says the study was funded by industry sponsors."),
+    pages = 1:3)
+
+  # Cap large enough that pages one and two pack together, small enough that
+  # page three does not join them.
+  ch <- quiet(gr_segment(gr_ingest(f), list(method = "paragraph", max_tokens = 40)))
+  expect_equal(nrow(ch$chunks), 2L)
+  expect_true(is.na(ch$chunks$page[1]))       # spans two pages: no single answer
+  expect_identical(ch$chunks$page[2], 3L)     # one page: still says so
+
+  # And a chunking where every chunk is one page keeps every page.
+  one <- quiet(gr_segment(gr_ingest(f), list(method = "paragraph", max_tokens = 32)))
+  expect_identical(one$chunks$page, 1:3)
+})
+
+test_that("a quoted span is given the page it is on, not the page of its chunk", {
+  f <- local_paged_doc(
+    texts = c("Page one says revenue was 45.2 million dollars in total.",
+              "Page two says the trial enrolled 1,204 participants overall.",
+              "Page three says the study was funded by industry sponsors."),
+    pages = 1:3)
+
+  # `skim` puts the model's own words in the evidence table, so only the excerpt
+  # that actually contains the sentence reports it -- leaving exactly one
+  # evidence row to check.
+  sentence <- "Page two says the trial enrolled 1,204 participants overall."
+  cl <- gr_mock_client(function(messages, params) {
+    seen <- paste(vapply(messages, function(m) paste(as.character(m$content), collapse = ""),
+                         character(1)), collapse = "\n")
+    if (grepl("<excerpt>", seen, fixed = TRUE) && !grepl("1,204", seen, fixed = TRUE)) {
+      return("NONE")
+    }
+    sentence
+  })
+  # No overlap: with it, the next chunk carries the tail of this one and reports
+  # the same sentence, which is correct behaviour and two rows to disentangle.
+  ans <- quiet(answer_document(f, "How many participants?", "precise", client = cl,
+                               max_tokens = 40, overlap_tokens = 0))
+  ev <- ans$evidence
+  ev <- ev[grepl("1,204", ev$text, fixed = TRUE) & ev$kind == "extracted", , drop = FALSE]
+  expect_equal(nrow(ev), 1L)
+  # The chunk it came from spans pages one and two. The sentence is on page two.
+  expect_identical(ev$page[[1]], 2L)
+})
+
+test_that("a span that cannot be placed is not given a page anyway", {
+  f <- local_paged_doc(
+    texts = c("Page one says revenue was 45.2 million dollars in total.",
+              "Page two says the trial enrolled 1,204 participants overall.",
+              "A running footer appears on every page of this document.",
+              "Page three says the study was funded by industry sponsors.",
+              "A running footer appears on every page of this document."),
+    pages = c(1L, 2L, 2L, 3L, 3L))
+  doc <- gr_ingest(f)
+  rp <- readgpt:::resolve_evidence_pages
+
+  ev <- data.frame(chunk_id = c(1L, 1L, 1L), page = c(NA_integer_, NA_integer_, 9L),
+                   section = NA_character_,
+                   text = c("Page two says the trial enrolled 1,204 participants overall.",
+                            "A running footer appears on every page of this document.",
+                            "A sentence that is nowhere in this document."),
+                   stringsAsFactors = FALSE)
+  out <- rp(ev, doc$blocks)
+  expect_identical(out$page[1], 2L)          # unambiguous: resolved
+  expect_true(is.na(out$page[2]))            # on two pages: the first would be a guess
+  expect_identical(out$page[3], 9L)          # not found: the fallback is left alone
+})
+
+test_that("resolving pages is inert when there are no pages to resolve", {
+  rp <- readgpt:::resolve_evidence_pages
+  ev <- data.frame(chunk_id = 1L, page = NA_integer_, section = NA_character_,
+                   text = "Some sentence.", stringsAsFactors = FALSE)
+  expect_identical(rp(ev, NULL), ev)
+  expect_identical(rp(ev, data.frame()), ev)
+  expect_identical(rp(ev, data.frame(text = "Some sentence.", page = NA_integer_,
+                                     section = NA_character_)), ev)
+  expect_identical(rp(NULL, data.frame(text = "x", page = 1L)), NULL)
+  expect_equal(nrow(rp(ev[0, ], data.frame(text = "x", page = 1L))), 0L)
+})
+
+test_that("a runt merged into its neighbour folds in its provenance", {
+  # The same lie from the other side. The packer flushes the runt as its own
+  # chunk -- the SUM of the unit token counts exceeds the cap -- and the runt
+  # merge then absorbs it, because the JOINED text does not. That second path
+  # has its own provenance handling, and keeping only the host chunk's meta made
+  # the merged chunk name a page it now only partly comes from.
+  pack <- readgpt:::pack_units
+  meta <- data.frame(page = c(1L, 1L, 2L), section = NA_character_,
+                     stringsAsFactors = FALSE)
+  units <- c(paste(rep("alpha", 4), collapse = " "),
+             paste(rep("beta", 10), collapse = " "),
+             "runt")
+
+  # Without the merge there are three chunks, each honestly on one page.
+  loose <- pack(units, max_tokens = 16, overlap_tokens = 0, min_tokens = 0, meta = meta)
+  expect_equal(length(loose$text), 3L)
+  expect_identical(loose$meta$page, c(1L, 1L, 2L))
+
+  # With it, the runt is absorbed -- and the chunk that swallowed it spans two
+  # pages, so it names neither.
+  tight <- pack(units, max_tokens = 16, overlap_tokens = 0, min_tokens = 6, meta = meta)
+  expect_equal(length(tight$text), 2L)
+  expect_equal(nrow(tight$meta), length(tight$text))
+  expect_true(grepl("runt", tight$text[2], fixed = TRUE))
+  expect_identical(tight$meta$page, c(1L, NA_integer_))
+})

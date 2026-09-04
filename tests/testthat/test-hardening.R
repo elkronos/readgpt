@@ -836,17 +836,25 @@ test_that("every export has a help topic with an example", {
   exports <- grep("^(print|as_json)\\.", all_exp, value = TRUE, invert = TRUE)
   skip_if(!length(exports))
   rd <- tools::Rd_db("readgpt")
-  aliases <- unlist(lapply(rd, function(x)
-    unlist(lapply(x[vapply(x, function(e) identical(attr(e, "Rd_tag"), "\\alias"), logical(1))],
-                  function(e) trimws(paste(unlist(e), collapse = ""))))))
-  expect_setequal(setdiff(exports, aliases), character(0))
+  # Alias -> topic, built one topic at a time. The obvious `unlist(lapply(rd, ...))`
+  # makes the names unique when a topic has SEVERAL aliases, so a topic
+  # documenting two exports (any `@rdname` pair) came back as "x.Rd1"/"x.Rd2" --
+  # names that then matched nothing in `has_example`, and the lookup returned NA
+  # rather than TRUE or FALSE. The test passed for as long as no topic
+  # documented two exported functions, and broke on the first one that did.
+  amap <- do.call(rbind, lapply(names(rd), function(nm) {
+    al <- unlist(lapply(rd[[nm]][vapply(rd[[nm]], function(e)
+      identical(attr(e, "Rd_tag"), "\\alias"), logical(1))],
+      function(e) trimws(paste(unlist(e), collapse = ""))))
+    if (!length(al)) return(NULL)
+    data.frame(alias = unname(al), topic = nm, stringsAsFactors = FALSE)
+  }))
+  expect_setequal(setdiff(exports, amap$alias), character(0))
   # Topics with no example teach nothing about how to use the function.
   has_example <- vapply(rd, function(x)
     any(vapply(x, function(e) identical(attr(e, "Rd_tag"), "\\examples"), logical(1))), logical(1))
-  topics_for <- vapply(exports, function(e) {
-    hit <- names(aliases)[aliases == e]
-    if (length(hit)) hit[1] else NA_character_
-  }, character(1))
+  topics_for <- amap$topic[match(exports, amap$alias)]
+  expect_false(anyNA(has_example[topics_for[!is.na(topics_for)]]))
   missing_ex <- exports[!is.na(topics_for) & !has_example[topics_for]]
   expect_equal(missing_ex, character(0))
 })

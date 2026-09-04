@@ -118,9 +118,12 @@ test_that("a cost nobody can compute is not reported as zero", {
   gr_options(max_cost_usd = NULL)
   gr_register_model("unpriced", context_window = 100000L, max_output = 4096L)
   cl <- gr_backend_client(function(m, p) "an answer", model = "unpriced")
+  # Distinct content per file. Three copies of one sentence are one document as
+  # far as gr_read_many() is concerned -- it reads the first and marks the rest
+  # duplicates -- and this test needs three documents to spend three times.
   files <- vapply(1:3, function(i) {
     p <- withr::local_tempfile(fileext = ".txt", .local_envir = parent.frame(3))
-    writeLines("Revenue was 45.2 million dollars.", p); p
+    writeLines(sprintf("Revenue in region %d was 45.2 million dollars.", i), p); p
   }, character(1))
 
   expect_warning(

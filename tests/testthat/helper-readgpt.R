@@ -77,6 +77,10 @@ call_labels <- function(client) {
 
 quiet <- function(expr) suppressWarnings(suppressMessages(force(expr)))
 
+# Base R gained `%||%` in 4.4.0 and this package supports 4.1.0, so tests cannot
+# rely on it being there. The package's own copy is not exported.
+`%||%` <- function(x, y) if (is.null(x)) y else x
+
 # ---------------------------------------------------------------------------
 # Registry and option isolation.
 #
@@ -88,7 +92,7 @@ quiet <- function(expr) suppressWarnings(suppressMessages(force(expr)))
 # this first.
 # ---------------------------------------------------------------------------
 .gr_registry_slots <- c("extractors", "cleaners", "segmenters", "readers",
-                        "embedders", "models", "model_patterns")
+                        "embedders", "models", "model_patterns", "protocols")
 
 local_registries <- function(env = parent.frame()) {
   # `readgpt:::gr_state[[s]] <- v` is a REPLACEMENT call on `readgpt`, not on

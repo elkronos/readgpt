@@ -332,6 +332,108 @@ One unreadable file is one `"failed"` row, not a dead run. Each document gets it
 own budget, so one enormous file cannot starve the rest. `store =` makes the run
 resumable, and `max_total_usd` is a corpus-wide ceiling.
 
+## From a folder to a review
+
+The three axes answer a question. A corpus job usually wants a *table*, and a
+review wants a table plus the account of it. Four functions cover that, and they
+compose in one direction:
+
+`gr_protocol()` → `gr_screen()` → `gr_extract()` → `gr_synthesise()`
+
+A protocol is what you fix before reading anything: which documents count, what
+to collect from the ones that do, and what the write-up has to cover. Fixing it
+first is the point — a criterion invented while reading is a criterion fitted to
+what was found.
+
+```{r}
+protocol <- gr_protocol(
+  "revenue-review",
+  question = "How did revenue change across the regional reports?",
+  include  = "Reports a revenue figure",
+  exclude  = "Is a forecast rather than a result",
+  fields   = gr_fields(
+    region  = "The region the report covers",
+    revenue = gr_field("Revenue in millions of dollars", type = "number"),
+    year    = gr_field("Fiscal year reported", type = "integer")
+  ),
+  outline  = c("Findings" = "How revenue compares across regions")
+)
+protocol
+```
+
+`gr_protocols()` lists three templates to start from, and
+`gr_protocol_save()`/`gr_protocol_read()` round-trip one through a JSON file so
+it can be shared and cited alongside the results.
+
+Screening is one call per document. Every document gets a decision and a reason,
+and nothing is dropped on the way — a file that could not be read has no
+decision rather than a silent exclusion, and `"unclear"` is an answer rather
+than a forced guess.
+
+```{r}
+screener <- gr_mock_client(function(messages, params) {
+  seen <- paste(vapply(messages, function(m) as.character(m$content), character(1)),
+                collapse = " ")
+  line <- regmatches(seen, regexpr("Revenue was [0-9.]+ million dollars in fiscal [0-9]+\\.", seen))
+  sprintf('{"decision":"include","reason":"Reports a revenue figure.",
+            "criterion":"Reports a revenue figure","quote":"%s"}', line)
+})
+
+screened <- gr_screen(folder, protocol, client = screener)
+screened$table[, c("document", "decision", "criterion", "verified")]
+```
+
+Extraction fills the schema from every chunk of each included document, then
+reconciles. The result is one typed row per document, and every filled cell
+carries the sentence it came from, checked against the chunk it was attributed
+to.
+
+```{r}
+extractor <- gr_mock_client(function(messages, params) {
+  seen <- paste(vapply(messages, function(m) as.character(m$content), character(1)),
+                collapse = " ")
+  n <- if (grepl("45.2", seen, fixed = TRUE)) "45.2" else "51.8"
+  yr <- if (grepl("2024", seen, fixed = TRUE)) 2024 else 2025
+  rg <- if (grepl("45.2", seen, fixed = TRUE)) "north" else "south"
+  line <- sprintf("Revenue was %s million dollars in fiscal %d.", n, yr)
+  sprintf('{"region":"%s","revenue":%s,"year":%d,
+            "region__quote":"%s","revenue__quote":"%s","year__quote":"%s"}',
+          rg, n, yr, line, line, line)
+})
+
+table <- gr_extract(screened$included, protocol, client = extractor, recipe = "fast")
+table$table[, c("document", "region", "revenue", "year", "n_unverified")]
+```
+
+`n_unverified` is the column to look at before believing a row: zero means every
+value in it can be pointed at in the document. `table$evidence` is the long form
+— one row per supported cell, with the quote, the page it is on, and whether the
+quote really appears there.
+
+```{r}
+table$evidence[, c("document_id", "field", "quote", "verified")]
+```
+
+Finally the write-up, one call per section of the outline, citing the rows it
+rests on:
+
+```{r}
+writer <- gr_mock_client(function(messages, params) {
+  "Revenue was higher in the southern region [study 2] than the northern [study 1]."
+})
+
+review <- gr_synthesise(table, protocol, client = writer)
+review$citations
+cat(review$text)
+```
+
+Every `[study n]` is parsed back out and checked against the rows that exist;
+one pointing at a row that is not there is reported and marks the section
+partial. That completes the chain — a sentence cites a study, the study's row
+cites a quote, the quote was checked against the page it is attributed to. None
+of it proves the sentence is true. It makes every step of the way back to the
+document short enough to walk.
+
 ## Using a real model
 
 Everything above used a mock. In production you need a client:

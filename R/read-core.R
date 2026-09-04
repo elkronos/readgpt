@@ -299,13 +299,15 @@ rbind_evidence <- function(tables) {
 #' @noRd
 evidence_table <- function(chunk_ids, texts, pages = NA_integer_, sections = NA_character_,
                            scores = NA_real_, source_text = NULL,
-                           kind = c("verbatim", "extracted", "answer")) {
+                           kind = c("verbatim", "extracted", "answer"), extra = NULL) {
   kind <- match.arg(kind)
   n <- length(texts)
   if (!n) {
-    return(data.frame(chunk_id = integer(0), text = character(0), page = integer(0),
+    out <- data.frame(chunk_id = integer(0), text = character(0), page = integer(0),
                       section = character(0), score = numeric(0), kind = character(0),
-                      stringsAsFactors = FALSE))
+                      stringsAsFactors = FALSE)
+    for (nm in names(extra)) out[[nm]] <- extra[[nm]][0]
+    return(out)
   }
   df <- data.frame(chunk_id = rep(chunk_ids, length.out = n),
                    text = vapply(texts, as_chr1, character(1), USE.NAMES = FALSE),
@@ -329,6 +331,11 @@ evidence_table <- function(chunk_ids, texts, pages = NA_integer_, sections = NA_
     df$verified <- v$verified
     df$match <- v$match
   }
+  # Per-row labels that have to survive the filter below. `extract` puts the
+  # FIELD each span supports here; attaching it after the fact would line the
+  # labels up against the wrong rows, because the filter drops empty spans and
+  # renumbers nothing.
+  for (nm in names(extra)) df[[nm]] <- rep(extra[[nm]], length.out = n)
   df[has_content(df$text), , drop = FALSE]
 }
 

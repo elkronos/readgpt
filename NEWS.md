@@ -1,3 +1,46 @@
+# readgpt 0.4.0 (in development)
+
+Reading a corpus for an answer and reading it for a *table* are different jobs.
+This release is the second one.
+
+## New
+
+* **Extraction schemas.** `gr_fields()` describes what you want out of a
+  document as typed fields rather than as a sentence — `gr_field("Number of
+  participants randomised, not the number analysed", type = "integer")` — and
+  `gr_extract()` applies one schema to a whole corpus, returning one tidy row
+  per document and one column per field, of that field's type.
+
+  The point is joinability. A paragraph about one paper cannot be compared with
+  a paragraph about two hundred others; a table can be sorted, counted,
+  filtered and published.
+
+* **A new reader, `extract`.** Traversal signature `all|N+conflicts|none`:
+  every chunk is asked to fill what it can and to leave the rest null, and the
+  per-chunk answers are then reconciled. Reconciliation is arithmetic when the
+  chunks agree, so it costs a call only where a document genuinely contradicts
+  itself — `resolve = "model"` adjudicates those, `resolve = "first"` (the
+  default) takes the earlier value and records the disagreement.
+
+* **Every filled cell carries its provenance.** Each value is asked for the
+  sentence it came from, and that sentence is checked against the chunk it was
+  attributed to. `$evidence` is the long form of that — one row per supported
+  cell, with `verified` and `match` — and `n_unverified` in the table counts the
+  values that could not be tied to a verbatim span, whether because no quote was
+  given or because the quote is not in the document. Nothing is discarded for
+  failing; `require_quote = TRUE` makes it a policy for a protocol that needs
+  one.
+
+## Behaviour
+
+* `gr_call_json()` gains `allow_empty`, used only by `extract`, where a JSON
+  object with no keys is a real answer — this excerpt supports none of the
+  fields — rather than a broken one.
+
+* A field a document does not report comes back `NA` with `status` `"ok"`, not
+  `"failed"`. "Not reported" is a finding; the `status` column is what separates
+  it from a document that was never read.
+
 # readgpt 0.3.0
 
 Two additions, one theme: the model call is the only part of this package that

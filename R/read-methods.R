@@ -675,6 +675,9 @@ register_builtin_readers <- function() {
   gr_register_reader("iterative", read_iterative, signature = "topk|rounds*2|forward",
     cost_calls = "up to 2 x max_rounds",
     description = "Agentic loop: the model names what it still needs and that drives the next retrieval.")
+  gr_register_reader("extract", read_extract, signature = "all|N+conflicts|none",
+    cost_calls = "N + one per disagreeing field",
+    description = "Fill a typed schema from every chunk, then reconcile. Needs `fields`.")
   gr_register_reader("ensemble", read_ensemble, signature = "ensemble|sum+1|none",
     cost_calls = "sum of members + 1",
     description = "Run several distinct readers and adjudicate. Members must have different signatures.")

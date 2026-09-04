@@ -460,3 +460,35 @@ test_that("a store written by an older version still resumes", {
   expect_false(is.na(out$summary$document_id[2]))
   expect_true(all(is.na(out$summary$duplicate_of)))
 })
+
+test_that("a corpus run resolves evidence pages too", {
+  # answer_document() and gr_read_many() are separate pipelines, so the page
+  # resolution has to be wired into both. It was easy to add to one and forget
+  # the other, and the symptom would be a citation that is right when you read
+  # the paper alone and wrong when you read the folder.
+  local_registries()
+  gr_register_extractor("pagedoc2", function(path, spec) {
+    data.frame(text = c("Page one says revenue was 45.2 million dollars in total.",
+                        "Page two says the trial enrolled 1,204 participants overall.",
+                        "Page three says the study was funded by industry sponsors."),
+               page = 1:3, section = NA_character_, kind = "body",
+               stringsAsFactors = FALSE)
+  }, extensions = "pagedoc2")
+  f <- tempfile(fileext = ".pagedoc2"); writeLines("placeholder", f)
+
+  sentence <- "Page two says the trial enrolled 1,204 participants overall."
+  cl <- gr_mock_client(function(messages, params) {
+    seen <- paste(vapply(messages, function(m) paste(as.character(m$content), collapse = ""),
+                         character(1)), collapse = "\n")
+    if (grepl("<excerpt>", seen, fixed = TRUE) && !grepl("1,204", seen, fixed = TRUE)) {
+      return("NONE")
+    }
+    sentence
+  })
+  out <- quiet(gr_read_many(f, "How many participants?", "precise", client = cl,
+                            max_tokens = 40, overlap_tokens = 0))
+  ev <- out$answers[[1]]$evidence
+  ev <- ev[grepl("1,204", ev$text, fixed = TRUE) & ev$kind == "extracted", , drop = FALSE]
+  expect_equal(nrow(ev), 1L)
+  expect_identical(ev$page[[1]], 2L)
+})

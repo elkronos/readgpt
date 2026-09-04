@@ -271,3 +271,48 @@ gr_verify_evidence <- function(answer, chunks = NULL) {
                            ifelse(nchar(ev$text) > 60, "...", "")),
              stringsAsFactors = FALSE)
 }
+
+#' Give each quoted span the page it is actually on.
+#'
+#' A chunk's page is the page of the text it was packed from, and when it was
+#' packed from more than one page there is no single right answer -- `meta_over()`
+#' reports `NA` there rather than naming one of them. But an evidence row is not
+#' a chunk: it is a specific sentence, and a specific sentence *is* on one page.
+#'
+#' So where the span can be found in the document's blocks, the page comes from
+#' the block that contains it, not from the chunk that happened to carry it. That
+#' turns a citation from "somewhere in this chunk" into "page 7", which is the
+#' difference between a reference a reader can check and one they cannot.
+#'
+#' Matching uses `normalise_for_match()`, the same rule `span_match()` verifies
+#' with, so a span that verified against its chunk cannot fail to locate against
+#' the document for a difference in whitespace or quote characters.
+#'
+#' A span found on several pages -- a repeated heading, a running footer -- is
+#' left alone: the first hit would be a guess dressed as a fact. So is a span
+#' that cannot be found at all, which is exactly the unverified case, where the
+#' chunk-level fallback is already as much as is known.
+#' @noRd
+resolve_evidence_pages <- function(evidence, blocks) {
+  if (!is.data.frame(evidence) || !nrow(evidence)) return(evidence)
+  if (!is.data.frame(blocks) || !nrow(blocks) || is.null(blocks$page)) return(evidence)
+  if (all(is.na(blocks$page))) return(evidence)
+
+  src <- normalise_for_match(blocks$text)
+  page <- blocks$page
+  section <- blocks$section
+  for (i in seq_len(nrow(evidence))) {
+    s <- trim_quote_edges(normalise_for_match(evidence$text[[i]]))
+    if (!nzchar(s)) next
+    hit <- which(vapply(src, function(b) nzchar(b) && grepl(s, b, fixed = TRUE),
+                        logical(1), USE.NAMES = FALSE))
+    if (!length(hit)) next
+    pg <- unique(page[hit][!is.na(page[hit])])
+    if (length(pg) == 1L) evidence$page[[i]] <- pg
+    if (!is.null(section)) {
+      sc <- unique(section[hit][!is.na(section[hit])])
+      if (length(sc) == 1L && is.na(evidence$section[[i]])) evidence$section[[i]] <- sc
+    }
+  }
+  evidence
+}

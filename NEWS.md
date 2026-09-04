@@ -51,6 +51,22 @@ This release is the second one.
   identical for two copies of it, which is the same fact as the duplicate
   detection above.
 
+## Fixed
+
+* **A quote now cites the page it is actually on.** A chunk is packed from
+  several units, and a chunk packed from two pages reported the *first* one —
+  right for its opening sentence, wrong for everything after it, and wrong in
+  the most expensive way, because a citation that names a page is checked by
+  turning to that page. Two changes: a chunk whose units disagree about the page
+  (or the section) now reports `NA` rather than picking one, and an evidence span
+  is located in the document's own blocks, so it gets the page of the block that
+  contains it rather than the page of the chunk that carried it. A span found on
+  several pages, or not found at all, is left alone — the first hit would be a
+  guess dressed as a fact.
+
+  Same for a runt paragraph absorbed into the previous chunk, which used to keep
+  only the host's page.
+
 ## Behaviour
 
 * `gr_call_json()` gains `allow_empty`, used only by `extract`, where a JSON

@@ -100,6 +100,25 @@
 #'
 #' See [gr_verify_evidence()] for the same check on a single answer.
 #'
+#' @section What to cite:
+#' In descending order of how long it stays true: the `quote`, which is verbatim
+#' text and findable in the document whatever anyone changes; `page` and
+#' `section`, which come from the document itself and are resolved per span, not
+#' per chunk, so a quote is credited to the page it is on; `document_id`, the
+#' hash of the cleaned text, which is the same in every run and on every machine.
+#'
+#' `chunk_id` is none of those. It numbers the pieces the document was cut into
+#' for *this* segmentation, so re-running with a different `max_tokens` makes
+#' chunk 7 a different piece of text. It is a pointer inside one run -- useful
+#' for going back to `$answers` -- and not a reference to publish.
+#'
+#' There is deliberately no attempt to guess a document's title or authors from
+#' its filename or its first few lines. A heuristic like that fails silently on
+#' preprints, reports and anything scanned, and a citation that is wrong without
+#' saying so is worse than none. Ask for them the same way as everything else --
+#' `gr_fields(title = , authors = , year = , doi = )` -- and each comes back with
+#' the sentence it was taken from and a check that the sentence is really there.
+#'
 #' @seealso [gr_fields()], [gr_read_many()], [gr_verify_evidence()],
 #'   [gr_trace_cost()]
 #' @export

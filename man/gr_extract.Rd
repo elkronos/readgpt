@@ -117,6 +117,27 @@ count into a policy and drops those values instead.
 See \code{\link[=gr_verify_evidence]{gr_verify_evidence()}} for the same check on a single answer.
 }
 
+\section{What to cite}{
+
+In descending order of how long it stays true: the \code{quote}, which is verbatim
+text and findable in the document whatever anyone changes; \code{page} and
+\code{section}, which come from the document itself and are resolved per span, not
+per chunk, so a quote is credited to the page it is on; \code{document_id}, the
+hash of the cleaned text, which is the same in every run and on every machine.
+
+\code{chunk_id} is none of those. It numbers the pieces the document was cut into
+for \emph{this} segmentation, so re-running with a different \code{max_tokens} makes
+chunk 7 a different piece of text. It is a pointer inside one run -- useful
+for going back to \verb{$answers} -- and not a reference to publish.
+
+There is deliberately no attempt to guess a document's title or authors from
+its filename or its first few lines. A heuristic like that fails silently on
+preprints, reports and anything scanned, and a citation that is wrong without
+saying so is worse than none. Ask for them the same way as everything else --
+\code{gr_fields(title = , authors = , year = , doi = )} -- and each comes back with
+the sentence it was taken from and a check that the sentence is really there.
+}
+
 \examples{
 fields <- gr_fields(
   design = "The study design",

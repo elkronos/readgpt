@@ -279,6 +279,7 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
       } else {
         ch <- gr_segment(doc, rec$segment, client = client, trace = sub)
         a <- gr_read(ch, question, client, rec$read, trace = sub)
+        a$evidence <- resolve_evidence_pages(a$evidence, doc$blocks)
         a$recipe <- rec$name
         a$document <- list(source = doc$source, stats = doc$stats)
         a$segmentation <- as.list(gr_chunk_stats(ch))

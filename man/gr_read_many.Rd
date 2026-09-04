@@ -69,15 +69,43 @@ code against.
 }
 \section{The summary}{
 
-\code{document}, \code{answer}, \code{not_found}, \code{partial}, \code{reader}, \code{chunks},
-\code{chunks_used}, \code{calls}, \code{cached}, \code{tokens_in}, \code{tokens_out}, \code{cost_usd},
-\code{seconds}, \code{status}, \code{error}.
+\code{document}, \code{document_id}, \code{answer}, \code{not_found}, \code{partial}, \code{reader},
+\code{chunks}, \code{chunks_used}, \code{calls}, \code{cached}, \code{tokens_in}, \code{tokens_out},
+\code{cost_usd}, \code{seconds}, \code{status}, \code{duplicate_of}, \code{error}.
+
+\code{document} is a filename and \code{document_id} is the hash of the cleaned text.
+Cite with the second: a filename changes when the file is renamed, collides
+between folders, and does not exist at all for a document passed as text,
+while the id is the same string for the same document in every run and on
+every machine. Two copies of one paper share an id, which is the same fact as
+the duplicate detection below.
 
 \code{status} is \code{"ok"}, \code{"failed"}, \code{"skipped"} (the corpus ceiling was reached
-first) or \code{"restored"} (read from \code{store}, not re-read now). A restored row
-keeps the numbers from when that document was first read, so its \code{cost_usd}
-is what it cost then, not what this run spent -- which is why the run's own
-spend comes from \code{gr_trace_cost(x$trace)} and not from summing the column.
+first), \code{"restored"} (read from \code{store}, not re-read now) or \code{"duplicate"}
+(see below). A restored row keeps the numbers from when that document was
+first read, so its \code{cost_usd} is what it cost then, not what this run spent --
+which is why the run's own spend comes from \code{gr_trace_cost(x$trace)} and not
+from summing the column.
+}
+
+\section{Documents that are the same document}{
+
+The same paper reaches you from three databases under three filenames. Each
+source is extracted and cleaned, and a document whose cleaned text is
+identical to one already read this run is \strong{not read again}: its row is
+filled in from the first copy, \code{status} is \code{"duplicate"} and \code{duplicate_of}
+names the row it repeats. Nothing is dropped -- every source you passed still
+has a row -- so \code{subset(x$summary, is.na(duplicate_of))} is the deduplicated
+set and \code{sum(!is.na(x$summary$duplicate_of))} is the number to report as
+removed.
+
+This is about the table, not the bill: a \code{\link[=gr_cache_client]{gr_cache_client()}} already makes the
+second copy's calls free. What it could not do is stop the duplicate from
+appearing in the results as a second, independent document, which is how one
+study gets counted twice in a synthesis.
+
+The comparison is exact, on cleaned text. Two typesettings of one paper are
+two documents here; matching those needs bibliographic metadata, not text.
 }
 
 \section{Budgets}{

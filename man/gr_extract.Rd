@@ -62,9 +62,13 @@ An object of class \code{gr_extraction}:
 \describe{
 \item{\code{table}}{One row per document: \code{document}, one column per field in
 the schema and of that field's type, then \code{n_filled}, \code{n_unverified},
-\code{conflicts}, \code{status}, \code{error}.}
-\item{\code{evidence}}{Long form, one row per filled cell: \code{document},
-\code{field}, \code{chunk_id}, \code{page}, \code{section}, \code{quote}, \code{verified}, \code{match}.}
+\code{conflicts}, \code{status}, \code{duplicate_of}, \code{error}. A document whose cleaned
+text repeats one already read is not read again -- see
+\code{\link[=gr_read_many]{gr_read_many()}} -- so \code{subset(x$table, is.na(duplicate_of))} is the
+set of distinct documents.}
+\item{\code{evidence}}{Long form, one row per supported cell: \code{document},
+\code{document_id}, \code{field}, \code{chunk_id}, \code{page}, \code{section}, \code{quote},
+\code{verified}, \code{match}.}
 \item{\code{fields}}{The schema, so the table can be read without it.}
 \item{\code{summary}}{The per-document run summary from \code{\link[=gr_read_many]{gr_read_many()}},
 including calls, tokens, cost and seconds.}

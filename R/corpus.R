@@ -121,15 +121,41 @@ gr_trace_cost <- function(trace) {
 #'   call made *this run*) and `store`.
 #'
 #' @section The summary:
-#' `document`, `answer`, `not_found`, `partial`, `reader`, `chunks`,
-#' `chunks_used`, `calls`, `cached`, `tokens_in`, `tokens_out`, `cost_usd`,
-#' `seconds`, `status`, `error`.
+#' `document`, `document_id`, `answer`, `not_found`, `partial`, `reader`,
+#' `chunks`, `chunks_used`, `calls`, `cached`, `tokens_in`, `tokens_out`,
+#' `cost_usd`, `seconds`, `status`, `duplicate_of`, `error`.
+#'
+#' `document` is a filename and `document_id` is the hash of the cleaned text.
+#' Cite with the second: a filename changes when the file is renamed, collides
+#' between folders, and does not exist at all for a document passed as text,
+#' while the id is the same string for the same document in every run and on
+#' every machine. Two copies of one paper share an id, which is the same fact as
+#' the duplicate detection below.
 #'
 #' `status` is `"ok"`, `"failed"`, `"skipped"` (the corpus ceiling was reached
-#' first) or `"restored"` (read from `store`, not re-read now). A restored row
-#' keeps the numbers from when that document was first read, so its `cost_usd`
-#' is what it cost then, not what this run spent -- which is why the run's own
-#' spend comes from `gr_trace_cost(x$trace)` and not from summing the column.
+#' first), `"restored"` (read from `store`, not re-read now) or `"duplicate"`
+#' (see below). A restored row keeps the numbers from when that document was
+#' first read, so its `cost_usd` is what it cost then, not what this run spent --
+#' which is why the run's own spend comes from `gr_trace_cost(x$trace)` and not
+#' from summing the column.
+#'
+#' @section Documents that are the same document:
+#' The same paper reaches you from three databases under three filenames. Each
+#' source is extracted and cleaned, and a document whose cleaned text is
+#' identical to one already read this run is **not read again**: its row is
+#' filled in from the first copy, `status` is `"duplicate"` and `duplicate_of`
+#' names the row it repeats. Nothing is dropped -- every source you passed still
+#' has a row -- so `subset(x$summary, is.na(duplicate_of))` is the deduplicated
+#' set and `sum(!is.na(x$summary$duplicate_of))` is the number to report as
+#' removed.
+#'
+#' This is about the table, not the bill: a [gr_cache_client()] already makes the
+#' second copy's calls free. What it could not do is stop the duplicate from
+#' appearing in the results as a second, independent document, which is how one
+#' study gets counted twice in a synthesis.
+#'
+#' The comparison is exact, on cleaned text. Two typesettings of one paper are
+#' two documents here; matching those needs bibliographic metadata, not text.
 #'
 #' @section Budgets:
 #' Every document gets its own trace, so `gr_options(max_calls =)` and
@@ -191,6 +217,8 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
   spent <- 0
   stopped <- FALSE
   warned_unpriced <- NULL
+  # Cleaned-text hash -> index of the first source that had it.
+  seen <- new.env(parent = emptyenv())
 
   for (i in seq_along(sources)) {
     src <- sources[[i]]
@@ -208,8 +236,25 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
       gr_msg(sprintf("[%d/%d] %s -- restored from store", i, length(sources), lab))
       restored$row$document <- lab
       restored$row$status <- "restored"
+      if (is.null(restored$row$document_id)) {
+        restored$row$document_id <- as_chr1(restored$doc_hash, NA_character_)
+      }
+      if (is.null(restored$row$duplicate_of)) restored$row$duplicate_of <- NA_character_
       rows[[i]] <- restored$row
       if (keep_answers && !is.null(restored$answer)) answers[[lab]] <- restored$answer
+      # A restored document is never ingested, so its text is not available to
+      # hash here. The hash travels in the store entry instead -- otherwise a
+      # resumed run would restore the first copy and then pay to read the second,
+      # reporting the pair as two independent documents. Entries written before
+      # this existed carry no hash and simply do not seed the set.
+      # First occurrence wins, and a row that is itself a duplicate never
+      # becomes the anchor -- otherwise a third copy would be reported as a
+      # duplicate of a duplicate and the chain would have to be followed to find
+      # the document actually read.
+      if (!is.null(restored$doc_hash) && is.na(restored$row$duplicate_of) &&
+          !exists(restored$doc_hash, envir = seen, inherits = FALSE)) {
+        assign(restored$doc_hash, i, envir = seen)
+      }
       next
     }
 
@@ -223,12 +268,23 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
 
     out <- tryCatch({
       doc <- gr_ingest(src, rec$ingest, trace = sub)
-      ch <- gr_segment(doc, rec$segment, client = client, trace = sub)
-      a <- gr_read(ch, question, client, rec$read, trace = sub)
-      a$recipe <- rec$name
-      a$document <- list(source = doc$source, stats = doc$stats)
-      a$segmentation <- as.list(gr_chunk_stats(ch))
-      a
+      # Identity is the CLEANED text, not the bytes: the same paper exported by
+      # two databases differs in metadata and whitespace and is the same
+      # document. Hashing before segmentation also means the check costs one
+      # local ingest rather than one read.
+      h <- gr_hash(list("readgpt-doc-v1", key_text(doc$text)))
+      prior <- mget(h, envir = seen, ifnotfound = list(NULL))[[1]]
+      if (!is.null(prior)) {
+        structure(list(of = prior, hash = h), class = "gr_corpus_duplicate")
+      } else {
+        ch <- gr_segment(doc, rec$segment, client = client, trace = sub)
+        a <- gr_read(ch, question, client, rec$read, trace = sub)
+        a$recipe <- rec$name
+        a$document <- list(source = doc$source, stats = doc$stats)
+        a$segmentation <- as.list(gr_chunk_stats(ch))
+        attr(a, "doc_hash") <- h
+        a
+      }
     }, error = function(e) {
       if (identical(on_error, "stop")) stop(e)
       gr_warn(sprintf("Document '%s' failed: %s", lab, conditionMessage(e)),
@@ -248,11 +304,33 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
     if (inherits(out, "condition")) {
       rows[[i]] <- corpus_row(lab, status = "failed", error = conditionMessage(out),
                               trace = sub, seconds = secs, cost = cost)
+    } else if (inherits(out, "gr_corpus_duplicate")) {
+      first <- labels[[out$of]]
+      gr_msg(sprintf("[%d/%d] %s -- same text as '%s', not read again",
+                     i, length(sources), lab, first))
+      # The first copy's row, relabelled. Its answer, reader and chunk counts
+      # describe this content too; its call counts and cost do not, because this
+      # run made no calls for it.
+      r <- rows[[out$of]]
+      r$document <- lab
+      r$status <- "duplicate"
+      r$duplicate_of <- first
+      r[c("calls", "cached", "tokens_in", "tokens_out")] <- 0L
+      r$cost_usd <- cost
+      r$seconds <- secs
+      rows[[i]] <- r
+      dup_answer <- answers[[first]]
+      if (keep_answers && !is.null(dup_answer)) answers[[lab]] <- dup_answer
+      # Saved under its OWN key, so a resumed run restores it instead of paying
+      # to rediscover that it is a duplicate.
+      if (!is.null(key)) corpus_save(store, key, rows[[i]], dup_answer, out$hash)
     } else {
       rows[[i]] <- corpus_row(lab, status = "ok", answer = out, trace = sub,
-                              seconds = secs, cost = cost)
+                              seconds = secs, cost = cost,
+                              document_id = attr(out, "doc_hash"))
       if (keep_answers) answers[[lab]] <- out
-      if (!is.null(key)) corpus_save(store, key, rows[[i]], out)
+      assign(attr(out, "doc_hash"), i, envir = seen)
+      if (!is.null(key)) corpus_save(store, key, rows[[i]], out, attr(out, "doc_hash"))
     }
 
     # A ceiling on a cost nobody can compute is not a ceiling. Say so once,
@@ -286,10 +364,13 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
 #' @export
 print.gr_corpus <- function(x, ...) {
   s <- x$summary
-  tab <- table(factor(s$status, levels = c("ok", "restored", "failed", "skipped")))
+  tab <- table(factor(s$status,
+                      levels = c("ok", "restored", "duplicate", "failed", "skipped")))
   cat(sprintf("<gr_corpus> %d document(s): %s\n", nrow(s),
               paste(sprintf("%d %s", as.integer(tab), names(tab))[tab > 0L], collapse = ", ")))
-  done <- s$status %in% c("ok", "restored")
+  dup <- sum(!is.na(s$duplicate_of))
+  if (dup) cat(sprintf("  %d repeated a document already read (see duplicate_of)\n", dup))
+  done <- s$status %in% c("ok", "restored", "duplicate")
   if (any(done)) {
     cat(sprintf("  %d answered, %d found nothing, %d partial\n",
                 sum(done), sum(s$not_found[done], na.rm = TRUE),
@@ -352,11 +433,19 @@ corpus_sources <- function(sources, recursive = FALSE) {
 #' One row of the summary, from an answer or from a failure.
 #' @noRd
 corpus_row <- function(document, status, answer = NULL, trace = NULL, error = NA_character_,
-                       seconds = NA_real_, cost = NA_real_) {
+                       seconds = NA_real_, cost = NA_real_, document_id = NA_character_) {
   seg <- if (is.null(answer)) list() else (answer$segmentation %||% list())
   s <- if (is.null(trace)) NULL else gr_trace_summary(trace)
   data.frame(
     document    = as_chr1(document),
+    # The stable half of a citation. `document` is a filename: it changes when
+    # the file is renamed, it collides between folders (make.unique() then
+    # appends "#1", which depends on the order you passed the sources in), and
+    # it says nothing about a document passed as text. This is the hash of the
+    # cleaned text, so it is the same string for the same document in every run,
+    # on every machine, under any name -- and identical for two copies of it,
+    # which is what makes duplicate detection and this column the same fact.
+    document_id = as_chr1(document_id, NA_character_),
     answer      = if (is.null(answer)) NA_character_ else as_chr1(answer$answer),
     not_found   = if (is.null(answer)) NA else is_not_found(answer$answer),
     partial     = if (is.null(answer)) NA else isTRUE(answer$partial),
@@ -370,6 +459,10 @@ corpus_row <- function(document, status, answer = NULL, trace = NULL, error = NA
     cost_usd    = as.numeric(cost),
     seconds     = as.numeric(seconds),
     status      = as_chr1(status),
+    # The durable marker. `status` is overwritten with "restored" when a row
+    # comes back from a store, so filtering duplicates out has to key on this
+    # column, which survives the round trip.
+    duplicate_of = NA_character_,
     error       = as_chr1(error, NA_character_),
     stringsAsFactors = FALSE
   )
@@ -415,11 +508,15 @@ corpus_restore <- function(store, key) {
 #' Written to a temporary name and renamed, so an interrupt cannot leave a half
 #' entry that a later run would have to tell from a real one.
 #' @noRd
-corpus_save <- function(store, key, row, answer) {
+corpus_save <- function(store, key, row, answer, doc_hash = NULL) {
   path <- corpus_store_path(store, key)
   tmp <- paste0(path, ".tmp-", Sys.getpid())
   ok <- tryCatch({
-    saveRDS(list(format = 1L, key = key, created = Sys.time(), row = row, answer = answer),
+    # `doc_hash` is additive and the format number does not move: an entry
+    # written before it existed is still a perfectly good answer, it just cannot
+    # seed duplicate detection.
+    saveRDS(list(format = 1L, key = key, created = Sys.time(), row = row,
+                 answer = answer, doc_hash = doc_hash),
             tmp, compress = TRUE)
     file.rename(tmp, path)
   }, error = function(e) FALSE, warning = function(w) FALSE)

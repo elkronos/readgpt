@@ -298,3 +298,165 @@ test_that("a trace with no model calls costs nothing and returns an empty frame"
   expect_identical(sum(cost$usd), 0)
   expect_error(gr_trace_cost("not a trace"))
 })
+
+# --- the same document, twice ----------------------------------------------
+#
+# The practical failure of a corpus workflow: one paper retrieved from three
+# databases under three filenames. A response cache already makes the second
+# copy's calls free; what it cannot do is stop the duplicate from appearing in
+# the results as a second, independent document.
+
+test_that("a document whose text repeats one already read is not read again", {
+  cl <- mock_echo("Revenue was 45.2 million dollars.")
+  txt <- "Revenue was 45.2 million dollars in the year under review."
+  a <- tempfile(fileext = ".txt"); writeLines(txt, a)
+  b <- tempfile(fileext = ".txt"); writeLines(txt, b)   # same text, different name
+  c3 <- tempfile(fileext = ".txt"); writeLines("Something else entirely here.", c3)
+
+  out <- quiet(gr_read_many(c(a, b, c3), "What was revenue?", "fast", client = cl))
+  expect_identical(out$summary$status, c("ok", "duplicate", "ok"))
+  expect_identical(out$summary$duplicate_of, c(NA, basename(a), NA))
+  expect_identical(length(cl$calls()), 2L)               # not three
+
+  # Nothing is dropped: every source still has a row, and the duplicate carries
+  # the answer rather than an empty cell.
+  expect_equal(nrow(out$summary), 3L)
+  expect_identical(out$summary$answer[2], out$summary$answer[1])
+  expect_identical(out$summary$reader[2], out$summary$reader[1])
+
+  # But it did not cost anything this run, and must not be counted as if it had.
+  expect_identical(out$summary$calls[2], 0L)
+  expect_identical(out$summary$tokens_in[2], 0L)
+
+  # The deduplicated set, and the number to report as removed.
+  expect_equal(nrow(subset(out$summary, is.na(duplicate_of))), 2L)
+  expect_identical(sum(!is.na(out$summary$duplicate_of)), 1L)
+})
+
+test_that("identity is the cleaned text, not the file", {
+  # Same content, different extension and different bytes on disk (one has a
+  # trailing blank line). Cleaning makes them one document.
+  cl <- mock_echo()
+  a <- tempfile(fileext = ".txt"); writeLines("Alpha beta gamma delta here.", a)
+  b <- tempfile(fileext = ".md");  writeLines(c("Alpha beta gamma delta here.", "", ""), b)
+  out <- quiet(gr_read_many(c(a, b), "Q?", "fast", client = cl))
+  expect_identical(out$summary$status, c("ok", "duplicate"))
+  expect_identical(length(cl$calls()), 1L)
+
+  # And a document that merely resembles another is not a duplicate.
+  d <- tempfile(fileext = ".txt"); writeLines("Alpha beta gamma delta there.", d)
+  out2 <- quiet(gr_read_many(c(a, d), "Q?", "fast", client = mock_echo()))
+  expect_identical(out2$summary$status, c("ok", "ok"))
+})
+
+test_that("a duplicate survives a store round trip without being re-read", {
+  # The resume hole: the first copy restores from the store and is never
+  # ingested, so its text is not available to hash. Without the hash travelling
+  # in the store entry, the second copy would be read and paid for on every
+  # resumed run, and reported as an independent document.
+  txt <- "Revenue was 45.2 million dollars in the year under review."
+  a <- tempfile(fileext = ".txt"); writeLines(txt, a)
+  b <- tempfile(fileext = ".txt"); writeLines(txt, b)
+  store <- withr::local_tempdir()
+
+  cl <- mock_echo()
+  first <- quiet(gr_read_many(c(a, b), "Q?", "fast", client = cl, store = store))
+  expect_identical(first$summary$status, c("ok", "duplicate"))
+  n1 <- length(cl$calls())
+
+  again <- quiet(gr_read_many(c(a, b), "Q?", "fast", client = cl, store = store))
+  expect_identical(again$summary$status, c("restored", "restored"))
+  expect_identical(length(cl$calls()), n1)                # nothing re-read
+  # `status` is overwritten by the restore, so the durable marker is the one
+  # that has to survive -- otherwise a resumed run silently loses the count.
+  expect_identical(again$summary$duplicate_of, c(NA, basename(a)))
+
+  # A third copy arriving later still resolves to the ORIGINAL, not to the
+  # duplicate: a chain of duplicates would have to be followed to find the
+  # document that was actually read.
+  c3 <- tempfile(fileext = ".txt"); writeLines(txt, c3)
+  third <- quiet(gr_read_many(c(a, b, c3), "Q?", "fast", client = cl, store = store))
+  expect_identical(third$summary$duplicate_of[3], basename(a))
+  expect_identical(length(cl$calls()), n1)
+})
+
+test_that("a failed document is not mistaken for a duplicate of anything", {
+  cl <- mock_echo()
+  txt <- "Revenue was 45.2 million dollars in the year under review."
+  a <- tempfile(fileext = ".txt"); writeLines(txt, a)
+  out <- quiet(gr_read_many(c("no-such-file.txt", a, a), "Q?", "fast", client = cl))
+  expect_identical(out$summary$status, c("failed", "ok", "duplicate"))
+  expect_identical(out$summary$duplicate_of, c(NA, NA, basename(a)))
+})
+
+test_that("document_id is the citable half of a row, and the filename is not", {
+  # A filename changes when the file is renamed, collides between folders (where
+  # make.unique() appends "#1", which depends on the order the sources were
+  # passed in), and does not exist at all for a document passed as text. The id
+  # is the hash of the cleaned text, so it is the same string for the same
+  # document under any name.
+  cl <- mock_echo()
+  txt <- "Revenue was 45.2 million dollars in the year under review."
+  a <- tempfile(fileext = ".txt"); writeLines(txt, a)
+  b <- tempfile(fileext = ".txt"); writeLines(txt, b)
+  other <- tempfile(fileext = ".txt"); writeLines("A different document entirely.", other)
+
+  out <- quiet(gr_read_many(c(a, other), "Q?", "fast", client = cl))
+  expect_false(anyNA(out$summary$document_id))
+  expect_false(out$summary$document_id[1] == out$summary$document_id[2])
+
+  # Same text under a different name: same id. Which is the same fact as the
+  # duplicate marking, from the other direction.
+  dup <- quiet(gr_read_many(c(a, b), "Q?", "fast", client = mock_echo()))
+  expect_identical(dup$summary$document_id[1], dup$summary$document_id[2])
+  expect_false(dup$summary$document[1] == dup$summary$document[2])
+
+  # Stable across runs, and across the file being renamed underneath it.
+  renamed <- tempfile(fileext = ".md"); writeLines(txt, renamed)
+  again <- quiet(gr_read_many(renamed, "Q?", "fast", client = mock_echo()))
+  expect_identical(again$summary$document_id, out$summary$document_id[1])
+
+  # A document that was never read has no id -- an id is a fact about content,
+  # and there was none.
+  bad <- quiet(gr_read_many("no-such-file.txt", "Q?", "fast", client = mock_echo()))
+  expect_true(is.na(bad$summary$document_id))
+})
+
+test_that("document_id survives the store", {
+  cl <- mock_echo()
+  a <- tempfile(fileext = ".txt")
+  writeLines("Revenue was 45.2 million dollars in the year under review.", a)
+  store <- withr::local_tempdir()
+  first <- quiet(gr_read_many(a, "Q?", "fast", client = cl, store = store))
+  again <- quiet(gr_read_many(a, "Q?", "fast", client = cl, store = store))
+  expect_identical(again$summary$status, "restored")
+  expect_identical(again$summary$document_id, first$summary$document_id)
+})
+
+test_that("a store written by an older version still resumes", {
+  # A store outlives the version that wrote it. Entries from 0.3.0 have neither
+  # `document_id` nor `duplicate_of` in the row and no `doc_hash` beside it, so a
+  # restored row is two columns narrower than a fresh one -- and rbind() on a
+  # ragged set of rows is an error, not a warning. The guards fill the columns
+  # in; this is what breaks if either is removed.
+  cl <- mock_echo("A restored answer.")
+  a <- tempfile(fileext = ".txt"); writeLines("Revenue was 45.2 million dollars.", a)
+  b <- tempfile(fileext = ".txt"); writeLines("A wholly different document here.", b)
+  store <- withr::local_tempdir()
+
+  rec <- readgpt:::as_recipe("fast")
+  key <- readgpt:::corpus_key(a, "Q?", rec, cl)
+  legacy <- readgpt:::corpus_row("old.txt", status = "ok")
+  legacy$answer <- "A restored answer."
+  legacy[c("document_id", "duplicate_of")] <- NULL          # the 0.3.0 shape
+  expect_false("document_id" %in% names(legacy))
+  saveRDS(list(format = 1L, key = key, created = Sys.time(), row = legacy, answer = NULL),
+          readgpt:::corpus_store_path(store, key))
+
+  out <- quiet(gr_read_many(c(a, b), "Q?", "fast", client = cl, store = store))
+  expect_identical(out$summary$status, c("restored", "ok"))
+  expect_true(all(c("document_id", "duplicate_of") %in% names(out$summary)))
+  expect_true(is.na(out$summary$document_id[1]))            # unknowable, not invented
+  expect_false(is.na(out$summary$document_id[2]))
+  expect_true(all(is.na(out$summary$duplicate_of)))
+})

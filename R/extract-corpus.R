@@ -56,9 +56,13 @@
 #'   \describe{
 #'     \item{`table`}{One row per document: `document`, one column per field in
 #'       the schema and of that field's type, then `n_filled`, `n_unverified`,
-#'       `conflicts`, `status`, `error`.}
-#'     \item{`evidence`}{Long form, one row per filled cell: `document`,
-#'       `field`, `chunk_id`, `page`, `section`, `quote`, `verified`, `match`.}
+#'       `conflicts`, `status`, `duplicate_of`, `error`. A document whose cleaned
+#'       text repeats one already read is not read again -- see
+#'       [gr_read_many()] -- so `subset(x$table, is.na(duplicate_of))` is the
+#'       set of distinct documents.}
+#'     \item{`evidence`}{Long form, one row per supported cell: `document`,
+#'       `document_id`, `field`, `chunk_id`, `page`, `section`, `quote`,
+#'       `verified`, `match`.}
 #'     \item{`fields`}{The schema, so the table can be read without it.}
 #'     \item{`summary`}{The per-document run summary from [gr_read_many()],
 #'       including calls, tokens, cost and seconds.}
@@ -161,7 +165,7 @@ gr_extract <- function(sources, fields, goal = NULL, recipe = "research",
 
   structure(list(
     table    = extraction_table(docs, answers, fields, out$summary),
-    evidence = extraction_evidence(docs, answers),
+    evidence = extraction_evidence(docs, answers, out$summary$document_id),
     fields   = fields,
     summary  = out$summary,
     answers  = if (isTRUE(keep_answers)) out$answers else list(),
@@ -175,10 +179,11 @@ print.gr_extraction <- function(x, ...) {
   tab <- x$table
   nf <- length(x$fields)
   cat(sprintf("<gr_extraction> %d document(s) x %d field(s)\n", nrow(tab), nf))
-  st <- table(factor(tab$status, levels = c("ok", "restored", "failed", "skipped")))
+  st <- table(factor(tab$status,
+                     levels = c("ok", "restored", "duplicate", "failed", "skipped")))
   cat(sprintf("  %s\n", paste(sprintf("%d %s", as.integer(st), names(st))[st > 0L],
                               collapse = ", ")))
-  done <- tab$status %in% c("ok", "restored")
+  done <- tab$status %in% c("ok", "restored", "duplicate")
   if (any(done) && nf > 0L) {
     cat(sprintf("  cells filled: %d of %d (%.0f%%)\n",
                 sum(tab$n_filled[done]), sum(done) * nf,
@@ -255,8 +260,11 @@ extraction_column <- function(field, values) {
 
 #' @noRd
 extraction_table <- function(docs, answers, fields, summary) {
+  if (is.null(summary$document_id)) summary$document_id <- NA_character_
   records <- lapply(docs, function(d) answer_record(answers[[d]], fields))
-  tab <- data.frame(document = as.character(docs), stringsAsFactors = FALSE)
+  tab <- data.frame(document = as.character(docs),
+                    document_id = as.character(summary$document_id),
+                    stringsAsFactors = FALSE)
   for (nm in names(fields)) {
     tab[[nm]] <- extraction_column(fields[[nm]], lapply(records, function(r) r[[nm]]))
   }
@@ -299,28 +307,37 @@ extraction_table <- function(docs, answers, fields, summary) {
   # A document that was never read has no record, so its n_filled of zero would
   # read as "reports none of these fields" -- exactly the confusion the status
   # column exists to prevent. Make it NA and let the status say why.
-  unread <- !summary$status %in% c("ok", "restored")
+  # A duplicate WAS read -- once, as another row. Its values are the first
+  # copy's values, so treating it as unread would blank a row that is fully
+  # known and mark it as a job to redo.
+  unread <- !summary$status %in% c("ok", "restored", "duplicate")
   tab$n_filled[unread] <- NA_integer_
   tab$n_unverified[unread] <- NA_integer_
   tab$status <- as.character(summary$status)
+  # Carried into the table so the deduplicated set is one subset() away without
+  # having to join back to $summary.
+  tab$duplicate_of <- as.character(summary$duplicate_of %||% NA_character_)
   tab$error <- as.character(summary$error)
   rownames(tab) <- NULL
   tab
 }
 
 #' @noRd
-extraction_evidence <- function(docs, answers) {
-  cols <- c("document", "field", "chunk_id", "page", "section", "quote",
-            "verified", "match")
-  empty <- data.frame(document = character(0), field = character(0),
+extraction_evidence <- function(docs, answers, ids = NULL) {
+  cols <- c("document", "document_id", "field", "chunk_id", "page", "section",
+            "quote", "verified", "match")
+  empty <- data.frame(document = character(0), document_id = character(0),
+                      field = character(0),
                       chunk_id = integer(0), page = integer(0),
                       section = character(0), quote = character(0),
                       verified = logical(0), match = numeric(0),
                       stringsAsFactors = FALSE)
+  ids <- stats::setNames(as.character(ids %||% rep(NA_character_, length(docs))), docs)
   parts <- lapply(docs, function(d) {
     ev <- answers[[d]]$evidence
     if (!is.data.frame(ev) || !nrow(ev)) return(NULL)
     data.frame(document = d,
+               document_id = as_chr1(ids[[d]], NA_character_),
                field    = if (is.null(ev$field)) NA_character_ else as.character(ev$field),
                chunk_id = as.integer(ev$chunk_id),
                page     = as.integer(ev$page),

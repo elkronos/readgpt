@@ -31,11 +31,35 @@ This release is the second one.
   failing; `require_quote = TRUE` makes it a policy for a protocol that needs
   one.
 
+* **The same document is read once.** A source whose cleaned text repeats one
+  already read this run is not read again: its row is filled in from the first
+  copy, `status` is `"duplicate"` and the new `duplicate_of` column names the
+  row it repeats. Nothing is dropped — every source you passed still has a row —
+  so `subset(x$summary, is.na(duplicate_of))` is the deduplicated set and
+  `sum(!is.na(x$summary$duplicate_of))` is the number to report as removed.
+
+  A response cache already made the second copy's calls free. What it could not
+  do was stop the duplicate appearing in the results as a second, independent
+  document, which is how one study gets counted twice in a synthesis. The hash
+  travels in the `store`, so a resumed run does not pay to rediscover it.
+
+* **A citable document id.** `document_id` is the hash of a document's cleaned
+  text, in the corpus summary, the extraction table and the evidence table.
+  `document` is a filename: it changes when the file is renamed, collides
+  between folders, and does not exist for a document passed as text. The id is
+  the same string for the same document in every run and on every machine — and
+  identical for two copies of it, which is the same fact as the duplicate
+  detection above.
+
 ## Behaviour
 
 * `gr_call_json()` gains `allow_empty`, used only by `extract`, where a JSON
   object with no keys is a real answer — this excerpt supports none of the
   fields — rather than a broken one.
+
+* `gr_read_many()`'s summary gains `document_id` and `duplicate_of`. A `store`
+  written by 0.3.0 still resumes; its rows have neither, and both are filled
+  with `NA` rather than being invented.
 
 * A field a document does not report comes back `NA` with `status` `"ok"`, not
   `"failed"`. "Not reported" is a finding; the `status` column is what separates

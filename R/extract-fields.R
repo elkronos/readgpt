@@ -108,8 +108,10 @@ gr_fields <- function(...) {
 # Names the extraction table uses for its own bookkeeping. A field called
 # `status` would be silently overwritten by the run status, which is the sort of
 # thing you discover after the run rather than before it.
-.gr_reserved_fields <- c("document", "status", "error", "n_filled", "n_unverified",
-                         "conflicts", "field")
+.gr_reserved_fields <- c("document", "document_id", "status", "duplicate_of",
+                         "error", "n_filled", "n_unverified", "conflicts",
+                         "field", "chunk_id", "page", "section", "quote",
+                         "verified", "match")
 
 #' Reject a field name before it becomes a broken column.
 #'

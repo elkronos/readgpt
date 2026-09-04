@@ -60,6 +60,17 @@ test_that("field names that would break the table are refused, not renamed", {
   expect_error(gr_fields(design__quote = "d"), class = "gr_bad_field")
   expect_error(gr_fields(status = "s"), class = "gr_bad_field")
   expect_error(gr_fields(document = "d"), class = "gr_bad_field")
+  expect_error(gr_fields(document_id = "d"), class = "gr_bad_field")
+  expect_error(gr_fields(duplicate_of = "d"), class = "gr_bad_field")
+  expect_error(gr_fields(n_unverified = "d"), class = "gr_bad_field")
+  # Every name the table writes for itself, checked against the table itself --
+  # so a column added later without being reserved fails here rather than
+  # silently overwriting a user's field.
+  tab_cols <- names(quiet(gr_extract(
+    two_para_file("A trial was run here.", "It then ended here."),
+    gr_fields(zzz = "anything"), client = mock_form(list()),
+    recipe = "thorough", max_tokens = 40))$table)
+  expect_true(all(setdiff(tab_cols, "zzz") %in% readgpt:::.gr_reserved_fields))
   expect_error(gr_fields(a = "x", a = "y"), class = "gr_bad_field")
   expect_error(gr_fields(), class = "gr_bad_field")
   expect_error(gr_fields("unnamed"), class = "gr_bad_field")
@@ -525,4 +536,41 @@ test_that("print.gr_extraction() reports the shape without erroring on the edges
   expect_output(print(x), "1 ok, 1 failed")
   expect_output(print(x), "cells filled: 1 of 1")
   expect_output(print(x), "verbatim in the cited chunk")
+})
+
+test_that("gr_extract() fills a duplicate row rather than blanking it", {
+  # A duplicate WAS read -- once, as another row. Treating it as unread would
+  # blank a row that is fully known and mark it as a job to redo.
+  f <- gr_fields(design = "The study design")
+  cl <- mock_form(list(list(where = "trial", field = "design", value = "trial")))
+  txt <- "A trial was run here and it then ended here."
+  a <- tempfile(fileext = ".txt"); writeLines(txt, a)
+  b <- tempfile(fileext = ".txt"); writeLines(txt, b)
+
+  x <- quiet(gr_extract(c(a, b), f, client = cl, recipe = "thorough", max_tokens = 40))
+  expect_identical(x$table$status, c("ok", "duplicate"))
+  expect_identical(x$table$design, c("trial", "trial"))
+  expect_identical(x$table$n_filled, c(1L, 1L))
+  expect_identical(x$table$n_unverified, c(0L, 0L))
+  expect_identical(x$table$duplicate_of, c(NA, basename(a)))
+  expect_identical(length(cl$calls()), 1L)
+
+  # Which makes the distinct set one subset() away.
+  expect_equal(nrow(subset(x$table, is.na(duplicate_of))), 1L)
+})
+
+test_that("the extraction tables carry the citable id, not just the filename", {
+  f <- gr_fields(design = "The study design")
+  cl <- mock_form(list(list(where = "trial", field = "design", value = "trial")))
+  txt <- "A trial was run here and it then ended here."
+  a <- tempfile(fileext = ".txt"); writeLines(txt, a)
+  b <- tempfile(fileext = ".txt"); writeLines(txt, b)
+
+  x <- quiet(gr_extract(c(a, b), f, client = cl, recipe = "thorough", max_tokens = 40))
+  expect_false(anyNA(x$table$document_id))
+  expect_identical(x$table$document_id[1], x$table$document_id[2])
+  # Evidence joins to the table on either column, and on the stable one across
+  # runs -- which is the point of putting it in both.
+  expect_true("document_id" %in% names(x$evidence))
+  expect_setequal(x$evidence$document_id, x$table$document_id)
 })

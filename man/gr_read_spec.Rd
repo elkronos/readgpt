@@ -91,7 +91,17 @@ for citations there asks the model to invent them.}
 stages. \code{skim_model} is used by \code{skim}'s extraction \strong{and} \code{rerank}'s
 relevance scoring; \code{summary_model} by \code{hierarchical}'s summarisation.}
 
-\item{parallel}{Run per-chunk calls in parallel.}
+\item{parallel}{Run per-chunk calls in parallel. Needs the \code{future} and
+\code{future.apply} packages; without them the run is sequential and says so.
+
+The trace is complete either way: workers keep their own and the parent
+absorbs them, in input order, so a parallel run reports the same calls,
+tokens and cost as the same run made sequentially. Two things do not cross
+the process boundary. \code{gr_options(max_calls =)} is checked per worker while
+the fan-out is in flight, so the pre-flight estimate -- which runs in the
+parent and knows the total -- is what bounds a parallel run. And a client
+that keeps its own log in a closure, such as \code{\link[=gr_mock_client]{gr_mock_client()}}, only sees
+the calls made in this process; ask the trace instead.}
 
 \item{delay_between_calls}{Seconds to sleep between sequential calls, for
 rate-limit shaping. Honoured by \code{map_reduce}, \code{refine} and \code{skim}; the

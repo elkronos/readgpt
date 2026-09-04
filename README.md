@@ -39,9 +39,25 @@ all of it without a key. Blocks that show an answer set
 `cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")` and
 pass `client = cl`.
 
+**One document** — `answer_document()` picks an ingest, a segmentation and a
+reading strategy, and hands back an answer with a trace of everything it did.
+**A folder** — `gr_screen()` decides which documents count, `gr_extract()` fills
+a typed schema across all of them, and `gr_synthesise()` writes the result up
+with every claim citing the row it rests on. [From a folder to a
+review](#from-a-folder-to-a-review) walks that path end to end.
+
+**Contents**
+
+- Start here — [Install](#install) · [Quick start](#quick-start) · [API key](#api-key) · [Other providers](#other-providers-and-other-peoples-clients)
+- The three axes — [ingest](#axis-1--ingest) · [segment](#axis-2--segment) · [read](#axis-3--read) · [choosing chunks](#choosing-chunks-and-where-to-put-them) · [recipes](#recipes)
+- Reading one document — [reading a run](#reading-a-run) · [when the answer is not what you expected](#when-the-answer-is-not-what-you-expected) · [cost and safety rails](#cost-and-safety-rails)
+- Reading a corpus — [many documents](#many-documents) · [from a folder to a review](#from-a-folder-to-a-review)
+- Paying once, twice never — [caching](#paying-once) · [replaying a run](#replaying-a-run)
+- Everything else — [extending it](#extending-it) · [Shiny app](#shiny-app) · [optional packages](#optional-packages) · [tests](#running-the-tests) · [CI](#continuous-integration) · [migrating from v1](#migrating-from-v1)
+
 ---
 
-## Requirements and install
+## Install
 
 Requires **R ≥ 4.1**. The only non-base hard dependencies are `digest`, `httr`
 and `jsonlite`.
@@ -57,21 +73,51 @@ Or from a local checkout:
 remotes::install_local("path/to/readgpt")
 ```
 
-Optional, each checked at the point of use:
+## Quick start
 
-| package | needed for |
-|---|---|
-| `pdftools` | PDF text extraction |
-| `tesseract` + `magick` | OCR of scanned pages and images |
-| `xml2` | HTML **and DOCX** extraction |
-| `future` + `future.apply` | `parallel = TRUE` (without them it warns and runs sequentially) |
-| `shiny` | the bundled app |
-| `reticulate` | the exact `tiktoken` tokenizer |
-| `readtext` | DOCX fallback when the `xml2` path yields nothing |
+```r
+library(readgpt)
 
-Missing `pdftools`/`xml2`/`tesseract` at extraction time raises a clear error
-naming the package. Missing OCR support mid-PDF only *warns* and returns those
-pages empty.
+ans <- answer_document("report.pdf", "What was Q3 revenue?", recipe = "needle")
+ans$answer
+ans$partial
+```
+
+`answer_document()` treats its first argument as a path when the file exists.
+A string that *looks* like a path but does not exist is an error, not a
+document — so a typo cannot silently become the text you ask questions about.
+
+Not sure which pipeline suits your document? Compare, then commit. One
+extraction is shared across all of them:
+
+```r
+cl  <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
+cmp <- gr_compare(readgpt_example(), "What was revenue in fiscal 2024?",
+                  c("fast", "needle", "thorough", "survey"), client = cl)
+cmp$summary
+#>     recipe  segmenter chunks       reader         signature partial chunks_used
+#> 1     fast  paragraph      1        stuff        all|1|none   FALSE           1
+#> 2   needle   semantic      2     retrieve       topk|1|none   FALSE           2
+#> 3 thorough  paragraph      1   map_reduce   all|N+logN|tree   FALSE           1
+#> 4   survey structural      6 hierarchical all|N+tree+1|tree   FALSE           6
+#>   answer_chars not_found error
+#> 1           33     FALSE  <NA>
+#> ...
+```
+
+(The bundled example is deliberately small — 573 tokens by `gr_count_tokens()`
+— so `fast` and `thorough` fit it in one chunk. On a real report they would not.)
+
+Build a pipeline by hand:
+
+```r
+rec <- gr_recipe("my_pipeline",
+  ingest  = list(clean = c("page_numbers", "hyphenation", "headers_footers")),
+  segment = list(method = "structural", max_tokens = 800, overlap_tokens = 80),
+  read    = list(reader = "skim", cite = TRUE, model = "gpt-5.6-terra"))
+
+ans <- answer_document("thesis.pdf", "How was the sample recruited?", rec)
+```
 
 ## API key
 
@@ -149,52 +195,6 @@ If you are already using ellmer and ragnar, the division is: ragnar retrieves,
 this package reads. `ragnar_retrieve()` gets you relevant chunks; `map_reduce`,
 `refine`, `hierarchical`, `iterative`, `rerank` and `ensemble` are what happen
 after that, with a traversal signature each and a bill you can see.
-
-## Quick start
-
-```r
-library(readgpt)
-
-ans <- answer_document("report.pdf", "What was Q3 revenue?", recipe = "needle")
-ans$answer
-ans$partial
-```
-
-`answer_document()` treats its first argument as a path when the file exists.
-A string that *looks* like a path but does not exist is an error, not a
-document — so a typo cannot silently become the text you ask questions about.
-
-Not sure which pipeline suits your document? Compare, then commit. One
-extraction is shared across all of them:
-
-```r
-cl  <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
-cmp <- gr_compare(readgpt_example(), "What was revenue in fiscal 2024?",
-                  c("fast", "needle", "thorough", "survey"), client = cl)
-cmp$summary
-#>     recipe  segmenter chunks       reader         signature partial chunks_used
-#> 1     fast  paragraph      1        stuff        all|1|none   FALSE           1
-#> 2   needle   semantic      2     retrieve       topk|1|none   FALSE           2
-#> 3 thorough  paragraph      1   map_reduce   all|N+logN|tree   FALSE           1
-#> 4   survey structural      6 hierarchical all|N+tree+1|tree   FALSE           6
-#>   answer_chars not_found error
-#> 1           33     FALSE  <NA>
-#> ...
-```
-
-(The bundled example is deliberately small — 573 tokens by `gr_count_tokens()`
-— so `fast` and `thorough` fit it in one chunk. On a real report they would not.)
-
-Build a pipeline by hand:
-
-```r
-rec <- gr_recipe("my_pipeline",
-  ingest  = list(clean = c("page_numbers", "hyphenation", "headers_footers")),
-  segment = list(method = "structural", max_tokens = 800, overlap_tokens = 80),
-  read    = list(reader = "skim", cite = TRUE, model = "gpt-5.6-terra"))
-
-ans <- answer_document("thesis.pdf", "How was the sample recruited?", rec)
-```
 
 ## Axis 1 — ingest
 
@@ -544,7 +544,7 @@ changes which files get picked up. The full summary also carries `answer`,
 `seconds` and `error` — `write.csv(out$summary, ...)` is a reasonable end to a
 run.
 
-Four things it does that a `lapply()` does not:
+Five things it does that a `lapply()` does not:
 
 **One bad file costs one row.** An unreadable document gets `status = "failed"`
 and its error in the `error` column; the other hundred and ninety-nine answers
@@ -572,6 +572,23 @@ whole pipeline and the model — so an edited document is a new job, not a stale
 hit. A `gr_backend_client()` needs a stable `id` for a store or a cache to be
 reused by a *later session*; `gr_client()` and `gr_ellmer_client()` already know
 what they are.
+
+**The same document is read once.** The same paper reaches you from three
+databases under three filenames. A source whose *cleaned text* repeats one
+already read is not read again: its row is filled in from the first copy,
+`status` is `"duplicate"`, and `duplicate_of` names the row it repeats. Nothing
+is dropped — every source you passed still has a row — so
+`subset(out$summary, is.na(duplicate_of))` is the deduplicated set and
+`sum(!is.na(out$summary$duplicate_of))` is the number to report as removed. A
+response cache already made the second copy's calls free; what it could not do
+was stop the duplicate appearing in the results as a second, independent
+document.
+
+`document_id`, beside `document` in the summary, is the hash of that cleaned
+text. Cite with it: a filename changes when the file is renamed, collides
+between folders, and does not exist at all for a document passed as text, while
+the id is the same string for the same document in every run and on every
+machine.
 
 **You can see what it cost.** `gr_trace_cost()` prices a run using each step's
 own model and counts only the calls that were really issued:
@@ -665,7 +682,7 @@ check — `require_quote = TRUE` makes discarding a choice rather than a surpris
 **The write-up is one call per section of the outline**, and every section cites
 the rows it rests on:
 
-```
+```text
 ## Findings
 
 The southern region reported more [study 2] than the northern [study 1].
@@ -861,6 +878,25 @@ Set `GPTREAD_DOC_ROOTS` (colon-separated) to control which folders the app can
 read. **Unset, it defaults to `~/Documents`, falling back to your entire home
 directory** — set it explicitly before exposing the app to anyone else.
 
+## Optional packages
+
+Each is checked at the point of use, so none of them is needed to install or to run
+anything that does not touch it.
+
+| package | needed for |
+|---|---|
+| `pdftools` | PDF text extraction |
+| `tesseract` + `magick` | OCR of scanned pages and images |
+| `xml2` | HTML **and DOCX** extraction |
+| `future` + `future.apply` | `parallel = TRUE` (without them it warns and runs sequentially) |
+| `shiny` | the bundled app |
+| `reticulate` | the exact `tiktoken` tokenizer |
+| `readtext` | DOCX fallback when the `xml2` path yields nothing |
+
+Missing `pdftools`/`xml2`/`tesseract` at extraction time raises a clear error
+naming the package. Missing OCR support mid-PDF only *warns* and returns those
+pages empty.
+
 ## Running the tests
 
 ```bash
@@ -872,10 +908,13 @@ bash run-tests.sh --no-install # skip dependency installation
 Works from the package directory or the repository root. It uses a personal R
 library, so it will not fail on a read-only system library.
 
-Running the suite needs only four R packages: `testthat`, `withr`, `jsonlite`
-and `httr`. The rest of `Suggests` gates optional features (PDF, OCR, HTML,
-parallelism) that the tests do not exercise -- verified by running the full
-suite in a library with those packages deliberately absent.
+Running the suite needs `testthat`, `withr`, `jsonlite` and `httr`, plus
+`knitr` for the vignette check and `future` + `future.apply` for the tests that
+check a parallel run accounts for itself. The rest of `Suggests` gates optional
+features (PDF, OCR, HTML) that the tests do not exercise. Tests that need an
+absent package skip rather than fail — which is why CI installs the ones above
+explicitly: `parallel = TRUE` once shipped under-reporting every run it sped up,
+and the tests that would have caught it were skipping silently.
 
 Every test uses an offline mock client, so **no API key is needed and no
 requests are made**. By hand:

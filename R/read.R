@@ -167,7 +167,17 @@ gr_reader_signature <- function(reader) {
 #' @param skim_model,summary_model Optional cheaper models for the per-chunk
 #'   stages. `skim_model` is used by `skim`'s extraction **and** `rerank`'s
 #'   relevance scoring; `summary_model` by `hierarchical`'s summarisation.
-#' @param parallel Run per-chunk calls in parallel.
+#' @param parallel Run per-chunk calls in parallel. Needs the `future` and
+#'   `future.apply` packages; without them the run is sequential and says so.
+#'
+#'   The trace is complete either way: workers keep their own and the parent
+#'   absorbs them, in input order, so a parallel run reports the same calls,
+#'   tokens and cost as the same run made sequentially. Two things do not cross
+#'   the process boundary. `gr_options(max_calls =)` is checked per worker while
+#'   the fan-out is in flight, so the pre-flight estimate -- which runs in the
+#'   parent and knows the total -- is what bounds a parallel run. And a client
+#'   that keeps its own log in a closure, such as [gr_mock_client()], only sees
+#'   the calls made in this process; ask the trace instead.
 #' @param delay_between_calls Seconds to sleep between sequential calls, for
 #'   rate-limit shaping. Honoured by `map_reduce`, `refine` and `skim`; the
 #'   other readers do not sleep.

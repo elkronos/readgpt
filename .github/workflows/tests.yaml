@@ -40,11 +40,18 @@ jobs:
           # its own `requireNamespace()` escape hatch and reported success having
           # checked nothing -- a green tick for a job that did not run.
           # No pandoc: that step knits to markdown rather than rendering.
+          #
+          # future/future.apply for the same reason: they are what `parallel =
+          # TRUE` runs on, and the tests that check a parallel run accounts for
+          # itself skip silently without them. `parallel = TRUE` shipped
+          # under-reporting every run it sped up, with no test on CI to notice.
           dependencies: '"hard"'
           extra-packages: |
             any::testthat
             any::withr
             any::knitr
+            any::future
+            any::future.apply
 
       - name: Install package
         run: R CMD INSTALL . --no-byte-compile

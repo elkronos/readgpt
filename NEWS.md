@@ -1,3 +1,27 @@
+# readgpt 0.4.1 (in development)
+
+## Fixed
+
+* **`parallel = TRUE` no longer under-reports the run it speeds up.** A worker
+  is a separate process, so the trace it was handed was a copy and every call it
+  recorded was thrown away with it. A six-chunk `map_reduce` reported one call
+  instead of seven; `gr_trace_cost()` under-reported the bill in proportion to
+  how parallel the run was. The answers were correct throughout, which is what
+  made it hard to notice.
+
+  Each worker now keeps its own trace and the parent absorbs them, in input
+  order rather than completion order, so a parallel run reports exactly what the
+  same run made sequentially reports — same calls, steps, tokens and cost.
+
+  Two things still do not cross the process boundary, and both are now
+  documented: `gr_options(max_calls =)` is checked per worker while a fan-out is
+  in flight, so the pre-flight estimate is what bounds a parallel run; and a
+  client that keeps its own log in a closure, such as `gr_mock_client()`, only
+  sees the calls made in this process. Ask the trace.
+
+  There were no tests for `parallel = TRUE` in the suite at all, and CI did not
+  install `future`, so any that had existed would have skipped. Both fixed.
+
 # readgpt 0.4.0
 
 Reading a corpus for an answer and reading it for a *table* are different jobs.

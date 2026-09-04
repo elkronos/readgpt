@@ -67,7 +67,7 @@ read_map_reduce <- function(chunks, question, client, spec, trace) {
     gr_warn(sprintf("map_reduce needs %d calls but the run cap is %d; reduce the chunk count or raise gr_options(max_calls=).",
                     nrow(d), gr_options("max_calls")), class = "gr_call_cap")
   }
-  res <- gr_lapply(seq_len(nrow(d)), function(i) {
+  res <- gr_lapply(seq_len(nrow(d)), function(i, trace) {
     if (!trace_can_call(trace)) return(list(ok = FALSE, text = "", capped = TRUE))
     r <- gr_call(client, answer_messages(question, render_chunks(d[i, , drop = FALSE]),
                                          cite = spec$cite),
@@ -75,7 +75,7 @@ read_map_reduce <- function(chunks, question, client, spec, trace) {
                  temperature = spec$temperature, trace = trace, label = "map.answer")
     if (spec$delay_between_calls > 0) Sys.sleep(spec$delay_between_calls)
     list(ok = usable_text(r), text = r$text, capped = FALSE)
-  }, parallel = spec$parallel, label = "chunk")
+  }, parallel = spec$parallel, label = "chunk", trace = trace)
 
   ok <- vapply(res, function(r) isTRUE(r$ok), logical(1))
   texts <- vapply(res, function(r) as_chr1(r$text), character(1))
@@ -169,7 +169,7 @@ read_refine <- function(chunks, question, client, spec, trace) {
 #' @noRd
 read_skim <- function(chunks, question, client, spec, trace) {
   d <- chunks$chunks
-  res <- gr_lapply(seq_len(nrow(d)), function(i) {
+  res <- gr_lapply(seq_len(nrow(d)), function(i, trace) {
     if (!trace_can_call(trace)) return(list(ok = FALSE, text = ""))
     r <- gr_call(client, list(
       list(role = "system", content = .gr_prompts$extract_system),
@@ -180,7 +180,7 @@ read_skim <- function(chunks, question, client, spec, trace) {
        temperature = spec$temperature, trace = trace, label = "skim.extract")
     if (spec$delay_between_calls > 0) Sys.sleep(spec$delay_between_calls)
     list(ok = usable_text(r), text = r$text)
-  }, parallel = spec$parallel, label = "skim chunk")
+  }, parallel = spec$parallel, label = "skim chunk", trace = trace)
 
   ok <- vapply(res, function(r) isTRUE(r$ok), logical(1))
   txt <- vapply(res, function(r) as_chr1(r$text), character(1))
@@ -304,7 +304,7 @@ read_rerank <- function(chunks, question, client, spec, trace) {
                  properties = list(
                    score = list(type = "integer", minimum = 0, maximum = 10),
                    reason = list(type = "string")))
-  scored <- gr_lapply(cand, function(i) {
+  scored <- gr_lapply(cand, function(i, trace) {
     if (!trace_can_call(trace)) return(list(i = i, score = 0, reason = "call cap reached"))
     out <- gr_call_json(client, list(
       list(role = "system", content = paste0(
@@ -318,7 +318,7 @@ read_rerank <- function(chunks, question, client, spec, trace) {
     if (!out$ok) return(list(i = i, score = 0, reason = "scoring failed"))
     list(i = i, score = as.numeric(out$value$score %||% 0),
          reason = as_chr1(out$value$reason))
-  }, parallel = spec$parallel, label = "rerank candidate")
+  }, parallel = spec$parallel, label = "rerank candidate", trace = trace)
 
   sc <- vapply(scored, function(s) s$score, numeric(1))
   ii <- vapply(scored, function(s) s$i, numeric(1))
@@ -381,7 +381,7 @@ read_hierarchical <- function(chunks, question, client, spec, trace) {
   d <- chunks$chunks
   summary_failures <- 0L
   summarise <- function(texts, level) {
-    unlist(gr_lapply(seq_along(texts), function(i) {
+    unlist(gr_lapply(seq_along(texts), function(i, trace) {
       if (!trace_can_call(trace)) return("")
       r <- gr_call(client, list(
         list(role = "system", content = .gr_prompts$summarise_system),
@@ -391,7 +391,8 @@ read_hierarchical <- function(chunks, question, client, spec, trace) {
          temperature = spec$temperature, trace = trace,
          label = sprintf("hier.summarise.L%d", level))
       if (usable_text(r)) r$text else ""
-    }, parallel = spec$parallel, label = sprintf("summary L%d", level)), use.names = FALSE)
+    }, parallel = spec$parallel, label = sprintf("summary L%d", level),
+       trace = trace), use.names = FALSE)
   }
   count_failures <- function(texts, got) {
     summary_failures <<- summary_failures + sum(!has_content(got))

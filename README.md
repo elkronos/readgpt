@@ -14,7 +14,7 @@ without editing the package:
 ```
   source  ──▶  INGEST  ──▶  SEGMENT  ──▶  READ  ──▶  answer + trace
                │             │             │
-               │             │             └─ 9 strategies, each with a
+               │             │             └─ 11 strategies, each with a
                │             │                distinct traversal signature
                │             └─ 9 segmenters + overlap / min-size / context
                └─ 6 extractors + 14 individually toggleable cleaners
@@ -302,7 +302,7 @@ do.call(rbind, lapply(c(0, 30, 60), function(ov)
 
 ## Axis 3 — read
 
-`gr_read()` answers the question. Nine strategies, each with a **traversal
+`gr_read()` answers the question. Eleven strategies, each with a **traversal
 signature** — `select|calls|state` — which is how the package tells two
 methodologies apart from two names for the same thing:
 
@@ -316,6 +316,8 @@ methodologies apart from two names for the same thing:
 | `rerank` | `topk\|m+1\|none` | m + 1 | BM25 prefilter, model scores candidates, answer from the winners |
 | `hierarchical` | `all\|N+tree+1\|tree` | N + levels + 1 | recursively summarise until the summaries fit, then answer |
 | `iterative` | `topk\|rounds*2\|forward` | ≤ 2 × rounds | agentic: the model names what it still needs, driving the next retrieval |
+| `extract` | `all\|N+conflicts\|none` | N + one per disagreeing field | fills a typed schema from every chunk, then reconciles; a call only where the document contradicts itself |
+| `screen` | `head\|1\|none` | 1 | one decision about the whole document, from its opening; include / exclude / unclear with a reason |
 | `ensemble` | `ensemble\|sum+1\|none` | Σ members + 1 | several distinct readers, adjudicated; members must have different signatures |
 
 `rerank` and `iterative` need JSON-schema structured output. Against an endpoint
@@ -384,7 +386,7 @@ ans$evidence    # what the answer rests on
 print(ans$trace)
 gr_trace_summary(ans$trace)
 #>                          run_id calls cached steps tokens_in tokens_out errors
-#> 1 run_20260904035101.469_68d50e     1      0     8       682         13      0
+#> 1 run_20260904035101.469_68d50e     1      0     8       669         13      0
 #>   elapsed_s
 #> 1       0.3
 
@@ -579,7 +581,7 @@ cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
 run <- answer_document(readgpt_example(), "What was revenue?", "fast", client = cl)
 gr_trace_cost(run$trace)
 #>           model calls paid_calls paid_in paid_out      usd
-#> 1 gpt-5.6-terra     1          1     609       13 0.001374
+#> 1 gpt-5.6-terra     1          1     595       13 0.001346
 ```
 
 This is why the token totals on `gr_trace_summary()` are not a bill. They say
@@ -587,6 +589,98 @@ how large the prompts were, which is the right measure of a run's shape; a fully
 cached re-run has the same shape and costs nothing. `paid_calls` is the column
 that falls to zero. A model with no registered price contributes `NA` rather
 than zero, so a total cannot quietly omit it.
+
+## From a folder to a review
+
+The three axes answer a question. A corpus job usually wants a *table*, and a
+review wants a table plus the account of it. Four functions cover that:
+
+`gr_protocol()` → `gr_screen()` → `gr_extract()` → `gr_synthesise()`
+
+A protocol is what you fix **before** reading anything: which documents count,
+what to collect from the ones that do, and what the write-up has to cover. That
+is the point of it — a criterion invented while reading is a criterion fitted to
+what was found. `gr_protocols()` lists three templates to start from, and
+`gr_protocol_save()` round-trips one through a JSON file so it can be shared,
+diffed and cited alongside the results.
+
+```r
+protocol <- gr_protocol(
+  "revenue-review",
+  question = "How did revenue change across the regional reports?",
+  include  = "Reports a revenue figure",
+  fields   = gr_fields(
+    region  = "The region the report covers",
+    revenue = gr_field("Revenue in millions of dollars", type = "number")
+  ),
+  outline  = c("Findings" = "How revenue compares across regions")
+)
+
+# One mock standing in for three stages, so the example runs offline.
+reply <- function() gr_mock_client(function(messages, params) {
+  seen <- paste(vapply(messages, function(m) as.character(m$content), character(1)),
+                collapse = " ")
+  line <- regmatches(seen, regexpr("Revenue was [0-9.]+ million[^.]*\\.", seen))
+  if (grepl("<studies>", seen, fixed = TRUE))
+    return("The southern region reported more [study 2] than the northern [study 1].")
+  if (grepl("screen", seen))
+    return(sprintf('{"decision":"include","reason":"Reports revenue.","criterion":"Reports a revenue figure","quote":"%s"}', line))
+  sprintf('{"region":"%s","revenue":%s,"region__quote":"%s","revenue__quote":"%s"}',
+          if (grepl("45.2", seen)) "north" else "south",
+          if (grepl("45.2", seen)) "45.2" else "51.8", line, line)
+})
+
+reports  <- file.path(tempdir(), "reports")
+screened <- gr_screen(reports, protocol, client = reply())
+extracted <- gr_extract(screened$included, protocol, client = reply(), recipe = "fast")
+review   <- gr_synthesise(extracted, protocol, client = reply())
+
+extracted$table[, c("document", "region", "revenue", "n_unverified")]
+#>    document region revenue n_unverified
+#> 1 north.txt  north    45.2            0
+#> 2 south.txt  south    51.8            0
+```
+
+**Screening is one call per document, and nothing is dropped.** Every document
+gets a decision and a reason. There is no retrieval step that could quietly
+remove a source before one is recorded; a file that could not be read gets
+`status = "failed"` and *no* decision rather than a silent exclusion; and
+`"unclear"` is an answer rather than a forced guess, because forcing a binary
+call on an excerpt that does not settle it is how automated screening loses
+studies. `screened$included` is the argument to hand to `gr_extract()`, and
+`table(screened$table$criterion)` is the breakdown a flow diagram asks for.
+
+**Extraction gives you a typed table, not prose.** A paragraph about one paper
+cannot be compared with a paragraph about two hundred others; a table can be
+sorted, counted, filtered and published. Each field is filled from every chunk
+and then reconciled — free where the chunks agree, one call where the document
+contradicts itself, and `conflicts` records that it did.
+
+`n_unverified` is the column to look at before believing a row: zero means every
+value in it can be pointed at in the document. `extracted$evidence` is the long
+form, one row per supported cell, carrying the quote, the page it is on, and
+whether the quote really appears there. Nothing is discarded for failing that
+check — `require_quote = TRUE` makes discarding a choice rather than a surprise.
+
+**The write-up is one call per section of the outline**, and every section cites
+the rows it rests on:
+
+```
+## Findings
+
+The southern region reported more [study 2] than the northern [study 1].
+```
+
+`review$citations` resolves each `[study n]` to its `document` and
+`document_id`. The markers are parsed back out and checked against the rows that
+exist; one pointing at a row that is not there is reported and marks the section
+partial. Duplicates never reach the write-up — a study counted twice is the
+error this whole path exists to avoid.
+
+That completes the chain: a sentence cites a study, the study's row cites a
+quote, and the quote was checked against the page it is attributed to. None of
+that proves the sentence is true. It makes every step of the way back to the
+document short enough to walk.
 
 ## Paying once
 
@@ -609,7 +703,7 @@ second <- answer_document(readgpt_example(), "What was revenue?", "thorough", cl
 
 gr_trace_summary(second$trace)[c("calls", "cached", "tokens_in")]
 #>   calls cached tokens_in
-#> 1     1      1       609
+#> 1     1      1       595
 ```
 
 `cached` counts the calls answered from the cache rather than the network, so

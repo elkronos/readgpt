@@ -180,7 +180,7 @@ do.call(rbind, lapply(c(0, 40), function(ov)
 
 ## Axis 3: the readers are genuinely different
 
-Nine strategies, each declaring a *traversal signature* — how it selects chunks,
+Eleven strategies, each declaring a *traversal signature* — how it selects chunks,
 how many calls it makes, and what state it carries between them:
 
 ```{r}

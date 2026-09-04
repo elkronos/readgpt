@@ -88,15 +88,23 @@ jobs:
               # that would issue a REAL model call is skipped too: the point of
               # this step is that the documented code parses and runs, not that
               # OpenAI is reachable.
-              if (grepl("report\\.pdf|thesis\\.pdf|install_local|install_github|runApp|sk-\\.\\.\\.", txt) ||
+              if (grepl("report\\.pdf|thesis\\.pdf|install_local|install_github|runApp|sk-\\.\\.\\.|library\\(ellmer\\)", txt) ||
                   (grepl("gr_client\\(", txt) && !grepl("gr_mock_client", txt))) {
                 skipped <- skipped + 1; next
               }
               env <- new.env(parent = globalenv())
+              # `cl` is assigned explicitly. It used to arrive only as a side
+              # effect of the delayedAssign below leaking its local `cl` into the
+              # global environment when some earlier block forced `ans` -- so
+              # whether a block resolved `cl` depended on its position in the
+              # file, and a block moved above the first `ans` reference would
+              # have failed for no reason a reader could see.
+              assign("cl", gr_mock_client(function(m, p) "Revenue was 45.2 million dollars."),
+                     envir = env)
               # Lazy: only the blocks that actually reference `ans` pay for it.
               delayedAssign("ans", {
-                cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
-                answer_document(readgpt_example(), "What was revenue?", "needle", client = cl)
+                answer_document(readgpt_example(), "What was revenue?", "needle",
+                                client = gr_mock_client(function(m, p) "Revenue was 45.2 million dollars."))
               }, assign.env = env)
               # withCallingHandlers, NOT tryCatch(warning=). A warning handler in
               # tryCatch UNWINDS: the block stops at its first warning and is then
@@ -135,7 +143,7 @@ jobs:
               if (!nzchar(trimws(txt))) next
               # Skip blocks whose output is inherently non-deterministic (run ids,
               # timings) or that need files/services CI does not have.
-              if (grepl("report\\.pdf|thesis\\.pdf|install_local|install_github|runApp|sk-\\.\\.\\.|gr_trace_summary|run_id", txt)) next
+              if (grepl("report\\.pdf|thesis\\.pdf|install_local|install_github|runApp|sk-\\.\\.\\.|gr_trace_summary|run_id|library\\(ellmer\\)", txt)) next
               if (grepl("gr_client\\(", txt) && !grepl("gr_mock_client", txt)) next
               env <- new.env(parent = globalenv()); assign("cl", cl, envir = env)
               got <- tryCatch(capture.output(print(eval(parse(text = txt), envir = env))),
@@ -154,6 +162,36 @@ jobs:
             cat(sprintf("\n%d README output block(s) checked, %d stale\n", checked, bad_blocks))
             if (checked == 0) { cat("No block was checked -- the extractor is broken.\n"); quit(status = 1) }
             if (bad_blocks) quit(status = 1)
+          '
+        shell: bash
+
+      - name: Verify the vignette runs with no key and no network
+        env:
+          OPENAI_API_KEY: ''
+        run: |
+          Rscript -e '
+            if (!requireNamespace("knitr", quietly = TRUE)) {
+              cat("knitr not available; skipping\n"); quit(status = 0)
+            }
+            # Knit rather than render: this step is about whether the CODE runs
+            # offline, not about pandoc. A vignette that quietly degraded --
+            # every call failing for want of a key -- would still knit, so the
+            # output is then checked for the sentinels that degradation leaves.
+            knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+            md <- tempfile(fileext = ".md")
+            ok <- tryCatch({ knitr::knit("vignettes/readgpt.Rmd", output = md, quiet = TRUE); TRUE },
+                           error = function(e) { cat("vignette failed:", conditionMessage(e), "\n"); FALSE })
+            if (!isTRUE(ok)) quit(status = 1)
+            out <- grep("^#>", readLines(md, warn = FALSE), value = TRUE)
+            if (!length(out)) { cat("The vignette produced no output at all.\n"); quit(status = 1) }
+            bad <- grep("NOT_IN_DOCUMENT|No API key available|Transport error|HTTP [0-9]{3}",
+                        out, value = TRUE)
+            if (length(bad)) {
+              cat("The vignette degraded rather than running clean:\n")
+              cat(paste0("  ", utils::head(bad, 5), collapse = "\n"), "\n")
+              quit(status = 1)
+            }
+            cat(sprintf("Vignette ran offline: %d output line(s), no degradation.\n", length(out)))
           '
         shell: bash
 

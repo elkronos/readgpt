@@ -43,6 +43,7 @@ as_chr1 <- function(x, default = "") {
 #' data-frame column goes through this.
 #' @noRd
 as_num1 <- function(x, default = NA_real_) {
+  force(x)   # see clamp(): forcing inside suppressWarnings() eats the caller's warnings
   if (is.null(x) || length(x) == 0L) return(default)
   x <- suppressWarnings(as.numeric(x)[1])
   if (is.na(x)) default else x
@@ -78,6 +79,29 @@ source_label <- function(source, inline = "<inline text>") {
 is_nonblank <- function(x) {
   !is.null(x) && length(x) == 1L && is.character(x) && !is.na(x) && nzchar(trimws(x))
 }
+
+#' Fall back to a default when a setting is missing, and say so.
+#'
+#' `clamp()` maps NA to the low end of the range, which is right for a bound and
+#' wrong for a setting: it silently picks whichever extreme happens to be `lo`.
+#' @noRd
+na_default <- function(x, default, name) {
+  # Not just NA: anything that cannot become a number lands on `lo` too, and
+  # `gr_read_spec(mmr = "abc")` selecting pure diversity is the same defect as
+  # `mmr = NA` doing it.
+  usable <- length(x) == 1L && !is.na(x) &&
+    (is.numeric(x) || is.finite(suppressWarnings(as.numeric(x))))
+  if (usable) return(x)
+  if (!identical(x, default)) {
+    gr_warn(sprintf("`%s` is missing or not a single value; using the default (%s).",
+                    name, format(default)), class = "gr_bad_setting")
+  }
+  default
+}
+
+#' Vectorised, NA-safe isTRUE.
+#' @noRd
+isTRUE_vec <- function(x) !is.na(x) & as.logical(x)
 
 #' Vectorised, NA-safe "has visible content".
 #' @noRd
@@ -118,6 +142,15 @@ clamp_warn <- function(x, lo, hi, what, integer = TRUE) {
 #' Clamp a numeric into [lo, hi].
 #' @noRd
 clamp <- function(x, lo = -Inf, hi = Inf) {
+  # force() FIRST, outside suppressWarnings. `x` arrives as a promise, and
+  # forcing it inside suppressWarnings() swallows every warning raised while
+  # EVALUATING the argument, not merely the coercion warning this is meant to
+  # quiet -- so `clamp_warn(na_default(mmr, 1, "mmr"), 0, 1, "mmr")` silently
+  # ate na_default()'s "using the default" warning, and any other
+  # clamp(f(...)) would have eaten f()'s warnings too. Same shape as
+  # `expect_warning(suppressWarnings(...))` never firing: the inner handler is
+  # established first and wins.
+  force(x)
   x <- suppressWarnings(as.numeric(x))
   if (length(x) == 0L || is.na(x)) x <- lo
   min(max(x, lo), hi)

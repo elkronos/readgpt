@@ -138,6 +138,22 @@ gr_reader_signature <- function(reader) {
 #'   if that would leave nothing the single best chunk is used anyway. `-Inf`
 #'   disables the filter. Not a cosine similarity when embeddings fall back to
 #'   lexical vectors -- the score is then a blend of cosine and BM25.
+#' @param mmr Diversity of selection, for `retrieve` and `iterative`. `1` (the
+#'   default) is plain top-k. Below 1, chunks are picked greedily by
+#'   `mmr * relevance - (1 - mmr) * similarity to what is already picked`, so
+#'   three chunks saying the same thing do not all get in and pay for each other.
+#'   Costs nothing -- the vectors are already computed. `0.7` is a reasonable
+#'   place to start; `0` selects for novelty alone and will happily pick
+#'   irrelevant chunks because they are different.
+#' @param context_order Where the selected chunks sit in the prompt.
+#'   `"relevance"` (default) is most relevant first; `"document"` restores the
+#'   order they appear in the document, which reads better when chunks are
+#'   consecutive; `"edges"` puts the strongest first and second-strongest last,
+#'   burying the weakest in the middle, because transformers attend measurably
+#'   better to the beginning and end of a long context than to its middle.
+#'   Selection is unaffected -- this decides only placement, and it applies to
+#'   `retrieve` and `rerank`, the two readers that put several ranked chunks in
+#'   one prompt.
 #' @param rerank_candidates,rerank_min_score For `rerank`: how many chunks to
 #'   score, and the score below which a chunk is discarded.
 #' @param fan_in,max_levels For `hierarchical`: summaries combined per call, and
@@ -178,6 +194,7 @@ gr_reader_signature <- function(reader) {
 gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL,
                          max_answer_tokens = 1500L, max_chunk_tokens = 700L,
                          max_summary_tokens = 500L, top_k = 6L, min_score = -Inf,
+                         mmr = 1, context_order = c("relevance", "document", "edges"),
                          rerank_candidates = 20L, rerank_min_score = 4,
                          fan_in = 5L, max_levels = 5L, max_rounds = 4L,
                          members = NULL, cite = FALSE,
@@ -185,20 +202,27 @@ gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL
                          parallel = NULL, delay_between_calls = 0,
                          on_overflow = c("warn", "error"), ...) {
   on_overflow <- match.arg(on_overflow)
+  context_order <- match.arg(context_order)
   spec <- structure(c(list(
     reader = reader,
     model = as_chr1(model %||% gr_options("model")),
     temperature = temperature %||% gr_options("temperature"),
-    max_answer_tokens = clamp_warn(max_answer_tokens, 16, 1e6, "max_answer_tokens"),
-    max_chunk_tokens = clamp_warn(max_chunk_tokens, 16, 1e6, "max_chunk_tokens"),
-    max_summary_tokens = clamp_warn(max_summary_tokens, 16, 1e6, "max_summary_tokens"),
-    top_k = clamp_warn(top_k, 1, 1e4, "top_k"),
+    max_answer_tokens = clamp_warn(na_default(max_answer_tokens, 1500L, "max_answer_tokens"), 16, 1e6, "max_answer_tokens"),
+    max_chunk_tokens = clamp_warn(na_default(max_chunk_tokens, 700L, "max_chunk_tokens"), 16, 1e6, "max_chunk_tokens"),
+    max_summary_tokens = clamp_warn(na_default(max_summary_tokens, 500L, "max_summary_tokens"), 16, 1e6, "max_summary_tokens"),
+    top_k = clamp_warn(na_default(top_k, 6L, "top_k"), 1, 1e4, "top_k"),
     min_score = min_score,
-    rerank_candidates = clamp_warn(rerank_candidates, 1, 1e4, "rerank_candidates"),
-    rerank_min_score = clamp_warn(rerank_min_score, 0, 10, "rerank_min_score", integer = FALSE),
-    fan_in = clamp_warn(fan_in, 2, 32, "fan_in"),
-    max_levels = clamp_warn(max_levels, 1, 12, "max_levels"),
-    max_rounds = clamp_warn(max_rounds, 1, 20, "max_rounds"),
+    # NA falls back to the DEFAULT, not to the bottom of the range. clamp_warn()
+    # maps NA to `lo`, which for this setting is 0 -- pure diversity, documented
+    # as "will happily pick irrelevant chunks because they are different". A
+    # missing value must not select the most destructive end of a scale.
+    mmr = clamp_warn(na_default(mmr, 1, "mmr"), 0, 1, "mmr", integer = FALSE),
+    context_order = context_order,
+    rerank_candidates = clamp_warn(na_default(rerank_candidates, 20L, "rerank_candidates"), 1, 1e4, "rerank_candidates"),
+    rerank_min_score = clamp_warn(na_default(rerank_min_score, 4, "rerank_min_score"), 0, 10, "rerank_min_score", integer = FALSE),
+    fan_in = clamp_warn(na_default(fan_in, 5L, "fan_in"), 2, 32, "fan_in"),
+    max_levels = clamp_warn(na_default(max_levels, 5L, "max_levels"), 1, 12, "max_levels"),
+    max_rounds = clamp_warn(na_default(max_rounds, 4L, "max_rounds"), 1, 20, "max_rounds"),
     members = members,
     cite = isTRUE(cite),
     skim_model = skim_model,

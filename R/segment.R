@@ -52,7 +52,7 @@ gr_segment_spec <- function(method = "paragraph", max_tokens = 1200L,
   # ANNOUNCED. Silently rewriting a user's parameter is how v1 ended up feeding
   # documents to the model backwards: a negative token limit went straight into
   # `split(tokens, ceiling(seq_along(tokens) / limit))` with nothing said.
-  max_tokens <- clamp_warn(max_tokens, 32, 1e6, "max_tokens")
+  max_tokens <- clamp_warn(na_default(max_tokens, 800L, "max_tokens"), 32, 1e6, "max_tokens")
   overlap_tokens <- clamp_warn(overlap_tokens, 0, max_tokens - 1L, "overlap_tokens")
   min_tokens <- clamp_warn(min_tokens, 0, max_tokens, "min_tokens")
   structure(c(list(method = method, max_tokens = max_tokens,

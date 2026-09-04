@@ -1,0 +1,376 @@
+---
+title: "Reading a document with a language model"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Reading a document with a language model}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+Asking a language model a question about a document involves three decisions,
+and they are usually made for you, invisibly, all at once. This package makes
+them separate:
+
+- **ingest** — get text out of the file, and decide what to throw away
+- **segment** — cut that text into pieces small enough to send
+- **read** — decide how the model works through those pieces to an answer
+
+Each is a registry you can list, swap and extend. Any ingest × any segmenter ×
+any reader composes.
+
+```{r message = FALSE}
+library(readgpt)
+```
+
+## Running this vignette without an API key
+
+Everything below runs offline. Two settings make that work, and they are worth
+understanding because they are also how you develop against this package without
+spending anything.
+
+```{r}
+cl <- gr_mock_client(function(messages, params) "Revenue was 45.2 million dollars.")
+old <- gr_options(verbose = FALSE, embedder = "lexical")
+```
+
+`gr_mock_client()` is a client whose handler is an ordinary R function. It goes
+everywhere a real client goes and records every prompt it was sent, which is
+what lets you check that a reading strategy is doing what you think before you
+pay for it.
+
+`embedder = "lexical"` selects hashed bag-of-words vectors instead of an
+embeddings endpoint. They measure word overlap rather than meaning, so they are
+a poor substitute in production — but they are free, offline, and *deterministic*,
+which is what makes this document reproducible. `gr_embedders()` lists what is
+registered.
+
+## A first run
+
+`answer_document()` binds one ingest, one segmenter and one reader into a
+pipeline and runs it. The bundled example is a short annual report.
+
+```{r}
+ans <- answer_document(readgpt_example(), "What was revenue?", "thorough",
+                       client = cl)
+ans$answer
+```
+
+`"thorough"` names a recipe. `gr_recipes()` returns the built-ins, and each is
+just a binding of the three axes:
+
+```{r}
+do.call(rbind, lapply(names(gr_recipes()), function(n) {
+  r <- gr_recipes(n)
+  data.frame(recipe = n, segment = r$segment$method, reader = r$read$reader)
+}))
+```
+
+`gr_recipes("thorough")` prints one in full, showing every setting on all three
+axes. A recipe is only a starting point: any of its settings can be overridden
+in the call, and `gr_recipe()` builds one from scratch.
+
+## Reading the answer
+
+The answer is not a string. It is an object that says how it was arrived at, and
+the first thing to look at is never `$answer`:
+
+```{r}
+ans$partial
+```
+
+`partial` is `TRUE` whenever anything degraded — a call failed, chunks were
+dropped for space, a budget stopped the run early, an embedding fell back to
+lexical vectors. **Check it before trusting the answer.** When it is `TRUE`,
+`$notes` says what happened.
+
+```{r}
+names(ans$notes)
+```
+
+`$evidence` is what the answer rests on. What `text` holds depends on the
+reader: verbatim chunk text for `stuff`, `retrieve`, `rerank` and `iterative`;
+model-extracted passages for `skim`; per-chunk model answers for `map_reduce`.
+
+```{r}
+ans$evidence[, c("chunk_id", "page", "section")]
+```
+
+And `$trace` records every prompt, response and token count from that one run —
+not from a second run made to explain the first.
+
+```{r}
+gr_trace_summary(ans$trace)[, c("calls", "cached", "tokens_in", "tokens_out")]
+```
+
+## Did the model quote the document, or invent the quote?
+
+For most readers `$evidence` is verbatim chunk text and is true by construction:
+the package put it there. For `skim` it is not. `skim` asks the model to extract
+the passages that bear on the question, and what comes back is whatever the model
+chose to write — presented as a quotation, with nothing checking that it was one.
+
+That is the worst gap to leave. A fabricated citation is more convincing than a
+fabricated answer, because it looks like the thing that would let you check.
+
+```{r}
+doc <- "Revenue rose to 45.2 million dollars.\n\nHeadcount grew to 1,204."
+ch  <- gr_segment(gr_ingest(doc), list(method = "paragraph", max_tokens = 40))
+
+extracting <- function(quote) gr_mock_client(function(messages, params) {
+  if (grepl("You extract evidence", messages[[1]]$content, fixed = TRUE)) return(quote)
+  "Revenue was 45.2 million dollars."
+})
+
+faithful <- gr_read(ch, "What was revenue?",
+                    extracting("Revenue rose to 45.2 million dollars."), "skim")
+gr_verify_evidence(faithful)[, c("kind", "verified", "match")]
+```
+
+Now a model that invents one. The span is fluent, on topic, attributed to a real
+chunk, and not in the document — the case you cannot catch by eye:
+
+```{r}
+invented <- gr_read(ch, "What was revenue?",
+                    extracting("Revenue rose to 88.9 billion dollars on record demand."),
+                    "skim")
+gr_verify_evidence(invented)[, c("kind", "verified", "match")]
+invented$partial
+invented$notes$unverified_evidence
+```
+
+The comparison is forgiving about typography and unforgiving about content.
+Whitespace, curly quotes, dashes, case and the punctuation a model wraps a quote
+in are all folded away, because none of that is fabrication and flagging it would
+make `partial` stop meaning anything. A changed number is not folded away. Below
+an exact match, `match` is the fraction of the span carried by its longest
+consecutive run in the source — a run rather than word overlap, because overlap
+cannot tell a quotation from a paraphrase built from the same words.
+
+Citations get the same treatment, for every reader. An answer citing a chunk that
+was never sent to it sets `notes$cited_unknown` and is `partial`.
+
+## Axis 2: segmentation is free to experiment with
+
+Chunking decides what the model can possibly see together. It involves no model
+calls at all, so you can compare strategies for nothing before spending anything
+on reading:
+
+```{r}
+doc <- gr_ingest(readgpt_example())
+do.call(rbind, lapply(c("fixed", "paragraph", "sentence", "structural"), function(m)
+  gr_chunk_stats(gr_segment(doc, list(method = m, max_tokens = 120)))))
+```
+
+`over_cap` is the column to watch: a chunk over the cap is one the reader will
+have to truncate or drop. `gr_segmenters()` lists all nine, with which of them
+need a client (the `semantic` one embeds).
+
+Overlap matters too. Without it, an answer straddling a boundary is lost by both
+chunks:
+
+```{r}
+do.call(rbind, lapply(c(0, 40), function(ov)
+  gr_chunk_stats(gr_segment(doc, list(method = "sentence", max_tokens = 120,
+                                      overlap_tokens = ov)))))
+```
+
+## Axis 3: the readers are genuinely different
+
+Nine strategies, each declaring a *traversal signature* — how it selects chunks,
+how many calls it makes, and what state it carries between them:
+
+```{r}
+gr_readers()[, c("name", "signature", "cost_calls")]
+```
+
+The signature is not documentation, it is a checkable property. Two recipes that
+resolve to the same segmentation and the same signature are the same work, and
+`gr_compare()` refuses to bill you twice for them.
+
+```{r}
+cmp <- gr_compare(readgpt_example(), "What was revenue?",
+                  c("fast", "precise", "thorough"), client = cl)
+cmp$summary[, c("recipe", "segmenter", "chunks", "reader", "chunks_used", "not_found")]
+```
+
+Extraction is shared across recipes and segmentation is shared between recipes
+whose segment specs match, so comparing three readers over one chunking costs one
+chunking. One trace covers the whole comparison:
+
+```{r}
+gr_trace_summary(cmp$trace)[, c("calls", "cached", "tokens_in")]
+```
+
+`not_found` distinguishes "the document does not say" from a failure. So does
+`is_not_found()` on any answer. A model that invents an answer is a worse outcome
+than one that admits the document is silent, and the two must not look alike.
+
+## Choosing which chunks, and where to put them
+
+Top-k by similarity answers "which chunks are most like the question", which is
+not quite the question you wanted answered. If three paragraphs say the same
+thing, all three score highly and all three go in the prompt.
+
+```{r}
+redundant <- paste(c(
+  "Revenue was 45.2 million dollars in fiscal 2024.",
+  "Total revenue reached 45.2 million dollars in the 2024 fiscal year.",
+  "In fiscal 2024 the company recorded revenue of 45.2 million dollars.",
+  "Headcount grew to 1,204 employees across nine clinical sites.",
+  "The board approved a dividend of 0.42 dollars per share in March."),
+  collapse = "\n\n")
+
+ch <- gr_segment(gr_ingest(redundant), list(method = "paragraph", max_tokens = 40))
+picked <- function(m) {
+  gr_read(ch, "What was revenue?", cl,
+          list(reader = "retrieve", top_k = 3, mmr = m))$chunks_used
+}
+rbind("mmr = 1 (top-k)" = picked(1), "mmr = 0.3" = picked(0.3))
+```
+
+`mmr` below 1 trades relevance against redundancy, so the second and third slots
+go to chunks that add something. It costs nothing — the vectors are already
+computed.
+
+`context_order` is a separate decision about *placement*: transformers attend
+better to the beginning and end of a long context than to its middle, so
+`"edges"` puts the strongest chunk first and the second-strongest last. It never
+changes which chunks were selected, only where they sit.
+
+## Rails, before you spend anything
+
+Two caps are on by default and checked *before* the first request:
+
+```{r}
+unlist(gr_options()[c("max_cost_usd", "max_calls")])
+```
+
+You can also ask what a run would cost before making it:
+
+```{r}
+gr_estimate_cost("gpt-4o", input_tokens = 120000, output_tokens = 4000)
+```
+
+And what one did cost afterwards — counting only the calls actually issued,
+which is not the same as the tokens it moved:
+
+```{r}
+gr_trace_cost(ans$trace)[, c("model", "calls", "paid_calls", "usd")]
+```
+
+## Making a re-run free, and a result checkable
+
+Every stage of this package except the model call is a pure function of its
+input. The model call is the only step that costs money, the only one that can
+die halfway through a long run, and above a temperature of zero the only one that
+does not return the same thing twice. Two features follow from that.
+
+A **cache** stores each successful response against the exact request, so a
+repeat is free and identical:
+
+```{r}
+cache <- gr_cache(dir = file.path(tempdir(), "readgpt-vignette-cache"))
+cached_cl <- gr_cache_client(cl, cache)
+
+first  <- answer_document(readgpt_example(), "What was revenue?", "fast",
+                          client = cached_cl)
+second <- answer_document(readgpt_example(), "What was revenue?", "fast",
+                          client = cached_cl)
+
+gr_trace_summary(second$trace)[, c("calls", "cached")]
+```
+
+`calls - cached` is what a run actually paid for. Failures are never cached: a
+rate limit is a property of the moment, and storing one would make a blip
+permanent.
+
+A **replay** goes further. A trace already holds every prompt and every response,
+so with the document it is enough to reproduce the run exactly — no key, no
+network, no spend:
+
+```{r}
+f <- file.path(tempdir(), "run.json")
+gr_trace_save(first$trace, f)
+
+replayed <- answer_document(readgpt_example(), "What was revenue?", "fast",
+                            client = gr_replay_client(f))
+identical(replayed$answer, first$answer)
+```
+
+That is the difference between a result someone has to trust and one they can
+check. A prompt with no recorded response raises `gr_replay_miss` rather than
+inventing an answer, because a result that looks like the original and is not is
+worse than no replay at all.
+
+Embeddings are not model calls and are not in the trace, so a replay reproduces
+chunk *ranking* only when the recording used a deterministic embedder and the
+replay uses the same one — which is why this vignette set `embedder = "lexical"`
+at the top.
+
+## Many documents
+
+`gr_compare()` runs several recipes over one document. `gr_read_many()` runs one
+recipe over many, and gives you a row per document:
+
+```{r}
+folder <- file.path(tempdir(), "reports")
+dir.create(folder, showWarnings = FALSE)
+writeLines("Revenue was 45.2 million dollars in fiscal 2024.",
+           file.path(folder, "north.txt"))
+writeLines("Revenue was 51.8 million dollars in fiscal 2025.",
+           file.path(folder, "south.txt"))
+
+out <- gr_read_many(folder, "What was revenue?", "fast", client = cl)
+out$summary[, c("document", "not_found", "chunks_used", "calls", "status")]
+```
+
+One unreadable file is one `"failed"` row, not a dead run. Each document gets its
+own budget, so one enormous file cannot starve the rest. `store =` makes the run
+resumable, and `max_total_usd` is a corpus-wide ceiling.
+
+## Using a real model
+
+Everything above used a mock. In production you need a client:
+
+```{r eval = FALSE}
+# An OpenAI-compatible endpoint:
+cl <- gr_client(model = "gpt-4o")          # key from OPENAI_API_KEY
+
+# Or any provider ellmer speaks to -- Anthropic, Google, Bedrock, Ollama:
+cl <- gr_ellmer_client(ellmer::chat_anthropic())
+
+# Or anything at all:
+cl <- gr_backend_client(function(messages, params) my_provider(messages))
+```
+
+Without a key nothing raises. Every call fails, the answer is the
+`"NOT_IN_DOCUMENT"` sentinel and `ans$partial` is `TRUE` — which is why checking
+`partial` is the habit worth forming.
+
+## Extending it
+
+Every axis is a registry, and an addition behaves exactly like a built-in — same
+token caps, same provenance, same reporting, and it can be named in a recipe or
+put in an `ensemble`.
+
+```{r}
+gr_register_segmenter("by_bullet", description = "one chunk per bullet",
+  fn = function(doc, spec, client, trace) {
+    units <- unlist(strsplit(doc$text, "\n(?=[-*])", perl = TRUE))
+    new_chunks(units, "by_bullet", spec)
+  })
+
+"by_bullet" %in% gr_segmenters()$name
+```
+
+`gr_register_extractor()`, `gr_register_cleaner()`, `gr_register_reader()`,
+`gr_register_embedder()` and `gr_register_model()` work the same way. Each has a
+worked example in its help page.
+
+```{r include = FALSE}
+gr_options(old)
+```

@@ -938,12 +938,12 @@ test_that("ingestion and segmentation are identical under a C locale", {
     list(tokens = d$stats$tokens, chars = d$stats$chars,
          text = d$text, totals = sum(ch$chunks$tokens))
   }
-  readgpt:::gr_cache_clear()
+  readgpt:::gr_flush_caches()
   utf8 <- measure()
 
   ok <- suppressWarnings(Sys.setlocale("LC_CTYPE", "C"))
   skip_if(!nzchar(ok), "cannot switch to the C locale here")
-  readgpt:::gr_cache_clear()
+  readgpt:::gr_flush_caches()
   c_loc <- measure()
 
   expect_identical(c_loc$tokens, utf8$tokens)

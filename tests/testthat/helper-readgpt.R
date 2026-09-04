@@ -88,7 +88,7 @@ quiet <- function(expr) suppressWarnings(suppressMessages(force(expr)))
 # this first.
 # ---------------------------------------------------------------------------
 .gr_registry_slots <- c("extractors", "cleaners", "segmenters", "readers",
-                        "models", "model_patterns")
+                        "embedders", "models", "model_patterns")
 
 local_registries <- function(env = parent.frame()) {
   # `readgpt:::gr_state[[s]] <- v` is a REPLACEMENT call on `readgpt`, not on
@@ -109,6 +109,20 @@ local_registries <- function(env = parent.frame()) {
 # Caches are global too: a document cached under one ingest spec must not decide
 # what a later test sees.
 local_clean_cache <- function(env = parent.frame()) {
-  readgpt:::gr_cache_clear()
-  withr::defer(readgpt:::gr_cache_clear(), envir = env)
+  readgpt:::gr_flush_caches()
+  withr::defer(readgpt:::gr_flush_caches(), envir = env)
+}
+
+# Strip a string's encoding label without touching its bytes.
+#
+# Source literals written with \u escapes are labelled UTF-8 by the parser, so a
+# fixture built that way is already in the state an encoding fix produces and
+# proves nothing. Text that reaches a user's session from readLines() without an
+# `encoding=`, from a command-line argument, or from a connection carries no
+# label at all -- that is the string that breaks serialisation and cache keys,
+# and this is how a test gets one deterministically in any locale.
+unmarked <- function(x) {
+  x <- as.character(x)
+  Encoding(x) <- "unknown"
+  x
 }

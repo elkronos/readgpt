@@ -17,9 +17,11 @@
 #' @param meta Named list of run-level metadata.
 #' @return A `gr_trace`. It is an environment, so it accumulates by reference:
 #'   pass the same trace to several calls and they all record into it. Fields:
-#'   `run_id`, `started`, `meta`, `steps`, `calls`, `tokens_in`, `tokens_out`,
-#'   `errors`, `budget_stop`.
-#' @seealso [gr_trace_summary()], [as_json()], [gr_answer]
+#'   `run_id`, `started`, `meta`, `steps`, `calls`, `cached`, `tokens_in`,
+#'   `tokens_out`, `errors`, `budget_stop`. `cached` counts the calls answered
+#'   from a [gr_cache()] or a [gr_replay_client()] rather than the network, so
+#'   `calls - cached` is what the run actually paid for.
+#' @seealso [gr_trace_summary()], [as_json()], [gr_answer], [gr_cache()]
 #' @export
 #' @examples
 #' tr <- gr_trace(meta = list(purpose = "demo"))
@@ -34,6 +36,7 @@ gr_trace <- function(run_id = NULL, meta = list()) {
   e$meta <- meta
   e$steps <- list()
   e$calls <- 0L
+  e$cached <- 0L
   e$tokens_in <- 0L
   e$tokens_out <- 0L
   e$errors <- list()
@@ -45,11 +48,12 @@ gr_trace <- function(run_id = NULL, meta = list()) {
 trace_record <- function(trace, label, messages, result, params = list()) {
   if (is.null(trace) || !inherits(trace, "gr_trace")) return(invisible(NULL))
   trace$calls <- trace$calls + 1L
+  if (isTRUE(result$cached)) trace$cached <- trace$cached + 1L
   trace$tokens_in <- trace$tokens_in + as.integer(result$usage$input %||% 0L)
   trace$tokens_out <- trace$tokens_out + as.integer(result$usage$output %||% 0L)
   if (!isTRUE(result$ok)) {
     trace$errors <- c(trace$errors, list(list(step = length(trace$steps) + 1L, label = label,
-                                              error = as_chr1(result$error))))
+                                              error = mark_utf8(as_chr1(result$error)))))
   }
   trace$steps <- c(trace$steps, list(list(
     step = length(trace$steps) + 1L,
@@ -57,9 +61,18 @@ trace_record <- function(trace, label, messages, result, params = list()) {
     at = format(Sys.time(), "%Y-%m-%dT%H:%M:%OS3"),
     model = as_chr1(result$model %||% params$model, NA_character_),
     ok = isTRUE(result$ok),
-    prompt = lapply(messages, function(m) list(role = m$role, content = m$content)),
-    response = result$text,
-    error = if (isTRUE(result$ok)) NULL else as_chr1(result$error),
+    cached = isTRUE(result$cached),
+    # mark_utf8(), not enc2utf8(). A trace is serialised by jsonlite, and
+    # jsonlite escapes bytes it cannot interpret in the CURRENT LOCALE: an
+    # unmarked string holding UTF-8 bytes came out of `as_json()` as the literal
+    # text "caf<c3><a9>" on any machine whose locale is not UTF-8. The bytes
+    # were always right; nothing had told R what they were. Labelling them here
+    # -- converting nothing -- is what makes a saved trace portable, and is what
+    # a replay from a file depends on.
+    prompt = lapply(messages, function(m) list(role = m$role,
+                                               content = mark_utf8(as_chr1(m$content)))),
+    response = mark_utf8(as_chr1(result$text)),
+    error = if (isTRUE(result$ok)) NULL else mark_utf8(as_chr1(result$error)),
     tokens = list(input = result$usage$input %||% 0L, output = result$usage$output %||% 0L),
     params = params[setdiff(names(params), "schema")]
   )))
@@ -92,6 +105,7 @@ trace_absorb <- function(parent, child) {
     st
   }))
   parent$calls <- parent$calls + child$calls
+  parent$cached <- (parent$cached %||% 0L) + (child$cached %||% 0L)
   parent$tokens_in <- parent$tokens_in + child$tokens_in
   parent$tokens_out <- parent$tokens_out + child$tokens_out
   parent$errors <- c(parent$errors, child$errors)
@@ -116,10 +130,17 @@ trace_can_call <- function(trace, n = 1L) {
 
 #' Summarise a trace
 #' @param trace A `gr_trace`.
-#' @return A one-row data frame: `run_id`, `calls`, `steps`, `tokens_in`,
-#'   `tokens_out`, `errors`, `elapsed_s`. There is no cost column -- combine
-#'   `tokens_in`/`tokens_out` with [gr_estimate_cost()] for that.
-#' @seealso [gr_trace()], [as_json()], [gr_estimate_cost()]
+#' @return A one-row data frame: `run_id`, `calls`, `cached`, `steps`,
+#'   `tokens_in`, `tokens_out`, `errors`, `elapsed_s`. There is no cost column
+#'   -- combine `tokens_in`/`tokens_out` with [gr_estimate_cost()] for that.
+#'
+#'   `cached` is how many of those calls were answered from a [gr_cache()] or a
+#'   [gr_replay_client()]. Their tokens are still counted in `tokens_in` and
+#'   `tokens_out`, because that is how large the prompts and replies were; they
+#'   were simply not paid for again. A run with `cached == calls` cost nothing,
+#'   so feeding its token counts to [gr_estimate_cost()] gives you what the run
+#'   *would* have cost, not what it did.
+#' @seealso [gr_trace()], [as_json()], [gr_estimate_cost()], [gr_cache()]
 #' @export
 #' @examples
 #' cl <- gr_mock_client(function(m, p) "45.2 million dollars")
@@ -131,6 +152,7 @@ gr_trace_summary <- function(trace) {
   data.frame(
     run_id = trace$run_id,
     calls = trace$calls,
+    cached = as.integer(trace$cached %||% 0L),
     steps = length(trace$steps),
     tokens_in = trace$tokens_in,
     tokens_out = trace$tokens_out,
@@ -143,8 +165,10 @@ gr_trace_summary <- function(trace) {
 #' @export
 print.gr_trace <- function(x, ...) {
   s <- gr_trace_summary(x)
-  cat(sprintf("<gr_trace %s>  %d steps, %d model calls, %d in / %d out tokens, %d error(s)\n",
-              s$run_id, s$steps, s$calls, s$tokens_in, s$tokens_out, s$errors))
+  cat(sprintf("<gr_trace %s>  %d steps, %d model calls%s, %d in / %d out tokens, %d error(s)\n",
+              s$run_id, s$steps, s$calls,
+              if (s$cached > 0L) sprintf(" (%d cached)", s$cached) else "",
+              s$tokens_in, s$tokens_out, s$errors))
   labs <- vapply(x$steps, function(st) as_chr1(st$label), character(1))
   if (length(labs)) {
     tab <- table(labs)

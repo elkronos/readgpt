@@ -1,3 +1,257 @@
+# readgpt 0.3.0
+
+Two additions, one theme: the model call is the only part of this package that
+costs money or fails to repeat itself, and neither of those had to be true
+twice.
+
+## New
+
+* **A response cache.** `gr_cache()` stores each successful model response,
+  keyed on the exact request, and `gr_cache_client()` attaches it to any
+  client. A repeated request is free and byte-identical, so iterating on a
+  prompt, resuming after a crash, or re-running an analysis whose last step
+  changed no longer re-bills every earlier call. The key covers the messages,
+  model, output cap, temperature, JSON schema, API shape and base URL — and
+  nothing else, because nothing else reaches the model. Failures are never
+  cached: a rate limit or a refusal is a property of the moment, and storing one
+  would make a blip permanent. `gr_cache_stats()` and `gr_cache_clear()` report
+  on and empty a cache.
+
+  The default directory is under `tempdir()`, so a cache costs nothing and
+  disappears with the session; set `gr_options(cache_dir = ...)` to keep entries
+  across sessions and make a long run resumable.
+
+* **Quoted evidence is checked against the document.** `ans$evidence` is what an
+  answer rests on, and for most readers those spans are verbatim chunk text --
+  true because the package put them there. For `skim` they are what the model
+  wrote when asked to extract the relevant passages: *presented* as quotations,
+  with nothing checking that they were.
+
+  Now they are checked, on every run. A span that is not in the chunk it is
+  attributed to sets `notes$unverified_evidence` and makes the answer `partial`,
+  like any other degradation. `gr_verify_evidence()` reports the detail:
+  `chunk_id`, `kind`, `verified`, `match` and the span.
+
+  The comparison is forgiving about typography and unforgiving about content.
+  Whitespace, curly quotes, dashes, case and the punctuation a model wraps a
+  quotation in are folded away, because none of that is fabrication and flagging
+  it would make `partial` mean nothing. A changed number is not folded away.
+  Below an exact match, `match` is the fraction of the span carried by its
+  longest consecutive run in the source -- a run measure rather than word
+  overlap, because overlap cannot tell a quotation from a paraphrase built out
+  of the same vocabulary, which is the whole distinction.
+
+  Citations are checked too, for every reader: an answer citing a chunk that was
+  never sent to it sets `notes$cited_unknown` and is `partial`. A fabricated
+  citation is more convincing than a fabricated answer, because it looks like
+  the thing that would let you check.
+
+  Both checks are local string operations on text already in hand. They cost
+  nothing, so there is no option to turn them off.
+
+* **A vignette**, `vignette("readgpt")`. It walks through the three axes and the
+  decision each one represents, then through comparing recipes, the cost rails,
+  caching, replay and reading a corpus. It builds against `gr_mock_client()` with
+  `gr_options(embedder = "lexical")`, so it compiles offline, deterministically
+  and with no API key -- on your machine and on CRAN's alike.
+
+* **`mmr` and `context_order` on the read spec**, both off by default.
+
+  `mmr` below 1 selects chunks by maximal marginal relevance -- relevance traded
+  against redundancy with what is already selected -- so three paragraphs saying
+  the same thing do not take all three top-k slots and pay for each other. It
+  costs nothing, the vectors are already computed, and it applies to `retrieve`
+  and `iterative`. `mmr = 1` is exactly top-k, bit for bit.
+
+  `context_order` decides where the selected chunks sit in the prompt:
+  `"relevance"` (default), `"document"`, or `"edges"`, which puts the strongest
+  first and second-strongest last and buries the weakest in the middle, because
+  transformers attend measurably better to the beginning and end of a long
+  context than to its middle. Selection is unaffected -- this is placement only,
+  for `retrieve` and `rerank`. It is not the primacy/recency effect it
+  resembles: those come from rehearsal and interference in human memory, which a
+  transformer does not have.
+
+* **An embedder registry.** `gr_register_embedder()` and `gr_embedders()` make
+  embedding the sixth registry, alongside extractors, cleaners, segmenters,
+  readers and models -- it was the one axis that was a chain of `inherits()`
+  branches, so adding a local model meant editing the package and there was no
+  way to ask what was available. `gr_options(embedder = )` switches every part
+  of the package that embeds; two built-ins are registered, `"api"` and
+  `"lexical"`.
+
+  The registry carries something a branch cannot: whether an embedder is
+  **deterministic**. That closes the replay gap. A replay now reproduces a run's
+  chunk ranking exactly when the recording used a deterministic embedder *and*
+  the replay uses the same one -- both conditions, checked against the embedder
+  the trace actually recorded. Determinism alone is not enough: replaying an
+  API-embedded run with a deterministic local embedder would compute vectors the
+  original never saw while reporting itself exact.
+
+  The embedding cache key now includes the embedder. Without it, switching
+  embedders returned the previous one's vectors for the same text and model --
+  two vector spaces silently mixed in one matrix, and a cosine similarity across
+  them means nothing.
+
+* **One question, many documents.** `gr_read_many()` runs one recipe over a
+  vector of files, or a directory expanded by the extractor registry, and
+  returns one tidy row per document -- `answer`, `not_found`, `partial`,
+  `chunks_used`, `calls`, `cached`, tokens, `cost_usd`, `seconds`, `status` and
+  `error`. It is the counterpart to `gr_compare()`, which runs several recipes
+  over one document.
+
+  It does four things a loop does not. One unreadable document costs one row
+  rather than the run. Budgets are per document -- each gets its own trace, so
+  `max_calls` applies as if it had been read alone and one enormous file cannot
+  starve the rest -- under an optional corpus-wide `max_total_usd` ceiling, past
+  which documents are marked `"skipped"` rather than quietly dropped. A `store =`
+  directory makes a run resumable: each result is written as it completes and
+  restored later, keyed on the document's path, size and mtime, the question,
+  the whole pipeline and the model, so an edited document is a new job and not a
+  stale hit. And every document's cost is recorded.
+
+* **`gr_trace_cost()`** prices a run using each step's own model and counts only
+  the calls that were actually issued -- a call served from a cache or a replay
+  spent nothing however large its prompt was. One row per model; an unpriced
+  model contributes `NA` rather than zero, so a total cannot quietly omit it.
+  This is the missing half of the `cached` accounting added alongside the cache:
+  token totals describe a run's shape, and this describes its bill.
+
+* **A swappable transport.** `gr_backend_client()` makes any function of
+  `(messages, params)` the model transport, and `gr_ellmer_client()` plugs in an
+  `ellmer` chat -- so Anthropic, Google, Bedrock, Azure, Ollama and Hugging Face
+  work with every reading strategy here. Nothing about ingesting, segmenting or
+  reading a document depends on one HTTP dialect, and the package should not be
+  reimplementing a transport layer R already has. Everything built around the
+  call is unchanged: context budgeting, cost and call rails, provenance, traces,
+  caching, replay and `gr_compare()`.
+
+  Backends may also supply an embedding function; without one, readers that
+  embed fall back to lexical vectors and warn (`gr_backend_no_embeddings`). A
+  supplied embedder is checked for one row per input before its output reaches
+  the ranking maths -- a wrong-shaped matrix would associate every chunk with
+  another chunk's vector and the answer would look fine.
+
+  Two ellmer limits are documented rather than papered over: sampling parameters
+  belong to the chat object, so a per-call `temperature` is ignored and warned
+  about once (`gr_ellmer_temperature`); and each call runs against a fresh deep
+  clone with its turns cleared, so no history leaks between chunks and the
+  caller's chat is never mutated.
+
+* **Reproducible replay.** `gr_trace_save()` writes a run's trace to a file
+  and `gr_replay_client()` answers from it, so a recorded run can be re-run
+  exactly by someone with no API key and no budget. A trace already held every
+  prompt and every response; it was write-only. Now a published result is
+  something a reader can check rather than trust, and a bug report can be a
+  re-runnable recording instead of a description.
+
+  A prompt with no recorded response raises `gr_replay_miss` rather than
+  inventing an answer — silent divergence would produce a result that looks like
+  the original and is not. Embeddings are not model calls and are not recorded,
+  so `retrieve` and the `semantic` segmenter fall back to lexical vectors under
+  replay and warn (`gr_replay_no_embeddings`).
+
+* **Cached calls are accounted separately.** `gr_trace` gains a `cached`
+  counter, and `gr_trace_summary()` a `cached` column, so `calls - cached` is
+  what a run actually paid for. `gr_result` gains `$cached`. Without this a
+  fully cached run reported the same token totals as a fully paid one and
+  `gr_estimate_cost()` quietly overstated the bill.
+
+## Fixes
+
+* `gr_cache_clear()` was two different functions. An internal helper of that
+  name in `R/core-state.R` cleared the in-memory document and embedding caches,
+  and R collates that file after `R/core-cache.R`, so the internal definition
+  silently replaced the exported one — the package would have shipped the wrong
+  implementation under the right documentation. The internal helper is now
+  `gr_flush_caches()`, and a test asserts the shadowing has not returned.
+
+* **A trace could not survive being written to a file.** `jsonlite` escapes
+  bytes it cannot interpret in the *current locale*, so an unmarked string
+  holding UTF-8 bytes came out of `as_json()` as the literal text
+  `"caf<c3><a9>"` on any machine whose locale is not UTF-8. The bytes were
+  always right; nothing had told R what they were. `trace_record()` now labels
+  prompt, response and error text -- `mark_utf8()`, which labels and converts
+  nothing, never `enc2utf8()`, which corrupts valid UTF-8 in exactly this
+  situation. This was present in 0.2.0 and is the same defect class as the
+  locale-dependent tokenizer fixed there: correct bytes, absent label, one
+  locale in the test matrix.
+
+* **`gr_result$text` is now always labelled.** An unlabelled response was at the
+  mercy of the session locale the moment anything serialised, compared or
+  counted characters in it, so two runs that produced identical bytes could
+  compare unequal. Both cache and replay keys normalise text the same way, which
+  is what lets a saved trace replay on a different machine.
+
+* **A missing or unusable setting falls back to its documented default**, rather
+  than to whichever end of its range happens to be the lower bound.
+  `gr_read_spec(max_answer_tokens = NA)` used to give 16 -- truncating every
+  answer -- and `top_k = NA` gave 1, because `clamp()` maps an unusable value to
+  `lo`. That is right for a bound and wrong for a setting. Applies to `mmr`,
+  `top_k`, the three token caps, `rerank_candidates`, `rerank_min_score`,
+  `fan_in`, `max_levels`, `max_rounds` and the segmenter's `max_tokens`, and to
+  anything unusable, not only `NA`.
+
+* **An embedding that *fell back* now sets `partial`.** The documentation says
+  to check `partial` before trusting an answer and lists a lexical fallback as a
+  degradation; it was recorded in `$notes` but not in the one flag readers are
+  told to look at. A fallback is a degradation, and `gr_options(embedder =
+  "lexical")` is a choice -- the two are now distinguished, and only the first
+  sets the flag.
+
+* **A citation of a chunk that was sent but did not contribute is no longer
+  reported as a fabrication.** `notes$cited_unknown` compared citations against
+  `chunks_used`, which for a per-chunk reader holds only the chunks that
+  *answered* -- so a model faithfully citing a chunk that had replied "not in
+  this excerpt" was flagged as inventing it, and the answer was silently
+  downgraded to `partial`. A false positive in a hallucination check is the one
+  place a false positive is least affordable.
+
+* **`context_order = "document"` was a silent no-op below three chunks** -- the
+  common case for a top-k reader. Only `"edges"` needs a middle to bury the
+  weakest chunk in.
+
+* **Warnings raised while evaluating a setting were silently swallowed.**
+  `clamp()` did `x <- suppressWarnings(as.numeric(x))`, and `x` arrives as a
+  promise -- so forcing it inside `suppressWarnings()` discarded everything
+  raised while *evaluating the argument*, not merely the coercion warning that
+  call exists to quiet. Every `clamp(f(...))` in the package lost `f()`'s
+  warnings, across `gr_read_spec()`, `gr_segment_spec()` and `gr_ingest_spec()`.
+  The argument is now forced first. Present in 0.2.0.
+
+* **`gr_options()` did not compose with `on.exit()`, which is the one thing its
+  documentation promised.** The "old" value it returns was built with
+  `modifyList()`, which deletes a key whose value is `NULL` -- so once an option
+  had been *stored* as `NULL`, which is exactly what restoring a saved list does
+  for `temperature`, `max_cost_usd`, `cache_dir` and `embedder`, the returned
+  name came back as `NA` and the next `gr_options(old)` failed with
+  "Unknown option(s): NA". The second use of the documented pattern, in a
+  function already fixed once for this same `NULL` trap in its setter.
+
+* `ensemble` combined its members' evidence with a plain `rbind()`, which
+  requires every member to produce the same columns. It does not -- only readers
+  whose evidence is model-written carry verification columns -- so an ensemble of
+  `skim` and `map_reduce` failed with "numbers of columns of arguments do not
+  match" the moment verification was added. Evidence tables are now unioned.
+
+* `gr_call()` had two exits, each recording its own trace entry. Anything that
+  needed to sit between a request and its response had to be written twice and
+  kept in step by hand. It now dispatches once and records once, and the
+  normalisation that enforces the `gr_result` invariants on whatever a handler
+  returned is shared by the mock and backend paths rather than duplicated.
+
+## Behaviour changes
+
+* `gr_trace_summary()` returns an extra `cached` column, between `calls` and
+  `steps`. Code that indexes its result by position rather than by name will
+  need updating.
+
+* `min_score` is applied to `retrieve` *before* selection rather than after.
+  Applied after, a chunk below the floor could displace one above it in the
+  top-k and then be dropped, quietly returning fewer chunks than `top_k` asked
+  for and giving no way to see why. A run with a finite `min_score` may now use
+  more chunks than it did.
+
 # readgpt 0.2.0
 
 A rewrite. The package is now a proper R package with three independent,

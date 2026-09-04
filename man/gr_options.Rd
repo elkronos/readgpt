@@ -52,6 +52,16 @@ reserves \emph{when \code{reserve_output} is not given explicitly}. An explicit
 \item{\code{cache_documents} (TRUE)}{Cache ingestion per file + settings. The key
 covers file size, mtime and every option that changes the output.}
 \item{\code{cache_embeddings} (TRUE)}{Cache embeddings per text + model.}
+\item{\code{embedder} (NULL)}{Which registered embedder to use. \code{NULL} means the
+one the client carries, if any, and otherwise \code{"api"}. Naming one here
+overrides both. See \code{\link[=gr_embedders]{gr_embedders()}}; recording a run with a
+\emph{deterministic} embedder is what lets a \code{\link[=gr_replay_client]{gr_replay_client()}} reproduce its
+chunk ranking.}
+\item{\code{cache_dir} (NULL)}{Directory \code{\link[=gr_cache]{gr_cache()}} stores model responses in.
+\code{NULL} means a per-session directory under \code{tempdir()}, which costs
+nothing and disappears with the session. Set it to a real path, such as
+\code{tools::R_user_dir("readgpt", "cache")}, to keep responses across
+sessions and make a long run resumable.}
 \item{\code{parallel} (FALSE)}{Run per-chunk calls concurrently. Needs the
 future and future.apply packages; without them it warns and runs
 sequentially.}
@@ -73,5 +83,5 @@ gr_options(old)
 }
 \seealso{
 \code{\link[=gr_register_model]{gr_register_model()}} to correct a model's limits,
-\code{\link[=gr_set_tokenizer]{gr_set_tokenizer()}}, \code{\link[=gr_budget]{gr_budget()}}
+\code{\link[=gr_set_tokenizer]{gr_set_tokenizer()}}, \code{\link[=gr_budget]{gr_budget()}}, \code{\link[=gr_cache]{gr_cache()}}
 }

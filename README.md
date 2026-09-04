@@ -24,6 +24,15 @@ Any ingest × any segmenter × any reader composes. `gr_recipe()` binds one of
 each into a named pipeline. Recipes are isolated: a recipe run alongside others
 produces a byte-identical `$answer` and `$chunks_used` to running it alone.
 
+Which model answers is a fourth, independent choice. There is a built-in client
+for OpenAI-compatible endpoints, and `gr_ellmer_client()` hands the transport to
+[ellmer](https://ellmer.tidyverse.org/) — so Anthropic, Google, Bedrock, Azure,
+Ollama and Hugging Face all work with every strategy below.
+
+`vignette("readgpt")` is the guided tour: the three axes, what each decision
+changes, and how to make a run cheap and reproducible. It builds and runs
+offline, so you can follow it without a key.
+
 Every console block below is real output from the bundled example document,
 produced with `gr_mock_client()` standing in for the API, so you can reproduce
 all of it without a key. Blocks that show an answer set
@@ -92,6 +101,54 @@ gitignored here for that reason — `.Renviron` is the usual home for it:
 ```
 OPENAI_API_KEY=sk-...
 ```
+
+## Other providers, and other people's clients
+
+The built-in client speaks one dialect: an OpenAI-compatible `/responses` or
+`/chat/completions` endpoint. Nothing about ingesting, segmenting or reading a
+document depends on that, so the transport is swappable.
+
+`gr_ellmer_client()` uses an [ellmer](https://ellmer.tidyverse.org/) chat, which
+covers roughly twenty providers including local models through Ollama:
+
+```r
+library(ellmer)
+
+cl <- gr_ellmer_client(chat_anthropic(model = "claude-sonnet-4-5"))
+answer_document("report.pdf", "What was revenue?", "thorough", client = cl)
+
+# Or locally, for nothing:
+gr_ellmer_client(chat_ollama(model = "llama3.1"))
+```
+
+Two things do not carry over, both by ellmer's design rather than by omission.
+Sampling parameters belong to the chat object, so a `temperature` in a read spec
+is ignored and warned about once — build a second chat if you need a second
+temperature. And embeddings are separate: pass `embed =` a function returning one
+row per text (a wrapper around `ragnar::embed_ollama()`, say), or `retrieve` and
+the `semantic` segmenter fall back to lexical vectors and tell you so.
+
+Anything else — a company proxy, a model behind a queue, a package this one has
+never heard of — goes through `gr_backend_client()`, which makes any function
+the transport:
+
+```r
+cl <- gr_backend_client(function(messages, params) {
+  # `messages` is a list of list(role=, content=); `params` carries model,
+  # max_output, temperature, schema. Return a string.
+  my_provider(messages, max_tokens = params$max_output)
+}, model = "my-model")
+```
+
+Everything the package does around the call is unchanged: context budgeting,
+the cost and call rails, provenance, the run trace, caching, replay and
+`gr_compare()`. Register the model's real limits with `gr_register_model()` —
+the context window is what sizes your chunks, so a guessed one is not cosmetic.
+
+If you are already using ellmer and ragnar, the division is: ragnar retrieves,
+this package reads. `ragnar_retrieve()` gets you relevant chunks; `map_reduce`,
+`refine`, `hierarchical`, `iterative`, `rerank` and `ensemble` are what happen
+after that, with a traversal signature each and a bill you can see.
 
 ## Quick start
 
@@ -268,6 +325,54 @@ respectively — with a warning and a note on the answer.
 `gr_compare()` refuses to bill you twice for two configurations that resolve to
 the same segmentation and the same signature.
 
+## Choosing chunks, and where to put them
+
+Two settings on the read spec, both off by default because changing what reaches
+the model changes answers and that should be a decision rather than a surprise.
+
+**`mmr` — stop paying for the same chunk three times.** Top-k by similarity
+answers "which chunks are most like the question", which is not quite the
+question you wanted. If three paragraphs say the same thing, all three score
+highly and all three go in the prompt. Maximal marginal relevance picks greedily,
+trading relevance against redundancy against what is already selected:
+
+```r
+cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
+old <- gr_options(embedder = "lexical")
+doc <- paste(c("Revenue was 45.2 million dollars in fiscal 2024.",
+               "Total revenue reached 45.2 million dollars in the 2024 fiscal year.",
+               "In fiscal 2024 the company recorded revenue of 45.2 million dollars.",
+               "Headcount grew to 1,204 employees across nine clinical sites.",
+               "The board approved a dividend of 0.42 dollars per share in March."),
+             collapse = "\n\n")
+ch <- gr_segment(gr_ingest(doc), list(method = "paragraph", max_tokens = 40))
+picked <- function(m) gr_read(ch, "What was revenue?", cl,
+                              list(reader = "retrieve", top_k = 3, mmr = m))$chunks_used
+result <- rbind("mmr = 1 (top-k)" = picked(1), "mmr = 0.3" = picked(0.3))
+gr_options(old)
+result
+#>                 [,1] [,2] [,3]
+#> mmr = 1 (top-k)    1    3    2
+#> mmr = 0.3          1    4    5
+```
+
+Top-k spends all three slots on the same fact. `mmr = 0.3` keeps the best chunk
+and spends the other two on different ones. It costs nothing — the vectors are
+already computed — and it applies to `retrieve` and `iterative`.
+
+**`context_order` — where the chosen chunks sit.** Transformers attend
+measurably better to the beginning and end of a long context than to its middle.
+`"edges"` puts the strongest chunk first and the second-strongest last, burying
+the weakest in the middle; `"document"` restores the order they appear in the
+document, which reads better when chunks are consecutive. Selection is
+unaffected — this decides placement only, for `retrieve` and `rerank`, the two
+readers that put several ranked chunks in one prompt.
+
+Note this is *not* the primacy-and-recency effect it resembles. Those come from
+rehearsal and interference in human memory, mechanisms a transformer does not
+have; the reason here is positional attention, and it argues about placement
+rather than about what to select.
+
 ## Reading a run
 
 Nothing degrades silently. Everything below is recorded on the answer.
@@ -278,15 +383,17 @@ ans$notes       # what: dropped_chunks, failed_calls, error, degraded_to_bm25, .
 ans$evidence    # what the answer rests on
 print(ans$trace)
 gr_trace_summary(ans$trace)
-#>                          run_id calls steps tokens_in tokens_out errors elapsed_s
-#> 1 run_20260825184837.437_4804a5     1     8       698         13      0      0.11
+#>                          run_id calls cached steps tokens_in tokens_out errors
+#> 1 run_20260904035101.469_68d50e     1      0     8       682         13      0
+#>   elapsed_s
+#> 1       0.3
 
 gr_estimate_cost("gpt-4o", ans$trace$tokens_in, ans$trace$tokens_out)
 as_json(ans)    # answer plus every prompt and response, from the same single run
 ```
 
 `ans$evidence` is a data frame with `chunk_id`, `text`, `page`, `section`,
-`score`. **What `text` holds depends on the reader**: verbatim chunk text for
+`score`, `kind`. **What `text` holds depends on the reader**: verbatim chunk text for
 `stuff`, `retrieve`, `rerank` and `iterative`; model-*extracted* passages for
 `skim`; per-chunk model *answers* for `map_reduce`. `refine` and `hierarchical`
 return `NULL`. `page` is populated only for PDF sources. `score` is set only by
@@ -294,6 +401,30 @@ return `NULL`. `page` is populated only for PDF sources. `score` is set only by
 
 With `cite = TRUE` the model cites bracketed chunk ids (`[chunk 3]`); map those
 back to pages through `ans$evidence`.
+
+**Quoted evidence is checked.** For most readers the evidence is verbatim chunk
+text and is true by construction. For `skim` it is what the model wrote when
+asked to extract the relevant passages — presented as a quotation, and nothing
+used to check that it was one. A fabricated citation is more convincing than a
+fabricated answer, because it looks like the thing that would let you check.
+
+```r
+gr_verify_evidence(ans)          # chunk_id, kind, verified, match, span
+```
+
+`match` is 1 for an exact quotation once whitespace, quote marks, dashes and case
+are folded away — the differences a faithful quotation introduces. Below 1 it is
+the fraction of the span carried by its longest consecutive **run** in the
+source, so *where* a change falls matters as much as how much changed: a changed
+last word leaves a run of nine in ten and scores 0.9, while a changed word in the
+middle splits the span and scores about 0.5. A swapped figure mid-sentence — the
+case this exists to catch — lands near 0.5. Below about 0.3 there is no quotation
+left, only shared vocabulary. A span that does not verify sets `ans$notes$unverified_evidence`
+and makes the answer `partial`.
+
+Citations are checked the same way, for every reader: an answer citing a chunk
+that was never sent sets `ans$notes$cited_unknown`. Both checks are local string
+operations on text you already have, so they cost nothing and always run.
 
 Errors are classed, so you can catch a specific failure: `gr_auth_error`,
 `gr_file_not_found`, `gr_empty_document`, `gr_unsupported_format`, `gr_overflow`,
@@ -317,6 +448,8 @@ cause:
 | `NOT_IN_DOCUMENT`, but you can see the answer in the file | `nrow(ans$evidence)`, then `gr_chunk_stats()` | the chunk holding it never reached the model. Lower `max_tokens`, raise `top_k`, or switch to a reader whose `signature` starts `all\|` |
 | the answer is right but thin | `ans$notes$chunks` vs `length(ans$chunks_used)` | most chunks answered `NOT_IN_DOCUMENT`. That is usually correct; if not, the boundaries are cutting the evidence in half — add `overlap_tokens` |
 | `ans$partial` is `TRUE` | `ans$notes`, then `print(ans$trace)` | `failed_calls` (transport), `dropped_chunks` (did not fit), `call_cap_reached`, or a merge that degraded to concatenation |
+| `ans$notes$unverified_evidence` is set | `gr_verify_evidence(ans)` | the model wrote a quotation that is not in the chunk it is attributed to. `match` says how far off; near 1 is a typo, near 0 is invention |
+| `ans$notes$cited_unknown` is set | that value against `ans$chunks_used` | the answer cited a chunk that was never sent to it |
 | figures, dates or percentages are missing | `doc$stats$clean_log` | a cleaning step removed them. `remove_numbers` is off by default; the `legacy` preset turns it on deliberately |
 | a scanned PDF comes back nearly empty | `doc$stats$chars` per page, and any `gr_ocr_unavailable` warning | OCR did not run or is not installed. Force it with `gr_ingest_spec(ocr = "always")`, and check `tesseract` and `magick` are present |
 | every chunk is the whole document | `nrow(doc$blocks)` | the file has no blank lines between paragraphs, so there is nothing to split on. Use `method = "sentence"` or `"fixed"` |
@@ -381,7 +514,178 @@ continuing to spend. Both raise a classed error naming the option to change.
 
 `gr_budget()` is the single arithmetic chokepoint for context math and is
 incapable of returning a non-positive input budget — it raises an actionable
-error instead. `gr_options()` documents all 19 settings; see `?gr_options`.
+error instead. `gr_options()` documents all 21 settings; see `?gr_options`.
+
+## Many documents
+
+`gr_compare()` runs several recipes over one document. `gr_read_many()` runs one
+recipe over many, and returns one tidy row per document — which is the shape the
+work usually has: a folder, one question, and a table at the end.
+
+```r
+cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
+reports <- file.path(tempdir(), "reports")
+dir.create(reports, showWarnings = FALSE)
+writeLines("Revenue was 45.2 million dollars in fiscal 2024.", file.path(reports, "north.txt"))
+writeLines("Revenue was 51.8 million dollars in fiscal 2025.", file.path(reports, "south.txt"))
+
+out <- gr_read_many(reports, "What was revenue?", "fast", client = cl)
+out$summary[, c("document", "not_found", "chunks_used", "calls", "status")]
+#>    document not_found chunks_used calls status
+#> 1 north.txt     FALSE           1     1     ok
+#> 2 south.txt     FALSE           1     1     ok
+```
+
+A directory is expanded by the extractor registry, so registering an extractor
+changes which files get picked up. The full summary also carries `answer`,
+`partial`, `reader`, `chunks`, `cached`, `tokens_in`, `tokens_out`, `cost_usd`,
+`seconds` and `error` — `write.csv(out$summary, ...)` is a reasonable end to a
+run.
+
+Four things it does that a `lapply()` does not:
+
+**One bad file costs one row.** An unreadable document gets `status = "failed"`
+and its error in the `error` column; the other hundred and ninety-nine answers
+survive. `on_error = "stop"` if you would rather it aborted.
+
+**Budgets are per document.** Every document gets its own trace, so
+`gr_options(max_calls =)` applies to each one exactly as if you had read it
+alone — one enormous document cannot starve the rest. `max_total_usd` is the
+corpus-wide ceiling; documents after it are marked `"skipped"` rather than
+quietly dropped.
+
+**A run can be resumed.** Point `store =` at a directory and each result is
+written as it completes and restored on a later run. Combined with a durable
+response cache, restarting a four-hour job costs approximately nothing:
+
+```r
+cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
+durable <- gr_cache_client(cl, gr_cache(tools::R_user_dir("readgpt", "cache")))
+gr_read_many(file.path(tempdir(), "reports"), "What was revenue?", "thorough",
+             client = durable, store = file.path(tempdir(), "run-store"))
+```
+
+The store is keyed on the document's path, size and mtime, the question, the
+whole pipeline and the model — so an edited document is a new job, not a stale
+hit. A `gr_backend_client()` needs a stable `id` for a store or a cache to be
+reused by a *later session*; `gr_client()` and `gr_ellmer_client()` already know
+what they are.
+
+**You can see what it cost.** `gr_trace_cost()` prices a run using each step's
+own model and counts only the calls that were really issued:
+
+```r
+cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
+run <- answer_document(readgpt_example(), "What was revenue?", "fast", client = cl)
+gr_trace_cost(run$trace)
+#>           model calls paid_calls paid_in paid_out      usd
+#> 1 gpt-5.6-terra     1          1     609       13 0.001374
+```
+
+This is why the token totals on `gr_trace_summary()` are not a bill. They say
+how large the prompts were, which is the right measure of a run's shape; a fully
+cached re-run has the same shape and costs nothing. `paid_calls` is the column
+that falls to zero. A model with no registered price contributes `NA` rather
+than zero, so a total cannot quietly omit it.
+
+## Paying once
+
+Every stage of this package except one is a pure function of its input.
+Extraction, cleaning, segmentation, ranking and merging give the same result
+every time, and `gr_chunk_stats()` lets you compare chunkings for nothing. The
+model call is the only step that costs money, the only step that can die halfway
+through a long run, and — above a temperature of zero — the only step that does
+not return the same thing twice.
+
+`gr_cache()` stores each successful response, keyed on the exact request. A
+repeat is free and *identical*:
+
+```r
+cache  <- gr_cache(file.path(tempdir(), "readgpt-cache"))
+cached <- gr_cache_client(cl, cache)
+
+first  <- answer_document(readgpt_example(), "What was revenue?", "thorough", client = cached)
+second <- answer_document(readgpt_example(), "What was revenue?", "thorough", client = cached)
+
+gr_trace_summary(second$trace)[c("calls", "cached", "tokens_in")]
+#>   calls cached tokens_in
+#> 1     1      1       609
+```
+
+`cached` counts the calls answered from the cache rather than the network, so
+`calls - cached` is what the run actually paid for. The token counts stay — that
+is how big the prompts were — but a run with `cached == calls` cost nothing, so
+do not hand its totals to `gr_estimate_cost()` and call the result a bill.
+
+The key covers everything that can change the reply: the messages, the model,
+the resolved output cap, the temperature, the JSON schema, the API shape and the
+base URL. It does **not** cover the key, the timeout or the retry policy, none
+of which the model sees. **Failures are never cached** — a rate limit or a
+refusal is a property of the moment, and storing one would make a blip
+permanent. At a temperature above zero a hit replays one sample instead of
+drawing a new one, which is the point, but it means a cached sweep does not
+explore; use a fresh directory when you want new draws.
+
+The default directory is under `tempdir()`, so a cache costs nothing and
+vanishes with the session. For a long run, point it somewhere real and the run
+becomes resumable — restart after a crash and every completed call is already
+paid for:
+
+```r
+gr_options(cache_dir = tools::R_user_dir("readgpt", "cache"))
+```
+
+## Replaying a run
+
+A trace already records every prompt and every response. That makes it a
+complete transcript of the only non-deterministic part of the pipeline — so a
+trace plus the source document is enough to reproduce a run exactly, with no key
+and no spend:
+
+```r
+run <- answer_document(readgpt_example(), "What was revenue?", "thorough", client = cl)
+gr_trace_save(run$trace, file.path(tempdir(), "run.json"))
+
+replayed <- answer_document(readgpt_example(), "What was revenue?", "thorough",
+                            client = gr_replay_client(file.path(tempdir(), "run.json")))
+identical(replayed$answer, run$answer)
+#> [1] TRUE
+```
+
+This is the difference between a result someone has to trust and one they can
+check. Ship the trace next to the paper and a reader reproduces the run instead
+of paying to approximate it. It is also the cheapest bug report there is: a
+trace file is a re-runnable recording of exactly what went wrong.
+
+A prompt with no recorded response raises `gr_replay_miss` rather than inventing
+an answer — a miss means the replay has diverged from the recording, and a
+result that looks like the original but is not is worse than no replay at all.
+Pass `strict = FALSE` to run a partial recording anyway.
+
+Embeddings are not model calls, so a trace does not contain them. Whether a
+replay can reproduce a run's chunk *ranking* therefore depends on how the run
+embedded, and the answer is checked rather than assumed: the replay reproduces
+the ranking exactly when the recording used a **deterministic** embedder and the
+replay uses the **same** one. Both conditions, not either — replaying an
+API-embedded run with a deterministic local embedder would compute vectors the
+original never saw while looking exact. Anything else warns
+(`gr_replay_no_embeddings`) and falls back to lexical vectors; every recorded
+answer is still reproduced, but the ranking may differ. So a run you intend to
+publish is worth recording with `gr_options(embedder = "lexical")`, or with your
+own embedder registered as `deterministic = TRUE`:
+
+```r
+old <- gr_options(embedder = "lexical")
+run <- answer_document(readgpt_example(), "What was revenue?", "needle", client = cl)
+identical(
+  answer_document(readgpt_example(), "What was revenue?", "needle",
+                  client = gr_replay_client(run$trace))$chunks_used,
+  run$chunks_used)
+#> [1] TRUE
+```
+
+One thing still does not replay: a trace does not record the JSON schema a call
+requested, so two calls differing only by schema share a recording.
 
 ## Extending it
 
@@ -400,8 +704,29 @@ gr_register_cleaner("drop_confidential", stage = "early",
 gr_register_model("my-local-llama", context_window = 32768, max_output = 4096)
 ```
 
-`gr_register_extractor()` and `gr_register_reader()` work the same way; each has
-a worked example in its help page.
+`gr_register_extractor()`, `gr_register_reader()` and `gr_register_embedder()`
+work the same way; each has a worked example in its help page.
+
+Embedding is the sixth registry, and the one worth knowing about even if you
+never add anything else — it is what makes `retrieve` and the `semantic`
+segmenter work offline, for free, and reproducibly:
+
+```r
+gr_embedders()
+#>      name deterministic
+#> 1     api         FALSE
+#> 2 lexical          TRUE
+#>                                                    description
+#> 1                 Embeddings endpoint on the client's base URL
+#> 2 Hashed bag-of-words; free, offline, word overlap not meaning
+```
+
+`gr_options(embedder = "lexical")` switches every part of the package that
+embeds. Register your own — a local model, a company service — and the
+`semantic` segmenter and the `retrieve` and `iterative` readers all use it, with
+no change to any of them. Set `deterministic = TRUE` only if the same text
+always gives the same vector: that flag is what a replay checks (see below), and
+claiming it wrongly turns a recording into a plausible-looking fiction.
 
 Two constructors make the extension points usable: `new_chunks()` builds the
 object a segmenter must return, and `new_answer()` builds the one a reader must

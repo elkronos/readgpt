@@ -1,4 +1,4 @@
-# readgpt 0.4.0 (in development)
+# readgpt 0.4.0
 
 Reading a corpus for an answer and reading it for a *table* are different jobs.
 This release is the second one.

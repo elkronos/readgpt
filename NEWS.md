@@ -21,6 +21,27 @@ twice.
   disappears with the session; set `gr_options(cache_dir = ...)` to keep entries
   across sessions and make a long run resumable.
 
+* **A swappable transport.** `gr_backend_client()` makes any function of
+  `(messages, params)` the model transport, and `gr_ellmer_client()` plugs in an
+  `ellmer` chat -- so Anthropic, Google, Bedrock, Azure, Ollama and Hugging Face
+  work with every reading strategy here. Nothing about ingesting, segmenting or
+  reading a document depends on one HTTP dialect, and the package should not be
+  reimplementing a transport layer R already has. Everything built around the
+  call is unchanged: context budgeting, cost and call rails, provenance, traces,
+  caching, replay and `gr_compare()`.
+
+  Backends may also supply an embedding function; without one, readers that
+  embed fall back to lexical vectors and warn (`gr_backend_no_embeddings`). A
+  supplied embedder is checked for one row per input before its output reaches
+  the ranking maths -- a wrong-shaped matrix would associate every chunk with
+  another chunk's vector and the answer would look fine.
+
+  Two ellmer limits are documented rather than papered over: sampling parameters
+  belong to the chat object, so a per-call `temperature` is ignored and warned
+  about once (`gr_ellmer_temperature`); and each call runs against a fresh deep
+  clone with its turns cleared, so no history leaks between chunks and the
+  caller's chat is never mutated.
+
 * **Reproducible replay.** `gr_trace_save()` writes a run's trace to a file
   and `gr_replay_client()` answers from it, so a recorded run can be re-run
   exactly by someone with no API key and no budget. A trace already held every
@@ -68,7 +89,9 @@ twice.
 
 * `gr_call()` had two exits, each recording its own trace entry. Anything that
   needed to sit between a request and its response had to be written twice and
-  kept in step by hand. It now dispatches once and records once.
+  kept in step by hand. It now dispatches once and records once, and the
+  normalisation that enforces the `gr_result` invariants on whatever a handler
+  returned is shared by the mock and backend paths rather than duplicated.
 
 ## Behaviour changes
 

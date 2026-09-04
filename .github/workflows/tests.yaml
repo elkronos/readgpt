@@ -88,7 +88,7 @@ jobs:
               # that would issue a REAL model call is skipped too: the point of
               # this step is that the documented code parses and runs, not that
               # OpenAI is reachable.
-              if (grepl("report\\.pdf|thesis\\.pdf|install_local|install_github|runApp|sk-\\.\\.\\.", txt) ||
+              if (grepl("report\\.pdf|thesis\\.pdf|install_local|install_github|runApp|sk-\\.\\.\\.|library\\(ellmer\\)", txt) ||
                   (grepl("gr_client\\(", txt) && !grepl("gr_mock_client", txt))) {
                 skipped <- skipped + 1; next
               }
@@ -135,7 +135,7 @@ jobs:
               if (!nzchar(trimws(txt))) next
               # Skip blocks whose output is inherently non-deterministic (run ids,
               # timings) or that need files/services CI does not have.
-              if (grepl("report\\.pdf|thesis\\.pdf|install_local|install_github|runApp|sk-\\.\\.\\.|gr_trace_summary|run_id", txt)) next
+              if (grepl("report\\.pdf|thesis\\.pdf|install_local|install_github|runApp|sk-\\.\\.\\.|gr_trace_summary|run_id|library\\(ellmer\\)", txt)) next
               if (grepl("gr_client\\(", txt) && !grepl("gr_mock_client", txt)) next
               env <- new.env(parent = globalenv()); assign("cl", cl, envir = env)
               got <- tryCatch(capture.output(print(eval(parse(text = txt), envir = env))),

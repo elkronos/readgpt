@@ -24,6 +24,11 @@ Any ingest × any segmenter × any reader composes. `gr_recipe()` binds one of
 each into a named pipeline. Recipes are isolated: a recipe run alongside others
 produces a byte-identical `$answer` and `$chunks_used` to running it alone.
 
+Which model answers is a fourth, independent choice. There is a built-in client
+for OpenAI-compatible endpoints, and `gr_ellmer_client()` hands the transport to
+[ellmer](https://ellmer.tidyverse.org/) — so Anthropic, Google, Bedrock, Azure,
+Ollama and Hugging Face all work with every strategy below.
+
 Every console block below is real output from the bundled example document,
 produced with `gr_mock_client()` standing in for the API, so you can reproduce
 all of it without a key. Blocks that show an answer set
@@ -92,6 +97,54 @@ gitignored here for that reason — `.Renviron` is the usual home for it:
 ```
 OPENAI_API_KEY=sk-...
 ```
+
+## Other providers, and other people's clients
+
+The built-in client speaks one dialect: an OpenAI-compatible `/responses` or
+`/chat/completions` endpoint. Nothing about ingesting, segmenting or reading a
+document depends on that, so the transport is swappable.
+
+`gr_ellmer_client()` uses an [ellmer](https://ellmer.tidyverse.org/) chat, which
+covers roughly twenty providers including local models through Ollama:
+
+```r
+library(ellmer)
+
+cl <- gr_ellmer_client(chat_anthropic(model = "claude-sonnet-4-5"))
+answer_document("report.pdf", "What was revenue?", "thorough", client = cl)
+
+# Or locally, for nothing:
+gr_ellmer_client(chat_ollama(model = "llama3.1"))
+```
+
+Two things do not carry over, both by ellmer's design rather than by omission.
+Sampling parameters belong to the chat object, so a `temperature` in a read spec
+is ignored and warned about once — build a second chat if you need a second
+temperature. And embeddings are separate: pass `embed =` a function returning one
+row per text (a wrapper around `ragnar::embed_ollama()`, say), or `retrieve` and
+the `semantic` segmenter fall back to lexical vectors and tell you so.
+
+Anything else — a company proxy, a model behind a queue, a package this one has
+never heard of — goes through `gr_backend_client()`, which makes any function
+the transport:
+
+```r
+cl <- gr_backend_client(function(messages, params) {
+  # `messages` is a list of list(role=, content=); `params` carries model,
+  # max_output, temperature, schema. Return a string.
+  my_provider(messages, max_tokens = params$max_output)
+}, model = "my-model")
+```
+
+Everything the package does around the call is unchanged: context budgeting,
+the cost and call rails, provenance, the run trace, caching, replay and
+`gr_compare()`. Register the model's real limits with `gr_register_model()` —
+the context window is what sizes your chunks, so a guessed one is not cosmetic.
+
+If you are already using ellmer and ragnar, the division is: ragnar retrieves,
+this package reads. `ragnar_retrieve()` gets you relevant chunks; `map_reduce`,
+`refine`, `hierarchical`, `iterative`, `rerank` and `ensemble` are what happen
+after that, with a traversal signature each and a bill you can see.
 
 ## Quick start
 

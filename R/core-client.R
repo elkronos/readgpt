@@ -286,7 +286,7 @@ gr_call <- function(client, messages, model = NULL, max_output = NULL,
   }
 
   params <- list(model = model, max_output = max_output, temperature = temperature,
-                 schema_name = schema_name, prompt_tokens = prompt_tokens)
+                 schema = schema, schema_name = schema_name, prompt_tokens = prompt_tokens)
 
   # One dispatch, one exit, one trace entry. The mock and HTTP paths each used
   # to `return()` after recording their own trace entry, so every feature that
@@ -322,6 +322,8 @@ client_dispatch <- function(client, messages, model, max_output, temperature,
 
   res <- if (inherits(client, "gr_mock_client")) {
     mock_dispatch(client, messages, model, params, label)
+  } else if (inherits(client, "gr_backend_client")) {
+    backend_dispatch(client, messages, model, params, label)
   } else {
     body <- build_request_body(client, messages, model, max_output, temperature,
                               schema, schema_name, info, extra)
@@ -339,18 +341,45 @@ client_dispatch <- function(client, messages, model, max_output, temperature,
 #' Run a mock client's handler and normalise whatever it returned.
 #' @noRd
 mock_dispatch <- function(client, messages, model, params, label) {
-  prompt_tokens <- as_int1(params$prompt_tokens, 0L)
   out <- tryCatch(client$handler(messages, params), error = function(e) e)
-  res <- if (inherits(out, "gr_result")) {
+  res <- handler_result(out, model, as_int1(params$prompt_tokens, 0L))
+  client$.log$calls <- c(client$.log$calls, list(list(messages = messages, params = params,
+                                                      result = res, label = label)))
+  res
+}
+
+#' Run a user-supplied backend handler.
+#'
+#' Same normalisation as the mock, deliberately: a backend is a stranger's
+#' function, and every caller downstream relies on invariants it has never heard
+#' of. Sharing `handler_result()` is what stops the two paths from drifting.
+#' @noRd
+backend_dispatch <- function(client, messages, model, params, label) {
+  out <- tryCatch(client$handler(messages, params), error = function(e) e)
+  res <- handler_result(out, model, as_int1(params$prompt_tokens, 0L))
+  client$.log$calls <- c(client$.log$calls, list(list(messages = messages, params = params,
+                                                      result = res, label = label)))
+  res
+}
+
+#' Turn whatever a handler returned into a lawful `gr_result`.
+#' @noRd
+handler_result <- function(out, model, prompt_tokens) {
+  if (inherits(out, "gr_result")) {
     # Re-normalise: a hand-built gr_result from a user handler can violate the
     # character(1) contract that every caller downstream relies on.
-    gr_result(out$ok, text = out$text, error = out$error, status = out$status %||% NA_integer_,
-              usage = out$usage %||% list(input = 0L, output = 0L),
-              model = out$model %||% model, finish_reason = out$finish_reason %||% NA_character_,
-              retryable = isTRUE(out$retryable), raw = out$raw, cached = isTRUE(out$cached))
+    return(gr_result(out$ok, text = out$text, error = out$error,
+                     status = out$status %||% NA_integer_,
+                     usage = out$usage %||% list(input = 0L, output = 0L),
+                     model = out$model %||% model,
+                     finish_reason = out$finish_reason %||% NA_character_,
+                     retryable = isTRUE(out$retryable), raw = out$raw,
+                     cached = isTRUE(out$cached)))
   }
-  else if (inherits(out, "error")) gr_result(FALSE, error = conditionMessage(out), model = model)
-  else {
+  if (inherits(out, "condition")) {
+    return(gr_result(FALSE, error = conditionMessage(out), model = model))
+  }
+  {
     # A handler that returns "" is the mock's version of the API returning
     # `content: null` -- a refusal, a content filter, a tool-call response. The
     # real client reports that as ok = FALSE, and `gr_result`'s documented
@@ -367,9 +396,6 @@ mock_dispatch <- function(client, messages, model, params, label) {
                 usage = list(input = prompt_tokens, output = sum(gr_count_tokens(txt))))
     }
   }
-  client$.log$calls <- c(client$.log$calls, list(list(messages = messages, params = params,
-                                                      result = res, label = label)))
-  res
 }
 
 #' @noRd

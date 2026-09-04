@@ -70,6 +70,39 @@ gr_embed <- function(client, texts, model = NULL, batch_size = 64L, cache = NULL
     return(finish_embedding(m, "api", trace, length(texts)))
   }
 
+  # A user-supplied backend brings its own embedder or none. Validate the shape
+  # before it reaches the ranking maths: a matrix with the wrong number of rows
+  # would silently mis-associate every chunk with another chunk's vector, and the
+  # answer would look fine.
+  if (inherits(client, "gr_backend_client")) {
+    if (is.function(client$embed_handler)) {
+      m <- tryCatch(client$embed_handler(texts, list(model = model)),
+                    error = function(e) e)
+      client$.log$embeds <- c(client$.log$embeds, list(list(texts = texts, model = model)))
+      bad <- if (inherits(m, "condition")) conditionMessage(m)
+             else if (!is.numeric(m) && !is.matrix(m)) "it did not return a numeric matrix"
+             else if (NROW(m) != length(texts))
+               sprintf("it returned %d row(s) for %d text(s)", NROW(m), length(texts))
+             else NULL
+      if (is.null(bad)) return(finish_embedding(m, "api", trace, length(texts)))
+      msg <- sprintf("The backend's embed function failed: %s.", bad)
+      if (identical(fallback, "error")) gr_abort(msg, class = "gr_embed_error")
+      if (identical(fallback, "none")) return(matrix(numeric(0), nrow = 0, ncol = 0))
+      gr_warn(paste0(msg, " Falling back to hashed lexical vectors, which approximate word ",
+                     "overlap and not meaning."), class = "gr_embed_fallback")
+      return(finish_embedding(lexical_embed(texts), "lexical", trace, length(texts)))
+    }
+    msg <- paste0("This backend client has no embed function, so there is no way to embed ",
+                  "text. Falling back to hashed lexical vectors: these approximate word ",
+                  "overlap, not meaning, so semantic segmentation and top-k retrieval will ",
+                  "be markedly less accurate. Pass `embed =` to gr_backend_client() or ",
+                  "gr_ellmer_client() to fix this.")
+    if (identical(fallback, "error")) gr_abort(msg, class = "gr_embed_error")
+    if (identical(fallback, "none")) return(matrix(numeric(0), nrow = 0, ncol = 0))
+    gr_warn(msg, class = "gr_backend_no_embeddings")
+    return(finish_embedding(lexical_embed(texts), "lexical", trace, length(texts)))
+  }
+
   # A trace records model calls, not embeddings, so a replay has nothing to
   # return here. Say so and take the lexical path rather than issuing a doomed
   # request to "replay://" and reporting it as a network failure -- the user

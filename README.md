@@ -321,6 +321,54 @@ respectively — with a warning and a note on the answer.
 `gr_compare()` refuses to bill you twice for two configurations that resolve to
 the same segmentation and the same signature.
 
+## Choosing chunks, and where to put them
+
+Two settings on the read spec, both off by default because changing what reaches
+the model changes answers and that should be a decision rather than a surprise.
+
+**`mmr` — stop paying for the same chunk three times.** Top-k by similarity
+answers "which chunks are most like the question", which is not quite the
+question you wanted. If three paragraphs say the same thing, all three score
+highly and all three go in the prompt. Maximal marginal relevance picks greedily,
+trading relevance against redundancy against what is already selected:
+
+```r
+cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
+old <- gr_options(embedder = "lexical")
+doc <- paste(c("Revenue was 45.2 million dollars in fiscal 2024.",
+               "Total revenue reached 45.2 million dollars in the 2024 fiscal year.",
+               "In fiscal 2024 the company recorded revenue of 45.2 million dollars.",
+               "Headcount grew to 1,204 employees across nine clinical sites.",
+               "The board approved a dividend of 0.42 dollars per share in March."),
+             collapse = "\n\n")
+ch <- gr_segment(gr_ingest(doc), list(method = "paragraph", max_tokens = 40))
+picked <- function(m) gr_read(ch, "What was revenue?", cl,
+                              list(reader = "retrieve", top_k = 3, mmr = m))$chunks_used
+result <- rbind("mmr = 1 (top-k)" = picked(1), "mmr = 0.3" = picked(0.3))
+gr_options(old)
+result
+#>                 [,1] [,2] [,3]
+#> mmr = 1 (top-k)    1    3    2
+#> mmr = 0.3          1    4    5
+```
+
+Top-k spends all three slots on the same fact. `mmr = 0.3` keeps the best chunk
+and spends the other two on different ones. It costs nothing — the vectors are
+already computed — and it applies to `retrieve` and `iterative`.
+
+**`context_order` — where the chosen chunks sit.** Transformers attend
+measurably better to the beginning and end of a long context than to its middle.
+`"edges"` puts the strongest chunk first and the second-strongest last, burying
+the weakest in the middle; `"document"` restores the order they appear in the
+document, which reads better when chunks are consecutive. Selection is
+unaffected — this decides placement only, for `retrieve` and `rerank`, the two
+readers that put several ranked chunks in one prompt.
+
+Note this is *not* the primacy-and-recency effect it resembles. Those come from
+rehearsal and interference in human memory, mechanisms a transformer does not
+have; the reason here is positional attention, and it argues about placement
+rather than about what to select.
+
 ## Reading a run
 
 Nothing degrades silently. Everything below is recorded on the answer.

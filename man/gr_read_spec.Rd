@@ -13,6 +13,8 @@ gr_read_spec(
   max_summary_tokens = 500L,
   top_k = 6L,
   min_score = -Inf,
+  mmr = 1,
+  context_order = c("relevance", "document", "edges"),
   rerank_candidates = 20L,
   rerank_min_score = 4,
   fan_in = 5L,
@@ -51,6 +53,24 @@ automatically for any model whose registry entry has
 if that would leave nothing the single best chunk is used anyway. \code{-Inf}
 disables the filter. Not a cosine similarity when embeddings fall back to
 lexical vectors -- the score is then a blend of cosine and BM25.}
+
+\item{mmr}{Diversity of selection, for \code{retrieve} and \code{iterative}. \code{1} (the
+default) is plain top-k. Below 1, chunks are picked greedily by
+\verb{mmr * relevance - (1 - mmr) * similarity to what is already picked}, so
+three chunks saying the same thing do not all get in and pay for each other.
+Costs nothing -- the vectors are already computed. \code{0.7} is a reasonable
+place to start; \code{0} selects for novelty alone and will happily pick
+irrelevant chunks because they are different.}
+
+\item{context_order}{Where the selected chunks sit in the prompt.
+\code{"relevance"} (default) is most relevant first; \code{"document"} restores the
+order they appear in the document, which reads better when chunks are
+consecutive; \code{"edges"} puts the strongest first and second-strongest last,
+burying the weakest in the middle, because transformers attend measurably
+better to the beginning and end of a long context than to its middle.
+Selection is unaffected -- this decides only placement, and it applies to
+\code{retrieve} and \code{rerank}, the two readers that put several ranked chunks in
+one prompt.}
 
 \item{rerank_candidates, rerank_min_score}{For \code{rerank}: how many chunks to
 score, and the score below which a chunk is discarded.}

@@ -227,15 +227,24 @@ read_retrieve <- function(chunks, question, client, spec, trace) {
     scores <- 0.5 * scores + 0.5 * scale01(bm25_scores(d$text, question))
   }
   k <- as.integer(clamp(spec$top_k, 1, nrow(d)))
-  ord <- order(scores, decreasing = TRUE)
-  keep <- ord[seq_len(k)]
   min_score <- as_num1(spec$min_score, -Inf)
-  if (is.finite(min_score)) keep <- keep[scores[keep] >= min_score]
-  if (!length(keep)) keep <- ord[1]
+  # The floor is applied BEFORE selection, not after. Applied after, a chunk
+  # below the floor could still displace one above it and then be dropped,
+  # leaving fewer chunks than asked for and no way to see why.
+  rel <- scores
+  if (is.finite(min_score)) rel[rel < min_score] <- -Inf
+  chunk_emb <- if (nrow(emb) >= 2L) emb[-1, , drop = FALSE] else NULL
+  lambda <- as_num1(spec$mmr, 1)
+  keep <- mmr_select(rel, chunk_emb, k, lambda)
+  if (!length(keep)) keep <- order(scores, decreasing = TRUE)[1]
 
   overhead <- prompt_overhead(question, .gr_prompts$answer_system)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   fit <- fit_chunks(d, bud$input, order = keep)
+  # Fit first, then arrange: what gets in is a relevance question, where it sits
+  # in the prompt is a positional-attention one, and answering them in the other
+  # order would let placement decide what gets dropped.
+  fit$idx <- arrange_context(fit$idx, spec$context_order)
   sub <- d[fit$idx, , drop = FALSE]
   if (!nrow(sub)) {
     return(new_answer(.NOT_FOUND, "retrieve", question, integer(0), trace, partial = TRUE,
@@ -243,6 +252,7 @@ read_retrieve <- function(chunks, question, client, spec, trace) {
   }
   trace_note(trace, "retrieve.rank",
              list(k = k, kept = nrow(sub), embedding_source = src,
+                  mmr = lambda, context_order = as_chr1(spec$context_order, "relevance"),
                   top_scores = round(utils::head(sort(scores, decreasing = TRUE), 5), 4)))
   res <- gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite),
                  model = spec$model, max_output = spec$max_answer_tokens,
@@ -252,7 +262,9 @@ read_retrieve <- function(chunks, question, client, spec, trace) {
                                        scores[fit$idx]),
              partial = !res$ok || length(fit$dropped) > 0,
              notes = list(chunks = nrow(d), top_k = k, used = nrow(sub),
-                          embedding_source = src, error = res$error))
+                          embedding_source = src, mmr = lambda,
+                          context_order = as_chr1(spec$context_order, "relevance"),
+                          error = res$error))
 }
 
 #' @noRd
@@ -327,9 +339,11 @@ read_rerank <- function(chunks, question, client, spec, trace) {
   overhead <- prompt_overhead(question, .gr_prompts$answer_system)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   fit <- fit_chunks(d, bud$input, order = as.integer(keep_ord))
+  fit$idx <- arrange_context(fit$idx, spec$context_order)
   sub <- d[fit$idx, , drop = FALSE]
   trace_note(trace, "rerank.select", list(candidates = m, kept = nrow(sub),
                                           degraded_to_bm25 = degraded,
+                                          context_order = as_chr1(spec$context_order, "relevance"),
                                           scores = round(utils::head(keep_sc, 10), 2)))
   res <- if (trace_can_call(trace)) {
     gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite),
@@ -442,9 +456,12 @@ read_iterative <- function(chunks, question, client, spec, trace) {
     rounds <- rounds + 1L
     q_emb <- gr_embed(client, queries[length(queries)], trace = trace)
     sc <- if (nrow(emb)) cosine_against(emb, q_emb[1, ]) else rep(0, nrow(d))
+    # -Inf, not removal: mmr_select() treats a non-finite relevance as ineligible,
+    # which is how a chunk already read stays out of this round without
+    # renumbering everything around it.
     sc[seen] <- -Inf
-    take <- utils::head(order(sc, decreasing = TRUE), as.integer(clamp(spec$top_k, 1, nrow(d))))
-    take <- take[is.finite(sc[take])]
+    take <- mmr_select(sc, if (nrow(emb) == nrow(d)) emb else NULL,
+                       as.integer(clamp(spec$top_k, 1, nrow(d))), as_num1(spec$mmr, 1))
     if (!length(take)) { done_reason <- "no unseen chunks"; break }
     seen <- c(seen, take)
     gathered <- c(gathered, render_chunks(d[take, , drop = FALSE]))

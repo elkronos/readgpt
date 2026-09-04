@@ -21,6 +21,23 @@ twice.
   disappears with the session; set `gr_options(cache_dir = ...)` to keep entries
   across sessions and make a long run resumable.
 
+* **`mmr` and `context_order` on the read spec**, both off by default.
+
+  `mmr` below 1 selects chunks by maximal marginal relevance -- relevance traded
+  against redundancy with what is already selected -- so three paragraphs saying
+  the same thing do not take all three top-k slots and pay for each other. It
+  costs nothing, the vectors are already computed, and it applies to `retrieve`
+  and `iterative`. `mmr = 1` is exactly top-k, bit for bit.
+
+  `context_order` decides where the selected chunks sit in the prompt:
+  `"relevance"` (default), `"document"`, or `"edges"`, which puts the strongest
+  first and second-strongest last and buries the weakest in the middle, because
+  transformers attend measurably better to the beginning and end of a long
+  context than to its middle. Selection is unaffected -- this is placement only,
+  for `retrieve` and `rerank`. It is not the primacy/recency effect it
+  resembles: those come from rehearsal and interference in human memory, which a
+  transformer does not have.
+
 * **An embedder registry.** `gr_register_embedder()` and `gr_embedders()` make
   embedding the sixth registry, alongside extractors, cleaners, segmenters,
   readers and models -- it was the one axis that was a chain of `inherits()`
@@ -132,6 +149,15 @@ twice.
   compare unequal. Both cache and replay keys normalise text the same way, which
   is what lets a saved trace replay on a different machine.
 
+* **`gr_options()` did not compose with `on.exit()`, which is the one thing its
+  documentation promised.** The "old" value it returns was built with
+  `modifyList()`, which deletes a key whose value is `NULL` -- so once an option
+  had been *stored* as `NULL`, which is exactly what restoring a saved list does
+  for `temperature`, `max_cost_usd`, `cache_dir` and `embedder`, the returned
+  name came back as `NA` and the next `gr_options(old)` failed with
+  "Unknown option(s): NA". The second use of the documented pattern, in a
+  function already fixed once for this same `NULL` trap in its setter.
+
 * `gr_call()` had two exits, each recording its own trace entry. Anything that
   needed to sit between a request and its response had to be written twice and
   kept in step by hand. It now dispatches once and records once, and the
@@ -143,6 +169,12 @@ twice.
 * `gr_trace_summary()` returns an extra `cached` column, between `calls` and
   `steps`. Code that indexes its result by position rather than by name will
   need updating.
+
+* `min_score` is applied to `retrieve` *before* selection rather than after.
+  Applied after, a chunk below the floor could displace one above it in the
+  top-k and then be dropped, quietly returning fewer chunks than `top_k` asked
+  for and giving no way to see why. A run with a finite `min_score` may now use
+  more chunks than it did.
 
 # readgpt 0.2.0
 

@@ -156,7 +156,14 @@ gr_options <- function(...) {
                      paste(unknown, collapse = ", "), paste(names(gr_defaults), collapse = ", ")))
   }
   cur <- as.list(gr_state$options %||% list())
-  old <- utils::modifyList(gr_defaults, cur)[names(args)]
+  # merged(), not modifyList(). modifyList() DELETES a key whose value is NULL,
+  # so once an option had been *stored* as NULL -- which is what restoring a
+  # saved list does for `temperature`, `max_cost_usd`, `cache_dir` or `embedder`
+  # -- the returned "old" value came back with the name NA and the next
+  # gr_options(old) failed with "Unknown option(s): NA". That is the documented
+  # on.exit() pattern breaking on the second use, and it is the same NULL trap
+  # the setter below was already fixed for.
+  old <- merged()[names(args)]
   # modifyList() DELETES a key whose value is NULL, which silently reverted the
   # option to its default -- so `gr_options(max_cost_usd = NULL)`, documented as
   # disabling the cost cap, quietly restored the $5 cap instead. Assign directly

@@ -106,6 +106,53 @@ not from a second run made to explain the first.
 gr_trace_summary(ans$trace)[, c("calls", "cached", "tokens_in", "tokens_out")]
 ```
 
+## Did the model quote the document, or invent the quote?
+
+For most readers `$evidence` is verbatim chunk text and is true by construction:
+the package put it there. For `skim` it is not. `skim` asks the model to extract
+the passages that bear on the question, and what comes back is whatever the model
+chose to write — presented as a quotation, with nothing checking that it was one.
+
+That is the worst gap to leave. A fabricated citation is more convincing than a
+fabricated answer, because it looks like the thing that would let you check.
+
+```{r}
+doc <- "Revenue rose to 45.2 million dollars.\n\nHeadcount grew to 1,204."
+ch  <- gr_segment(gr_ingest(doc), list(method = "paragraph", max_tokens = 40))
+
+extracting <- function(quote) gr_mock_client(function(messages, params) {
+  if (grepl("You extract evidence", messages[[1]]$content, fixed = TRUE)) return(quote)
+  "Revenue was 45.2 million dollars."
+})
+
+faithful <- gr_read(ch, "What was revenue?",
+                    extracting("Revenue rose to 45.2 million dollars."), "skim")
+gr_verify_evidence(faithful)[, c("kind", "verified", "match")]
+```
+
+Now a model that invents one. The span is fluent, on topic, attributed to a real
+chunk, and not in the document — the case you cannot catch by eye:
+
+```{r}
+invented <- gr_read(ch, "What was revenue?",
+                    extracting("Revenue rose to 88.9 billion dollars on record demand."),
+                    "skim")
+gr_verify_evidence(invented)[, c("kind", "verified", "match")]
+invented$partial
+invented$notes$unverified_evidence
+```
+
+The comparison is forgiving about typography and unforgiving about content.
+Whitespace, curly quotes, dashes, case and the punctuation a model wraps a quote
+in are all folded away, because none of that is fabrication and flagging it would
+make `partial` stop meaning anything. A changed number is not folded away. Below
+an exact match, `match` is the fraction of the span carried by its longest
+consecutive run in the source — a run rather than word overlap, because overlap
+cannot tell a quotation from a paraphrase built from the same words.
+
+Citations get the same treatment, for every reader. An answer citing a chunk that
+was never sent to it sets `notes$cited_unknown` and is `partial`.
+
 ## Axis 2: segmentation is free to experiment with
 
 Chunking decides what the model can possibly see together. It involves no model

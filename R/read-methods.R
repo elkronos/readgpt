@@ -186,7 +186,10 @@ read_skim <- function(chunks, question, client, spec, trace) {
                       notes = list(chunks = nrow(d), failed_calls = sum(!ok),
                                    reason = "no chunk contained relevant evidence")))
   }
-  ev <- evidence_table(d$chunk_id[keep], txt[keep], d$page[keep], d$section[keep])
+  # `skim` is the one reader whose evidence is written by the model rather than
+  # copied out of the document, so it is the one that has to prove its quotes.
+  ev <- evidence_table(d$chunk_id[keep], txt[keep], d$page[keep], d$section[keep],
+                       source_text = d$text[keep])
   overhead <- prompt_overhead(question, .gr_prompts$answer_system)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   body <- paste(sprintf("[chunk %d]\n%s", ev$chunk_id, ev$text), collapse = "\n\n")
@@ -207,7 +210,8 @@ read_skim <- function(chunks, question, client, spec, trace) {
   new_answer(if (usable_text(res2)) res2$text else .NOT_FOUND, "skim", question, ev$chunk_id, trace,
              evidence = ev, partial = any(!ok) || !res2$ok,
              notes = list(chunks = nrow(d), with_evidence = nrow(ev),
-                          failed_calls = sum(!ok), evidence_consolidated = dropped > 0))
+                          failed_calls = sum(!ok), evidence_consolidated = dropped > 0,
+                          evidence_verified = sum(isTRUE_vec(ev$verified))))
 }
 
 # ---------------------------------------------------------------------------
@@ -608,7 +612,7 @@ read_ensemble <- function(chunks, question, client, spec, trace) {
        trace = trace, label = "ensemble.adjudicate")
   } else gr_result(FALSE, error = "call cap reached before adjudication")
 
-  ev <- do.call(rbind, lapply(results[usable], function(r) r$evidence))
+  ev <- rbind_evidence(lapply(results[usable], function(r) r$evidence))
 
   # Observed, not assumed, distinctness. Two members that read the same chunks
   # and returned the same text did not corroborate each other -- they were the

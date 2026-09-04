@@ -79,6 +79,10 @@ is_nonblank <- function(x) {
   !is.null(x) && length(x) == 1L && is.character(x) && !is.na(x) && nzchar(trimws(x))
 }
 
+#' Vectorised, NA-safe isTRUE.
+#' @noRd
+isTRUE_vec <- function(x) !is.na(x) & as.logical(x)
+
 #' Vectorised, NA-safe "has visible content".
 #' @noRd
 has_content <- function(x) {

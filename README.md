@@ -402,6 +402,27 @@ return `NULL`. `page` is populated only for PDF sources. `score` is set only by
 With `cite = TRUE` the model cites bracketed chunk ids (`[chunk 3]`); map those
 back to pages through `ans$evidence`.
 
+**Quoted evidence is checked.** For most readers the evidence is verbatim chunk
+text and is true by construction. For `skim` it is what the model wrote when
+asked to extract the relevant passages — presented as a quotation, and nothing
+used to check that it was one. A fabricated citation is more convincing than a
+fabricated answer, because it looks like the thing that would let you check.
+
+```r
+gr_verify_evidence(ans)          # chunk_id, kind, verified, match, span
+```
+
+`match` is 1 for an exact quotation once whitespace, quote marks, dashes and case
+are folded away — the differences a faithful quotation introduces. Below 1 it is
+the fraction of the span carried by its longest consecutive run in the source, so
+0.9 is a quote with a word changed and 0.1 is a sentence sharing vocabulary and
+nothing else. A span that does not verify sets `ans$notes$unverified_evidence`
+and makes the answer `partial`.
+
+Citations are checked the same way, for every reader: an answer citing a chunk
+that was never sent sets `ans$notes$cited_unknown`. Both checks are local string
+operations on text you already have, so they cost nothing and always run.
+
 Errors are classed, so you can catch a specific failure: `gr_auth_error`,
 `gr_file_not_found`, `gr_empty_document`, `gr_unsupported_format`, `gr_overflow`,
 `gr_call_cap`, `gr_cost_cap`, `gr_budget_error`, `gr_unknown_model`,
@@ -424,6 +445,8 @@ cause:
 | `NOT_IN_DOCUMENT`, but you can see the answer in the file | `nrow(ans$evidence)`, then `gr_chunk_stats()` | the chunk holding it never reached the model. Lower `max_tokens`, raise `top_k`, or switch to a reader whose `signature` starts `all\|` |
 | the answer is right but thin | `ans$notes$chunks` vs `length(ans$chunks_used)` | most chunks answered `NOT_IN_DOCUMENT`. That is usually correct; if not, the boundaries are cutting the evidence in half — add `overlap_tokens` |
 | `ans$partial` is `TRUE` | `ans$notes`, then `print(ans$trace)` | `failed_calls` (transport), `dropped_chunks` (did not fit), `call_cap_reached`, or a merge that degraded to concatenation |
+| `ans$notes$unverified_evidence` is set | `gr_verify_evidence(ans)` | the model wrote a quotation that is not in the chunk it is attributed to. `match` says how far off; near 1 is a typo, near 0 is invention |
+| `ans$notes$cited_unknown` is set | that value against `ans$chunks_used` | the answer cited a chunk that was never sent to it |
 | figures, dates or percentages are missing | `doc$stats$clean_log` | a cleaning step removed them. `remove_numbers` is off by default; the `legacy` preset turns it on deliberately |
 | a scanned PDF comes back nearly empty | `doc$stats$chars` per page, and any `gr_ocr_unavailable` warning | OCR did not run or is not installed. Force it with `gr_ingest_spec(ocr = "always")`, and check `tesseract` and `magick` are present |
 | every chunk is the whole document | `nrow(doc$blocks)` | the file has no blank lines between paragraphs, so there is nothing to split on. Use `method = "sentence"` or `"fixed"` |

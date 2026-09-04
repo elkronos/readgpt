@@ -21,6 +21,34 @@ twice.
   disappears with the session; set `gr_options(cache_dir = ...)` to keep entries
   across sessions and make a long run resumable.
 
+* **Quoted evidence is checked against the document.** `ans$evidence` is what an
+  answer rests on, and for most readers those spans are verbatim chunk text --
+  true because the package put them there. For `skim` they are what the model
+  wrote when asked to extract the relevant passages: *presented* as quotations,
+  with nothing checking that they were.
+
+  Now they are checked, on every run. A span that is not in the chunk it is
+  attributed to sets `notes$unverified_evidence` and makes the answer `partial`,
+  like any other degradation. `gr_verify_evidence()` reports the detail:
+  `chunk_id`, `kind`, `verified`, `match` and the span.
+
+  The comparison is forgiving about typography and unforgiving about content.
+  Whitespace, curly quotes, dashes, case and the punctuation a model wraps a
+  quotation in are folded away, because none of that is fabrication and flagging
+  it would make `partial` mean nothing. A changed number is not folded away.
+  Below an exact match, `match` is the fraction of the span carried by its
+  longest consecutive run in the source -- a run measure rather than word
+  overlap, because overlap cannot tell a quotation from a paraphrase built out
+  of the same vocabulary, which is the whole distinction.
+
+  Citations are checked too, for every reader: an answer citing a chunk that was
+  never sent to it sets `notes$cited_unknown` and is `partial`. A fabricated
+  citation is more convincing than a fabricated answer, because it looks like
+  the thing that would let you check.
+
+  Both checks are local string operations on text already in hand. They cost
+  nothing, so there is no option to turn them off.
+
 * **A vignette**, `vignette("readgpt")`. It walks through the three axes and the
   decision each one represents, then through comparing recipes, the cost rails,
   caching, replay and reading a corpus. It builds against `gr_mock_client()` with
@@ -163,6 +191,12 @@ twice.
   name came back as `NA` and the next `gr_options(old)` failed with
   "Unknown option(s): NA". The second use of the documented pattern, in a
   function already fixed once for this same `NULL` trap in its setter.
+
+* `ensemble` combined its members' evidence with a plain `rbind()`, which
+  requires every member to produce the same columns. It does not -- only readers
+  whose evidence is model-written carry verification columns -- so an ensemble of
+  `skim` and `map_reduce` failed with "numbers of columns of arguments do not
+  match" the moment verification was added. Evidence tables are now unioned.
 
 * `gr_call()` had two exits, each recording its own trace entry. Anything that
   needed to sit between a request and its response had to be written twice and

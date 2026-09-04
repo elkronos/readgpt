@@ -46,19 +46,35 @@ jobs:
           r-version: ${{ matrix.config.r }}
           use-public-rspm: true
 
+      # Building a vignette runs it through pandoc. Without this the build step
+      # fails before check ever starts.
+      - uses: r-lib/actions/setup-pandoc@v2
+
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
           # Hard dependencies only, plus what the suite itself needs.
+          #
+          # knitr and rmarkdown are NOT optional here, whatever DESCRIPTION says.
+          # `VignetteBuilder: knitr` makes the builder a build-time requirement,
+          # and rcmdcheck builds the tarball before it checks it, so without them
+          # `R CMD build` dies with "vignette builder 'knitr' not found" and the
+          # `--no-build-vignettes` below never gets a chance to apply -- it is an
+          # argument to CHECK, not to BUILD.
           dependencies: '"hard"'
           extra-packages: |
             any::testthat
             any::withr
             any::rcmdcheck
+            any::knitr
+            any::rmarkdown
 
       - uses: r-lib/actions/check-r-package@v2
         with:
           upload-snapshots: true
-          args: 'c("--no-manual", "--no-build-vignettes")'
+          # The vignette IS built and re-run. It is the one place the three
+          # axes are exercised end to end against a document, and CRAN will
+          # build it whether or not this does.
+          args: 'c("--no-manual")'
           # NOTEs are tolerated (the only one is "suggested packages not
           # available", which is expected given dependencies: "hard"). If a
           # runner ever produces an environment-specific WARNING you do not

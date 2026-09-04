@@ -36,10 +36,15 @@ jobs:
 
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
+          # knitr is needed by the vignette step below. Without it that step took
+          # its own `requireNamespace()` escape hatch and reported success having
+          # checked nothing -- a green tick for a job that did not run.
+          # No pandoc: that step knits to markdown rather than rendering.
           dependencies: '"hard"'
           extra-packages: |
             any::testthat
             any::withr
+            any::knitr
 
       - name: Install package
         run: R CMD INSTALL . --no-byte-compile
@@ -170,8 +175,13 @@ jobs:
           OPENAI_API_KEY: ''
         run: |
           Rscript -e '
+            # Not a skip. knitr is installed by this workflow, so its absence
+            # means the workflow is broken rather than that the check is
+            # inapplicable, and a step that passes by not running is worse than
+            # no step at all.
             if (!requireNamespace("knitr", quietly = TRUE)) {
-              cat("knitr not available; skipping\n"); quit(status = 0)
+              cat("knitr is missing: the workflow should have installed it.\n")
+              quit(status = 1)
             }
             # Knit rather than render: this step is about whether the CODE runs
             # offline, not about pandoc. A vignette that quietly degraded --

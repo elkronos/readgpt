@@ -124,8 +124,10 @@ read_screen <- function(chunks, question, client, spec, trace) {
 #'     \item{`table`}{One row per document: `document`, `document_id`,
 #'       `decision`, `reason`, `criterion`, `quote`, `verified`, `seen_tokens`,
 #'       `document_tokens`, `truncated`, `status`, `duplicate_of`, `error`.}
-#'     \item{`included`}{The sources whose decision was `"include"`, ready to
-#'       hand to [gr_extract()].}
+#'     \item{`included`}{The distinct sources whose decision was `"include"` --
+#'       the paths, not the display labels, so this is the argument to hand
+#'       straight to [gr_extract()]. Duplicates are left out; they are the same
+#'       study, and `table` still has their rows.}
 #'     \item{`summary`,`answers`,`trace`,`store`}{As [gr_extract()].}
 #'   }
 #'
@@ -209,7 +211,12 @@ gr_screen <- function(sources, protocol = NULL, question = NULL, include = NULL,
 
   structure(list(
     table    = tab,
-    included = out$summary$document[!is.na(tab$decision) & tab$decision == "include"],
+    # The SOURCES, not summary$document, which is a display label with no way
+    # back to a file -- gr_extract(screened$included) then failed with "file not
+    # found" on every row. And distinct: a duplicate is the same study, so
+    # extracting it again buys nothing but the chance of counting it twice.
+    included = out$sources[!is.na(tab$decision) & tab$decision == "include" &
+                             is.na(tab$duplicate_of)],
     include  = include,
     exclude  = exclude,
     summary  = out$summary,

@@ -117,8 +117,10 @@ gr_trace_cost <- function(trace) {
 #' @param recursive Descend into subdirectories when `sources` is a directory.
 #' @param ... Overrides applied to the recipe, as in [answer_document()].
 #' @return An object of class `gr_corpus`: `summary` (one row per document),
-#'   `answers` (named list, empty when `keep_answers = FALSE`), `trace` (every
-#'   call made *this run*) and `store`.
+#'   `answers` (named list, empty when `keep_answers = FALSE`), `sources` (the
+#'   sources as read, aligned row for row with `summary` -- `summary$document` is
+#'   a display label and cannot be turned back into a path), `trace` (every call
+#'   made *this run*) and `store`.
 #'
 #' @section The summary:
 #' `document`, `document_id`, `answer`, `not_found`, `partial`, `reader`,
@@ -359,6 +361,13 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
   }
 
   structure(list(summary = do.call(rbind, rows), answers = answers,
+                 # The sources as they were actually read, aligned row for row
+                 # with `summary`. `summary$document` is a LABEL -- a basename,
+                 # made unique with a suffix when two folders hold the same
+                 # filename -- so there is no way back from it to the file. Any
+                 # caller that wants to feed a subset of a corpus into the next
+                 # stage needs the paths, not the labels.
+                 sources = simplify_sources(sources),
                  trace = trace, store = store), class = "gr_corpus")
 }
 
@@ -492,6 +501,20 @@ corpus_key <- function(src, question, rec, client) {
                # fields are identical constants, so without this a store restored
                # one client's answers for a different client's run.
                as_chr1(client$.client_id, "<url-addressed>")))
+}
+
+#' Give the sources back in the shape they arrived in.
+#'
+#' `corpus_sources()` works in a list so that a mixed set -- paths and raw text
+#' together -- survives. Handing that back to a caller who passed a plain
+#' character vector is a small surprise with a long tail: `basename(x$sources)`
+#' and `file.exists(x$sources)` both do the wrong thing on a list of strings.
+#' @noRd
+simplify_sources <- function(x) {
+  if (!is.list(x)) return(x)
+  if (all(vapply(x, function(e) is.character(e) && length(e) == 1L, logical(1)))) {
+    unlist(x, use.names = FALSE)
+  } else x
 }
 
 #' @noRd

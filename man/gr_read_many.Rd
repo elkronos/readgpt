@@ -58,8 +58,10 @@ runs you out of memory.}
 }
 \value{
 An object of class \code{gr_corpus}: \code{summary} (one row per document),
-\code{answers} (named list, empty when \code{keep_answers = FALSE}), \code{trace} (every
-call made \emph{this run}) and \code{store}.
+\code{answers} (named list, empty when \code{keep_answers = FALSE}), \code{sources} (the
+sources as read, aligned row for row with \code{summary} -- \code{summary$document} is
+a display label and cannot be turned back into a path), \code{trace} (every call
+made \emph{this run}) and \code{store}.
 }
 \description{
 The counterpart to \code{\link[=gr_compare]{gr_compare()}}: that runs several recipes over one

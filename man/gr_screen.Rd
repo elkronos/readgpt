@@ -49,8 +49,10 @@ An object of class \code{gr_screening}:
 \item{\code{table}}{One row per document: \code{document}, \code{document_id},
 \code{decision}, \code{reason}, \code{criterion}, \code{quote}, \code{verified}, \code{seen_tokens},
 \code{document_tokens}, \code{truncated}, \code{status}, \code{duplicate_of}, \code{error}.}
-\item{\code{included}}{The sources whose decision was \code{"include"}, ready to
-hand to \code{\link[=gr_extract]{gr_extract()}}.}
+\item{\code{included}}{The distinct sources whose decision was \code{"include"} --
+the paths, not the display labels, so this is the argument to hand
+straight to \code{\link[=gr_extract]{gr_extract()}}. Duplicates are left out; they are the same
+study, and \code{table} still has their rows.}
 \item{\code{summary},\code{answers},\code{trace},\code{store}}{As \code{\link[=gr_extract]{gr_extract()}}.}
 }
 }

@@ -44,7 +44,7 @@ test_that("every source gets a row, and every decision has a reason", {
   expect_identical(s$table$decision, c("include", "exclude", "unclear"))
   expect_false(anyNA(s$table$reason))
   expect_identical(s$table$criterion[2], "Not a primary research report")
-  expect_identical(s$included, s$table$document[1])
+  expect_identical(s$included, a)                   # the path, not the label
   expect_identical(length(cl$calls()), 3L)          # one call per document
 
   # The quote behind a decision is checked against what the model was shown,
@@ -64,7 +64,7 @@ test_that("a document that could not be read has no decision, and is not exclude
   expect_true(is.na(s$table$decision[2]))
   expect_identical(s$table$status[2], "failed")
   expect_false(is.na(s$table$error[2]))
-  expect_identical(s$included, s$table$document[1])
+  expect_identical(s$included, a)
   expect_output(print(s), "could not be read and have NO decision")
 })
 
@@ -264,11 +264,40 @@ test_that("screening feeds extraction, and duplicates are screened once", {
   expect_identical(length(cl$calls()), 2L)          # the duplicate was not screened again
   expect_identical(s$table$decision, c("include", "include", "exclude"))
   expect_identical(s$table$duplicate_of, c(NA, basename(a), NA))
-  expect_length(s$included, 2L)
 
-  # The distinct included set, which is what a review actually extracts from.
-  distinct <- s$table[is.na(s$table$duplicate_of) & s$table$decision == "include", ]
-  expect_equal(nrow(distinct), 1L)
+  # `included` is the PATHS, not the display labels -- summary$document is a
+  # basename, made unique with a suffix when two folders hold the same filename,
+  # and there is no way back from it to a file. Handing labels to gr_extract()
+  # failed with "file not found" on every row, which is the whole purpose of the
+  # field. And it is the DISTINCT set: a duplicate is the same study.
+  expect_identical(s$included, a)
+  expect_true(all(file.exists(s$included)))
+
+  fields <- gr_fields(n = gr_field("Participants", type = "integer"))
+  ex <- gr_mock_client(function(messages, params) {
+    '{"n":1204,"n__quote":"We randomly assigned 1,204 participants to two groups."}'
+  })
+  x <- quiet(gr_extract(s$included, fields, client = ex, recipe = "fast"))
+  expect_identical(x$table$status, "ok")
+  expect_identical(x$table$n, 1204L)
+})
+
+test_that("gr_read_many() hands back the sources it read, aligned with the summary", {
+  cl <- mock_echo()
+  a <- txt_file(trial_txt); b <- txt_file(edit_txt)
+  out <- quiet(gr_read_many(c(a, b, "no-such-file.txt"), "Q?", "fast", client = cl))
+  expect_length(out$sources, nrow(out$summary))
+  expect_identical(out$sources, c(a, b, "no-such-file.txt"))
+
+  # A directory is expanded, so the sources are what was actually read rather
+  # than the argument that was passed.
+  dir <- withr::local_tempdir()
+  writeLines(trial_txt, file.path(dir, "one.txt"))
+  writeLines(edit_txt, file.path(dir, "two.txt"))
+  d <- quiet(gr_read_many(dir, "Q?", "fast", client = mock_echo()))
+  expect_length(d$sources, 2L)
+  expect_true(all(file.exists(d$sources)))
+  expect_identical(basename(d$sources), d$summary$document)
 })
 
 test_that("a screening run resumes from a store", {

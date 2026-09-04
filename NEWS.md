@@ -141,6 +141,12 @@ This release is the second one.
   Nor may a name end in `__quote`, which collides with the companion span every
   field gets.
 
+* `gr_read_many()` returns `$sources`: the sources as they were actually read,
+  aligned row for row with `summary`. `summary$document` is a display label — a
+  basename, made unique with a suffix when two folders hold the same filename —
+  and there is no way back from it to a file, which is what any caller feeding
+  part of a corpus into the next stage needs.
+
 * `gr_read_many()`'s summary gains `document_id` and `duplicate_of`. A `store`
   written by 0.3.0 still resumes; its rows have neither, and both are filled
   with `NA` rather than being invented.

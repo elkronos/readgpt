@@ -21,6 +21,30 @@ twice.
   disappears with the session; set `gr_options(cache_dir = ...)` to keep entries
   across sessions and make a long run resumable.
 
+* **One question, many documents.** `gr_read_many()` runs one recipe over a
+  vector of files, or a directory expanded by the extractor registry, and
+  returns one tidy row per document -- `answer`, `not_found`, `partial`,
+  `chunks_used`, `calls`, `cached`, tokens, `cost_usd`, `seconds`, `status` and
+  `error`. It is the counterpart to `gr_compare()`, which runs several recipes
+  over one document.
+
+  It does four things a loop does not. One unreadable document costs one row
+  rather than the run. Budgets are per document -- each gets its own trace, so
+  `max_calls` applies as if it had been read alone and one enormous file cannot
+  starve the rest -- under an optional corpus-wide `max_total_usd` ceiling, past
+  which documents are marked `"skipped"` rather than quietly dropped. A `store =`
+  directory makes a run resumable: each result is written as it completes and
+  restored later, keyed on the document's path, size and mtime, the question,
+  the whole pipeline and the model, so an edited document is a new job and not a
+  stale hit. And every document's cost is recorded.
+
+* **`gr_trace_cost()`** prices a run using each step's own model and counts only
+  the calls that were actually issued -- a call served from a cache or a replay
+  spent nothing however large its prompt was. One row per model; an unpriced
+  model contributes `NA` rather than zero, so a total cannot quietly omit it.
+  This is the missing half of the `cached` accounting added alongside the cache:
+  token totals describe a run's shape, and this describes its bill.
+
 * **A swappable transport.** `gr_backend_client()` makes any function of
   `(messages, params)` the model transport, and `gr_ellmer_client()` plugs in an
   `ellmer` chat -- so Anthropic, Google, Bedrock, Azure, Ollama and Hugging Face

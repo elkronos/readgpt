@@ -438,6 +438,76 @@ continuing to spend. Both raise a classed error naming the option to change.
 incapable of returning a non-positive input budget — it raises an actionable
 error instead. `gr_options()` documents all 20 settings; see `?gr_options`.
 
+## Many documents
+
+`gr_compare()` runs several recipes over one document. `gr_read_many()` runs one
+recipe over many, and returns one tidy row per document — which is the shape the
+work usually has: a folder, one question, and a table at the end.
+
+```r
+cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
+reports <- file.path(tempdir(), "reports")
+dir.create(reports, showWarnings = FALSE)
+writeLines("Revenue was 45.2 million dollars in fiscal 2024.", file.path(reports, "north.txt"))
+writeLines("Revenue was 51.8 million dollars in fiscal 2025.", file.path(reports, "south.txt"))
+
+out <- gr_read_many(reports, "What was revenue?", "fast", client = cl)
+out$summary[, c("document", "not_found", "chunks_used", "calls", "status")]
+#>    document not_found chunks_used calls status
+#> 1 north.txt     FALSE           1     1     ok
+#> 2 south.txt     FALSE           1     1     ok
+```
+
+A directory is expanded by the extractor registry, so registering an extractor
+changes which files get picked up. The full summary also carries `answer`,
+`partial`, `reader`, `chunks`, `cached`, `tokens_in`, `tokens_out`, `cost_usd`,
+`seconds` and `error` — `write.csv(out$summary, ...)` is a reasonable end to a
+run.
+
+Four things it does that a `lapply()` does not:
+
+**One bad file costs one row.** An unreadable document gets `status = "failed"`
+and its error in the `error` column; the other hundred and ninety-nine answers
+survive. `on_error = "stop"` if you would rather it aborted.
+
+**Budgets are per document.** Every document gets its own trace, so
+`gr_options(max_calls =)` applies to each one exactly as if you had read it
+alone — one enormous document cannot starve the rest. `max_total_usd` is the
+corpus-wide ceiling; documents after it are marked `"skipped"` rather than
+quietly dropped.
+
+**A run can be resumed.** Point `store =` at a directory and each result is
+written as it completes and restored on a later run. Combined with a durable
+response cache, restarting a four-hour job costs approximately nothing:
+
+```r
+cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
+durable <- gr_cache_client(cl, gr_cache(tools::R_user_dir("readgpt", "cache")))
+gr_read_many(file.path(tempdir(), "reports"), "What was revenue?", "thorough",
+             client = durable, store = file.path(tempdir(), "run-store"))
+```
+
+The store is keyed on the document's path, size and mtime, the question, the
+whole pipeline and the model — so an edited document is a new job, not a stale
+hit.
+
+**You can see what it cost.** `gr_trace_cost()` prices a run using each step's
+own model and counts only the calls that were really issued:
+
+```r
+cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
+run <- answer_document(readgpt_example(), "What was revenue?", "fast", client = cl)
+gr_trace_cost(run$trace)
+#>           model calls paid_calls paid_in paid_out      usd
+#> 1 gpt-5.6-terra     1          1     609       13 0.001374
+```
+
+This is why the token totals on `gr_trace_summary()` are not a bill. They say
+how large the prompts were, which is the right measure of a run's shape; a fully
+cached re-run has the same shape and costs nothing. `paid_calls` is the column
+that falls to zero. A model with no registered price contributes `NA` rather
+than zero, so a total cannot quietly omit it.
+
 ## Paying once
 
 Every stage of this package except one is a pure function of its input.

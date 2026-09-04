@@ -189,6 +189,15 @@ gr_ellmer_client <- function(chat, embed = NULL, model = NULL) {
   warned <- new.env(parent = emptyenv())
 
   handler <- function(messages, params) {
+    if (!identical(as_chr1(params$model, model), model) && is.null(warned$model)) {
+      warned$model <- TRUE
+      gr_warn(sprintf(paste0("This run asked for model '%s', but an ellmer chat answers with ",
+                             "the model it was built with ('%s'). The call is going to '%s'. ",
+                             "Recipes carry a model, so pass model = '%s' to override it and ",
+                             "keep the context window and cost estimates honest."),
+                      as_chr1(params$model, "?"), model, model, model),
+              class = "gr_ellmer_model")
+    }
     if (!is.null(params$temperature) && is.null(warned$temp)) {
       warned$temp <- TRUE
       gr_warn(paste0("temperature is set on the ellmer chat object, not per call, so the ",

@@ -384,7 +384,7 @@ ans$evidence    # what the answer rests on
 print(ans$trace)
 gr_trace_summary(ans$trace)
 #>                          run_id calls cached steps tokens_in tokens_out errors
-#> 1 run_20260904035101.469_68d50e     1      0     8       682         13      0
+#> 1 run_20260904035101.469_68d50e     1      0     8       669         13      0
 #>   elapsed_s
 #> 1       0.3
 
@@ -579,7 +579,7 @@ cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
 run <- answer_document(readgpt_example(), "What was revenue?", "fast", client = cl)
 gr_trace_cost(run$trace)
 #>           model calls paid_calls paid_in paid_out      usd
-#> 1 gpt-5.6-terra     1          1     609       13 0.001374
+#> 1 gpt-5.6-terra     1          1     595       13 0.001346
 ```
 
 This is why the token totals on `gr_trace_summary()` are not a bill. They say
@@ -609,7 +609,7 @@ second <- answer_document(readgpt_example(), "What was revenue?", "thorough", cl
 
 gr_trace_summary(second$trace)[c("calls", "cached", "tokens_in")]
 #>   calls cached tokens_in
-#> 1     1      1       609
+#> 1     1      1       595
 ```
 
 `cached` counts the calls answered from the cache rather than the network, so

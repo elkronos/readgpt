@@ -12,6 +12,7 @@ gr_state$extractors     <- list()
 gr_state$cleaners       <- list()
 gr_state$segmenters     <- list()
 gr_state$readers        <- list()
+gr_state$embedders      <- list()
 gr_state$models         <- list()
 gr_state$model_patterns <- list()
 gr_state$doc_cache      <- new.env(parent = emptyenv())
@@ -41,6 +42,10 @@ gr_defaults <- list(
   # filesystem unasked, and a literal tempdir() here would be frozen at install
   # time rather than evaluated per session.
   cache_dir           = NULL,
+  # Which registered embedder to use. NULL means "whatever the client brought,
+  # otherwise api" -- the meaning is in the value, so restoring a saved option
+  # list cannot change which embedder is chosen.
+  embedder            = NULL,
   parallel            = FALSE,
   workers             = 4L,
   # Refuse to start a run whose *estimated* cost exceeds this (USD). NULL = off.
@@ -92,6 +97,11 @@ gr_defaults <- list(
 #'   \item{`cache_documents` (TRUE)}{Cache ingestion per file + settings. The key
 #'     covers file size, mtime and every option that changes the output.}
 #'   \item{`cache_embeddings` (TRUE)}{Cache embeddings per text + model.}
+#'   \item{`embedder` (NULL)}{Which registered embedder to use. `NULL` means the
+#'     one the client carries, if any, and otherwise `"api"`. Naming one here
+#'     overrides both. See [gr_embedders()]; recording a run with a
+#'     *deterministic* embedder is what lets a [gr_replay_client()] reproduce its
+#'     chunk ranking.}
 #'   \item{`cache_dir` (NULL)}{Directory [gr_cache()] stores model responses in.
 #'     `NULL` means a per-session directory under `tempdir()`, which costs
 #'     nothing and disappears with the session. Set it to a real path, such as

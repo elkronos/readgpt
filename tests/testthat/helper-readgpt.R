@@ -88,7 +88,7 @@ quiet <- function(expr) suppressWarnings(suppressMessages(force(expr)))
 # this first.
 # ---------------------------------------------------------------------------
 .gr_registry_slots <- c("extractors", "cleaners", "segmenters", "readers",
-                        "models", "model_patterns")
+                        "embedders", "models", "model_patterns")
 
 local_registries <- function(env = parent.frame()) {
   # `readgpt:::gr_state[[s]] <- v` is a REPLACEMENT call on `readgpt`, not on

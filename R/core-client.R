@@ -134,9 +134,11 @@ gr_client <- function(model = NULL, api = NULL, api_key = NULL, base_url = NULL,
 #' time it is called, so they appear in [gr_models()] afterwards. Its default
 #' handler returns plain text, so readers that need JSON-schema output
 #' (`rerank`, `iterative`) take their documented degraded path unless your
-#' handler returns valid JSON for those prompts. And [gr_embed()] short-circuits
-#' for mock clients: it always reports `embedding_source = "api"` and never
-#' takes the lexical fallback, so that degradation cannot be exercised offline.
+#' handler returns valid JSON for those prompts. And its `embed_handler` is used
+#' by [gr_embed()] in preference to any registered embedder, reporting
+#' `embedding_source = "api"` -- so an offline run gets semantic-shaped vectors
+#' rather than the lexical fallback. A mock embed handler that fails or returns
+#' the wrong number of rows is still caught and still degrades, like any other.
 #'
 #' @param handler Function of `(messages, params)` returning a string or a
 #'   [gr_result].

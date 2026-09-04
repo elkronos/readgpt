@@ -11,7 +11,8 @@ gr_embed(
   batch_size = 64L,
   cache = NULL,
   trace = NULL,
-  fallback = c("lexical", "error", "none")
+  fallback = c("lexical", "error", "none"),
+  embedder = NULL
 )
 }
 \arguments{
@@ -32,11 +33,15 @@ gr_embed(
 meaning, so \code{semantic} segmentation and \code{retrieve} ranking become markedly
 less accurate. The substitution warns and is recorded, but the run
 continues. Use \code{"error"} to fail fast, or \code{"none"} to get an empty matrix.}
+
+\item{embedder}{A registered embedder name (see \code{\link[=gr_embedders]{gr_embedders()}}), or a
+function of \verb{(texts, params)}. Defaults to the embed function supplied with
+the client, if any, and otherwise to \code{gr_options("embedder")}.}
 }
 \value{
 A numeric matrix, one row per input, carrying an \code{"embedding_source"}
-attribute of \code{"api"} or \code{"lexical"} -- always check it before treating the
-rows as semantic. Rows from the API and lexical paths are L2-normalised.
+attribute naming the embedder that produced it (\code{"api"} or \code{"lexical"} for
+the built-ins) -- always check it before treating the rows as semantic. Rows from the API and lexical paths are L2-normalised.
 With \code{fallback = "none"} and a failed request the result is a 0 x 0 matrix.
 }
 \description{
@@ -60,7 +65,8 @@ gr_segment(readgpt_example(), list(method = "semantic", max_tokens = 200),
            client = cl)$extra$embedding_source
 }
 \seealso{
-\code{\link[=gr_client]{gr_client()}}, \code{\link[=gr_segment_spec]{gr_segment_spec()}} for \code{method = "semantic"},
+\code{\link[=gr_embedders]{gr_embedders()}} for what is registered, \code{\link[=gr_register_embedder]{gr_register_embedder()}}
+to add one, \code{\link[=gr_client]{gr_client()}}, \code{\link[=gr_segment_spec]{gr_segment_spec()}} for \code{method = "semantic"},
 \code{\link[=gr_read_spec]{gr_read_spec()}} for \code{reader = "retrieve"}, \code{\link[=gr_models]{gr_models()}} for the
 embedding models in the registry
 }

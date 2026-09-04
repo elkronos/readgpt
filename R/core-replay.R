@@ -108,6 +108,7 @@ gr_trace_save <- function(trace, path) {
 #'                 client = gr_replay_client(f))$answer
 gr_replay_client <- function(source, strict = TRUE) {
   steps <- replay_steps(source)
+  embed_source <- replay_embed_source(source)
   if (!length(steps)) {
     gr_abort(paste0("That trace has no recorded model calls, so there is nothing to replay. ",
                     "A run that made no calls (every reader failed, or the budget stopped it ",
@@ -139,6 +140,9 @@ gr_replay_client <- function(source, strict = TRUE) {
     embedding_model = "replay-embed", max_retries = 0L, retry_pause_base = 0,
     timeout = 1, extra_body = list(),
     strict = isTRUE(strict), .idx = idx,
+    # Which embedder the RECORDING used, so a replay can tell an embedding it
+    # can reproduce from one it cannot. See gr_embed().
+    embed_source = embed_source,
     n_recorded = length(steps),
     stats = function() data.frame(
       recorded = length(steps), distinct = length(idx$full),
@@ -200,6 +204,35 @@ replay_steps <- function(source) {
     )
   }
   out
+}
+
+#' Which embedder produced the vectors in the recorded run, if any.
+#'
+#' Embeddings are not model calls, so they are not in the transcript -- but
+#' `gr_embed()` writes a local note saying which embedder it used, and that is
+#' enough. A replay can reproduce a run's ranking only when it uses the SAME
+#' embedder and that embedder is deterministic. Without this the check was
+#' "is the current embedder deterministic", which is not the same question: a
+#' run recorded through an API and replayed with a deterministic local embedder
+#' would have claimed to be exact while ranking chunks by different vectors.
+#'
+#' `NA` when the run embedded nothing (no ranking to reproduce) or when the
+#' recording used more than one embedder.
+#' @noRd
+replay_embed_source <- function(source) {
+  obj <- source
+  if (inherits(source, "gr_trace")) obj <- trace_as_list(source)
+  else if (is.character(source) && length(source) == 1L && file.exists(source)) {
+    obj <- tryCatch(jsonlite::fromJSON(source, simplifyVector = FALSE),
+                    error = function(e) NULL)
+  }
+  if (!is.list(obj)) return(NA_character_)
+  srcs <- unlist(lapply(obj$steps %||% list(), function(st) {
+    if (!is.list(st) || !identical(as_chr1(st$label, ""), "embed")) return(NULL)
+    as_chr1((st$detail %||% list())$source, NA_character_)
+  }), use.names = FALSE)
+  srcs <- unique(srcs[!is.na(srcs)])
+  if (length(srcs) == 1L) srcs else NA_character_
 }
 
 #' Normalise a recorded prompt to a plain list of role/content pairs.

@@ -580,12 +580,32 @@ trace file is a re-runnable recording of exactly what went wrong.
 A prompt with no recorded response raises `gr_replay_miss` rather than inventing
 an answer — a miss means the replay has diverged from the recording, and a
 result that looks like the original but is not is worse than no replay at all.
-Pass `strict = FALSE` to run a partial recording anyway. Two things do not
-replay: embeddings are not model calls and are not recorded, so `retrieve` and
-the `semantic` segmenter fall back to lexical vectors and warn
-(`gr_replay_no_embeddings`) — every recorded answer is still reproduced exactly,
-but chunk *ranking* may differ; and a trace does not record the JSON schema a
-call requested, so two calls differing only by schema share a recording.
+Pass `strict = FALSE` to run a partial recording anyway.
+
+Embeddings are not model calls, so a trace does not contain them. Whether a
+replay can reproduce a run's chunk *ranking* therefore depends on how the run
+embedded, and the answer is checked rather than assumed: the replay reproduces
+the ranking exactly when the recording used a **deterministic** embedder and the
+replay uses the **same** one. Both conditions, not either — replaying an
+API-embedded run with a deterministic local embedder would compute vectors the
+original never saw while looking exact. Anything else warns
+(`gr_replay_no_embeddings`) and falls back to lexical vectors; every recorded
+answer is still reproduced, but the ranking may differ. So a run you intend to
+publish is worth recording with `gr_options(embedder = "lexical")`, or with your
+own embedder registered as `deterministic = TRUE`:
+
+```r
+old <- gr_options(embedder = "lexical")
+run <- answer_document(readgpt_example(), "What was revenue?", "needle", client = cl)
+identical(
+  answer_document(readgpt_example(), "What was revenue?", "needle",
+                  client = gr_replay_client(run$trace))$chunks_used,
+  run$chunks_used)
+#> [1] TRUE
+```
+
+One thing still does not replay: a trace does not record the JSON schema a call
+requested, so two calls differing only by schema share a recording.
 
 ## Extending it
 
@@ -604,8 +624,29 @@ gr_register_cleaner("drop_confidential", stage = "early",
 gr_register_model("my-local-llama", context_window = 32768, max_output = 4096)
 ```
 
-`gr_register_extractor()` and `gr_register_reader()` work the same way; each has
-a worked example in its help page.
+`gr_register_extractor()`, `gr_register_reader()` and `gr_register_embedder()`
+work the same way; each has a worked example in its help page.
+
+Embedding is the sixth registry, and the one worth knowing about even if you
+never add anything else — it is what makes `retrieve` and the `semantic`
+segmenter work offline, for free, and reproducibly:
+
+```r
+gr_embedders()
+#>      name deterministic
+#> 1     api         FALSE
+#> 2 lexical          TRUE
+#>                                                    description
+#> 1                 Embeddings endpoint on the client's base URL
+#> 2 Hashed bag-of-words; free, offline, word overlap not meaning
+```
+
+`gr_options(embedder = "lexical")` switches every part of the package that
+embeds. Register your own — a local model, a company service — and the
+`semantic` segmenter and the `retrieve` and `iterative` readers all use it, with
+no change to any of them. Set `deterministic = TRUE` only if the same text
+always gives the same vector: that flag is what a replay checks (see below), and
+claiming it wrongly turns a recording into a plausible-looking fiction.
 
 Two constructors make the extension points usable: `new_chunks()` builds the
 object a segmenter must return, and `new_answer()` builds the one a reader must

@@ -20,6 +20,7 @@
   register_builtin_cleaners()
   register_builtin_segmenters()
   register_builtin_readers()
+  register_builtin_embedders()
   invisible(NULL)
 }
 

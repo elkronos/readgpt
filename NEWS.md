@@ -21,6 +21,27 @@ twice.
   disappears with the session; set `gr_options(cache_dir = ...)` to keep entries
   across sessions and make a long run resumable.
 
+* **An embedder registry.** `gr_register_embedder()` and `gr_embedders()` make
+  embedding the sixth registry, alongside extractors, cleaners, segmenters,
+  readers and models -- it was the one axis that was a chain of `inherits()`
+  branches, so adding a local model meant editing the package and there was no
+  way to ask what was available. `gr_options(embedder = )` switches every part
+  of the package that embeds; two built-ins are registered, `"api"` and
+  `"lexical"`.
+
+  The registry carries something a branch cannot: whether an embedder is
+  **deterministic**. That closes the replay gap. A replay now reproduces a run's
+  chunk ranking exactly when the recording used a deterministic embedder *and*
+  the replay uses the same one -- both conditions, checked against the embedder
+  the trace actually recorded. Determinism alone is not enough: replaying an
+  API-embedded run with a deterministic local embedder would compute vectors the
+  original never saw while reporting itself exact.
+
+  The embedding cache key now includes the embedder. Without it, switching
+  embedders returned the previous one's vectors for the same text and model --
+  two vector spaces silently mixed in one matrix, and a cosine similarity across
+  them means nothing.
+
 * **One question, many documents.** `gr_read_many()` runs one recipe over a
   vector of files, or a directory expanded by the extractor registry, and
   returns one tidy row per document -- `answer`, `not_found`, `partial`,

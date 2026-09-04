@@ -187,7 +187,7 @@ extract_pdf <- function(path, opts) {
     } else {
       gr_msg(sprintf("OCR-ing %d of %d PDF page(s).", sum(needs), length(pages)))
       eng <- tesseract::tesseract(as_chr1(opts$ocr_lang %||% "eng"))
-      ocr_txt <- gr_lapply(which(needs), function(i) {
+      ocr_txt <- gr_lapply(which(needs), function(i, trace) {
         tryCatch({
           img <- magick::image_read_pdf(path, pages = i, density = as.numeric(opts$ocr_dpi %||% 300))
           as_chr1(tesseract::ocr(img, engine = eng))

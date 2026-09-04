@@ -21,9 +21,10 @@
 #' Falls back to sequential -- with a warning, not silently -- when the future
 #' packages are unavailable.
 #' @noRd
-gr_lapply <- function(x, fn, parallel = NULL, workers = NULL, key = NULL, label = "task") {
+gr_lapply <- function(x, fn, parallel = NULL, workers = NULL, key = NULL, label = "task",
+                      trace = NULL) {
   parallel <- isTRUE(parallel %||% gr_options("parallel"))
-  if (!parallel || length(x) <= 1L) return(lapply(x, fn))
+  if (!parallel || length(x) <= 1L) return(lapply(x, function(item) fn(item, trace)))
 
   if (!requireNamespace("future", quietly = TRUE) ||
       !requireNamespace("future.apply", quietly = TRUE)) {
@@ -43,11 +44,25 @@ gr_lapply <- function(x, fn, parallel = NULL, workers = NULL, key = NULL, label 
   future::plan(future::multisession, workers = workers)
   gr_msg(sprintf("Running %d %s(s) across %d workers.", length(x), label, workers))
 
+  # A worker is a separate PROCESS, so the trace it is handed is a copy and
+  # every call it records is thrown away with it. That is not a cosmetic loss:
+  # the trace is where the token totals, gr_trace_cost() and the run's own
+  # account of what it did all come from, so `parallel = TRUE` used to buy speed
+  # by silently under-reporting the run in proportion to how parallel it was.
+  #
+  # Each worker therefore gets its OWN trace, returns it alongside the result,
+  # and the parent absorbs them. Absorbing in the order `future_lapply()`
+  # returns -- which is the order of `x`, not of completion -- means the
+  # assembled trace reads the same whether or not the work was parallel.
+  parent_meta <- if (inherits(trace, "gr_trace")) trace$meta else list()
   wrapped <- function(item) {
     if (nzchar(key)) Sys.setenv(OPENAI_API_KEY = key)
     gr_state$options <- opts
-    fn(item)
+    sub <- gr_trace(meta = parent_meta)
+    list(value = fn(item, sub), trace = sub)
   }
-  future.apply::future_lapply(x, wrapped, future.seed = TRUE,
-                              future.globals = TRUE, future.packages = "readgpt")
+  out <- future.apply::future_lapply(x, wrapped, future.seed = TRUE,
+                                     future.globals = TRUE, future.packages = "readgpt")
+  for (r in out) trace_absorb(trace, r$trace)
+  lapply(out, `[[`, "value")
 }

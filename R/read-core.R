@@ -427,7 +427,7 @@ tree_merge <- function(client, question, pieces, spec, trace, label = "merge",
     }
 
     gr_msg(sprintf("Merge level %d: %d finding(s) -> %d group(s).", level, length(pieces), length(groups)))
-    pieces <- unlist(gr_lapply(groups, function(g) {
+    pieces <- unlist(gr_lapply(groups, function(g, trace) {
       if (length(g) == 1L) return(g)
       if (!trace_can_call(trace)) return(merge_giveup(g, spec))
       body <- paste(sprintf("<%s>\n%s\n</%s>", kind, g, kind), collapse = "\n\n")
@@ -438,7 +438,8 @@ tree_merge <- function(client, question, pieces, spec, trace, label = "merge",
       ), model = spec$model, max_output = spec$max_answer_tokens, temperature = spec$temperature,
          trace = trace, label = paste0(label, ".level", level))
       if (res$ok) res$text else paste(g, collapse = "\n\n")
-    }, parallel = spec$parallel, label = "merge group"), use.names = FALSE)
+    }, parallel = spec$parallel, label = "merge group", trace = trace),
+      use.names = FALSE)
     pieces <- pieces[has_content(pieces)]
 
     # Progress guard. If a level did not shrink the pile, another level will not

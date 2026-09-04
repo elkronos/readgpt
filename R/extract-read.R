@@ -36,7 +36,7 @@ read_extract <- function(chunks, question, client, spec, trace) {
                     nrow(d), format(gr_options("max_calls"))), class = "gr_call_cap")
   }
 
-  got <- gr_lapply(seq_len(nrow(d)), function(i) {
+  got <- gr_lapply(seq_len(nrow(d)), function(i, trace) {
     if (!trace_can_call(trace)) return(list(ok = FALSE, value = NULL))
     out <- gr_call_json(client, list(
       list(role = "system", content = paste0(
@@ -53,7 +53,7 @@ read_extract <- function(chunks, question, client, spec, trace) {
        temperature = spec$temperature, trace = trace, label = "extract.chunk")
     if (spec$delay_between_calls > 0) Sys.sleep(spec$delay_between_calls)
     list(ok = isTRUE(out$ok), value = out$value, chunk = i)
-  }, parallel = spec$parallel, label = "extract chunk")
+  }, parallel = spec$parallel, label = "extract chunk", trace = trace)
 
   failed <- sum(!vapply(got, function(g) isTRUE(g$ok), logical(1)))
   rec <- reconcile_fields(got, fields, d, client, spec, trace)

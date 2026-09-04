@@ -390,7 +390,7 @@ seg_contextual <- function(doc, spec, client, trace) {
 
   headers <- if (identical(src, "llm")) {
     doc_summary <- gr_truncate_tokens(doc$text, 1500, "")
-    unlist(gr_lapply(seq_len(nrow(d)), function(i) {
+    unlist(gr_lapply(seq_len(nrow(d)), function(i, trace) {
       if (!trace_can_call(trace)) return("")
       res <- gr_call(client, list(
         list(role = "system", content = "You situate an excerpt within its source document. Reply with one sentence, no preamble."),
@@ -399,7 +399,8 @@ seg_contextual <- function(doc, spec, client, trace) {
           "\n</excerpt>\n\nIn one sentence, say what this excerpt is about and where it fits in the document."))
       ), max_output = 90L, trace = trace, label = "segment.context")
       if (res$ok) res$text else ""
-    }, parallel = spec$parallel, label = "context blurb"), use.names = FALSE)
+    }, parallel = spec$parallel, label = "context blurb", trace = trace),
+      use.names = FALSE)
   } else {
     vapply(seq_len(nrow(d)), function(i) {
       bits <- c(sprintf("Source: %s", title),
@@ -434,7 +435,7 @@ seg_proposition <- function(doc, spec, client, trace) {
                  required = list("propositions"),
                  properties = list(propositions = list(
                    type = "array", items = list(type = "string"))))
-  res <- gr_lapply(seq_along(batches$text), function(i) {
+  res <- gr_lapply(seq_along(batches$text), function(i, trace) {
     if (!trace_can_call(trace)) return(character(0))
     out <- gr_call_json(client, list(
       list(role = "system", content = paste0(
@@ -447,7 +448,7 @@ seg_proposition <- function(doc, spec, client, trace) {
        label = "segment.proposition", max_output = 2000L)
     if (!out$ok) return(character(0))
     as.character(out$value$propositions %||% character(0))
-  }, parallel = spec$parallel, label = "proposition batch")
+  }, parallel = spec$parallel, label = "proposition batch", trace = trace)
   props <- unlist(res, use.names = FALSE)
   props <- props[has_content(props)]
   if (!length(props)) {

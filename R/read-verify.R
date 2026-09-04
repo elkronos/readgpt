@@ -137,7 +137,7 @@ cited_chunks <- function(text) {
 .gr_evidence_kind <- c(
   stuff = "verbatim", retrieve = "verbatim", rerank = "verbatim",
   iterative = "verbatim", page = "verbatim",
-  skim = "extracted",
+  skim = "extracted", extract = "extracted", screen = "extracted",
   map_reduce = "answer", refine = "answer", hierarchical = "answer",
   ensemble = "mixed"
 )

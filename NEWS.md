@@ -48,6 +48,29 @@ This release is the second one.
   `gr_extract()` takes a protocol wherever it takes a schema, using its question
   and recipe unless you say otherwise.
 
+* **Screening.** `gr_screen()` is the stage before extraction: one model call
+  per document, a decision and a reason for every one, and nothing dropped on the
+  way. Two hundred candidate papers extracted in full is two hundred times twenty
+  calls; screened, it is two hundred calls, and most of them end the document's
+  involvement.
+
+  Three properties it is built around. Every document gets a decision — there is
+  no retrieval step or relevance prefilter that could quietly remove a source
+  before one is recorded, and a document that could not be read is
+  `status = "failed"` with no decision rather than a silent absence. `"unclear"`
+  is an answer, not a failure: forcing a binary decision out of an excerpt that
+  does not settle the question is how automated screening loses studies, and
+  those documents are for a person. And every decision names the criterion that
+  produced it, because `table(x$table$criterion)` is what a flow diagram asks
+  for.
+
+  `screen_tokens =` caps what the model is shown, counted from the start of the
+  document, so title-and-abstract screening is available deliberately rather than
+  by accident; `truncated` and `seen_tokens` always say what was actually read.
+  `x$included` is the argument to hand to `gr_extract()`.
+
+  The reader behind it is `screen`, traversal `head|1|none`.
+
 * **The same document is read once.** A source whose cleaned text repeats one
   already read this run is not read again: its row is filled in from the first
   copy, `status` is `"duplicate"` and the new `duplicate_of` column names the

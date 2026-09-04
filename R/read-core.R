@@ -170,7 +170,15 @@ as_json.gr_answer <- function(x, pretty = TRUE, ...) {
   refine_system = paste0(
     "You revise a draft answer using a new excerpt. Add what the excerpt supports, correct what ",
     "it contradicts, and leave the rest of the draft alone. Return the complete revised answer, ",
-    "not a description of your edits.")
+    "not a description of your edits."),
+  screen_system = paste0(
+    "You screen one document against a review's criteria, using only the excerpt supplied. ",
+    "Answer 'include' only if the excerpt shows the document meets every inclusion criterion ",
+    "and no exclusion criterion. Answer 'exclude' only if the excerpt clearly shows it fails ",
+    "one; name that criterion. If the excerpt does not settle the decision, answer 'unclear' -- ",
+    "that is a correct and expected answer, and it is much better than a guess, because an ",
+    "'unclear' document is looked at by a person while a wrong 'exclude' is never seen again. ",
+    "Do not use anything you know about the document from outside the excerpt.")
 )
 
 #' Sentinel the readers use to mark "this chunk had nothing".
@@ -255,12 +263,19 @@ answer_messages <- function(question, body, cite = FALSE, label = "Excerpts") {
 #' unbounded merge prompts and HTTP 400s in `gpt_read_chunked()` and
 #' `gpt_read_hierarchical()`.
 #' @noRd
-fit_chunks <- function(df, budget_tokens, order = NULL) {
+fit_chunks <- function(df, budget_tokens, order = NULL, prefix = FALSE) {
   idx <- order %||% seq_len(nrow(df))
   used <- integer(0); total <- 0L
   for (i in idx) {
     t <- gr_count_tokens(render_chunks(df[i, , drop = FALSE]))
-    if (total + t > budget_tokens) next
+    if (total + t > budget_tokens) {
+      # Skipping over an oversized chunk and carrying on is right for a RANKED
+      # order -- take as much of the good stuff as fits. It is wrong for a
+      # contiguous read: `screen` shows the model the opening of a document, and
+      # an opening assembled from chunks 1, 2 and 47 is not an opening. `prefix`
+      # stops at the first thing that does not fit.
+      if (prefix) break else next
+    }
     used <- c(used, i); total <- total + t
   }
   list(idx = used, tokens = total, dropped = setdiff(idx, used))

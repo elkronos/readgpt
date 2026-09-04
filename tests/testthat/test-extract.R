@@ -31,7 +31,6 @@ mock_form <- function(rules) {
   })
 }
 as_chr1_t <- function(x) if (length(x)) paste(as.character(x), collapse = "\n") else ""
-`%||%` <- function(a, b) if (is.null(a)) b else a
 
 two_para_file <- function(a, b) {
   f <- tempfile(fileext = ".txt")

@@ -1,4 +1,4 @@
-# readgpt 0.4.2 (in development)
+# readgpt 0.4.2
 
 ## Fixed
 

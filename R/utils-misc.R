@@ -103,6 +103,45 @@ na_default <- function(x, default, name) {
 #' @noRd
 isTRUE_vec <- function(x) !is.na(x) & as.logical(x)
 
+#' Warn when a `...` name looks like a misspelt formal.
+#'
+#' `gr_read_spec()` and `gr_segment_spec()` keep a `...` because a custom reader
+#' or segmenter needs somewhere to put its own settings -- `fields`, `include`,
+#' `screen_tokens` and the rest all arrive that way. The cost is that a TYPO
+#' lands there too: `gr_read_spec("retrieve", topk = 8)` is accepted in full,
+#' stores a `topk` nobody reads, and leaves `top_k` at its default of 6. The run
+#' then works perfectly and answers the wrong question, which is the failure this
+#' package spends most of its guards trying not to have.
+#'
+#' R's own partial matching catches the prefix cases (`max_token` finds
+#' `max_tokens`) and nothing else, so this covers the rest: a name one edit away
+#' from a formal, or the same name written with different case or punctuation.
+#' It warns rather than errors, because the escape hatch has to stay open for
+#' the field that really is new.
+#' @noRd
+warn_near_miss <- function(dots, formals, what) {
+  nms <- names(dots)
+  nms <- nms[nzchar(nms %||% "")]
+  if (!length(nms)) return(invisible(NULL))
+  formals <- setdiff(formals, "...")
+  flat <- function(x) tolower(gsub("[._]", "", x))
+  hits <- lapply(nms, function(nm) {
+    if (nm %in% formals) return(character(0))
+    same <- formals[flat(formals) == flat(nm)]
+    near <- formals[as.integer(utils::adist(nm, formals)) <= 1L]
+    unique(c(same, near))
+  })
+  bad <- which(lengths(hits) > 0L)
+  for (i in bad) {
+    gr_warn(sprintf(paste0("`%s` is not a %s setting, but `%s` is -- if that is a typo the ",
+                           "real setting keeps its default and the run will look fine. Passed ",
+                           "through as given."),
+                    nms[i], what, paste(hits[[i]], collapse = "` or `")),
+            class = "gr_near_miss")
+  }
+  invisible(NULL)
+}
+
 #' Vectorised, NA-safe "has visible content".
 #' @noRd
 has_content <- function(x) {

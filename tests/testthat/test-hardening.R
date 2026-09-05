@@ -962,3 +962,51 @@ test_that("ingestion and segmentation are identical under a C locale", {
   expect_false(grepl("—", c_loc$text, useBytes = TRUE))
   expect_false(grepl("—", utf8$text, useBytes = TRUE))
 })
+
+test_that("a misspelt setting is not silently parked in `...`", {
+  # `gr_read_spec()` and `gr_segment_spec()` keep a `...` because a custom reader
+  # needs somewhere for its own settings -- `fields`, `include`, `screen_tokens`
+  # all arrive that way. The cost is that a TYPO lands there too:
+  # gr_read_spec("retrieve", topk = 8) is accepted in full, stores a `topk`
+  # nobody reads, and leaves top_k at its default. The run then works perfectly
+  # and answers a different question, which is the failure mode this package
+  # spends most of its guards trying not to have. gr_options() already refuses an
+  # unknown name outright; this is the same guarantee where `...` must stay open.
+  expect_warning(s <- gr_read_spec("retrieve", topk = 8), class = "gr_near_miss")
+  expect_identical(s$top_k, 6L)          # the real setting is untouched, hence the warning
+  expect_identical(s[["topk"]], 8)       # and the value is still passed through
+
+  for (typo in c("topk", "top.k", "TopK", "TOP_K"))
+    expect_warning(do.call(gr_read_spec, list("retrieve", 8) |> stats::setNames(c("", typo))),
+                   class = "gr_near_miss")
+  # Not `min_token`: that IS a prefix of `min_tokens`, so R resolves it and
+  # there is nothing to warn about. A punctuation variant is not a prefix.
+  expect_warning(gr_segment_spec(overlap.tokens = 5), class = "gr_near_miss")
+
+  # R's own partial matching resolves the PREFIX cases before `...` ever sees
+  # them, so those are already right and must not warn.
+  expect_silent(s <- gr_read_spec("stuff", cit = TRUE))
+  expect_true(s[["cite"]])
+  expect_false("cit" %in% names(s))
+  expect_silent(g <- gr_segment_spec(overlap_token = 5))
+  expect_identical(g[["overlap_tokens"]], 5L)
+
+  # And every setting a built-in reader really does take through `...` stays
+  # silent -- a guard that cried wolf on `fields` would be turned off at once.
+  expect_silent(gr_read_spec("extract", fields = gr_fields(a = "Anything")))
+  expect_silent(gr_read_spec("extract", resolve = "first", require_quote = TRUE))
+  expect_silent(gr_read_spec("screen", include = "x", exclude = "y", screen_tokens = 100L))
+  expect_silent(gr_read_spec("stuff", my_own_setting = 1))
+})
+
+test_that("the near-miss check is exact about what counts as near", {
+  wn <- readgpt:::warn_near_miss
+  expect_silent(wn(list(), c("top_k", "cite"), "read"))
+  expect_silent(wn(list(1), c("top_k"), "read"))              # unnamed: nothing to compare
+  expect_silent(wn(list(top_k = 1), c("top_k"), "read"))      # exact: not a miss
+  expect_silent(wn(list(entirely_new = 1), c("top_k", "cite"), "read"))
+  expect_warning(wn(list(top_j = 1), c("top_k"), "read"), class = "gr_near_miss")
+  # Two edits away is a different word, not a typo -- warning on it would make
+  # the guard noise, and noise gets suppressed.
+  expect_silent(wn(list(tpo_j = 1), c("top_k"), "read"))
+})

@@ -1,3 +1,22 @@
+# readgpt 0.4.2 (in development)
+
+## Fixed
+
+* **A misspelt reader or segmenter setting is no longer swallowed in silence.**
+  `gr_read_spec()` and `gr_segment_spec()` keep a `...` so a custom reader has
+  somewhere for its own settings — `fields`, `include`, `screen_tokens` and the
+  rest all arrive that way. A typo landed there too:
+  `gr_read_spec("retrieve", topk = 8)` was accepted in full, stored a `topk`
+  nothing reads, and left `top_k` at its default of 6. The run then worked
+  perfectly and answered a different question.
+
+  A `...` name one edit from a real setting, or the same name in different case
+  or punctuation, now warns and says which setting it looks like. It still goes
+  through — the escape hatch has to stay open for the field that really is new —
+  and `gr_options()` continues to refuse an unknown name outright, since it has
+  no such escape hatch to keep. R's own partial matching already resolved the
+  prefix cases (`cit` finds `cite`); this covers the rest.
+
 # readgpt 0.4.1
 
 ## Fixed

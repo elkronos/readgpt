@@ -48,6 +48,7 @@ gr_segment_spec <- function(method = "paragraph", max_tokens = 1200L,
                             context_source = c("metadata", "llm"),
                             proposition_batch_tokens = 900L, parallel = NULL, ...) {
   context_source <- match.arg(context_source)
+  warn_near_miss(list(...), names(formals(gr_segment_spec)), "segment")
   # Out-of-range settings are clamped rather than accepted, but the clamp is
   # ANNOUNCED. Silently rewriting a user's parameter is how v1 ended up feeding
   # documents to the model backwards: a negative token limit went straight into

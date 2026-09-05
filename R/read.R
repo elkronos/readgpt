@@ -213,6 +213,7 @@ gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL
                          on_overflow = c("warn", "error"), ...) {
   on_overflow <- match.arg(on_overflow)
   context_order <- match.arg(context_order)
+  warn_near_miss(list(...), names(formals(gr_read_spec)), "read")
   spec <- structure(c(list(
     reader = reader,
     model = as_chr1(model %||% gr_options("model")),

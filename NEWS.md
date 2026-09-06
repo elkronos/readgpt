@@ -52,6 +52,21 @@
   list, and a new test asks the real `ellmer::Chat` whether it has those methods
   rather than asking a stub written to match.
 
+* **Two more fixtures that could drift from the source, now guarded.** Sweeping
+  for the same shape found the shared test mock branching on phrases lifted from
+  three real prompts — reword one and the mock silently stops matching, returns
+  its generic answer, and the `rerank` and `iterative` tests keep passing against
+  the *degraded* path, because both fall back gracefully on output they cannot
+  parse. A test that quietly changes what it tests is worse than one that fails.
+  The guard reads the phrases out of the fixture rather than repeating them, so
+  it cannot fall behind what it guards.
+
+  And `.gr_evidence_kind`, which decides whether a reader's quotes are checked at
+  all: a reader missing from it falls back to "verbatim", meaning text copied out
+  of the document and so never verified. Every reader was present, but nothing
+  said so; now something does. A stale entry for `page`, which is a segmenter
+  rather than a reader, is gone.
+
 * **`gr_flow()`** returns the same counts as a data frame: sources given,
   duplicates removed, screened, included, excluded, unclear, unreadable,
   extracted, and values with no verbatim span. Every source is accounted for at

@@ -1057,3 +1057,53 @@ test_that("a provider that reports no usable token count falls back, not to zero
   expect_identical(eu(chat(NULL), list(prompt_tokens = 42L), txt)$input, 42L)
   expect_identical(eu(chat(data.frame(other = 1)), list(prompt_tokens = 42L), txt)$input, 42L)
 })
+
+test_that("every reader declares what kind of thing its evidence is", {
+  # The fallback for a reader with no entry is "verbatim" -- text copied out of
+  # the document, true by construction and so never checked. A reader whose
+  # evidence is MODEL-WRITTEN and which is missing from this list therefore has
+  # its quotes silently exempted from verification, which is the one guarantee
+  # the evidence table exists to give. Nothing else notices, because the answer
+  # still looks right.
+  kinds <- readgpt:::.gr_evidence_kind
+  readers <- gr_readers()$name
+  expect_setequal(setdiff(readers, names(kinds)), character(0))
+  # And in the other direction: an entry for something that is not a reader is a
+  # list written by hand against a wrong idea of what is in it.
+  expect_setequal(setdiff(names(kinds), readers), character(0))
+  expect_true(all(kinds %in% c("verbatim", "extracted", "answer", "mixed")))
+})
+
+test_that("the shared mock still recognises the prompts it branches on", {
+  # `mock_echo()` returns JSON for a rerank score, an iterative round or a
+  # proposition batch by matching a phrase from each prompt. Reword a prompt and
+  # the mock silently stops matching, returns its generic answer, and the tests
+  # keep passing -- against the DEGRADED path, because `rerank` and `iterative`
+  # both fall back gracefully on output they cannot parse. A test that quietly
+  # changes what it tests is the failure the ellmer stub had: a fixture mirroring
+  # something the source owns, with nothing watching for drift.
+  #
+  # The phrases are read out of the helper rather than repeated here, so this
+  # guard cannot itself fall behind the fixture it guards.
+  helper <- readLines(test_path("helper-readgpt.R"), warn = FALSE)
+  hits <- regmatches(helper, gregexpr('grepl\\("[^"]{10,}"', helper))
+  phrases <- unique(sub('^grepl\\("', "", unlist(hits)))
+  phrases <- sub('"$', "", phrases)
+  expect_gte(length(phrases), 3L)
+
+  # Everything the package could possibly send: the shared prompts, plus the
+  # inline ones inside reader and segmenter bodies. Taken from the NAMESPACE,
+  # not from R/*.R -- under `R CMD check` the tests run from the installed
+  # package and there is no source tree to read.
+  ns <- asNamespace("readgpt")
+  corpus <- paste(c(unlist(readgpt:::.gr_prompts),
+                    unlist(lapply(ls(ns, all.names = TRUE), function(n) {
+                      f <- get(n, envir = ns)
+                      if (is.function(f)) paste(deparse(body(f)), collapse = " ") else NULL
+                    }))), collapse = " || ")
+
+  for (ph in phrases) {
+    expect_true(grepl(ph, corpus, fixed = TRUE),
+                info = sprintf("mock_echo() branches on '%s', which no prompt contains any more", ph))
+  }
+})

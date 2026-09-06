@@ -238,9 +238,31 @@ test_that("gr_ellmer_client rejects something that is not a chat", {
   expect_error(gr_ellmer_client(list(a = 1)), class = "gr_bad_backend")
 })
 
+test_that("the methods the adapter requires are the ones ellmer really has", {
+  # The risk this whole adapter carries: a rename upstream turns every real Chat
+  # into one the constructor refuses, and a stub test cannot see it because the
+  # stub is written to whatever the adapter currently asks for. This asks the
+  # real class instead. Constructing a Chat does not contact the provider, so a
+  # placeholder key is enough.
+  skip_if_not_installed("ellmer")
+  chat <- tryCatch(ellmer::chat_openai(api_key = "sk-not-a-real-key", model = "gpt-4o"),
+                   error = function(e) NULL)
+  skip_if(is.null(chat), "could not construct an ellmer Chat to inspect")
+  for (m in readgpt:::.gr_ellmer_methods) {
+    expect_true(is.function(chat[[m]]),
+                info = sprintf("ellmer's Chat has no `%s()`; the adapter requires it", m))
+  }
+  # And a real Chat must pass the constructor's own check.
+  expect_silent(readgpt:::check_chat_methods(chat))
+})
+
 test_that("gr_ellmer_client drives a chat and never mutates the caller's", {
   skip_if_not_installed("ellmer")
-  # A stub with the three methods the adapter documents as its requirements.
+  # The stub must carry every method the adapter requires. It used to carry
+  # three of the five and say so in this comment, which nothing noticed because
+  # the test skipped everywhere: CI did not install ellmer, so its only two
+  # tests never ran anywhere at all. Built from the requirement list now, so a
+  # method added to the adapter cannot leave the stub behind.
   turns_seen <- list()
   stub <- local({
     self <- new.env(parent = emptyenv())
@@ -258,8 +280,14 @@ test_that("gr_ellmer_client drives a chat and never mutates the caller's", {
     }
     self$set_turns <- function(value) self$turns <- value
     self$set_system_prompt <- function(value) self$system <- value
+    self$chat_structured <- function(user, type = NULL, echo = "none") list(answer = "an answer")
     self$get_model <- function() "stub-model"
     self$get_tokens <- function() data.frame(input = 5, output = 3)
+    for (m in readgpt:::.gr_ellmer_methods) {
+      if (!is.function(self[[m]])) {
+        stop(sprintf("the stub is missing `%s()`, which the adapter requires", m))
+      }
+    }
     self
   })
   cl <- gr_ellmer_client(stub)

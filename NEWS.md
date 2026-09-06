@@ -45,7 +45,12 @@
   trace as having spent no tokens.
 
   Its two tests were also the only ones in the suite that always skipped, because
-  CI never installed `ellmer`. It does now.
+  CI never installed `ellmer`. It does now — and the first time they ran, one
+  failed: its stub carried three of the five methods the adapter requires and
+  its own comment said "the three methods", a drift nothing could catch while
+  the test skipped everywhere. The stub is now built against the requirement
+  list, and a new test asks the real `ellmer::Chat` whether it has those methods
+  rather than asking a stub written to match.
 
 * **`gr_flow()`** returns the same counts as a data frame: sources given,
   duplicates removed, screened, included, excluded, unclear, unreadable,

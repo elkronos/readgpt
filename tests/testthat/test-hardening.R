@@ -1010,3 +1010,50 @@ test_that("the near-miss check is exact about what counts as near", {
   # the guard noise, and noise gets suppressed.
   expect_silent(wn(list(tpo_j = 1), c("top_k"), "read"))
 })
+
+test_that("an unknown token count is not costed as a free one", {
+  # The same defect gr_read_many() had, living in gr_estimate_cost(): summing
+  # with na.rm = TRUE turns "we do not know how many tokens" into "zero tokens",
+  # and a run whose size nobody knows is reported as having cost nothing.
+  # gr_estimate_cost(m, NA, NA) returned 0. The rule the package settled on is
+  # that a cost which cannot be computed comes back NA, so a total cannot
+  # quietly omit it.
+  expect_equal(gr_estimate_cost("gpt-4o", 1e6, 1e5), 3.5)
+  expect_true(is.na(gr_estimate_cost("gpt-4o", NA, 1e5)))
+  expect_true(is.na(gr_estimate_cost("gpt-4o", 1e6, NA)))
+  expect_true(is.na(gr_estimate_cost("gpt-4o", NA, NA)))
+  expect_true(is.na(gr_estimate_cost("gpt-4o", "not a number", 1e5)))
+  expect_true(is.na(gr_estimate_cost("gpt-4o", Inf, 1e5)))
+
+  # NULL is not NA. A length-zero sum really is zero: nothing was sent.
+  expect_equal(gr_estimate_cost("gpt-4o", NULL, 1e5), 1)
+  # A vector of per-call counts still adds up.
+  expect_equal(gr_estimate_cost("gpt-4o", c(5e5, 5e5), 1e5), 3.5)
+  # And an unpriced model is still NA for its own reason.
+  expect_true(is.na(quiet(gr_estimate_cost("a-model-nobody-registered", 1e6, 1e5))))
+})
+
+test_that("a provider that reports no usable token count falls back, not to zero", {
+  # ellmer's get_tokens() shape varies by provider, and this is the one transport
+  # never exercised against a real one. A column present but holding NA -- or
+  # text, which some providers give -- summed with na.rm = TRUE to 0, which is
+  # finite, so the NA fallback never fired: a real call recorded as having spent
+  # no tokens and costed at nothing.
+  eu <- readgpt:::ellmer_usage
+  chat <- function(df) list(get_tokens = function() df)
+  txt <- "a reply with several words in it"
+
+  usable <- eu(chat(data.frame(input = 100, output = 20)), list(), txt)
+  expect_identical(usable, list(input = 100L, output = 20L))
+
+  for (bad in list(data.frame(input = NA_real_, output = NA_real_),
+                   data.frame(input = "n/a", output = "n/a"))) {
+    got <- eu(chat(bad), list(prompt_tokens = 42L), txt)
+    expect_identical(got$input, 42L)          # the local estimate, not 0
+    expect_gt(got$output, 0L)                 # counted from the reply itself
+  }
+
+  # No table at all, and a table without the columns, both already fell back.
+  expect_identical(eu(chat(NULL), list(prompt_tokens = 42L), txt)$input, 42L)
+  expect_identical(eu(chat(data.frame(other = 1)), list(prompt_tokens = 42L), txt)$input, 42L)
+})

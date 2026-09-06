@@ -357,6 +357,18 @@ gr_budget <- function(model = NULL, reserve_output = NULL, overhead = 0,
 gr_estimate_cost <- function(model, input_tokens, output_tokens = 0) {
   info <- gr_model_info(model)
   if (is.na(info$input_usd)) return(NA_real_)
-  sum(input_tokens, na.rm = TRUE) / 1e6 * info$input_usd +
-    sum(output_tokens, na.rm = TRUE) / 1e6 * (info$output_usd %|z|% 0)
+  # An UNKNOWN token count is not a zero one. `sum(na.rm = TRUE)` made
+  # gr_estimate_cost(m, NA, NA) return 0 -- a run reported as free because
+  # nobody knew what it was. That is the same defect gr_read_many() had, and the
+  # rule it settled on: a cost that cannot be computed comes back NA so a total
+  # cannot quietly omit it. NULL still means none, because a length-zero sum
+  # really is zero; it is NA that means "we do not know".
+  usable <- function(x) {
+    if (!length(x)) return(0)
+    v <- suppressWarnings(as.numeric(x))
+    if (anyNA(v) || !all(is.finite(v))) NA_real_ else sum(v)
+  }
+  tin <- usable(input_tokens); tout <- usable(output_tokens)
+  if (is.na(tin) || is.na(tout)) return(NA_real_)
+  tin / 1e6 * info$input_usd + tout / 1e6 * (info$output_usd %|z|% 0)
 }

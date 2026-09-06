@@ -27,6 +27,26 @@
   the quote having been invented, which is the failure that is otherwise
   invisible. A verification column a reader over-reads is worse than no column.
 
+## Fixed
+
+* **An unknown token count is no longer costed as a free one.**
+  `gr_estimate_cost()` summed with `na.rm = TRUE`, so
+  `gr_estimate_cost(model, NA, NA)` returned `0` — a run whose size nobody knew,
+  reported as having cost nothing. That is the defect `gr_read_many()` was fixed
+  for in 0.3.0, in a different function. Unknown now comes back `NA`, so a total
+  cannot quietly omit it; `NULL` still means none, because a length-zero sum
+  really is zero.
+
+* **A provider that reports no usable token count falls back instead of
+  reporting zero.** `gr_ellmer_client()` reads `chat$get_tokens()`, whose shape
+  varies by provider. A column that was present but held `NA` — or text, which
+  some providers give — summed with `na.rm = TRUE` to `0`, which is finite, so
+  the fallback to the local estimate never fired and a real call went into the
+  trace as having spent no tokens.
+
+  Its two tests were also the only ones in the suite that always skipped, because
+  CI never installed `ellmer`. It does now.
+
 * **`gr_flow()`** returns the same counts as a data frame: sources given,
   duplicates removed, screened, included, excluded, unclear, unreadable,
   extracted, and values with no verbatim span. Every source is accounted for at

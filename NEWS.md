@@ -1,3 +1,37 @@
+# readgpt 0.5.0 (in development)
+
+## New
+
+* **`gr_audit_report()` — the run, written out so somebody else can check it.**
+  One self-contained HTML file: the protocol as fixed in advance, what happened
+  to every document, every extracted value with the sentence and page it came
+  from and whether that sentence is really there, what was written and which
+  rows each claim rests on, and what the whole thing cost. No new dependencies;
+  pass whichever stages you ran.
+
+  Everything in it was already recorded — across four objects and half a dozen
+  data frames, which is why in practice nobody looked at it. This is not for the
+  person who ran the review, who can index into `$evidence`. It is for the
+  reviewer, co-author or regulator who did not, and whose question is "how do
+  you know?"
+
+  **It does not flatter the run.** Unverified quotes, documents that could not be
+  read, screening calls the model declined to make, fields nothing supported and
+  citations pointing at rows that do not exist are all counted near the top. An
+  audit that showed only what worked would look like diligence and be the
+  opposite of it.
+
+  **And it says what the checking does not establish.** That a quoted sentence
+  occurs in the chunk it was credited to is not evidence that it supports the
+  value taken from it, nor that the value is right. What the check rules out is
+  the quote having been invented, which is the failure that is otherwise
+  invisible. A verification column a reader over-reads is worse than no column.
+
+* **`gr_flow()`** returns the same counts as a data frame: sources given,
+  duplicates removed, screened, included, excluded, unclear, unreadable,
+  extracted, and values with no verbatim span. Every source is accounted for at
+  every stage it reached, so the arithmetic closes.
+
 # readgpt 0.4.2
 
 ## Fixed

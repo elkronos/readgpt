@@ -427,6 +427,14 @@ review$citations
 cat(review$text)
 ```
 
+`gr_audit_report()` writes the whole chain out as one self-contained HTML file
+for somebody who did not run it:
+
+```{r eval = FALSE}
+gr_audit_report("audit.html", screening = screened, extraction = table,
+                review, protocol = protocol)
+```
+
 Every `[study n]` is parsed back out and checked against the rows that exist;
 one pointing at a row that is not there is reported and marks the section
 partial. That completes the chain — a sentence cites a study, the study's row

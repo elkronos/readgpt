@@ -51,7 +51,7 @@ review](#from-a-folder-to-a-review) walks that path end to end.
 - Start here — [Install](#install) · [Quick start](#quick-start) · [API key](#api-key) · [Other providers](#other-providers-and-other-peoples-clients)
 - The three axes — [ingest](#axis-1--ingest) · [segment](#axis-2--segment) · [read](#axis-3--read) · [choosing chunks](#choosing-chunks-and-where-to-put-them) · [recipes](#recipes)
 - Reading one document — [reading a run](#reading-a-run) · [when the answer is not what you expected](#when-the-answer-is-not-what-you-expected) · [cost and safety rails](#cost-and-safety-rails)
-- Reading a corpus — [many documents](#many-documents) · [from a folder to a review](#from-a-folder-to-a-review)
+- Reading a corpus — [many documents](#many-documents) · [from a folder to a review](#from-a-folder-to-a-review) · [the audit report](#from-a-folder-to-a-review)
 - Paying once, twice never — [caching](#paying-once) · [replaying a run](#replaying-a-run)
 - Everything else — [extending it](#extending-it) · [Shiny app](#shiny-app) · [optional packages](#optional-packages) · [tests](#running-the-tests) · [CI](#continuous-integration) · [migrating from v1](#migrating-from-v1)
 
@@ -652,6 +652,9 @@ screened <- gr_screen(reports, protocol, client = reply())
 extracted <- gr_extract(screened$included, protocol, client = reply(), recipe = "fast")
 review   <- gr_synthesise(extracted, protocol, client = reply())
 
+gr_audit_report(file.path(tempdir(), "audit.html"), screening = screened,
+                extraction = extracted, review, protocol = protocol)
+
 extracted$table[, c("document", "region", "revenue", "n_unverified")]
 #>    document region revenue n_unverified
 #> 1 north.txt  north    45.2            0
@@ -698,6 +701,22 @@ That completes the chain: a sentence cites a study, the study's row cites a
 quote, and the quote was checked against the page it is attributed to. None of
 that proves the sentence is true. It makes every step of the way back to the
 document short enough to walk.
+
+`gr_audit_report()` writes that chain out as one self-contained HTML file — the
+protocol as fixed in advance, what happened to every document, every value with
+its quote and page and whether the quote is really there, what was written and
+which rows each claim rests on, and what it cost. It is not for you; it is for
+the reviewer or co-author whose question is "how do you know?" — the call is in
+the block above.
+
+The report does not flatter the run. Unverified quotes, documents that could not
+be read, screening calls the model declined to make and citations pointing at
+rows that do not exist are counted near the top — an audit showing only what
+worked looks like diligence and is the opposite. It also states what the
+checking does *not* establish: that a quoted sentence really occurs in the
+document is not evidence that it supports the value taken from it.
+`gr_flow()` returns the same counts as a data frame if you want the numbers
+without the page.
 
 ## Paying once
 

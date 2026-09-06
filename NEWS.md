@@ -52,6 +52,14 @@
   list, and a new test asks the real `ellmer::Chat` whether it has those methods
   rather than asking a stub written to match.
 
+  Running it then surfaced a second fault in the same stub: its `clone()` copied
+  the bindings but not the closures, so the copied methods still wrote to the
+  *original*. `clone$set_turns()` emptied the caller's turns and left the clone's
+  untouched — exactly backwards, and it made the adapter look as though it
+  mutates a chat it does not. The stub is a factory now, so a clone is a new
+  object whose methods close over itself, and it checks that isolation as it is
+  built rather than leaving it to surface as a confusing expectation later.
+
 * **Two more fixtures that could drift from the source, now guarded.** Sweeping
   for the same shape found the shared test mock branching on phrases lifted from
   three real prompts — reword one and the mock silently stops matching, returns

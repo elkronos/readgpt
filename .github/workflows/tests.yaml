@@ -45,6 +45,11 @@ jobs:
           # TRUE` runs on, and the tests that check a parallel run accounts for
           # itself skip silently without them. `parallel = TRUE` shipped
           # under-reporting every run it sped up, with no test on CI to notice.
+          #
+          # ellmer likewise. Its two tests were the only ones in the suite that
+          # always skipped, on the one transport that has never been exercised
+          # against a real provider -- and a token-accounting bug was sitting in
+          # it. A test nothing runs is not coverage.
           dependencies: '"hard"'
           extra-packages: |
             any::testthat
@@ -52,6 +57,7 @@ jobs:
             any::knitr
             any::future
             any::future.apply
+            any::ellmer
 
       - name: Install package
         run: R CMD INSTALL . --no-byte-compile

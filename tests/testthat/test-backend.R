@@ -238,30 +238,85 @@ test_that("gr_ellmer_client rejects something that is not a chat", {
   expect_error(gr_ellmer_client(list(a = 1)), class = "gr_bad_backend")
 })
 
+test_that("the methods the adapter requires are the ones ellmer really has", {
+  # The risk this whole adapter carries: a rename upstream turns every real Chat
+  # into one the constructor refuses, and a stub test cannot see it because the
+  # stub is written to whatever the adapter currently asks for. This asks the
+  # real class instead. Constructing a Chat does not contact the provider, so a
+  # placeholder key is enough.
+  skip_if_not_installed("ellmer")
+  # `credentials` since ellmer 0.4.0; `api_key` is deprecated and warns. Take
+  # whichever this ellmer has, so the test neither warns nor pins a version.
+  key <- function() "sk-not-a-real-key"
+  chat <- NULL
+  for (arg in list(list(credentials = key), list(api_key = "sk-not-a-real-key"))) {
+    chat <- tryCatch(suppressWarnings(
+      do.call(ellmer::chat_openai, c(arg, list(model = "gpt-4o")))),
+      error = function(e) NULL)
+    if (!is.null(chat)) break
+  }
+  skip_if(is.null(chat), "could not construct an ellmer Chat to inspect")
+  for (m in readgpt:::.gr_ellmer_methods) {
+    expect_true(is.function(chat[[m]]),
+                info = sprintf("ellmer's Chat has no `%s()`; the adapter requires it", m))
+  }
+  # And a real Chat must pass the constructor's own check.
+  expect_silent(readgpt:::check_chat_methods(chat))
+})
+
 test_that("gr_ellmer_client drives a chat and never mutates the caller's", {
   skip_if_not_installed("ellmer")
-  # A stub with the three methods the adapter documents as its requirements.
+  local_registries()
+  # The stub answers to a model name nothing has registered, which is a real
+  # warning about a real thing and just noise here.
+  gr_register_model("stub-model", context_window = 128000L, max_output = 4096L,
+                    input_usd = 0, output_usd = 0)
+  # A stub standing in for an ellmer Chat. Written as a FACTORY, so clone()
+  # returns a genuinely independent object whose methods close over the new one.
+  #
+  # The obvious shortcut -- copy the bindings with as.list() and hand back an
+  # environment -- is what was here, and it is wrong in the direction that
+  # matters: the copied methods still close over the ORIGINAL, so
+  # clone$set_turns() emptied the caller's turns and left the clone's untouched.
+  # Exactly backwards, and it made the adapter look like it mutates a chat it
+  # does not. Rebinding each closure to the copy fixes that and then needs the
+  # parent chain and a `self` binding managed by hand; a factory needs neither.
+  #
+  # It must also carry every method the adapter requires. It used to carry three
+  # of the five and say "the three methods" in a comment, which nothing noticed
+  # because CI did not install ellmer and so this test never ran anywhere.
   turns_seen <- list()
-  stub <- local({
+  make_stub <- function(turns = list("PRE-EXISTING"), system = NULL) {
     self <- new.env(parent = emptyenv())
-    self$turns <- list("PRE-EXISTING")
-    self$system <- NULL
+    self$turns <- turns
+    self$system <- system
     self$chat <- function(user, echo = "none") {
       turns_seen[[length(turns_seen) + 1L]] <<- list(user = user, system = self$system,
                                                      turns = self$turns)
       "an answer"
     }
-    self$clone <- function(deep = FALSE) {
-      c2 <- as.environment(as.list(self, all.names = TRUE))
-      parent.env(c2) <- emptyenv()
-      c2
-    }
+    self$chat_structured <- function(user, type = NULL, echo = "none") list(answer = "an answer")
+    self$clone <- function(deep = FALSE) make_stub(self$turns, self$system)
     self$set_turns <- function(value) self$turns <- value
     self$set_system_prompt <- function(value) self$system <- value
     self$get_model <- function() "stub-model"
     self$get_tokens <- function() data.frame(input = 5, output = 3)
     self
-  })
+  }
+  stub <- make_stub()
+
+  # The fixture has to be right before the assertions below mean anything. Both
+  # of these failed once, and both surfaced as a confusing expectation several
+  # lines later rather than here, where the fault is.
+  for (m in readgpt:::.gr_ellmer_methods) {
+    expect_true(is.function(stub[[m]]),
+                info = sprintf("the stub is missing `%s()`, which the adapter requires", m))
+  }
+  probe <- stub$clone()
+  probe$set_turns(list("CLONE-ONLY"))
+  expect_identical(stub$turns, list("PRE-EXISTING"))   # the clone really isolates
+  expect_identical(probe$turns, list("CLONE-ONLY"))
+
   cl <- gr_ellmer_client(stub)
   res <- gr_call(cl, list(list(role = "system", content = "be terse"),
                           list(role = "user", content = "q")))

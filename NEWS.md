@@ -1,3 +1,85 @@
+# readgpt 0.5.0 (in development)
+
+## New
+
+* **`gr_audit_report()` — the run, written out so somebody else can check it.**
+  One self-contained HTML file: the protocol as fixed in advance, what happened
+  to every document, every extracted value with the sentence and page it came
+  from and whether that sentence is really there, what was written and which
+  rows each claim rests on, and what the whole thing cost. No new dependencies;
+  pass whichever stages you ran.
+
+  Everything in it was already recorded — across four objects and half a dozen
+  data frames, which is why in practice nobody looked at it. This is not for the
+  person who ran the review, who can index into `$evidence`. It is for the
+  reviewer, co-author or regulator who did not, and whose question is "how do
+  you know?"
+
+  **It does not flatter the run.** Unverified quotes, documents that could not be
+  read, screening calls the model declined to make, fields nothing supported and
+  citations pointing at rows that do not exist are all counted near the top. An
+  audit that showed only what worked would look like diligence and be the
+  opposite of it.
+
+  **And it says what the checking does not establish.** That a quoted sentence
+  occurs in the chunk it was credited to is not evidence that it supports the
+  value taken from it, nor that the value is right. What the check rules out is
+  the quote having been invented, which is the failure that is otherwise
+  invisible. A verification column a reader over-reads is worse than no column.
+
+## Fixed
+
+* **An unknown token count is no longer costed as a free one.**
+  `gr_estimate_cost()` summed with `na.rm = TRUE`, so
+  `gr_estimate_cost(model, NA, NA)` returned `0` — a run whose size nobody knew,
+  reported as having cost nothing. That is the defect `gr_read_many()` was fixed
+  for in 0.3.0, in a different function. Unknown now comes back `NA`, so a total
+  cannot quietly omit it; `NULL` still means none, because a length-zero sum
+  really is zero.
+
+* **A provider that reports no usable token count falls back instead of
+  reporting zero.** `gr_ellmer_client()` reads `chat$get_tokens()`, whose shape
+  varies by provider. A column that was present but held `NA` — or text, which
+  some providers give — summed with `na.rm = TRUE` to `0`, which is finite, so
+  the fallback to the local estimate never fired and a real call went into the
+  trace as having spent no tokens.
+
+  Its two tests were also the only ones in the suite that always skipped, because
+  CI never installed `ellmer`. It does now — and the first time they ran, one
+  failed: its stub carried three of the five methods the adapter requires and
+  its own comment said "the three methods", a drift nothing could catch while
+  the test skipped everywhere. The stub is now built against the requirement
+  list, and a new test asks the real `ellmer::Chat` whether it has those methods
+  rather than asking a stub written to match.
+
+  Running it then surfaced a second fault in the same stub: its `clone()` copied
+  the bindings but not the closures, so the copied methods still wrote to the
+  *original*. `clone$set_turns()` emptied the caller's turns and left the clone's
+  untouched — exactly backwards, and it made the adapter look as though it
+  mutates a chat it does not. The stub is a factory now, so a clone is a new
+  object whose methods close over itself, and it checks that isolation as it is
+  built rather than leaving it to surface as a confusing expectation later.
+
+* **Two more fixtures that could drift from the source, now guarded.** Sweeping
+  for the same shape found the shared test mock branching on phrases lifted from
+  three real prompts — reword one and the mock silently stops matching, returns
+  its generic answer, and the `rerank` and `iterative` tests keep passing against
+  the *degraded* path, because both fall back gracefully on output they cannot
+  parse. A test that quietly changes what it tests is worse than one that fails.
+  The guard reads the phrases out of the fixture rather than repeating them, so
+  it cannot fall behind what it guards.
+
+  And `.gr_evidence_kind`, which decides whether a reader's quotes are checked at
+  all: a reader missing from it falls back to "verbatim", meaning text copied out
+  of the document and so never verified. Every reader was present, but nothing
+  said so; now something does. A stale entry for `page`, which is a segmenter
+  rather than a reader, is gone.
+
+* **`gr_flow()`** returns the same counts as a data frame: sources given,
+  duplicates removed, screened, included, excluded, unclear, unreadable,
+  extracted, and values with no verbatim span. Every source is accounted for at
+  every stage it reached, so the arithmetic closes.
+
 # readgpt 0.4.2
 
 ## Fixed

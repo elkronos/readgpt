@@ -1010,3 +1010,100 @@ test_that("the near-miss check is exact about what counts as near", {
   # the guard noise, and noise gets suppressed.
   expect_silent(wn(list(tpo_j = 1), c("top_k"), "read"))
 })
+
+test_that("an unknown token count is not costed as a free one", {
+  # The same defect gr_read_many() had, living in gr_estimate_cost(): summing
+  # with na.rm = TRUE turns "we do not know how many tokens" into "zero tokens",
+  # and a run whose size nobody knows is reported as having cost nothing.
+  # gr_estimate_cost(m, NA, NA) returned 0. The rule the package settled on is
+  # that a cost which cannot be computed comes back NA, so a total cannot
+  # quietly omit it.
+  expect_equal(gr_estimate_cost("gpt-4o", 1e6, 1e5), 3.5)
+  expect_true(is.na(gr_estimate_cost("gpt-4o", NA, 1e5)))
+  expect_true(is.na(gr_estimate_cost("gpt-4o", 1e6, NA)))
+  expect_true(is.na(gr_estimate_cost("gpt-4o", NA, NA)))
+  expect_true(is.na(gr_estimate_cost("gpt-4o", "not a number", 1e5)))
+  expect_true(is.na(gr_estimate_cost("gpt-4o", Inf, 1e5)))
+
+  # NULL is not NA. A length-zero sum really is zero: nothing was sent.
+  expect_equal(gr_estimate_cost("gpt-4o", NULL, 1e5), 1)
+  # A vector of per-call counts still adds up.
+  expect_equal(gr_estimate_cost("gpt-4o", c(5e5, 5e5), 1e5), 3.5)
+  # And an unpriced model is still NA for its own reason.
+  expect_true(is.na(quiet(gr_estimate_cost("a-model-nobody-registered", 1e6, 1e5))))
+})
+
+test_that("a provider that reports no usable token count falls back, not to zero", {
+  # ellmer's get_tokens() shape varies by provider, and this is the one transport
+  # never exercised against a real one. A column present but holding NA -- or
+  # text, which some providers give -- summed with na.rm = TRUE to 0, which is
+  # finite, so the NA fallback never fired: a real call recorded as having spent
+  # no tokens and costed at nothing.
+  eu <- readgpt:::ellmer_usage
+  chat <- function(df) list(get_tokens = function() df)
+  txt <- "a reply with several words in it"
+
+  usable <- eu(chat(data.frame(input = 100, output = 20)), list(), txt)
+  expect_identical(usable, list(input = 100L, output = 20L))
+
+  for (bad in list(data.frame(input = NA_real_, output = NA_real_),
+                   data.frame(input = "n/a", output = "n/a"))) {
+    got <- eu(chat(bad), list(prompt_tokens = 42L), txt)
+    expect_identical(got$input, 42L)          # the local estimate, not 0
+    expect_gt(got$output, 0L)                 # counted from the reply itself
+  }
+
+  # No table at all, and a table without the columns, both already fell back.
+  expect_identical(eu(chat(NULL), list(prompt_tokens = 42L), txt)$input, 42L)
+  expect_identical(eu(chat(data.frame(other = 1)), list(prompt_tokens = 42L), txt)$input, 42L)
+})
+
+test_that("every reader declares what kind of thing its evidence is", {
+  # The fallback for a reader with no entry is "verbatim" -- text copied out of
+  # the document, true by construction and so never checked. A reader whose
+  # evidence is MODEL-WRITTEN and which is missing from this list therefore has
+  # its quotes silently exempted from verification, which is the one guarantee
+  # the evidence table exists to give. Nothing else notices, because the answer
+  # still looks right.
+  kinds <- readgpt:::.gr_evidence_kind
+  readers <- gr_readers()$name
+  expect_setequal(setdiff(readers, names(kinds)), character(0))
+  # And in the other direction: an entry for something that is not a reader is a
+  # list written by hand against a wrong idea of what is in it.
+  expect_setequal(setdiff(names(kinds), readers), character(0))
+  expect_true(all(kinds %in% c("verbatim", "extracted", "answer", "mixed")))
+})
+
+test_that("the shared mock still recognises the prompts it branches on", {
+  # `mock_echo()` returns JSON for a rerank score, an iterative round or a
+  # proposition batch by matching a phrase from each prompt. Reword a prompt and
+  # the mock silently stops matching, returns its generic answer, and the tests
+  # keep passing -- against the DEGRADED path, because `rerank` and `iterative`
+  # both fall back gracefully on output they cannot parse. A test that quietly
+  # changes what it tests is the failure the ellmer stub had: a fixture mirroring
+  # something the source owns, with nothing watching for drift.
+  #
+  # The phrases are read out of the helper rather than repeated here, so this
+  # guard cannot itself fall behind the fixture it guards.
+  helper <- readLines(test_path("helper-readgpt.R"), warn = FALSE)
+  hits <- regmatches(helper, gregexpr('grepl\\("[^"]{10,}"', helper))
+  phrases <- unique(sub('^grepl\\("', "", unlist(hits)))
+  phrases <- sub('"$', "", phrases)
+  expect_gte(length(phrases), 3L)
+
+  # Everything the package could possibly send: the shared prompts, plus the
+  # inline ones inside reader and segmenter bodies. Taken from the NAMESPACE,
+  # not from R/*.R -- under `R CMD check` the tests run from the installed
+  # package and there is no source tree to read.
+  ns <- asNamespace("readgpt")
+  corpus <- paste(c(unlist(readgpt:::.gr_prompts),
+                    unlist(lapply(ls(ns, all.names = TRUE), function(n) {
+                      f <- get(n, envir = ns)
+                      if (is.function(f)) paste(deparse(body(f)), collapse = " ") else NULL
+                    }))), collapse = " || ")
+
+  for (ph in phrases) {
+    expect_true(grepl(ph, corpus, fixed = TRUE),
+                info = sprintf("mock_echo() branches on '%s', which no prompt contains any more", ph))
+  }
+})

@@ -382,7 +382,14 @@ ellmer_usage <- function(chat, params, txt) {
   pick <- function(pattern) {
     col <- grep(pattern, names(tk), ignore.case = TRUE, value = TRUE)[1]
     if (is.na(col)) return(NA_integer_)
-    v <- suppressWarnings(sum(as.numeric(tk[[col]]), na.rm = TRUE))
+    v <- suppressWarnings(as.numeric(tk[[col]]))
+    # A column that is there but holds nothing usable -- all NA, or text, which
+    # is what an unfamiliar provider's get_tokens() may well give -- is UNKNOWN,
+    # not zero. `sum(na.rm = TRUE)` returned 0, which is finite, so the NA below
+    # never fired and the local estimate was never used: a real call recorded as
+    # having spent no tokens at all, and costed at nothing.
+    if (!length(v) || all(is.na(v))) return(NA_integer_)
+    v <- sum(v, na.rm = TRUE)
     if (is.finite(v)) as.integer(v) else NA_integer_
   }
   inp <- pick("^input|prompt")

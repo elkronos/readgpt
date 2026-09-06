@@ -130,3 +130,35 @@ unmarked <- function(x) {
   Encoding(x) <- "unknown"
   x
 }
+
+# Clients for the paths the shared `mock_echo()` cannot reach.
+#
+# `mock_echo()` answers the iterative prompt with `can_answer: true`, so every
+# test using it stops `iterative` on round one. That is a real case but it is
+# the degenerate one -- it never iterates, which is the only thing separating it
+# from `retrieve`. This one refuses instead, so the loop runs.
+#
+# `refuse` distinct queries come back before it repeats the last, which is how
+# the run leaves through the query-loop guard rather than through max_rounds.
+# Passing `refuse` >= max_rounds exits on rounds instead.
+mock_iterative_loop <- function(refuse = 3L, answer = "FROM GATHERED") {
+  round <- 0L
+  gr_mock_client(function(messages, params) {
+    if (grepl("reading iteratively", messages[[1]]$content, fixed = TRUE)) {
+      round <<- round + 1L
+      nq <- sprintf("missing detail %d", min(round, refuse))
+      return(sprintf('{"can_answer": false, "answer": "", "next_query": "%s"}', nq))
+    }
+    answer
+  })
+}
+
+# Summaries long enough to stay over a small context window, so `hierarchical`
+# has to fan them in instead of answering from the first pass. `mock_echo()`
+# returns a short string, which collapses under any budget and takes the
+# recursion out of the recursive reader.
+mock_bulky <- function(sentences = 12L) {
+  body <- paste(rep("Summary sentence about the cohort and the primary endpoint.", sentences),
+                collapse = " ")
+  gr_mock_client(function(messages, params) body)
+}

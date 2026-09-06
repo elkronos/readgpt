@@ -193,3 +193,161 @@ test_that("a failed recipe is recorded, not deleted from the results", {
   expect_true(cmp$summary$partial[cmp$summary$recipe == "bad"])
   expect_false(is.na(cmp$summary$error[cmp$summary$recipe == "bad"]))
 })
+
+# ---------------------------------------------------------------------------
+# Signature conformance for the readers whose distinctness IS a loop.
+#
+# The call-pattern test above runs every reader under `mock_echo()`, which
+# answers the iterative prompt with `can_answer: true` on round one, and over
+# fixture documents small enough that a single summarise pass always fits. Under
+# those conditions the two readers claiming the most in their registered
+# signatures -- `topk|rounds*2|forward` and `all|N+tree+1|tree` -- collapse to
+# one retrieval and one summarise pass. That is to say they become `retrieve`
+# and `map_reduce`, which is precisely the collapse this file exists to catch.
+#
+# Line coverage said so plainly: every line after `iterative`'s loop was dead,
+# and `hierarchical`'s reduction body never ran once in the whole suite. Note
+# that the assertion above, `sum(p_hier) == n + 1`, is the arithmetic of the
+# NON-recursive case -- the expectation had quietly been written around the
+# behaviour the fixtures happened to produce.
+#
+# Driven by hand both paths turned out correct, which is the good version of the
+# news and exactly the version a suite stops being able to promise the moment
+# nothing drives them.
+# ---------------------------------------------------------------------------
+
+test_that("iterative really iterates, and the loop is what makes it not retrieve", {
+  ch <- gr_segment(gr_ingest(sample_doc(5, 4)), list(method = "paragraph", max_tokens = 120))
+  cl <- mock_iterative_loop(refuse = 2L)
+  a <- quiet(gr_read(ch, "How many participants?", cl,
+                     list(reader = "iterative", max_rounds = 5L, top_k = 2L)))
+  labs <- call_labels(cl)
+
+  # The claim in "rounds*2": more than one assess step, not one.
+  expect_gt(sum(labs == "iterative.step"), 1L)
+  expect_gte(a$notes$rounds, 2L)
+
+  # Each refusal drove a NEW query. Without this a loop that asks the same
+  # thing repeatedly would satisfy the count above and retrieve nothing new.
+  expect_gt(length(a$notes$queries), 1L)
+  expect_equal(anyDuplicated(a$notes$queries), 0L)
+
+  # And it accumulated across rounds, rather than re-reading one retrieval.
+  expect_gt(a$notes$chunks_seen, 2L)
+  expect_equal(nrow(a$evidence), a$notes$chunks_seen)
+
+  # It left through the query-loop guard and answered from everything gathered,
+  # which is the post-loop path -- not the model declaring itself satisfied.
+  expect_equal(a$notes$stop_reason, "query loop")
+  expect_true("iterative.final" %in% labs)
+  expect_true(a$partial)
+
+  # The reader it is most easily confused with, on the same document and the
+  # same client, does none of that.
+  cr <- mock_iterative_loop(refuse = 2L)
+  quiet(gr_read(ch, "How many participants?", cr,
+                list(reader = "retrieve", top_k = 2L)))
+  expect_equal(length(call_labels(cr)), 1L)
+  expect_gt(length(labs), length(call_labels(cr)))
+})
+
+test_that("iterative stops at max_rounds and still answers from what it gathered", {
+  ch <- gr_segment(gr_ingest(sample_doc(5, 4)), list(method = "paragraph", max_tokens = 120))
+  cl <- mock_iterative_loop(refuse = 99L)   # never repeats, so rounds run out
+  a <- quiet(gr_read(ch, "How many participants?", cl,
+                     list(reader = "iterative", max_rounds = 3L, top_k = 2L)))
+  expect_equal(a$notes$rounds, 3L)
+  expect_equal(a$notes$stop_reason, "max rounds")
+  expect_equal(sum(call_labels(cl) == "iterative.step"), 3L)
+  # Work already paid for is not thrown away when the budget runs out.
+  expect_true("iterative.final" %in% call_labels(cl))
+  expect_gt(a$notes$chunks_seen, 0L)
+})
+
+test_that("hierarchical really recurses when the summaries do not fit", {
+  local_registries()
+  gr_register_model("small-window", context_window = 900L, max_output = 200L,
+                    input_usd = 0, output_usd = 0)
+  ch <- gr_segment(gr_ingest(sample_doc(6, 5)), list(method = "paragraph", max_tokens = 60))
+  n <- nrow(ch$chunks)
+  expect_gt(n, 8L)
+
+  cl <- mock_bulky()
+  a <- quiet(gr_read(ch, "Summarise the findings", cl,
+                     list(reader = "hierarchical", model = "small-window",
+                          fan_in = 3L, max_levels = 6L, max_summary_tokens = 150L)))
+
+  # The claim in "N+tree+1": a tree, so more than one level and fewer summaries
+  # coming out than chunks going in.
+  expect_gte(a$notes$levels, 2L)
+  expect_lt(a$notes$final_summaries, n)
+  labs <- call_labels(cl)
+  expect_gt(length(labs), n + 1L)
+  # Levels are labelled, so the tree is visible in the trace and not just in a note.
+  expect_true(any(grepl("^hier\\.summarise\\.L2$", labs)))
+  expect_true("hier.answer" %in% labs)
+})
+
+test_that("max_levels caps the recursion and says so rather than truncating in silence", {
+  local_registries()
+  gr_register_model("small-window", context_window = 900L, max_output = 200L,
+                    input_usd = 0, output_usd = 0)
+  ch <- gr_segment(gr_ingest(sample_doc(6, 5)), list(method = "paragraph", max_tokens = 60))
+  cl <- mock_bulky()
+  expect_warning(
+    a <- suppressMessages(gr_read(ch, "Summarise the findings", cl,
+                                  list(reader = "hierarchical", model = "small-window",
+                                       fan_in = 3L, max_levels = 1L,
+                                       max_summary_tokens = 150L))),
+    "still exceed the budget")
+  expect_equal(a$notes$levels, 1L)
+})
+
+test_that("skim_model and summary_model route the cheap pass off the answer model", {
+  local_registries()
+  gr_register_model("cheap-model", context_window = 128000L, max_output = 4096L,
+                    input_usd = 0, output_usd = 0)
+  ch <- gr_segment(gr_ingest(sample_doc(3, 3)), list(method = "paragraph", max_tokens = 120))
+  models_by_label <- function(cl) {
+    calls <- cl$calls()
+    stats::setNames(vapply(calls, function(x) as.character(x$params$model), character(1)),
+                    vapply(calls, function(x) x$label, character(1)))
+  }
+
+  cl <- mock_echo()
+  quiet(gr_read(ch, "How many participants?", cl,
+                list(reader = "skim", model = "mock-model", skim_model = "cheap-model")))
+  m <- models_by_label(cl)
+  expect_gt(sum(names(m) == "skim.extract"), 1L)
+  expect_true(all(m[names(m) == "skim.extract"] == "cheap-model"))
+  expect_true(all(m[names(m) != "skim.extract"] == "mock-model"))
+
+  local_registries()
+  gr_register_model("small-window", context_window = 900L, max_output = 200L,
+                    input_usd = 0, output_usd = 0)
+  gr_register_model("cheap-model", context_window = 128000L, max_output = 4096L,
+                    input_usd = 0, output_usd = 0)
+  ch2 <- gr_segment(gr_ingest(sample_doc(6, 5)), list(method = "paragraph", max_tokens = 60))
+  cl2 <- mock_bulky()
+  quiet(gr_read(ch2, "Summarise the findings", cl2,
+                list(reader = "hierarchical", model = "small-window", summary_model = "cheap-model",
+                     fan_in = 3L, max_levels = 6L, max_summary_tokens = 150L)))
+  m2 <- models_by_label(cl2)
+  summarise_calls <- grepl("^hier\\.summarise", names(m2))
+  expect_true(any(summarise_calls))
+  expect_true(all(m2[summarise_calls] == "cheap-model"))
+  expect_equal(unname(m2[names(m2) == "hier.answer"]), "small-window")
+})
+
+test_that("rerank_min_score keeps chunks out rather than being a number nothing reads", {
+  ch <- gr_segment(gr_ingest(sample_doc(3, 3)), list(method = "paragraph", max_tokens = 120))
+  # mock_echo() scores every candidate 8.
+  keep <- quiet(gr_read(ch, "How many participants?", mock_echo(),
+                        list(reader = "rerank", rerank_min_score = 4, top_k = 2L)))
+  expect_false(identical(keep$answer, readgpt:::.NOT_FOUND))
+
+  drop <- quiet(gr_read(ch, "How many participants?", mock_echo(),
+                        list(reader = "rerank", rerank_min_score = 9, top_k = 2L)))
+  expect_identical(drop$answer, readgpt:::.NOT_FOUND)
+  expect_match(drop$notes$reason, "no candidate scored")
+})

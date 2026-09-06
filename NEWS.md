@@ -29,6 +29,32 @@
 
 ## Fixed
 
+* **The two readers whose distinctness is a loop were never tested looping.**
+  Line coverage over the whole suite found every line after `iterative`'s
+  retrieve-assess loop dead, and `hierarchical`'s reduction body never executed
+  once. The cause was the shared test client: it answers the iterative prompt
+  with `can_answer: true` on round one, so the loop always stopped immediately,
+  and every fixture document was small enough that one summarise pass always
+  fit. Under those conditions the two readers claiming the most in their
+  registered signatures -- `topk|rounds*2|forward` and `all|N+tree+1|tree` --
+  behaved as `retrieve` and `map_reduce`. The existing call-count assertion for
+  `hierarchical` was `n + 1`, which is the arithmetic of the non-recursive case:
+  the expectation had been written around what the fixtures happened to produce.
+
+  Driven by hand both paths were correct, so nothing shipped broken. But a
+  signature is a claim about behaviour, and nothing was checking that the
+  behaviour happened. Two steering clients now do: one that refuses to answer so
+  the loop runs, one whose summaries stay over a small context window so the
+  tree has to fan in. The new tests assert rounds, distinct queries, accumulated
+  chunks, tree depth, the `max_levels` cap and its warning. Each was confirmed
+  to fail against a deliberately broken build before being kept.
+
+  Sweeping the same way found three settings that no test ever set to a
+  non-default value: `skim_model` and `summary_model` -- the routing that sends
+  the cheap per-chunk pass to a cheaper model, which is a headline cost feature
+  -- and `rerank_min_score`. All three are now checked, and reader coverage rose
+  from 75.1% to 82.5%.
+
 * **An unknown token count is no longer costed as a free one.**
   `gr_estimate_cost()` summed with `na.rm = TRUE`, so
   `gr_estimate_cost(model, NA, NA)` returned `0` — a run whose size nobody knew,

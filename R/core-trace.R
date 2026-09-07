@@ -33,7 +33,11 @@ gr_trace <- function(run_id = NULL, meta = list()) {
   e <- new.env(parent = emptyenv())
   e$run_id <- as_chr1(run_id %||% gr_new_id("run"))
   e$started <- Sys.time()
-  e$meta <- meta
+  # The version that produced the run, so a trace read back later says which
+  # readgpt wrote it. Prompts and readers change between versions.
+  e$meta <- c(list(readgpt = tryCatch(as.character(utils::packageVersion("readgpt")),
+                                      error = function(e) NA_character_)),
+              meta)
   e$steps <- list()
   e$calls <- 0L
   e$cached <- 0L

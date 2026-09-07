@@ -146,7 +146,19 @@ as_recipe <- function(x, fallback_name = NULL) {
   if (inherits(x, "gr_recipe")) return(x)
   if (is.character(x) && length(x) == 1L) {
     known <- names(gr_recipes())
-    if (x %in% known) return(gr_recipes(x))
+    if (x %in% known) {
+      # Recipes win, and that is a trap when a reader shares the name: asking
+      # for "survey" would silently hand back whatever reader the RECIPE named.
+      # Say so rather than resolving one of two meanings in silence.
+      if (x %in% names(gr_state$readers)) {
+        gr_warn(sprintf(paste0("'%s' is both a recipe and a reader. Using the recipe, whose ",
+                               "reader is '%s'. Pass gr_read_spec('%s') or ",
+                               "read = list(reader = '%s') for the reader itself."),
+                        x, gr_recipes(x)$read$reader, x, x),
+                class = "gr_ambiguous_name")
+      }
+      return(gr_recipes(x))
+    }
     # A bare reader name is also accepted, paired with the default segmenter.
     if (x %in% names(gr_state$readers)) return(gr_recipe(x, read = x))
     gr_abort(sprintf("'%s' is neither a recipe (%s) nor a reader (%s).",

@@ -159,6 +159,13 @@ gr_reader_signature <- function(reader) {
 #' @param fan_in,max_levels For `hierarchical`: summaries combined per call, and
 #'   the recursion depth cap.
 #' @param max_rounds For `iterative`: retrieve-assess cycles.
+#' @param preview_tokens For `survey`: the cap on the outline the planner sees.
+#'   The outline is built from section labels, sizes and short excerpts -- never
+#'   the full text -- and per-section excerpts shrink until the whole thing fits,
+#'   so every section stays visible to the planner rather than the outline being
+#'   truncated and some sections never being offered to it at all. The planner is
+#'   an LLM call about a long document and so prone to exactly the degradation
+#'   this package manages; keeping its input small is the mitigation.
 #' @param members For `ensemble`: the reader names to combine.
 #' @param cite Ask for chunk-level citations (`[chunk 3]`) in the answer. Map
 #'   those ids back to pages via `ans$evidence`. Forced off for `hierarchical`,
@@ -189,7 +196,8 @@ gr_reader_signature <- function(reader) {
 #' Numeric arguments are clamped into a usable range and the change is warned
 #' about, never applied silently: `top_k` \[1, 1e4\], `fan_in` \[2, 32\],
 #' `max_levels` \[1, 12\], `max_rounds` \[1, 20\], `rerank_candidates` \[1, 1e4\],
-#' `rerank_min_score` \[0, 10\], `delay_between_calls` \[0, 600\],
+#' `rerank_min_score` \[0, 10\], `preview_tokens` \[100, 1e5\],
+#' `delay_between_calls` \[0, 600\],
 #' token caps \[16, 1e6\].
 #'
 #' @seealso [gr_readers()] for the available readers and their call costs,
@@ -207,6 +215,7 @@ gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL
                          mmr = 1, context_order = c("relevance", "document", "edges"),
                          rerank_candidates = 20L, rerank_min_score = 4,
                          fan_in = 5L, max_levels = 5L, max_rounds = 4L,
+                         preview_tokens = 1200L,
                          members = NULL, cite = FALSE,
                          skim_model = NULL, summary_model = NULL,
                          parallel = NULL, delay_between_calls = 0,
@@ -234,6 +243,8 @@ gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL
     fan_in = clamp_warn(na_default(fan_in, 5L, "fan_in"), 2, 32, "fan_in"),
     max_levels = clamp_warn(na_default(max_levels, 5L, "max_levels"), 1, 12, "max_levels"),
     max_rounds = clamp_warn(na_default(max_rounds, 4L, "max_rounds"), 1, 20, "max_rounds"),
+    preview_tokens = clamp_warn(na_default(preview_tokens, 1200L, "preview_tokens"), 100, 1e5,
+                               "preview_tokens"),
     members = members,
     cite = isTRUE(cite),
     skim_model = skim_model,
@@ -371,7 +382,11 @@ preflight <- function(chunks, spec, trace) {
   }
   trace_note(trace, "preflight", list(reader = spec$reader, chunks = n,
                                       est_calls = est_calls,
-                                      est_cost_usd = if (is.na(cost)) NULL else round(cost, 4)))
+                                      est_cost_usd = if (is.na(cost)) NULL else round(cost, 4),
+                                      # What was changed from the defaults, so
+                                      # the trace records the configuration and
+                                      # not just the reader's name.
+                                      settings = read_settings(spec)))
   invisible(NULL)
 }
 

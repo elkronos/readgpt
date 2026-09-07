@@ -656,6 +656,257 @@ read_ensemble <- function(chunks, question, client, spec, trace) {
                           member_notes = lapply(results, function(r) r$notes)))
 }
 
+
+# ---------------------------------------------------------------------------
+# preview: planned | 1 + skims + 1 | none
+#
+# The only reader that decides how to read before reading. Every other reader
+# treats all chunks alike: `stuff` sends them all, `map_reduce` answers from
+# each in turn, `retrieve` ranks them by similarity. None of them plans.
+#
+# A skilled analyst handed a 200-page report does not read it uniformly, and
+# does not rank its paragraphs by similarity either. They look at the structure,
+# work out which parts can bear on the question, read those properly, scan a few
+# more, and ignore the rest. That is a different traversal from anything above,
+# which is why it gets its own signature rather than a flag on an existing
+# reader: selection is `planned`, and the plan is an artifact you can read back.
+#
+# The obvious objection is that the planner is itself an LLM call about a long
+# document, and so prone to exactly the degradation this package exists to
+# manage. Three things keep it honest. The outline it sees is built from section
+# metadata and short excerpts, never the full text, and is capped at
+# `preview_tokens`. Its output is a fixed schema, not prose. And when it fails or
+# returns something unparseable, the reader reads everything and says so, rather
+# than quietly skipping the document.
+# ---------------------------------------------------------------------------
+
+#' Group chunks into the units a plan is made of.
+#'
+#' Sections when the segmenter recorded them, contiguous runs of chunks when it
+#' did not -- `fixed` and `recursive` leave `section` NA on every row, and a
+#' planner needs something to point at either way.
+#' @noRd
+preview_units <- function(d, target = 8L) {
+  sec <- d$section
+  if (!all(is.na(sec))) {
+    # `rle` on the raw column would merge two same-named sections separated by a
+    # third. Keying on a run id keeps them apart.
+    key <- as.character(sec)
+    key[is.na(key)] <- "none"
+    run <- cumsum(c(TRUE, key[-1] != key[-length(key)]))
+    return(unname(split(seq_len(nrow(d)), run)))
+  }
+  # No structure to work with: contiguous blocks, sized so a long document does
+  # not produce an outline with one line per chunk.
+  n <- nrow(d)
+  size <- max(1L, ceiling(n / max(1L, target)))
+  unname(split(seq_len(n), ceiling(seq_len(n) / size)))
+}
+
+#' The label a unit is known by, in the plan and in the outline.
+#' @noRd
+preview_label <- function(d, rows) {
+  nm <- unique(as.character(d$section[rows]))
+  nm <- nm[!is.na(nm) & nzchar(nm)]
+  if (length(nm)) nm[1] else sprintf("chunks %d-%d", min(rows), max(rows))
+}
+
+#' One line per unit: what it is, how big, and enough text to judge it by.
+#' @noRd
+preview_outline <- function(d, units, budget) {
+  first_words <- function(x, n) {
+    w <- strsplit(trimws(as_chr1(x)), "[[:space:]]+")[[1]]
+    paste(utils::head(w, n), collapse = " ")
+  }
+  body <- ""
+  # Shrink the per-unit excerpt until the whole outline fits, rather than
+  # truncating the outline and hiding whole sections from the planner. A section
+  # the planner never saw is a section it cannot choose to read.
+  for (w in c(40L, 25L, 15L, 8L)) {
+    lines <- vapply(seq_along(units), function(i) {
+      rows <- units[[i]]
+      pg <- d$page[rows]; pg <- pg[!is.na(pg)]
+      sprintf("[%d] %s | chunks %d-%d | %stokens %d\n    opens: %s\n    ends: %s",
+              i, preview_label(d, rows), min(rows), max(rows),
+              if (length(pg)) sprintf("pp. %d-%d | ", min(pg), max(pg)) else "",
+              sum(d$tokens[rows]),
+              first_words(d$text[rows[1]], w),
+              first_words(d$text[rows[length(rows)]], w))
+    }, character(1))
+    body <- paste(lines, collapse = "\n")
+    if (gr_count_tokens(body) <= budget) return(body)
+  }
+  gr_truncate_tokens(body, budget)
+}
+
+#' @noRd
+read_preview <- function(chunks, question, client, spec, trace) {
+  d <- chunks$chunks
+  units <- preview_units(d)
+  n_units <- length(units)
+
+  outline <- preview_outline(d, units, as.integer(clamp(spec$preview_tokens %||% 1200L, 100, 1e5)))
+  schema <- list(type = "object", additionalProperties = FALSE,
+                 required = list("sections"),
+                 properties = list(sections = list(
+                   type = "array",
+                   items = list(type = "object", additionalProperties = FALSE,
+                                required = list("id", "treatment", "reason"),
+                                properties = list(
+                                  id = list(type = "integer"),
+                                  treatment = list(type = "string",
+                                                   enum = list("read", "skim", "skip")),
+                                  reason = list(type = "string"))))))
+
+  plan <- if (trace_can_call(trace)) {
+    gr_call_json(client, list(
+      list(role = "system", content = .gr_prompts$preview_system),
+      list(role = "user", content = paste0("Question: ", question)),
+      list(role = "user", content = paste0("<outline>\n", outline, "\n</outline>")),
+      list(role = "user", content = sprintf(
+        "Return one entry for each of the %d sections, using the ids shown.", n_units))
+    ), schema = schema, schema_name = "reading_plan", model = spec$model,
+       max_output = spec$max_answer_tokens, temperature = spec$temperature,
+       trace = trace, label = "preview.plan")
+  } else list(ok = FALSE, value = NULL)
+
+  # The default is READ, not skip. An unplanned section is one the planner did
+  # not speak about, and the safe reading of silence is "look at it", not "throw
+  # it away": a skipped section is never revisited, and this reader must not be
+  # able to lose a document's contents to a malformed reply.
+  treat <- rep("read", n_units)
+  reasons <- rep(NA_character_, n_units)
+  degraded <- TRUE
+  if (isTRUE(plan$ok)) {
+    tab <- plan$value$sections
+    if (is.data.frame(tab) && nrow(tab) && all(c("id", "treatment") %in% names(tab))) {
+      ids <- suppressWarnings(as.integer(tab$id))
+      tr <- tolower(trimws(as.character(tab$treatment)))
+      ok <- !is.na(ids) & ids >= 1L & ids <= n_units & tr %in% c("read", "skim", "skip")
+      if (any(ok)) {
+        # Last entry wins for a duplicated id, matching the registries' rule.
+        treat[ids[ok]] <- tr[ok]
+        if (!is.null(tab$reason)) reasons[ids[ok]] <- as.character(tab$reason)[ok]
+        degraded <- FALSE
+      }
+    }
+  }
+  if (degraded) {
+    gr_warn(paste0("The preview step returned no usable reading plan, so every section is being ",
+                   "read in full (does this endpoint support JSON schema output?). This run is ",
+                   "effectively 'stuff', not 'preview'."), class = "gr_preview_degraded")
+  }
+
+  # Budget the sections marked `read`, in document order. What does not fit is
+  # DEMOTED to skim rather than dropped: the section still gets looked at, for
+  # one call, instead of vanishing because the plan was more ambitious than the
+  # context window.
+  overhead <- prompt_overhead(question, .gr_prompts$answer_system)
+  bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
+  read_rows <- sort(unlist(units[treat == "read"], use.names = FALSE))
+  fit <- fit_chunks(d, bud$input, order = read_rows)
+  demoted <- integer(0)
+  if (length(fit$dropped)) {
+    demoted <- which(vapply(units, function(rows) any(rows %in% fit$dropped), logical(1)) &
+                     treat == "read")
+    treat[demoted] <- "skim"
+  }
+  keep_rows <- fit$idx
+
+  # One extraction call per skimmed SECTION, not per chunk. That is what makes
+  # this cheaper than `skim`: the plan has already judged these sections
+  # unlikely to hold the answer, so they get one look each.
+  skim_units <- which(treat == "skim")
+  ev_skim <- NULL
+  failed <- 0L
+  if (length(skim_units)) {
+    res <- gr_lapply(skim_units, function(i, trace) {
+      rows <- units[[i]]
+      if (!trace_can_call(trace)) return(list(ok = FALSE, text = "", rows = rows))
+      body <- render_chunks(d[rows, , drop = FALSE])
+      cap <- max(64L, bud$input %/% 2L)
+      if (gr_count_tokens(body) > cap) body <- gr_truncate_tokens(body, cap)
+      r <- gr_call(client, list(
+        list(role = "system", content = .gr_prompts$extract_system),
+        list(role = "user", content = paste0("Question: ", question)),
+        list(role = "user", content = paste0("<excerpt>\n", body, "\n</excerpt>"))
+      ), model = spec$skim_model %||% spec$model, max_output = spec$max_chunk_tokens,
+         temperature = spec$temperature, trace = trace, label = "preview.skim")
+      list(ok = usable_text(r), text = r$text, rows = rows)
+    }, parallel = spec$parallel, label = "preview section", trace = trace)
+
+    ok <- vapply(res, function(r) isTRUE(r$ok), logical(1))
+    txt <- vapply(res, function(r) as_chr1(r$text), character(1))
+    failed <- sum(!ok)
+    keep <- ok & !grepl("^[\"'`*_ ]*NONE[\"'`*_. ]*$", trimws(txt), ignore.case = TRUE) &
+      has_content(txt)
+    if (any(keep)) {
+      rows1 <- vapply(res[keep], function(r) as.integer(r$rows[1]), integer(1))
+      # Model-written, so it carries its source and is verified -- the rule
+      # `skim` follows. The source is the whole section the span was drawn from,
+      # which is what the model actually saw.
+      src <- vapply(res[keep], function(r) paste(d$text[r$rows], collapse = "\n\n"), character(1))
+      ev_skim <- evidence_table(d$chunk_id[rows1], txt[keep], d$page[rows1], d$section[rows1],
+                                source_text = src, kind = "extracted")
+    }
+  }
+
+  ev_read <- if (length(keep_rows)) {
+    evidence_table(d$chunk_id[keep_rows], d$text[keep_rows], d$page[keep_rows],
+                   d$section[keep_rows], kind = "verbatim")
+  } else NULL
+  ev <- rbind_evidence(list(ev_read, ev_skim))
+
+  # The plan is a first-class artifact, not a log line: what each section was
+  # judged to be, and why. "Sections 3 and 5 were not read" is a finding about
+  # the answer, and the audit report has to be able to show it.
+  plan_tab <- data.frame(
+    section = seq_len(n_units),
+    label = vapply(units, function(rows) preview_label(d, rows), character(1)),
+    chunks = vapply(units, length, integer(1)),
+    tokens = vapply(units, function(rows) sum(d$tokens[rows]), integer(1)),
+    treatment = treat, reason = reasons, stringsAsFactors = FALSE)
+  rownames(plan_tab) <- NULL
+  skipped_rows <- unlist(units[treat == "skip"], use.names = FALSE)
+  trace_note(trace, "preview.plan", list(
+    sections = n_units, read = sum(treat == "read"), skimmed = sum(treat == "skim"),
+    skipped = sum(treat == "skip"), demoted = length(demoted), degraded = degraded,
+    tokens_read = sum(d$tokens[keep_rows]),
+    tokens_skipped = sum(d$tokens[skipped_rows])))
+
+  body <- paste(c(
+    if (length(keep_rows)) render_chunks(d[keep_rows, , drop = FALSE]),
+    if (!is.null(ev_skim) && nrow(ev_skim))
+      paste(sprintf("[chunk %d]\n%s", ev_skim$chunk_id, ev_skim$text), collapse = "\n\n")
+  ), collapse = "\n\n")
+
+  if (!nzchar(trimws(body))) {
+    return(new_answer(.NOT_FOUND, "preview", question, integer(0), trace, partial = TRUE,
+                      chunks_sent = d$chunk_id,
+                      notes = list(sections = n_units, plan = plan_tab, degraded = degraded,
+                                   reason = "the plan skipped every section, or every skim failed")))
+  }
+
+  res2 <- if (trace_can_call(trace)) {
+    gr_call(client, answer_messages(question, body, cite = spec$cite),
+            model = spec$model, max_output = spec$max_answer_tokens,
+            temperature = spec$temperature, trace = trace, label = "preview.answer")
+  } else gr_result(FALSE, error = "call cap reached before the answer step")
+
+  used <- unique(c(d$chunk_id[keep_rows], if (!is.null(ev_skim)) ev_skim$chunk_id))
+  new_answer(if (usable_text(res2)) res2$text else .NOT_FOUND, "preview", question, used, trace,
+             chunks_sent = d$chunk_id, evidence = ev,
+             # A run that deliberately did not read part of the document is
+             # partial in the sense the word carries everywhere else here: the
+             # answer does not rest on everything that was available.
+             partial = !res2$ok || failed > 0L || any(treat == "skip") || degraded,
+             notes = list(sections = n_units, plan = plan_tab,
+                          read = sum(treat == "read"), skimmed = sum(treat == "skim"),
+                          skipped = sum(treat == "skip"), demoted_to_skim = length(demoted),
+                          failed_calls = failed, degraded = degraded,
+                          tokens_skipped = sum(d$tokens[skipped_rows])))
+}
+
 #' @noRd
 register_builtin_readers <- function() {
   gr_register_reader("stuff", read_stuff, signature = "all|1|none", cost_calls = "1",
@@ -682,6 +933,10 @@ register_builtin_readers <- function() {
   gr_register_reader("screen", read_screen, signature = "head|1|none", cost_calls = "1",
     description = paste0("Decide whether one document meets a review's criteria, from its ",
                          "opening. Needs `include`/`exclude`."))
+  gr_register_reader("preview", read_preview, signature = "planned|1+s+1|none",
+    cost_calls = "1 + skimmed sections + 1",
+    description = paste0("Plan from an outline first, then read only what the plan says to. ",
+                         "Sections it skips are named."))
   gr_register_reader("ensemble", read_ensemble, signature = "ensemble|sum+1|none",
     cost_calls = "sum of members + 1",
     description = "Run several distinct readers and adjudicate. Members must have different signatures.")

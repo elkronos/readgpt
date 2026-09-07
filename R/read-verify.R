@@ -145,7 +145,7 @@ cited_chunks <- function(text) cited_ids(text, "chunk")
   iterative = "verbatim",
   skim = "extracted", extract = "extracted", screen = "extracted",
   map_reduce = "answer", refine = "answer", hierarchical = "answer",
-  ensemble = "mixed"
+  preview = "mixed", ensemble = "mixed"
 )
 
 #' Check that quoted evidence really is in the document

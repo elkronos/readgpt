@@ -1,5 +1,44 @@
 # readgpt 0.5.1 (in development)
 
+## New
+
+* **`preview` — the reader that decides how to read before reading.** Every
+  other reader treats all chunks alike: `stuff` sends them all, `map_reduce`
+  answers from each in turn, `retrieve` ranks them by similarity. None of them
+  plans. `preview` builds an outline from section labels, sizes and short
+  excerpts, asks once which sections must be read in full, which are worth
+  scanning, and which cannot bear on the question, then reads accordingly and
+  answers. Its traversal signature is `planned|1+s+1|none` — `planned` is a
+  selection mode no other reader has — and the plan comes back in
+  `ans$notes$plan`, so "sections 3 and 5 were not read" is a finding you can
+  see rather than a silent economy.
+
+  Three things keep the planner honest, because it is itself an LLM call about
+  a long document and so prone to exactly the degradation this package exists
+  to manage. Its outline is built from metadata and excerpts, never the full
+  text, and is capped by the new `preview_tokens` setting; per-section excerpts
+  shrink until the whole outline fits, so no section is hidden from it by
+  truncation. Its output is a fixed schema. And a section the plan does not
+  mention defaults to **read**, never to skip — silence must not be able to
+  lose a document's contents. When no usable plan comes back at all, the reader
+  reads everything, warns `gr_preview_degraded`, and marks the answer partial.
+
+  It is called `preview` and not `survey` because a recipe already owns
+  `survey`, and `as_recipe()` resolves recipes before readers — so a reader of
+  that name would have been silently unreachable by string. A name owned by
+  both now warns (`gr_ambiguous_name`) instead of quietly resolving to one of
+  its two meanings.
+
+* **A trace records the configuration that produced it.** Trace meta carried
+  the recipe's *name* and nothing about how it was set up, so two runs of
+  `"thorough"` with `top_k = 3` and `top_k = 8` produced traces — and a
+  `gr_compare()` summary — that could not be told apart. For a package whose
+  point is comparing configurations, the configuration has to be in the record.
+  The preflight and segment steps now carry whatever differs from the defaults,
+  `gr_compare()$summary` gains a `settings` column naming it, and every trace
+  stamps the readgpt version that wrote it. A run that changed nothing reports
+  nothing: the record says what the run did, not thirty defaults.
+
 ## Fixed
 
 * **A provider that omits its usage block no longer makes the call free.**

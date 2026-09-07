@@ -14,7 +14,7 @@ without editing the package:
 ```
   source  ──▶  INGEST  ──▶  SEGMENT  ──▶  READ  ──▶  answer + trace
                │             │             │
-               │             │             └─ 11 strategies, each with a
+               │             │             └─ 12 strategies, each with a
                │             │                distinct traversal signature
                │             └─ 9 segmenters + overlap / min-size / context
                └─ 6 extractors + 14 individually toggleable cleaners
@@ -94,16 +94,22 @@ extraction is shared across all of them:
 cl  <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
 cmp <- gr_compare(readgpt_example(), "What was revenue in fiscal 2024?",
                   c("fast", "needle", "thorough", "survey"), client = cl)
-cmp$summary
-#>     recipe  segmenter chunks       reader         signature partial chunks_used
-#> 1     fast  paragraph      1        stuff        all|1|none   FALSE           1
-#> 2   needle   semantic      2     retrieve       topk|1|none   FALSE           2
-#> 3 thorough  paragraph      1   map_reduce   all|N+logN|tree   FALSE           1
-#> 4   survey structural      6 hierarchical all|N+tree+1|tree   FALSE           6
-#>   answer_chars not_found error
-#> 1           33     FALSE  <NA>
-#> ...
+cmp$summary[, c("recipe", "segmenter", "chunks", "reader", "signature", "settings")]
+#>     recipe  segmenter chunks       reader         signature
+#> 1     fast  paragraph      1        stuff        all|1|none
+#> 2   needle   semantic      2     retrieve       topk|1|none
+#> 3 thorough  paragraph      1   map_reduce   all|N+logN|tree
+#> 4   survey structural      6 hierarchical all|N+tree+1|tree
+#>                                                settings
+#> 1                                       max_tokens=4000
+#> 2 top_k=8, cite=TRUE, max_tokens=500, overlap_tokens=50
+#> 3                                    overlap_tokens=120
+#> 4                                       max_tokens=1500
 ```
+
+`settings` names whatever each recipe changed from the defaults, so two recipes
+differing only in a number are not two identical-looking rows. The same facts
+land on the trace, and survive `gr_trace_save()`.
 
 (The bundled example is deliberately small — 573 tokens by `gr_count_tokens()`
 — so `fast` and `thorough` fit it in one chunk. On a real report they would not.)
@@ -302,7 +308,7 @@ do.call(rbind, lapply(c(0, 30, 60), function(ov)
 
 ## Axis 3 — read
 
-`gr_read()` answers the question. Eleven strategies, each with a **traversal
+`gr_read()` answers the question. Twelve strategies, each with a **traversal
 signature** — `select|calls|state` — which is how the package tells two
 methodologies apart from two names for the same thing:
 
@@ -318,6 +324,7 @@ methodologies apart from two names for the same thing:
 | `iterative` | `topk\|rounds*2\|forward` | ≤ 2 × rounds | agentic: the model names what it still needs, driving the next retrieval |
 | `extract` | `all\|N+conflicts\|none` | N + one per disagreeing field | fills a typed schema from every chunk, then reconciles; a call only where the document contradicts itself |
 | `screen` | `head\|1\|none` | 1 | one decision about the whole document, from its opening; include / exclude / unclear with a reason |
+| `preview` | `planned\|1+s+1\|none` | 1 + skimmed sections + 1 | surveys an outline and plans first, then reads only what the plan says to; the sections it skipped are named in `ans$notes$plan` |
 | `ensemble` | `ensemble\|sum+1\|none` | Σ members + 1 | several distinct readers, adjudicated; members must have different signatures |
 
 `rerank` and `iterative` need JSON-schema structured output. Against an endpoint

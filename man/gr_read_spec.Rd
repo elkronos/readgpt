@@ -20,6 +20,7 @@ gr_read_spec(
   fan_in = 5L,
   max_levels = 5L,
   max_rounds = 4L,
+  preview_tokens = 1200L,
   members = NULL,
   cite = FALSE,
   skim_model = NULL,
@@ -80,6 +81,14 @@ the recursion depth cap.}
 
 \item{max_rounds}{For \code{iterative}: retrieve-assess cycles.}
 
+\item{preview_tokens}{For \code{survey}: the cap on the outline the planner sees.
+The outline is built from section labels, sizes and short excerpts -- never
+the full text -- and per-section excerpts shrink until the whole thing fits,
+so every section stays visible to the planner rather than the outline being
+truncated and some sections never being offered to it at all. The planner is
+an LLM call about a long document and so prone to exactly the degradation
+this package manages; keeping its input small is the mitigation.}
+
 \item{members}{For \code{ensemble}: the reader names to combine.}
 
 \item{cite}{Ask for chunk-level citations (\verb{[chunk 3]}) in the answer. Map
@@ -122,7 +131,8 @@ Describe a reading configuration
 Numeric arguments are clamped into a usable range and the change is warned
 about, never applied silently: \code{top_k} [1, 1e4], \code{fan_in} [2, 32],
 \code{max_levels} [1, 12], \code{max_rounds} [1, 20], \code{rerank_candidates} [1, 1e4],
-\code{rerank_min_score} [0, 10], \code{delay_between_calls} [0, 600],
+\code{rerank_min_score} [0, 10], \code{preview_tokens} [100, 1e5],
+\code{delay_between_calls} [0, 600],
 token caps [16, 1e6].
 }
 

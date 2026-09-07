@@ -348,3 +348,148 @@ test_that("rerank_min_score keeps chunks out rather than being a number nothing 
   expect_identical(drop$answer, readgpt:::.NOT_FOUND)
   expect_match(drop$notes$reason, "no candidate scored")
 })
+
+
+# ---------------------------------------------------------------------------
+# survey: the reader that decides how to read before reading.
+#
+# Its claim is the one no other reader makes -- that the plan, not similarity
+# and not position, decides what gets read. So the tests drive the plan and
+# check the reading followed it, rather than checking that an answer came back.
+# ---------------------------------------------------------------------------
+
+test_that("survey reads what its plan says to read, and nothing it skipped", {
+  ch <- gr_segment(gr_ingest(sample_doc(5, 3)), list(method = "structural", max_tokens = 150))
+  n_sec <- length(unique(ch$chunks$section))
+  expect_equal(n_sec, 5L)
+
+  cl <- mock_planner(c("read", "skip", "skim", "skip", "read"))
+  a <- quiet(gr_read(ch, "How many participants?", cl, list(reader = "preview")))
+  labs <- call_labels(cl)
+  secs <- ch$chunks$section
+
+  # The claim in "1+s+1": one plan, one call per SKIMMED section, one answer.
+  expect_equal(sum(labs == "preview.plan"), 1L)
+  expect_equal(sum(labs == "preview.skim"), 1L)
+  expect_equal(sum(labs == "preview.answer"), 1L)
+  expect_equal(length(labs), 3L)
+
+  # The plan is an artifact, not a log line, and it matches what was asked for.
+  expect_equal(a$notes$plan$treatment, c("read", "skip", "skim", "skip", "read"))
+  expect_equal(a$notes$read, 2L)
+  expect_equal(a$notes$skipped, 2L)
+  expect_false(a$notes$degraded)
+
+  # The skipped sections' chunks are not in the answer prompt, and the read
+  # ones are. This is the whole reader in one assertion.
+  body <- cl$calls()[[length(labs)]]$messages[[2]]$content
+  for (s in unique(secs)[c(2, 4)]) expect_false(grepl(s, body, fixed = TRUE))
+  for (s in unique(secs)[c(1, 5)]) expect_true(grepl(s, body, fixed = TRUE))
+
+  # One call per skimmed SECTION means the call sees the WHOLE section -- that
+  # is what makes this cheaper than `skim` without being a worse `skim`. Reading
+  # only the section's first chunk would satisfy the call count above and
+  # silently look at a third of the text.
+  skim_body <- cl$calls()[[which(labs == "preview.skim")]]$messages[[3]]$content
+  sec3 <- ch$chunks$text[ch$chunks$section == unique(secs)[3]]
+  expect_gt(length(sec3), 1L)
+  for (t in sec3) expect_true(grepl(substr(t, nchar(t) - 40L, nchar(t)), skim_body, fixed = TRUE))
+
+  # Not reading part of the document is reported, not hidden.
+  expect_true(a$partial)
+  expect_gt(a$notes$tokens_skipped, 0L)
+  expect_setequal(unique(a$evidence$kind), c("verbatim", "extracted"))
+})
+
+test_that("survey plans differently when the plan differs, on identical input", {
+  ch <- gr_segment(gr_ingest(sample_doc(5, 3)), list(method = "structural", max_tokens = 150))
+  run <- function(treat) {
+    cl <- mock_planner(treat)
+    a <- quiet(gr_read(ch, "How many participants?", cl, list(reader = "preview")))
+    list(calls = length(call_labels(cl)), used = length(a$chunks_used),
+         skipped = a$notes$skipped)
+  }
+  wide <- run(rep("read", 5))
+  narrow <- run(c("read", "skip", "skip", "skip", "skip"))
+  expect_gt(wide$used, narrow$used)
+  expect_equal(wide$skipped, 0L)
+  expect_equal(narrow$skipped, 4L)
+  # Reading less costs no more: the point of planning is spending less.
+  expect_lte(narrow$calls, wide$calls)
+})
+
+test_that("survey defaults an unplanned section to read, never to skip", {
+  # Silence from the planner must not lose a section. A skipped section is never
+  # revisited, so the safe reading of "the plan did not mention it" is "look at
+  # it" -- the opposite default would let a malformed reply drop a document's
+  # contents without anything saying so.
+  ch <- gr_segment(gr_ingest(sample_doc(4, 3)), list(method = "structural", max_tokens = 150))
+  cl <- gr_mock_client(function(messages, params) {
+    if (grepl("You plan how to read a document", messages[[1]]$content, fixed = TRUE)) {
+      return(preview_plan_json_ids(c(1L), "skip"))   # speaks about section 1 only
+    }
+    "ANSWER"
+  })
+  a <- quiet(gr_read(ch, "Q?", cl, list(reader = "preview")))
+  expect_equal(a$notes$plan$treatment, c("skip", "read", "read", "read"))
+  expect_false(a$notes$degraded)
+})
+
+test_that("a survey that cannot get a plan reads everything and says so", {
+  ch <- gr_segment(gr_ingest(sample_doc(4, 3)), list(method = "structural", max_tokens = 150))
+  cl <- mock_planner_broken()
+  expect_warning(a <- suppressMessages(gr_read(ch, "Q?", cl, list(reader = "preview"))),
+                 class = "gr_preview_degraded")
+  expect_true(a$notes$degraded)
+  expect_equal(a$notes$read, 4L)
+  expect_equal(a$notes$skipped, 0L)
+  expect_true(a$partial)          # a degraded run is never reported as clean
+  expect_identical(a$answer, "FALLBACK ANSWER")
+})
+
+test_that("survey demotes to skim what will not fit, rather than dropping it", {
+  # The plan can be more ambitious than the context window. A section that does
+  # not fit still gets one look; it does not vanish because the planner was
+  # optimistic.
+  local_registries()
+  gr_register_model("small-window", context_window = 1200L, max_output = 200L,
+                    input_usd = 0, output_usd = 0)
+  ch <- gr_segment(gr_ingest(sample_doc(6, 4)), list(method = "structural", max_tokens = 120))
+  cl <- mock_planner(rep("read", 6))
+  a <- quiet(gr_read(ch, "How many participants?", cl,
+                     list(reader = "preview", model = "small-window", max_answer_tokens = 150)))
+  expect_gt(a$notes$demoted_to_skim, 0L)
+  expect_equal(a$notes$skipped, 0L)         # demoted, not dropped
+  expect_gt(sum(call_labels(cl) == "preview.skim"), 0L)
+  expect_equal(a$notes$read + a$notes$skimmed, 6L)
+})
+
+test_that("survey works when the segmenter recorded no sections at all", {
+  # `fixed` and `recursive` leave `section` NA on every row. A planner still
+  # needs something to point at, so contiguous blocks stand in.
+  ch <- gr_segment(gr_ingest(sample_doc(5, 3)), list(method = "fixed", max_tokens = 150))
+  expect_true(all(is.na(ch$chunks$section)))
+  cl <- mock_planner(c("read", "skip", "read", "skip", "read", "skip", "read", "skip"))
+  a <- quiet(gr_read(ch, "Q?", cl, list(reader = "preview")))
+  expect_gt(a$notes$sections, 1L)
+  expect_lte(a$notes$sections, nrow(ch$chunks))
+  expect_gt(a$notes$skipped, 0L)
+  expect_match(a$notes$plan$label[1], "^chunks ")
+})
+
+
+test_that("a name that is both a recipe and a reader resolves loudly, not silently", {
+  # `preview` is named `preview` and not `survey` because a recipe already owns
+  # `survey` -- and `as_recipe()` resolves recipes first, so asking for the
+  # reader by that name would have handed back the recipe's reader instead. The
+  # collision is legal; resolving it in silence is not.
+  local_registries()
+  gr_register_reader("survey", function(chunks, question, client, spec, trace) {
+    new_answer("x", "survey", question, integer(0), trace)
+  }, signature = "clash|1|none", cost_calls = "1", description = "clashes with the recipe")
+  expect_warning(rec <- readgpt:::as_recipe("survey"), class = "gr_ambiguous_name")
+  expect_identical(rec$read$reader, "hierarchical")   # the recipe still wins
+  # And a name owned by only one of the two stays silent.
+  expect_silent(readgpt:::as_recipe("preview"))
+  expect_identical(readgpt:::as_recipe("preview")$read$reader, "preview")
+})

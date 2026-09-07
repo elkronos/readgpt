@@ -1147,6 +1147,53 @@ test_that("a step whose token count is unknown makes the cost unknown, not small
   expect_false(is.na(gr_trace_cost(tr)$usd))
 })
 
+test_that("a trace records the configuration that produced it, not just the recipe's name", {
+  # Two runs of the same recipe with different settings -- top_k = 3 and 8, say
+  # -- produced traces whose meta said `recipe = "thorough"` and nothing else,
+  # and a gr_compare() summary with two identical rows. For a package whose
+  # point is comparing configurations, the configuration has to be in the
+  # record. What differs from the defaults is stamped on the preflight and
+  # segment steps, which every path passes through, and every trace names the
+  # version that wrote it.
+  txt <- sample_doc(3, 3)
+  k3 <- gr_recipe("k3", segment = list(method = "paragraph", max_tokens = 150),
+                  read = list(reader = "retrieve", top_k = 3))
+  k8 <- gr_recipe("k8", segment = list(method = "paragraph", max_tokens = 150),
+                  read = list(reader = "retrieve", top_k = 8, mmr = 0.7))
+  cmp <- quiet(gr_compare(txt, "How many participants?", list(k3, k8), client = mock_echo()))
+
+  expect_true("settings" %in% names(cmp$summary))
+  expect_false(identical(cmp$summary$settings[1], cmp$summary$settings[2]))
+  expect_match(cmp$summary$settings[1], "top_k=3")
+  expect_match(cmp$summary$settings[2], "top_k=8")
+  expect_match(cmp$summary$settings[2], "mmr=0.7")
+  expect_match(cmp$summary$settings[1], "max_tokens=150")
+
+  # The same facts sit on the trace steps, so they survive gr_trace_save().
+  pf <- Filter(function(s) identical(s$label, "preflight"), cmp$trace$steps)
+  expect_length(pf, 2L)
+  expect_identical(pf[[1]]$detail$settings$top_k, 3L)
+  expect_identical(pf[[2]]$detail$settings$top_k, 8L)
+  expect_equal(pf[[2]]$detail$settings$mmr, 0.7)
+  sg <- Filter(function(s) identical(s$label, "segment"), cmp$trace$steps)
+  expect_identical(sg[[1]]$detail$settings$max_tokens, 150L)
+
+  # A run that changed nothing reports nothing -- the record says what the run
+  # DID, not thirty defaults.
+  a <- quiet(answer_document(txt, "Q?", "fast", client = mock_echo()))
+  pf <- Filter(function(s) identical(s$label, "preflight"), a$trace$steps)
+  expect_length(pf[[1]]$detail$settings, 0L)
+
+  # And the version, on every trace, through a save and back.
+  expect_identical(a$trace$meta$readgpt, as.character(utils::packageVersion("readgpt")))
+  f <- withr::local_tempfile(fileext = ".json")
+  gr_trace_save(a$trace, f)
+  back <- jsonlite::fromJSON(f, simplifyVector = FALSE)
+  expect_identical(back$meta$readgpt, as.character(utils::packageVersion("readgpt")))
+  expect_identical(back$steps[[which(vapply(back$steps, function(s) identical(s$label, "preflight"),
+                                            logical(1)))[1]]]$detail$reader, "stuff")
+})
+
 test_that("every reader declares what kind of thing its evidence is", {
   # The fallback for a reader with no entry is "verbatim" -- text copied out of
   # the document, true by construction and so never checked. A reader whose

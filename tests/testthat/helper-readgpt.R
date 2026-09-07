@@ -22,6 +22,15 @@ mock_echo <- function(answer = "MOCK ANSWER") {
       return(sprintf('{"can_answer": true, "answer": %s, "next_query": ""}',
                      jsonlite::toJSON(answer, auto_unbox = TRUE)))
     }
+    if (grepl("You plan how to read a document", sys, fixed = TRUE)) {
+      # Read everything: the neutral plan, so the shared mock does not quietly
+      # decide what `survey` skips. Tests that care drive it with mock_planner().
+      # The section count is taken from the prompt the reader builds, so the
+      # plan is the right length for whatever document it is reading.
+      last <- messages[[length(messages)]]$content
+      n <- suppressWarnings(as.integer(sub(".*each of the ([0-9]+) sections.*", "\\1", last)))
+      return(preview_plan_json(rep("read", if (is.na(n)) 1L else max(1L, n))))
+    }
     if (grepl("Decompose text into standalone propositions", sys, fixed = TRUE)) {
       return('{"propositions": ["Alpha is one.", "Beta is two."]}')
     }
@@ -161,4 +170,46 @@ mock_bulky <- function(sentences = 12L) {
   body <- paste(rep("Summary sentence about the cohort and the primary endpoint.", sentences),
                 collapse = " ")
   gr_mock_client(function(messages, params) body)
+}
+
+
+# A reading plan as the survey planner would return it, one treatment per
+# section in order. `mock_echo()` uses this to answer "read" for everything;
+# `mock_planner()` is how a test says which sections get skipped.
+preview_plan_json <- function(treatments) {
+  jsonlite::toJSON(list(sections = data.frame(
+    id = seq_along(treatments), treatment = as.character(treatments),
+    reason = paste("because", seq_along(treatments)), stringsAsFactors = FALSE)),
+    auto_unbox = TRUE)
+}
+
+mock_planner <- function(treatments, answer = "PLANNED ANSWER") {
+  gr_mock_client(function(messages, params) {
+    sys <- messages[[1]]$content
+    if (grepl("You plan how to read a document", sys, fixed = TRUE)) {
+      return(preview_plan_json(treatments))
+    }
+    if (grepl("extract evidence, not answers", sys, fixed = TRUE)) {
+      return("The cohort comprised 482 participants recruited across nine clinical sites.")
+    }
+    answer
+  })
+}
+
+# A planner whose reply is not a usable plan, for the degraded path.
+mock_planner_broken <- function() {
+  gr_mock_client(function(messages, params) {
+    if (grepl("You plan how to read a document", messages[[1]]$content, fixed = TRUE)) {
+      return("I would read the whole thing, personally.")
+    }
+    "FALLBACK ANSWER"
+  })
+}
+
+
+#' A plan that speaks about only some sections, to exercise the default.
+preview_plan_json_ids <- function(ids, treatment) {
+  jsonlite::toJSON(list(sections = data.frame(
+    id = as.integer(ids), treatment = rep(as.character(treatment), length(ids)),
+    reason = rep("stated", length(ids)), stringsAsFactors = FALSE)), auto_unbox = TRUE)
 }

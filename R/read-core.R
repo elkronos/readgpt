@@ -178,6 +178,15 @@ as_json.gr_answer <- function(x, pretty = TRUE, ...) {
     "'not reported' is a finding and worth stating. Do not add studies, figures or conclusions ",
     "that are not in the records, and do not cite an id that is not there. Write prose for the ",
     "section only -- no heading, no preamble, no closing summary of what you just wrote."),
+  preview_system = paste0(
+    "You plan how to read a document, before reading it. You are given the question and an ",
+    "outline: one line per section, with its size and a short excerpt. Decide, for each ",
+    "section, whether it must be read in full ('read'), is worth scanning for stray relevant ",
+    "detail ('skim'), or cannot bear on the question and should be skipped ('skip'). Reading ",
+    "everything in full is the expensive default you are here to improve on, so mark 'read' ",
+    "only where the section is likely to contain the answer itself. When the outline is too ",
+    "thin to tell, prefer 'skim' over 'skip': a skipped section is never looked at again. Give ",
+    "a short reason for each decision."),
   screen_system = paste0(
     "You screen one document against a review's criteria, using only the excerpt supplied. ",
     "Answer 'include' only if the excerpt shows the document meets every inclusion criterion ",

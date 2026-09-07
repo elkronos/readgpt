@@ -208,9 +208,14 @@ gr_compare <- function(source, question, recipes = c("fast", "needle", "thorough
   summary <- do.call(rbind, lapply(names(answers), function(nm) {
     a <- answers[[nm]]
     seg <- a$segmentation %||% list(method = NA_character_, n = NA_integer_)
+    r <- recs[[nm]]
     data.frame(recipe = nm, segmenter = as_chr1(seg$method, NA_character_),
                chunks = as.integer(seg$n %||% NA), reader = a$reader,
                signature = as_chr1(a$signature, NA_character_),
+               # Recipes differing only in a setting -- top_k, mmr, max_tokens --
+               # were indistinguishable here. Name what was changed.
+               settings = if (is.null(r)) NA_character_ else
+                 format_settings(c(read_settings(r$read), segment_settings(r$segment))),
                partial = a$partial,
                chunks_used = length(a$chunks_used),
                answer_chars = nchar(a$answer),

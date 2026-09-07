@@ -139,7 +139,8 @@ gr_segment <- function(doc, spec = NULL, client = NULL, trace = NULL) {
                      spec$method, doc$stats$tokens), class = "gr_empty_chunks")
   }
   trace_note(trace, "segment", c(list(method = spec$method),
-                                 as.list(gr_chunk_stats(out))[-1]))
+                                 as.list(gr_chunk_stats(out))[-1],
+                                 list(settings = segment_settings(spec))))
   out
 }
 

@@ -1058,6 +1058,95 @@ test_that("a provider that reports no usable token count falls back, not to zero
   expect_identical(eu(chat(data.frame(other = 1)), list(prompt_tokens = 42L), txt)$input, 42L)
 })
 
+test_that("an HTTP provider that omits its usage block is counted, not zeroed", {
+  # The same fault as the two above, on the path every real HTTP user takes.
+  # parse_response() collapsed a missing `usage` -- several OpenAI-compatible
+  # local servers omit it, and a gateway can strip it -- to 0 tokens in and 0
+  # out, so a real call was recorded as free. The parser now says NA, and the
+  # call settles NA against the local count exactly as ellmer_usage() does.
+  fake_resp <- function(json) structure(
+    list(content = charToRaw(json), status_code = 200L,
+         headers = list(`content-type` = "application/json; charset=utf-8"),
+         all_headers = list(), url = "mock://"), class = "response")
+  reply <- "The cohort comprised 482 participants recruited across nine sites."
+  body <- function(usage) sprintf(
+    '{"choices":[{"message":{"content":"%s"},"finish_reason":"stop"}]%s}',
+    reply, usage)
+  parse <- readgpt:::parse_response
+
+  # The parser: reported figures kept as reported, a genuine zero included;
+  # a missing, null or non-numeric block is NA, never 0.
+  ok <- parse(fake_resp(body(',"usage":{"prompt_tokens":120,"completion_tokens":9}')), "chat")
+  expect_identical(ok$usage, list(input = 120L, output = 9L))
+  zero <- parse(fake_resp(body(',"usage":{"prompt_tokens":0,"completion_tokens":0}')), "chat")
+  expect_identical(zero$usage, list(input = 0L, output = 0L))
+  for (u in c("", ',"usage":null', ',"usage":{}', ',"usage":{"prompt_tokens":"n/a"}')) {
+    r <- parse(fake_resp(body(u)), "chat")
+    expect_true(r$ok, info = u)
+    expect_true(is.na(r$usage$input), info = u)
+    expect_true(is.na(r$usage$output), info = u)
+  }
+
+  # Through gr_call(): what the trace records is the local count, not 0.
+  local_registries()
+  gr_register_model("priced-model", context_window = 128000L, max_output = 4096L,
+                    input_usd = 1, output_usd = 1)
+  cl <- gr_client(api_key = "sk-not-real", model = "priced-model", base_url = "https://x.invalid")
+  testthat::local_mocked_bindings(
+    http_call = function(client, url, body) parse(fake_resp(body("")), "chat"),
+    .package = "readgpt")
+  tr <- gr_trace()
+  res <- gr_call(cl, "How many participants were recruited?", model = "priced-model",
+                 trace = tr, label = "probe")
+  expect_true(res$ok)
+  expect_gt(res$usage$input, 0L)
+  expect_gt(res$usage$output, 0L)
+  expect_equal(res$usage$output, sum(gr_count_tokens(reply)))
+  expect_gt(tr$tokens_in, 0L)
+  expect_gt(tr$tokens_out, 0L)
+  cost <- gr_trace_cost(tr)
+  expect_equal(nrow(cost), 1L)
+  expect_gt(cost$paid_in, 0L)
+  expect_gt(cost$usd, 0)      # a priced model, a real call: not free
+})
+
+test_that("a handler-built result that leaves usage out is counted like a bare string", {
+  # handler_result() already counted locally for a plain-string reply. A
+  # hand-built gr_result with no `usage` took `list(0, 0)` instead: the same
+  # function, two rules, and the second one recorded a call as free.
+  txt <- "a reply with several words in it"
+  cl <- gr_mock_client(function(messages, params) {
+    r <- gr_result_for_test(ok = TRUE, text = txt); r$usage <- NULL; r
+  })
+  tr <- gr_trace()
+  res <- gr_call(cl, "q", trace = tr, label = "probe")
+  expect_true(res$ok)
+  expect_equal(res$usage$output, sum(gr_count_tokens(txt)))
+  expect_gt(res$usage$input, 0L)
+  expect_gt(tr$tokens_in, 0L)
+})
+
+test_that("a step whose token count is unknown makes the cost unknown, not smaller", {
+  # gr_trace_cost() turned an NA step count into 0 before summing, so a trace
+  # read back from a file with one unknown step reported a confident, too-small
+  # dollar figure beside an NA token total. The report renders NA as a dash;
+  # zero it would have rendered as a price.
+  local_registries()
+  gr_register_model("priced-model", context_window = 128000L, max_output = 4096L,
+                    input_usd = 1, output_usd = 1)
+  tr <- gr_trace()
+  step <- function(inp, out) list(step = length(tr$steps) + 1L, label = "x", at = "t",
+                                  model = "priced-model", ok = TRUE, cached = FALSE,
+                                  tokens = list(input = inp, output = out))
+  tr$steps <- list(step(100L, 10L), step(NA_integer_, 10L))
+  cost <- gr_trace_cost(tr)
+  expect_true(is.na(cost$paid_in))
+  expect_true(is.na(cost$usd))
+  tr$steps <- list(step(100L, 10L), step(50L, 5L))
+  expect_equal(gr_trace_cost(tr)$paid_in, 150L)
+  expect_false(is.na(gr_trace_cost(tr)$usd))
+})
+
 test_that("every reader declares what kind of thing its evidence is", {
   # The fallback for a reader with no entry is "verbatim" -- text copied out of
   # the document, true by construction and so never checked. A reader whose

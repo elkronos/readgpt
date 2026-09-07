@@ -1,3 +1,53 @@
+# readgpt 0.5.1 (in development)
+
+## Fixed
+
+* **A provider that omits its usage block no longer makes the call free.**
+  `parse_response()` collapsed a missing, null or non-numeric `usage` -- several
+  OpenAI-compatible local servers omit it, and a gateway can strip it -- to 0
+  tokens in and 0 out, so a real call was recorded and costed as nothing. That
+  is the same fault 0.5.0 fixed in `ellmer_usage()` and `gr_estimate_cost()`,
+  still alive on the path every HTTP user takes. The parser now reports NA and
+  the call settles NA against the local count, as the ellmer adapter already
+  did: the prompt was measured before it was sent and the reply is in hand, and
+  the local tokenizer is biased to over-count, so the substitute errs towards
+  charging too much. A figure the provider did report is kept as reported,
+  including a genuine zero.
+
+  Two neighbours of the same shape: a handler-built `gr_result` that left
+  `usage` out took `list(0, 0)` where a bare-string reply from the same handler
+  was counted locally, and `gr_trace_cost()` turned an unknown step count into
+  0 before summing, so a trace read back from a file with one unknown step
+  reported a confident, too-small dollar figure beside an NA token total. Both
+  now say unknown; the report renders that as a dash, where zero rendered as a
+  price.
+
+* **The two readers whose distinctness is a loop were never tested looping.**
+  Line coverage over the whole suite found every line after `iterative`'s
+  retrieve-assess loop dead, and `hierarchical`'s reduction body never executed
+  once. The cause was the shared test client: it answers the iterative prompt
+  with `can_answer: true` on round one, so the loop always stopped immediately,
+  and every fixture document was small enough that one summarise pass always
+  fit. Under those conditions the two readers claiming the most in their
+  registered signatures -- `topk|rounds*2|forward` and `all|N+tree+1|tree` --
+  behaved as `retrieve` and `map_reduce`. The existing call-count assertion for
+  `hierarchical` was `n + 1`, which is the arithmetic of the non-recursive case:
+  the expectation had been written around what the fixtures happened to produce.
+
+  Driven by hand both paths were correct, so nothing shipped broken. But a
+  signature is a claim about behaviour, and nothing was checking that the
+  behaviour happened. Two steering clients now do: one that refuses to answer so
+  the loop runs, one whose summaries stay over a small context window so the
+  tree has to fan in. The new tests assert rounds, distinct queries, accumulated
+  chunks, tree depth, the `max_levels` cap and its warning. Each was confirmed
+  to fail against a deliberately broken build before being kept.
+
+  Sweeping the same way found three settings that no test ever set to a
+  non-default value: `skim_model` and `summary_model` -- the routing that sends
+  the cheap per-chunk pass to a cheaper model, which is a headline cost feature
+  -- and `rerank_min_score`. All three are now checked, and reader coverage rose
+  from 75.1% to 82.5%.
+
 # readgpt 0.5.0
 
 ## New
@@ -28,32 +78,6 @@
   invisible. A verification column a reader over-reads is worse than no column.
 
 ## Fixed
-
-* **The two readers whose distinctness is a loop were never tested looping.**
-  Line coverage over the whole suite found every line after `iterative`'s
-  retrieve-assess loop dead, and `hierarchical`'s reduction body never executed
-  once. The cause was the shared test client: it answers the iterative prompt
-  with `can_answer: true` on round one, so the loop always stopped immediately,
-  and every fixture document was small enough that one summarise pass always
-  fit. Under those conditions the two readers claiming the most in their
-  registered signatures -- `topk|rounds*2|forward` and `all|N+tree+1|tree` --
-  behaved as `retrieve` and `map_reduce`. The existing call-count assertion for
-  `hierarchical` was `n + 1`, which is the arithmetic of the non-recursive case:
-  the expectation had been written around what the fixtures happened to produce.
-
-  Driven by hand both paths were correct, so nothing shipped broken. But a
-  signature is a claim about behaviour, and nothing was checking that the
-  behaviour happened. Two steering clients now do: one that refuses to answer so
-  the loop runs, one whose summaries stay over a small context window so the
-  tree has to fan in. The new tests assert rounds, distinct queries, accumulated
-  chunks, tree depth, the `max_levels` cap and its warning. Each was confirmed
-  to fail against a deliberately broken build before being kept.
-
-  Sweeping the same way found three settings that no test ever set to a
-  non-default value: `skim_model` and `summary_model` -- the routing that sends
-  the cheap per-chunk pass to a cheaper model, which is a headline cost feature
-  -- and `rerank_min_score`. All three are now checked, and reader coverage rose
-  from 75.1% to 82.5%.
 
 * **An unknown token count is no longer costed as a free one.**
   `gr_estimate_cost()` summed with `na.rm = TRUE`, so

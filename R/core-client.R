@@ -335,6 +335,7 @@ client_dispatch <- function(client, messages, model, max_output, temperature,
                   if (identical(client$api, "responses")) "/responses" else "/chat/completions")
     out <- http_call(client, url, body)
     out$model <- model
+    out$usage <- settle_usage(out$usage, params$prompt_tokens, out$text)
     out
   }
 
@@ -367,6 +368,27 @@ backend_dispatch <- function(client, messages, model, params, label) {
 }
 
 #' Turn whatever a handler returned into a lawful `gr_result`.
+#' Token usage the trace can trust.
+#'
+#' Unknown is not zero. When the provider's figure for a call is missing or not
+#' a number, count locally instead: the prompt was measured before it was sent
+#' and the reply is in hand. This package's tokenizer is deliberately biased to
+#' over-count, so the substitute errs towards charging too much rather than too
+#' little -- the same rule `ellmer_usage()` applies, now applied to the HTTP
+#' path and to a handler-built result that left `usage` out. A figure the
+#' provider did report is kept as reported, including a genuine zero.
+#' @noRd
+settle_usage <- function(usage, prompt_tokens, text) {
+  num <- function(v) {
+    v <- suppressWarnings(as.numeric(v))
+    if (length(v) != 1L || is.na(v) || !is.finite(v) || v < 0) NA_integer_ else as.integer(v)
+  }
+  inp <- num(if (is.list(usage)) usage$input else NULL)
+  out <- num(if (is.list(usage)) usage$output else NULL)
+  list(input  = if (is.na(inp)) as_int1(prompt_tokens, 0L) else inp,
+       output = if (is.na(out)) sum(gr_count_tokens(as_chr1(text))) else out)
+}
+
 #' @noRd
 handler_result <- function(out, model, prompt_tokens) {
   if (inherits(out, "gr_result")) {
@@ -374,7 +396,7 @@ handler_result <- function(out, model, prompt_tokens) {
     # character(1) contract that every caller downstream relies on.
     return(gr_result(out$ok, text = out$text, error = out$error,
                      status = out$status %||% NA_integer_,
-                     usage = out$usage %||% list(input = 0L, output = 0L),
+                     usage = settle_usage(out$usage, prompt_tokens, out$text),
                      model = out$model %||% model,
                      finish_reason = out$finish_reason %||% NA_character_,
                      retryable = isTRUE(out$retryable), raw = out$raw,
@@ -549,10 +571,19 @@ parse_response <- function(resp, api) {
   }
   text <- extract_text(parsed, api)
   ug <- fld(parsed, "usage")
-  int1 <- function(v) { v <- suppressWarnings(as.integer(v)[1]); if (is.na(v)) 0L else v }
+  # NA, not 0, when the block is missing or holds nothing numeric. A provider
+  # that omits `usage` -- several OpenAI-compatible local servers do, and so
+  # does a gateway that strips it -- had every call recorded as 0 tokens in and
+  # 0 out: a real call costed at nothing. That is the fault `ellmer_usage()` and
+  # `gr_estimate_cost()` were fixed for, still alive on the path every HTTP user
+  # takes. The caller settles NA against a local count; see settle_usage().
+  int1 <- function(v) {
+    v <- suppressWarnings(as.integer(v)[1])
+    if (is.na(v) || v < 0L) NA_integer_ else v
+  }
   usage <- list(
-    input  = int1(fld(ug, "input_tokens")  %||% fld(ug, "prompt_tokens")     %||% 0L),
-    output = int1(fld(ug, "output_tokens") %||% fld(ug, "completion_tokens") %||% 0L)
+    input  = int1(fld(ug, "input_tokens")  %||% fld(ug, "prompt_tokens")     %||% NA_integer_),
+    output = int1(fld(ug, "output_tokens") %||% fld(ug, "completion_tokens") %||% NA_integer_)
   )
   ch <- fld(parsed, "choices")
   finish <- as_chr1(fld(parsed, "status") %||%

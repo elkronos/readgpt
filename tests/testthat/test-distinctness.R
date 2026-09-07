@@ -322,10 +322,7 @@ test_that("skim_model and summary_model route the cheap pass off the answer mode
   expect_true(all(m[names(m) == "skim.extract"] == "cheap-model"))
   expect_true(all(m[names(m) != "skim.extract"] == "mock-model"))
 
-  local_registries()
   gr_register_model("small-window", context_window = 900L, max_output = 200L,
-                    input_usd = 0, output_usd = 0)
-  gr_register_model("cheap-model", context_window = 128000L, max_output = 4096L,
                     input_usd = 0, output_usd = 0)
   ch2 <- gr_segment(gr_ingest(sample_doc(6, 5)), list(method = "paragraph", max_tokens = 60))
   cl2 <- mock_bulky()

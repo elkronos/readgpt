@@ -200,13 +200,22 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
   if (!is_nonblank(question)) gr_abort("`question` must be a non-empty string.")
   sources <- corpus_sources(sources, recursive = recursive)
   if (!length(sources)) {
+    below <- attr(sources, "below") %||% character(0)
     gr_abort(paste0("`sources` is empty. Pass file paths, a directory containing files ",
-                    "some extractor handles (see gr_extractors()), or raw text."),
+                    "some extractor handles (see gr_extractors()), or raw text.",
+                    # The commonest cause by far, and the old message did not
+                    # mention the argument that fixes it.
+                    if (length(below)) sprintf(
+                      " %d readable file(s) are in subdirectories of that folder; pass recursive = TRUE to include them.",
+                      length(below)) else "",
+                    " gr_inventory() reports what is there and why each file was or was not taken."),
              class = "gr_no_sources")
   }
   rec <- apply_overrides(as_recipe(recipe), list(...))
   client <- client %||% gr_client(model = rec$read$model)
-  labels <- make.unique(vapply(sources, corpus_label, character(1), USE.NAMES = FALSE), sep = "#")
+  root <- attr(sources, "root")
+  labels <- make.unique(vapply(sources, corpus_label, character(1),
+                               root = root, USE.NAMES = FALSE), sep = "#")
 
   trace <- gr_trace(meta = list(recipe = rec$name, question = question,
                                 documents = length(sources)))
@@ -417,27 +426,71 @@ print.gr_corpus <- function(x, ...) {
 #' to `basename()` warns about an expanded path of 1200 characters, which is how
 #' this was found in the first place.
 #' @noRd
-corpus_label <- function(source, inline = "<inline text>") {
+corpus_label <- function(source, inline = "<inline text>", root = NULL) {
   if (!is.character(source) || length(source) != 1L || is.na(source)) return(inline)
   if (grepl("\n", source, fixed = TRUE)) return(inline)
   if (nchar(source, type = "bytes") >= 1000L) return(inline)
-  if (file.exists(source)) return(basename(source))
+  if (file.exists(source)) {
+    # Keep the folder a file came from. `basename()` turned 2019/report.txt and
+    # 2020/report.txt into one name, and make.unique() then separated them as
+    # "report.txt" and "report.txt#1" -- discarding the meaningful half and
+    # replacing it with an index that depends on sort order. A reviewer who
+    # filed by year had that year thrown away and could not tell the rows apart.
+    if (!is.null(root) && nzchar(root)) {
+      rel <- relative_path(source, root)
+      if (!is.na(rel)) return(rel)
+    }
+    return(basename(source))
+  }
   looks_like_path <- grepl("[/\\\\]", source) || nzchar(tools::file_ext(source))
   if (looks_like_path) basename(source) else inline
 }
 
-#' Expand a directory to the files some extractor actually handles.
+#' The file extensions some registered extractor claims.
 #' @noRd
-corpus_sources <- function(sources, recursive = FALSE) {
+known_extensions <- function() {
+  ext <- unlist(strsplit(gr_extractors()$extensions, ",\\s*"), use.names = FALSE)
+  tolower(unique(trimws(ext[nzchar(ext)])))
+}
+
+#' Expand a directory to the files some extractor actually handles.
+#'
+#' Carries what it decided on the result: `root` (so labels can keep the folder
+#' a file came from), `skipped` (files no extractor claims) and `below` (files
+#' that exist further down and were not scanned). Silently returning only the
+#' survivors is how a directory of 200 `.doc` files reads as an empty corpus.
+#' @noRd
+corpus_sources <- function(sources, recursive = FALSE, quiet = FALSE) {
   if (is.character(sources) && length(sources) == 1L && !is.na(sources) &&
       dir.exists(sources)) {
-    ext <- unlist(strsplit(gr_extractors()$extensions, ",\\s*"), use.names = FALSE)
-    ext <- unique(trimws(ext[nzchar(ext)]))
-    files <- list.files(sources, full.names = TRUE, recursive = recursive,
-                        no.. = TRUE)
+    ext <- known_extensions()
+    files <- list.files(sources, full.names = TRUE, recursive = recursive, no.. = TRUE)
     files <- files[!dir.exists(files)]
-    keep <- tolower(tools::file_ext(files)) %in% tolower(ext)
-    return(sort(files[keep]))
+    keep <- tolower(tools::file_ext(files)) %in% ext
+    skipped <- sort(files[!keep])
+    # Files sitting further down that a non-recursive scan never looked at. The
+    # single most likely reason a directory looks empty.
+    below <- if (recursive) character(0) else {
+      deep <- list.files(sources, full.names = TRUE, recursive = TRUE, no.. = TRUE)
+      deep <- deep[!dir.exists(deep)]
+      deep <- setdiff(deep, files)
+      sort(deep[tolower(tools::file_ext(deep)) %in% ext])
+    }
+    if (!quiet && length(skipped)) {
+      by_ext <- sort(table(tolower(tools::file_ext(skipped))), decreasing = TRUE)
+      nm <- names(by_ext); nm[!nzchar(nm)] <- "(no extension)"
+      gr_warn(sprintf(paste0("%d file(s) in '%s' were skipped: no registered extractor claims ",
+                             "%s. See gr_extractors(), gr_inventory() for the full picture, or ",
+                             "gr_register_extractor() to add one."),
+                      length(skipped), sources,
+                      paste(sprintf("%s (%d)", nm, as.integer(by_ext)), collapse = ", ")),
+              class = "gr_sources_skipped")
+    }
+    out <- sort(files[keep])
+    attr(out, "root") <- sources
+    attr(out, "skipped") <- skipped
+    attr(out, "below") <- below
+    return(out)
   }
   if (is.list(sources)) return(sources)
   as.list(as.character(sources))

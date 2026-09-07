@@ -49,9 +49,13 @@ test_that("recursion into subdirectories is opt-in", {
   writeLines("Revenue was 9.9 million dollars.", file.path(d, "sub", "deep.txt"))
 
   flat <- quiet(gr_read_many(d, "Q?", "fast", client = mock_echo()))
-  expect_false("deep.txt" %in% flat$summary$document)
+  expect_false(any(grepl("deep.txt", flat$summary$document, fixed = TRUE)))
   deep <- quiet(gr_read_many(d, "Q?", "fast", client = mock_echo(), recursive = TRUE))
-  expect_true("deep.txt" %in% deep$summary$document)
+  # Named for where it sits, not just what it is called: two files called
+  # report.txt in 2019/ and 2020/ used to collapse to one name and be separated
+  # by a sort-order index. See test-inventory.R.
+  expect_true("sub/deep.txt" %in% deep$summary$document)
+  expect_false("deep.txt" %in% deep$summary$document)
 })
 
 test_that("an empty corpus is an error, not an empty result", {

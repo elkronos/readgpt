@@ -2,6 +2,49 @@
 
 ## New
 
+* **`gr_inventory()` — what is in a folder, before you read any of it.** Every
+  other pre-run check here is per document and happens once the run is already
+  going: `preflight()` estimates a document's cost as `gr_read()` is called, and
+  `extract_pdf()` decides a page needs OCR while extracting that page. Both are
+  the right check in the wrong place for a corpus — point `gr_extract()` at four
+  hundred PDFs and you learn that a hundred and eighty are scans, and that
+  tesseract is not installed, after paying for the two hundred and twenty that
+  were not. This is the same discipline one level up, and deliberately not an
+  LLM step: whether a page carries a text layer is a character count, whether a
+  file has an extractor is a lookup, and asking a model either would be slower,
+  cost money and be less accurate than the answer already on disk.
+
+  One row per file **including** the ones that will not be read, because "180 of
+  your files were skipped" is the finding and a table of survivors cannot report
+  it. No file can stop the survey either: a corrupt PDF, a binary file wearing a
+  `.txt` extension, a broken symlink or anything unforeseen becomes a row saying
+  so, which is the contract [`gr_read_many()`] has always given a corpus run. It chooses nothing for you: no automatic routing of files to recipes,
+  because a router that reads one document with `retrieve` and another with
+  `stuff` returns a plausible answer built on part of a file with nothing saying
+  so, and it makes `gr_compare()` meaningless — the corpus no longer had *a*
+  configuration.
+
+* **Three ways a directory could quietly read as less than you gave it.** Found
+  while writing the above, all in `corpus_sources()` and all silent.
+
+  Files whose extension no extractor claims were **dropped without a word**, so
+  a folder of `.doc` files (not `.docx`) read as an empty corpus and a mixed
+  folder read as however much of it happened to be supported. It now warns,
+  counts them by extension, and carries the list on the result.
+
+  A document **lost the folder it came from**: `basename()` turned
+  `2019/report.txt` and `2020/report.txt` into one name, and `make.unique()`
+  then separated them as `report.txt` and `report.txt#1` — discarding the
+  meaningful half and replacing it with an index that depends on sort order.
+  Somebody who had filed by year could not tell their own rows apart. Labels are
+  now relative to the directory, so the folder survives into `$summary` and into
+  the extraction table.
+
+  And the empty-directory error **never mentioned `recursive`**, which is the
+  commonest cause by far: the default does not descend, so a folder of
+  subfolders looks empty. It now counts the readable files sitting below and
+  says so.
+
 * **`preview` — the reader that decides how to read before reading.** Every
   other reader treats all chunks alike: `stuff` sends them all, `map_reduce`
   answers from each in turn, `retrieve` ranks them by similarity. None of them

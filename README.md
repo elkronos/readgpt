@@ -527,9 +527,58 @@ error instead. `gr_options()` documents all 21 settings; see `?gr_options`.
 
 ## Many documents
 
+### Look before you read
+
+Point the package at a folder you have not read before and `gr_inventory()` will
+tell you what is in it. No model calls, no API key — every question it answers is
+sitting on disk.
+
+```r
+d <- file.path(tempdir(), "corpus"); dir.create(file.path(d, "2019"), recursive = TRUE)
+writeLines("The 2019 cohort had 482 participants.", file.path(d, "2019", "report.txt"))
+writeLines("The 2020 cohort had 611 participants.", file.path(d, "2019", "followup.txt"))
+writeLines("legacy notes", file.path(d, "old.doc"))
+
+inv <- gr_inventory(d)
+inv$files[, c("file", "folder", "ext", "extractor", "status", "tokens")]
+#>                 file folder ext extractor       status tokens
+#> 1 2019/followup.txt   2019 txt       txt        ready     16
+#> 2   2019/report.txt   2019 txt       txt        ready     16
+#> 3           old.doc      . doc      <NA> no_extractor     NA
+```
+
+Printing `inv` gives the same thing as a summary, with the two lines somebody
+has to act on — how many files have no text layer, and how many would be
+skipped — called out at the bottom.
+
+It exists to catch the three things that turn a corpus run into a confident
+wrong answer:
+
+| what it catches | why it matters |
+|---|---|
+| files no extractor claims | they were dropped without appearing anywhere, so a folder of `.doc` files read as an empty corpus |
+| PDFs with no text layer | they extract to nothing, then answer `NOT_IN_DOCUMENT` — indistinguishable from a document that genuinely does not say |
+| files one level further down than you scanned | `recursive = FALSE` is the default, and a folder of subfolders looks empty |
+
+`inv$files` is one row per file — **including** the ones that will not be read,
+because "180 of your files were skipped" is the finding, and a table of only the
+survivors cannot report it. `folder` is a column, so `split(inv$files,
+inv$files$folder)` gives you the piles.
+
+It deliberately does not choose anything for you. A router that quietly reads one
+document with `retrieve` and another with `stuff` hands you a plausible answer
+built on part of a file with nothing saying so — and it makes `gr_compare()`
+meaningless, because the corpus no longer had *a* configuration. Group the rows
+yourself and pass each group the recipe you picked.
+
+### Reading them
+
 `gr_compare()` runs several recipes over one document. `gr_read_many()` runs one
 recipe over many, and returns one tidy row per document — which is the shape the
 work usually has: a folder, one question, and a table at the end.
+
+A document keeps the folder it came from, so `2019/report.txt` and
+`2020/report.txt` stay distinguishable instead of collapsing to one name.
 
 ```r
 cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")

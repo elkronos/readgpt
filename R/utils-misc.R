@@ -491,3 +491,21 @@ format_settings <- function(x) {
     paste0(nm, "=", val)
   }, character(1)), collapse = ", ")
 }
+
+#' A path expressed relative to a directory, or NA when it is not under it.
+#'
+#' Both sides are normalised first: a root given as "~/docs" or with a trailing
+#' slash must still match a path that `list.files()` returned in full.
+#' @noRd
+relative_path <- function(path, root) {
+  np <- tryCatch(normalizePath(path, winslash = "/", mustWork = FALSE),
+                 error = function(e) NA_character_)
+  nr <- tryCatch(normalizePath(root, winslash = "/", mustWork = FALSE),
+                 error = function(e) NA_character_)
+  if (is.na(np) || is.na(nr)) return(NA_character_)
+  nr <- sub("/+$", "", nr)
+  # `startsWith(np, nr)` alone would match /docs-old against a root of /docs.
+  # The separator has to be there.
+  if (!startsWith(np, paste0(nr, "/"))) return(NA_character_)
+  sub("^/+", "", substring(np, nchar(nr) + 1L))
+}

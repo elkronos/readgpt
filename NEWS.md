@@ -208,6 +208,48 @@
   because screening proportions sit at the ends of the scale where the textbook
   interval returns [1, 1] from five observations.
 
+* **`headers` — reaching an endpoint that does not authenticate with a bearer
+  token.** `base_url` was enough only for a gateway that speaks the OpenAI shape
+  and takes `Authorization: Bearer`, because that header was hardcoded. Most
+  gateways standing in front of a company's OpenAI and Anthropic tokens are
+  somewhere else: Azure OpenAI authenticates with `api-key`, API Management adds
+  a subscription key, and many want a cost-centre or correlation id. There was
+  no way to express any of it.
+
+  `gr_client(headers = )` takes a named character vector, and
+  `gr_options(api_headers = )` sets one for every client — the form that belongs
+  in a project's `.Rprofile`. Two rules make it predictable. A header you name
+  replaces the automatic `Authorization` rather than joining it, matched without
+  regard to case, because HTTP field names are case-insensitive and curl is not:
+  given both spellings it sends two headers and leaves the gateway to pick. And
+  naming any header makes the API key optional, because nothing here can tell
+  which of a stranger's headers is the credential. `NA` as a value suppresses a
+  header instead of sending it, which is how an `OPENAI_API_KEY` left set for
+  another client in the same session is kept off the company gateway.
+
+  The embeddings endpoint takes the same headers as the chat endpoint. They were
+  two copies of the same three lines, which is how one of them ends up a release
+  behind the other.
+
+  Three things are refused rather than repaired. A name that is not a legal HTTP
+  field name is a typo, not a header. A value carrying a control character is
+  request splitting — CR/LF ends the header and starts one the caller never
+  wrote, and these values come from environment variables and config files,
+  which is exactly where a stray line ending comes from. And an empty value is
+  refused because curl drops the header entirely, so
+  `c("api-key" = Sys.getenv("GATEWAY_KEY"))` with that variable unset would
+  otherwise leave without the credential and come back a 401 that looks like a
+  wrong key rather than a missing one.
+
+  Headers are excluded from the cache key, for the same reason the API key is: a
+  rotating token or a per-request correlation id would make every lookup a miss.
+  A header that changes *which* model answers belongs in `base_url` or `model`,
+  where the cache can see it.
+
+  `gr_client()` also prints now. It had no print method, so a client echoed at
+  the console printed as a plain list with `api_key` in it, in full. Header
+  values would have joined it there. Names are shown; values never are.
+
 ## Fixed
 
 * **A provider that omits its usage block no longer makes the call free.**

@@ -136,6 +136,21 @@ cl <- gr_client(api_key = "sk-...")     # per-client, for multi-user Shiny
 Resolution order is explicit argument → `readgpt.api_key` option →
 `OPENAI_API_KEY`.
 
+Behind a company gateway, a bearer token is often not what authenticates. Azure
+OpenAI uses `api-key`, API Management adds a subscription key, and many
+gateways want a cost-centre or correlation id:
+
+```r
+cl <- gr_client(
+  base_url = "https://gateway.example.com/openai/v1", api = "chat",
+  headers  = c("api-key" = Sys.getenv("GATEWAY_KEY"), Authorization = NA))
+```
+
+Naming a header replaces the automatic `Authorization` rather than joining it,
+and naming any header makes the key optional. `NA` suppresses a header, which is
+how a personal `OPENAI_API_KEY` set for another client is kept off the gateway.
+`gr_options(api_headers = ...)` applies the same set to every client.
+
 **Without a key nothing raises.** Every model call fails, you get
 `"NOT_IN_DOCUMENT"` back, and the failure is reported on the answer object:
 

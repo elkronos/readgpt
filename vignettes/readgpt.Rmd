@@ -457,6 +457,29 @@ cl <- gr_ellmer_client(ellmer::chat_anthropic())
 cl <- gr_backend_client(function(messages, params) my_provider(messages))
 ```
 
+Behind a company gateway, `base_url` is usually not enough on its own. It is
+when the gateway speaks the OpenAI shape and takes `Authorization: Bearer`; most
+do not. Azure OpenAI authenticates with `api-key`, API Management adds a
+subscription key, and many require a cost-centre or correlation id. `headers`
+covers those, and naming any header makes the API key optional -- so a gateway
+with its own scheme needs no `OPENAI_API_KEY` set at all:
+
+```{r eval = FALSE}
+cl <- gr_client(
+  base_url = "https://gateway.example.com/openai/v1", api = "chat",
+  headers  = c("api-key" = Sys.getenv("GATEWAY_KEY"),
+               "X-Cost-Centre" = "1234",
+               # NA suppresses a header rather than sending it. Without this,
+               # an OPENAI_API_KEY left set for another client in the same
+               # session would be sent to the gateway as well.
+               Authorization = NA))
+```
+
+`gr_options(api_headers = ...)` sets the same thing once for every client, which
+is the form that belongs in a project's `.Rprofile`. Headers are excluded from
+the cache key, like the API key: a rotating token or a per-request correlation
+id would otherwise make every lookup a miss.
+
 Without a key nothing raises. Every call fails, the answer is the
 `"NOT_IN_DOCUMENT"` sentinel and `ans$partial` is `TRUE` — which is why checking
 `partial` is the habit worth forming.

@@ -173,12 +173,16 @@ embed_api <- function(texts, params) {
     for (start in seq(1, length(todo), by = batch)) {
       idx <- todo[start:min(start + batch - 1L, length(todo))]
       body <- list(model = model, input = as.list(payload[match(idx, todo)]))
-      key <- tryCatch(gr_api_key(client$api_key), error = function(e) NULL)
-      if (is.null(key)) gr_abort("no API key available", class = "gr_embed_error")
+      # Same auth path as gr_call(), deliberately: a gateway that needs an
+      # `api-key` header for chat needs it for embeddings too, and two copies of
+      # the header logic is how one of them ends up a release behind.
+      headers <- request_headers(client)
+      if (is.null(headers)) gr_abort("no API key available", class = "gr_embed_error")
       resp <- tryCatch(
         httr::POST(paste0(client$base_url, "/embeddings"),
-                   httr::add_headers(Authorization = paste("Bearer", key)),
-                   httr::content_type_json(), httr::timeout(client$timeout),
+                   httr::content_type_json(),
+                   httr::add_headers(.headers = headers),
+                   httr::timeout(client$timeout),
                    body = body, encode = "json"),
         error = function(e) e)
       parsed <- if (inherits(resp, "condition") || httr::status_code(resp) >= 300) NULL else

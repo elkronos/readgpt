@@ -13,7 +13,8 @@ gr_client(
   max_retries = NULL,
   retry_pause_base = NULL,
   timeout = NULL,
-  extra_body = list()
+  extra_body = list(),
+  headers = NULL
 )
 }
 \arguments{
@@ -32,6 +33,11 @@ gr_client(
 \item{timeout}{Per-request timeout in seconds.}
 
 \item{extra_body}{Named list merged into every request body.}
+
+\item{headers}{Named character vector of extra HTTP headers, for endpoints
+that do not authenticate with a bearer token. Defaults to the \code{api_headers}
+option. \code{NA} as a value suppresses a header rather than sending it, which
+is how the automatic \code{Authorization} is dropped.}
 }
 \value{
 An object of class \code{gr_client}: a list of the settings above.
@@ -44,6 +50,32 @@ Shiny app serve two users with two different keys in one R process -- the old
 code called \code{Sys.setenv(OPENAI_API_KEY = ...)}, which is process-wide, so the
 second user's key silently billed the first user's requests.
 }
+\section{Endpoints behind a company gateway}{
+
+\code{base_url} alone is enough when the gateway speaks the OpenAI shape and takes
+\code{Authorization: Bearer}. It is not enough anywhere else, and most corporate
+gateways are somewhere else: Azure OpenAI authenticates with \code{api-key}, API
+Management adds a subscription key, and many require a cost-centre or
+correlation id. \code{headers} covers those.
+
+Two rules make it predictable. A header you name replaces the automatic
+\code{Authorization} rather than joining it, matched without regard to case; and
+naming any header at all makes the API key optional, because nothing here can
+tell which of your headers is the credential. So a gateway with its own
+scheme needs no \code{OPENAI_API_KEY} set at all:
+
+\if{html}{\out{<div class="sourceCode r">}}\preformatted{gr_client(
+  base_url = "https://gateway.example.com/openai/v1", api = "chat",
+  headers  = c("api-key" = Sys.getenv("GATEWAY_KEY"), Authorization = NA))
+}\if{html}{\out{</div>}}
+
+Headers are credentials and routing metadata, not part of what answers, so
+they are excluded from the \code{\link[=gr_cache]{gr_cache()}} key for the same reason \code{api_key} is
+-- a rotating bearer or a per-request correlation id would otherwise make
+every cache lookup miss. If a header changes \emph{which} model answers, give that
+client its own \code{base_url} or \code{model} so the cache can tell them apart.
+}
+
 \examples{
 # A client is a value, not a global. Two of them, two keys, one R process --
 # which is what makes a Shiny app serving two users safe.

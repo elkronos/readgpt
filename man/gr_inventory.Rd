@@ -114,7 +114,9 @@ inv$files[, c("file", "folder", "ext", "status", "tokens")]
 \code{\link[=gr_ingest_spec]{gr_ingest_spec()}} for the OCR settings this predicts
 
 Other corpus functions: 
+\code{\link{gr_calibrate}()},
 \code{\link{gr_records}()},
+\code{\link{gr_reference}()},
 \code{\link{gr_search}()}
 }
 \concept{corpus functions}

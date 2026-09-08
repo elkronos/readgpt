@@ -339,8 +339,13 @@ print.gr_chunks <- function(x, ...) {
   d <- x$chunks
   cat(sprintf("<gr_chunks> method=%s  n=%d\n", x$method, nrow(d)))
   if (nrow(d)) {
-    cat(sprintf("  tokens: min %d / median %d / mean %.0f / max %d / total %d\n",
-                min(d$tokens), stats::median(d$tokens), mean(d$tokens),
+    # `%s` and format(): median() averages the two middle values on an
+    # even-length vector, so it returns a DOUBLE, and sprintf("%d", 27.5) is an
+    # error rather than a coercion. gr_segment() auto-prints at top level, so
+    # the canonical interactive call failed on any document whose two middle
+    # chunks had token counts of different parity -- about one in four.
+    cat(sprintf("  tokens: min %d / median %s / mean %.0f / max %d / total %d\n",
+                min(d$tokens), format(stats::median(d$tokens)), mean(d$tokens),
                 max(d$tokens), sum(d$tokens)))
     cap <- x$spec$max_tokens %||% NA
     if (!is.na(cap)) cat(sprintf("  cap=%d  over-cap chunks: %d\n", cap, sum(d$tokens > cap)))

@@ -215,6 +215,13 @@ replay_steps <- function(source) {
       response = as_chr1(st$response, ""),
       error = if (isTRUE(st$ok)) NULL else as_chr1(st$error, "recorded failure"),
       tokens = list(input = as_int1(tok$input, 0L), output = as_int1(tok$output, 0L)),
+      # Carried through, because a caller acts on it: gr_synthesise(coherence =
+      # TRUE) rejects a revision that stopped for "length". Dropping it here
+      # made every replayed call look like a clean stop, so the replay kept a
+      # truncated revision the live run had thrown away, published a different
+      # document, and reported 0 misses -- certifying itself as an exact
+      # reproduction of a run it had not reproduced.
+      finish_reason = as_chr1(st$finish_reason, NA_character_),
       label = as_chr1(st$label, "call")
     )
   }
@@ -314,7 +321,10 @@ replay_lookup <- function(client, messages, model, params) {
   gr_result(
     ok = st$ok, text = st$response, error = st$error, status = NA_integer_,
     usage = list(input = st$tokens$input, output = st$tokens$output),
-    model = as_chr1(st$model, model), finish_reason = NA_character_,
+    model = as_chr1(st$model, model),
+    # From the recording. Hard-coded NA here made every replayed call look like
+    # a clean stop, including the ones the live run rejected for being cut off.
+    finish_reason = as_chr1(st$finish_reason, NA_character_),
     cached = TRUE
   )
 }

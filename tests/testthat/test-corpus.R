@@ -100,11 +100,19 @@ test_that("a failed document is named by its path, not called inline text", {
   expect_identical(txt$summary$status, "ok")
 })
 
-test_that("on_error = 'stop' aborts", {
+test_that("on_error = 'stop' aborts, and only when something fails", {
   local_registries()
   d <- local_corpus()
+  # A bare expect_error() passed no matter what `on_error` did, because the
+  # fixture always contains a failing document: replacing the whole feature with
+  # an unconditional stop() left the suite green.
   expect_error(quiet(gr_read_many(c(file.path(d, "a.txt"), "no-such-file.txt"),
-                                  "Q?", "fast", client = mock_echo(), on_error = "stop")))
+                                  "Q?", "fast", client = mock_echo(), on_error = "stop")),
+               class = "gr_file_not_found")
+  # And the corpus with nothing wrong in it completes under the same setting.
+  ok <- quiet(gr_read_many(file.path(d, "a.txt"), "Q?", "fast",
+                           client = mock_echo(), on_error = "stop"))
+  expect_identical(ok$summary$status, "ok")
 })
 
 test_that("documents with the same name are still distinguishable", {

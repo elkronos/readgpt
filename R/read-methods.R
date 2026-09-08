@@ -687,14 +687,27 @@ read_ensemble <- function(chunks, question, client, spec, trace) {
 #' planner needs something to point at either way.
 #' @noRd
 preview_units <- function(d, target = 8L) {
-  sec <- d$section
+  sec <- as.character(d$section)
+  # A placeholder is not a heading. `seg_structural()` writes the literal
+  # "[no section]" where a chunk has none, so a document without headings
+  # arrived here with a section column that was entirely placeholder rather
+  # than NA. `!all(is.na(sec))` was therefore TRUE, the run-length grouping
+  # produced ONE unit spanning the document, and a plan that marked that single
+  # unit "skim" sent one truncated excerpt and reported the answer complete --
+  # 16% of an 18,000-token document read, `partial = FALSE`.
+  sec[!is.na(sec) & (!nzchar(trimws(sec)) | sec %in% .gr_no_section)] <- NA_character_
   if (!all(is.na(sec))) {
     # `rle` on the raw column would merge two same-named sections separated by a
     # third. Keying on a run id keeps them apart.
-    key <- as.character(sec)
+    key <- sec
     key[is.na(key)] <- "none"
     run <- cumsum(c(TRUE, key[-1] != key[-length(key)]))
-    return(unname(split(seq_len(nrow(d)), run)))
+    units <- unname(split(seq_len(nrow(d)), run))
+    # One unit covering everything is not a plan -- there is nothing to decide
+    # between, and every treatment it can be given applies to the whole
+    # document. Fall through to blocks, which is what a document with no
+    # structure gets anyway.
+    if (length(units) > 1L) return(units)
   }
   # No structure to work with: contiguous blocks, sized so a long document does
   # not produce an outline with one line per chunk.
@@ -824,22 +837,29 @@ read_preview <- function(chunks, question, client, spec, trace) {
   skim_units <- which(treat == "skim")
   ev_skim <- NULL
   failed <- 0L
+  truncated <- 0L
   if (length(skim_units)) {
     res <- gr_lapply(skim_units, function(i, trace) {
       rows <- units[[i]]
       if (!trace_can_call(trace)) return(list(ok = FALSE, text = "", rows = rows))
       body <- render_chunks(d[rows, , drop = FALSE])
       cap <- max(64L, bud$input %/% 2L)
-      if (gr_count_tokens(body) > cap) body <- gr_truncate_tokens(body, cap)
+      # What the truncation costs is reported, not swallowed. A skimmed unit
+      # too big for one call used to lose its tail silently, so the run said it
+      # had looked at a section it had seen half of.
+      had <- gr_count_tokens(body)
+      lost <- 0L
+      if (had > cap) { body <- gr_truncate_tokens(body, cap); lost <- as.integer(had - cap) }
       r <- gr_call(client, list(
         list(role = "system", content = .gr_prompts$extract_system),
         list(role = "user", content = paste0("Question: ", question)),
         list(role = "user", content = paste0("<excerpt>\n", body, "\n</excerpt>"))
       ), model = spec$skim_model %||% spec$model, max_output = spec$max_chunk_tokens,
          temperature = spec$temperature, trace = trace, label = "preview.skim")
-      list(ok = usable_text(r), text = r$text, rows = rows)
+      list(ok = usable_text(r), text = r$text, rows = rows, lost = lost)
     }, parallel = spec$parallel, label = "preview section", trace = trace)
 
+    truncated <- sum(vapply(res, function(r) as.integer(r$lost %||% 0L), integer(1)))
     ok <- vapply(res, function(r) isTRUE(r$ok), logical(1))
     txt <- vapply(res, function(r) as_chr1(r$text), character(1))
     failed <- sum(!ok)
@@ -897,6 +917,7 @@ read_preview <- function(chunks, question, client, spec, trace) {
                                    demoted_to_skim = length(demoted), failed_calls = failed,
                                    degraded = degraded,
                                    tokens_skipped = sum(d$tokens[skipped_rows]),
+                                   tokens_truncated = truncated,
                                    reason = "the plan skipped every section, or every skim failed")))
   }
 
@@ -912,12 +933,17 @@ read_preview <- function(chunks, question, client, spec, trace) {
              # A run that deliberately did not read part of the document is
              # partial in the sense the word carries everywhere else here: the
              # answer does not rest on everything that was available.
-             partial = !res2$ok || failed > 0L || any(treat == "skip") || degraded,
+             # A truncated skim is the same kind of gap as a skipped section:
+             # part of the document did not reach any model. It counts here for
+             # the same reason `skip` does.
+             partial = !res2$ok || failed > 0L || any(treat == "skip") || degraded ||
+               truncated > 0L,
              notes = list(sections = n_units, plan = plan_tab,
                           read = sum(treat == "read"), skimmed = sum(treat == "skim"),
                           skipped = sum(treat == "skip"), demoted_to_skim = length(demoted),
                           failed_calls = failed, degraded = degraded,
-                          tokens_skipped = sum(d$tokens[skipped_rows])))
+                          tokens_skipped = sum(d$tokens[skipped_rows]),
+                          tokens_truncated = truncated))
 }
 
 #' @noRd

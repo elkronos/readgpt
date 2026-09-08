@@ -204,6 +204,9 @@ test_that("writing leaves no temporary files behind", {
   cl <- gr_cache_client(gr_mock_client(function(m, p) "ok"), gr_cache(dir))
   for (i in 1:5) invisible(gr_call(cl, paste("q", i)))
   expect_length(list.files(dir, pattern = "tmp", recursive = TRUE), 0L)
+  # An empty directory satisfies the line above, so this test passed with
+  # cache_put() replaced by a no-op. Five distinct prompts, five entries.
+  expect_length(list.files(dir, pattern = "\\.rds$", recursive = TRUE), 5L)
 })
 
 test_that("read and write can each be switched off", {

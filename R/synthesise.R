@@ -442,6 +442,7 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
 
   body <- paste(rendered, collapse = "\n\n")
+  lost_batches <- 0L
   text <- if (gr_count_tokens(body) <= bud$input) {
     res <- gr_call(client, list(
       list(role = "system", content = system_prompt),
@@ -466,22 +467,39 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
          temperature = spec$temperature, trace = trace, label = "synthesise.batch")
       if (usable_text(res)) res$text else ""
     }, character(1), USE.NAMES = FALSE)
+    # tree_merge() strips empty pieces, so a merge over the survivors reads
+    # exactly like a merge over everything -- and with one survivor it returns
+    # that piece unchanged, ok = TRUE, without making a call. The studies in the
+    # failed batch were then simply absent from the write-up, with nothing on
+    # the section, on `partial` or in print() to say so.
+    # `<-`, not `<<-`: an if/else block shares the enclosing frame, so `<<-`
+    # here would have written to the global environment and left this one at 0.
+    lost_batches <- sum(!nzchar(parts))
     m <- tree_merge(client, ask, parts, spec, trace, label = "synthesise.merge",
                     system_prompt = system_prompt, kind = "draft")
-    if (isTRUE(m$ok)) m$text else paste(parts[nzchar(parts)], collapse = "\n\n")
+    # m$text on failure carries tree_merge()'s own "[merge failed; findings
+    # above are truncated]" marker. Throwing it away for a raw paste() of the
+    # parts discarded the one thing that said the section was incomplete.
+    if (isTRUE(m$ok)) m$text else as_chr1(m$text, paste(parts[nzchar(parts)], collapse = "\n\n"))
   }
 
   cited <- cited_ids(text, "study")
   known <- cited[cited %in% used$study]
   unknown <- setdiff(cited, used$study)
   hits <- match(known, used$study)
+  if (lost_batches > 0L) {
+    gr_warn(sprintf(paste0("Section '%s': %d batch(es) of studies failed, so the studies in ",
+                           "them are missing from it. The section is marked partial."),
+                    heading, lost_batches), class = "gr_synth_batch_failed")
+  }
   list(
     row = data.frame(section = heading, brief = as_chr1(brief), text = as_chr1(text),
                      n_cited = length(known), n_unknown = length(unknown),
                      # A section citing a row that is not in the table, or citing
                      # nothing at all, is not a section anyone should paste into a
                      # manuscript unread.
-                     partial = length(unknown) > 0L || !nzchar(trimws(text)),
+                     partial = length(unknown) > 0L || !nzchar(trimws(text)) ||
+                       lost_batches > 0L,
                      stringsAsFactors = FALSE),
     citations = if (!length(known)) NULL else
       data.frame(section = heading, study = known,

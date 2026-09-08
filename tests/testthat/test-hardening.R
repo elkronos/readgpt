@@ -194,9 +194,15 @@ test_that("a text argument that looks slightly path-like is not treated as a pat
 
 test_that("inline text and a vector of blocks do not share a cache key", {
   local_clean_cache()
-  d1 <- gr_ingest("First paragraph of the document.\n\nSecond paragraph of it.")
-  d2 <- gr_ingest(c("First paragraph of the document.", "Different second block."))
-  expect_false(identical(d1$text, d2$text))
+  # These two inputs COLLIDE under the bug: the key joined the vector with "\n"
+  # while ingestion joins with "\n\n", so a two-element vector hashed the same
+  # as one string holding a single newline. The old fixture used inputs with
+  # different content, which differ whatever the key does -- it would have
+  # passed with the bug restored.
+  a <- gr_ingest("First paragraph.\nSecond paragraph.")
+  b <- gr_ingest(c("First paragraph.", "Second paragraph."))
+  expect_false(identical(a$text, b$text))
+  expect_gt(nrow(b$blocks), nrow(a$blocks))
 })
 
 # ---------------------------------------------------------------------------
@@ -508,7 +514,14 @@ test_that("as_json survives every object that embeds a trace", {
   for (x in list(out$trace, out$answers[[1]])) {
     j <- expect_no_error(as_json(x))
     expect_true(nzchar(as.character(j)))
-    expect_type(jsonlite::fromJSON(as.character(j), simplifyVector = FALSE), "list")
+    back <- jsonlite::fromJSON(as.character(j), simplifyVector = FALSE)
+    expect_type(back, "list")
+    # `structure("{}", class = "json")` satisfied every assertion above, so this
+    # test survived having both as_json methods replaced by a constant. Assert
+    # that something from the run actually crossed.
+    flat <- unlist(back, use.names = TRUE)
+    expect_true(any(grepl("readgpt", names(flat), fixed = TRUE)) ||
+                  any(grepl("revenue", as.character(flat), ignore.case = TRUE)))
   }
   j <- quiet(answer_question(readgpt_example(), "What was revenue?", mode = "Chunked",
                              return_json = TRUE, client = mock_echo()))
@@ -544,6 +557,24 @@ test_that("every v1 shim runs and does not reproduce the v1 bug it replaced", {
   a <- quiet(answer_question(readgpt_example(), "What was revenue?",
                              mode = "Chunked", client = mock_echo()))
   expect_type(a, "character")
+
+  # WHICH reader each shim maps to, not merely that it returned a string.
+  # mock_echo() answers anything, so pointing all four shims at one reader left
+  # the suite green -- the shims ran, and nothing checked they ran the right
+  # thing. The call labels are the traversal, which is what a shim promises.
+  labels <- function(fn, ...) {
+    cl <- mock_echo()
+    readgpt:::.warn_once_reset()
+    invisible(quiet(suppressWarnings(fn(readgpt_example(), "What was revenue?",
+                                        client = cl, ...))))
+    paste(sort(unique(vapply(cl$calls(), function(x) as_chr1(x$label), character(1)))),
+          collapse = ",")
+  }
+  seen <- c(chunked = labels(gpt_read_chunked), retrieval = labels(gpt_read_retrieval),
+            hierarchical = labels(gpt_read_hierarchical))
+  expect_equal(length(unique(seen)), 3L, label = paste(seen, collapse = " | "))
+  expect_match(seen[["retrieval"]], "skim")
+  expect_match(seen[["hierarchical"]], "hier")
 
   # v1 stripped every digit by default, so no question about a figure could be
   # answered. parse_text() must not do that any more.

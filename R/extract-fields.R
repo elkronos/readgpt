@@ -224,10 +224,32 @@ coerce_field <- function(value, field) {
     # (as.character(1/3) is fifteen digits), and coercion runs again on values
     # that have already been coerced once.
     integer = { if (is.numeric(v) && is.finite(v)) return(as.integer(round(v)))
-                n <- suppressWarnings(as.numeric(gsub("[^0-9.+-]", "", as_chr1(v))))
-                if (!is.finite(n)) NULL else as.integer(round(n)) },
+                n <- numeric_token(as_chr1(v))
+                if (is.null(n) || !is.finite(n)) NULL else as.integer(round(n)) },
     number  = { if (is.numeric(v) && is.finite(v)) return(as.numeric(v))
-                n <- suppressWarnings(as.numeric(gsub("[^0-9.eE+-]", "", as_chr1(v))))
-                if (!is.finite(n)) NULL else n },
+                n <- numeric_token(as_chr1(v), exponent = TRUE)
+                if (is.null(n) || !is.finite(n)) NULL else n },
     NULL)
+}
+
+#' The one number in a string, or nothing.
+#'
+#' `gsub("[^0-9.+-]", "", x)` deleted the separators along with the words, so
+#' every digit in the value was glued into a single number: "120 (60 per arm)"
+#' became 12060, "482 (Table 1)" became 4821, and "1,204 randomised; 1,180
+#' analysed" became 12041180. Those are fabricated figures, and they were the
+#' worst kind, because the QUOTE they came with was verbatim -- so the evidence
+#' check passed, `n_unverified` stayed 0, and the audit report certified a
+#' number that appears nowhere in the paper.
+#'
+#' A value carrying more than one number is a value this field did not get.
+#' Returning nothing makes it a miss, which is counted and reported. There is no
+#' reading of "120 (60 per arm)" under which 12060 is better than a miss.
+#' @noRd
+numeric_token <- function(x, exponent = FALSE) {
+  pat <- if (exponent) "[-+]?[0-9][0-9,]*(?:\\.[0-9]+)?(?:[eE][-+]?[0-9]+)?"
+         else "[-+]?[0-9][0-9,]*(?:\\.[0-9]+)?"
+  hits <- regmatches(x, gregexpr(pat, x, perl = TRUE))[[1]]
+  if (length(hits) != 1L) return(NULL)
+  suppressWarnings(as.numeric(gsub(",", "", hits)))
 }

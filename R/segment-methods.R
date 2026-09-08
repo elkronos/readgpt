@@ -202,6 +202,16 @@ seg_recursive <- function(doc, spec, client, trace) {
   new_chunks(packed$text, "recursive", spec)
 }
 
+#' What `structural` writes where a chunk has no heading above it.
+#'
+#' A literal, not NA, because the column is also a display label. That made it
+#' invisible to every downstream test of the form `all(is.na(section))` --
+#' `preview` read it as "this document has structure" and planned one unit for
+#' the whole thing. Named here so the producer and the consumers cannot disagree
+#' about the spelling.
+#' @noRd
+.gr_no_section <- "[no section]"
+
 #' @noRd
 seg_structural <- function(doc, spec, client, trace) {
   b <- doc$blocks
@@ -225,12 +235,12 @@ seg_structural <- function(doc, spec, client, trace) {
     # matched and the title was emitted twice.
     is_head <- !is.na(sec) & heading_label(b$text) == heading_label(sec)
   }
-  sec[is.na(sec)] <- "[no section]"
+  sec[is.na(sec)] <- .gr_no_section
   groups <- split(seq_len(nrow(b)), factor(sec, levels = unique(sec)))
   out <- character(0); pg <- integer(0); sc <- character(0); bid <- integer(0)
   for (nm in names(groups)) {
     idx <- groups[[nm]]
-    labelled <- isTRUE(spec$prefix_section) && !identical(nm, "[no section]")
+    labelled <- isTRUE(spec$prefix_section) && !identical(nm, .gr_no_section)
     # Drop the heading block only when the prefix will carry it. Without the
     # prefix, dropping it would lose the heading text from the document.
     body_idx <- if (labelled) idx[!is_head[idx]] else idx

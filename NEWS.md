@@ -252,6 +252,148 @@
 
 ## Fixed
 
+* **An adversarial sweep of the whole package, from six angles at once.** Every
+  defect below was reproduced against the shipped build before it was fixed, and
+  every one has a test that fails without its fix. Twenty-seven mutations across
+  the new guarantees, all caught.
+
+* **The citation checker and the citation renderer had different grammars.** The
+  synthesis prompt asks the model to "cite more than one where more than one
+  supports it". `render_citations()` understood the combined form it invites --
+  `[studies 1 and 2]` -- and the CHECK matched only `[study 1]`. So a section
+  citing three studies that way was rendered into published prose as
+  "(Garcia, 2022; Lee & Petrov, 2021; Smith & Okafor, 2019)" while the check
+  reported it cited nothing: no reference list for the studies it had just
+  named, and an audit report printing that prose above the line "This section
+  cites nothing." Worse, `[studies 1 and 99]` over three studies passed as
+  clean, where `[study 99]` is correctly flagged. A fabricated citation slipping
+  past the fabrication check is the exact failure this pipeline exists to
+  prevent. There is now one grammar, `cite_pattern()`, used by both, and a drift
+  test asserting that anything the renderer rewrites, the check has seen.
+
+* **Two records could be given each other's file.** `match_files()` settled its
+  author-year key across the whole record set, so two Smith 2019 papers matched
+  neither rather than one taking the other's PDF. The other three routes --
+  filename, DOI suffix, title prefix -- had no equivalent, so whichever record
+  the export listed first took the file. Two folders each holding a `report.txt`
+  -- the shape of any `year/report.pdf` archive -- put the 2019 file on the 2020
+  record and the 2020 file on the 2019 record, both marked retrieved. That is
+  one paper's findings published under another paper's authors, year and DOI,
+  and nothing in the run says so. All four routes now settle the same way.
+
+* **`@string` and `@comment` counted as studies, and a broken entry vanished.**
+  Every `@`-block matched the entry opener, so a JabRef or publisher `.bib` file
+  inflated "records identified" -- the first number of a PRISMA flow diagram --
+  by however many non-bibliographic blocks it carried. Separately, an entry with
+  an unbalanced brace was skipped in silence, removing a study from the counts,
+  from screening and from the flow diagram. Non-entries are skipped now, and an
+  unterminated entry warns with the character position to look at.
+
+* **A reference stacking two sampling frames was averaged rather than
+  refused.** `gr_reference()`'s own advice is to judge every record the screener
+  kept AND a sample of what it discarded; `gr_calibrate()` takes one reference,
+  so people `rbind()` them. The combined frame came back "unknown", fell through
+  to the corpus-wide branch, and computed unweighted sensitivity and specificity
+  over strata sampled at 100% and 6%. On a screener that really missed 14% of
+  eligible studies this reported **sensitivity 100%** with a 95% interval that
+  excluded the truth, `adequate = TRUE`, and no warning. A mixed frame is now
+  refused with the fix named; a frame that cannot be identified at all warns and
+  says what it is assuming; and `of =` lets a hand-built reference declare
+  itself. Two smaller faults in the same file: `screened_n` had no CSV column,
+  so the printed denominator changed meaning between the in-memory frame and the
+  file read back; and the projected count of lost studies was computed from the
+  rate *after* rounding it to four decimals, reporting 999 studies where the
+  arithmetic says 1000.
+
+* **A number that appears in no paper could pass the evidence check.**
+  Coercing a value to `integer` or `number` stripped every character that was
+  not a digit, which deleted the separators along with the words: "120 (60 per
+  arm)" became **12060**, "482 (Table 1)" became 4821, and "1,204 randomised;
+  1,180 analysed" became 12041180. The quote these arrived with was verbatim, so
+  the evidence check passed, `n_unverified` stayed 0, and the audit report
+  certified the figure. A value carrying more than one number is now a miss,
+  which is counted and reported; there is no reading of "120 (60 per arm)" under
+  which 12060 is better than nothing.
+
+* **Three cache keys could return another request's answer.** `gr_hash()` was
+  blind to any list name nested below the third level -- `str(max.level = 3L)`
+  stops printing there, and `as.character()` drops names, so `use.names = TRUE`
+  was inert. Two JSON schemas differing only in a leaf's name hashed
+  identically, and the schema is part of the response-cache key: asking for
+  `{result:{headcount}}` after `{result:{revenue}}` returned the revenue figure,
+  marked `cached = TRUE`. `temperature` was hashed before it was resolved from
+  `gr_options()`, so a temperature sweep through one cache directory explored
+  nothing and reported the first sample's answer for every setting. And
+  `embed_cache_key()` omitted the endpoint, so two clients with different
+  `base_url` and the same model id shared one vector space -- the failure the
+  embedder name was added to prevent, one field over. The corpus store gained
+  the tokenizer, which is what turns `max_tokens` into an actual chunk boundary.
+  All four keys are versioned, so old entries are not mixed with new ones.
+
+* **`preview` could read a sixth of a document and call the answer complete.**
+  `seg_structural()` writes the literal `"[no section]"` where a chunk has no
+  heading, so a heading-less document arrived at the planner with a section
+  column that was placeholder rather than NA. The test for structure was
+  `!all(is.na(section))`, which was therefore TRUE, and the whole document
+  became ONE unit: a plan marking that unit "skim" sent one truncated excerpt
+  and returned `partial = FALSE`. The placeholder is a named constant now, a
+  single unit spanning everything falls through to blocks, and a skim whose
+  excerpt had to be truncated reports `tokens_truncated` and marks the answer
+  partial.
+
+* **A replay could publish a document the live run had rejected.** The trace did
+  not record `finish_reason`, and `gr_replay_client()` hard-coded it to `NA` --
+  so `gr_synthesise(coherence = TRUE)`, which discards a revision that stopped
+  for "length", kept it on replay, produced a different review, and reported 0
+  misses: certifying itself as an exact reproduction of a run it had not
+  reproduced.
+
+* **The "running sequentially instead" fallback aborted one line later.**
+  `gr_lapply()` called `fn(item)` without the trace on that branch, and lazy
+  evaluation hid it until the worker's first line -- so `parallel = TRUE`
+  without the `future` packages, which is a default install, died after
+  ingestion, segmentation and any calls already paid for. Workers also now
+  receive the registries: `future.packages` re-runs `.onLoad()`, which registers
+  the built-ins only, so a model registered with `gr_register_model()` was
+  unknown in the worker and the parallel run used a different output ceiling
+  from the sequential one.
+
+* **A failed batch was dropped from a section that then reported itself
+  complete.** With more studies than fit one prompt, `gr_synthesise()` drafts in
+  batches and merges; `tree_merge()` strips empty pieces, so a merge over the
+  survivors read exactly like a merge over everything, and with one survivor it
+  returned that piece unchanged with `ok = TRUE`. The studies in the failed
+  batch were simply absent. The section is marked partial now and says so.
+
+* **Three constructs that did not mean what they said.**
+  `sprintf("%d", median(tokens))` -- `median()` returns a double on an
+  even-length vector, and `gr_segment()` auto-prints, so the canonical
+  interactive call failed on about one document in four. `clamp()`'s
+  `length(x) == 0L || is.na(x)` reached a vectorised `is.na()` for any setting
+  that was not one number, stopping every read in the session with a message
+  naming neither the setting nor the function. And `gr_ingest()` gated
+  `file.exists()` behind a no-newlines test, so a file whose name contains a
+  newline was never looked for and the path string itself became the document --
+  status "ok", `partial = FALSE`, the model answering about a filename.
+
+* **`.csv` and `.tsv` are readable, as `gr_inventory()` already said they
+  were.** The inventory documented counting their tokens and no extractor
+  claimed them, so a folder of exported tables surveyed as ready and then read
+  as nothing.
+
+* **Six tests were passing without testing anything.** Each is now written so
+  that deleting what it names makes it fail: `on_error = "stop"` asserted only
+  that *an* error was raised, against a fixture that always fails, and survived
+  the feature being replaced by an unconditional `stop()`; the ingest cache-key
+  test used inputs with different content, so it would have passed with the key
+  collision restored; `expect_error(class = "gr_error")` passes on every
+  condition this package raises, because that is the base class; the `as_json`
+  round-trip survived both methods being replaced by the string `"{}"`; "writing
+  leaves no temporary files" was satisfied by an empty directory; and the v1
+  compatibility shims were checked only for returning a string, so pointing all
+  four at one reader left the suite green.
+
+
 * **A provider that omits its usage block no longer makes the call free.**
   `parse_response()` collapsed a missing, null or non-numeric `usage` -- several
   OpenAI-compatible local servers omit it, and a gateway can strip it -- to 0

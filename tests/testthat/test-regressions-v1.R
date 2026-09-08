@@ -58,8 +58,17 @@ test_that("no segmenter ever emits a chunk over its token cap", {
 test_that("chunkers return an empty-but-typed result, never NULL", {
   # v1: chunk_text_naive() returned NULL when nothing survived, and parse_text()
   # cached and returned that NULL.
-  expect_error(gr_ingest(""), class = "gr_error")
-  expect_error(gr_ingest("   \n\n   "), class = "gr_error")
+  # `gr_error` is the base class gr_abort() attaches to EVERY package condition,
+  # so this passed on any error at all -- including one saying the file was not
+  # found, which is a different thing entirely.
+  expect_error(gr_ingest(""), class = "gr_empty_document")
+  expect_error(gr_ingest("   \n\n   "), class = "gr_empty_document")
+  # And the name of the test: a degenerate document still segments to an
+  # empty-but-typed frame rather than NULL.
+  doc <- gr_ingest("A short but real document, long enough to survive cleaning.")
+  ch <- quiet(gr_segment(doc, list(method = "paragraph", max_tokens = 500)))
+  expect_s3_class(ch$chunks, "data.frame")
+  expect_true(all(c("chunk_id", "text", "tokens") %in% names(ch$chunks)))
 })
 
 test_that("boilerplate cleaners run before destructive ones", {

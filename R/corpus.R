@@ -564,7 +564,13 @@ corpus_key <- function(src, question, rec, client) {
   } else {
     list("text", key_text(as.character(src)))
   }
-  gr_hash(list("readgpt-corpus-v1", ident, key_text(question),
+  gr_hash(list("readgpt-corpus-v2", ident, key_text(question),
+               # The tokenizer, because it is what turns `max_tokens = 300` into
+               # an actual chunk boundary: the same document under "chars" and
+               # under "words" segments differently and is answered differently.
+               # Without it the store handed back an answer built from a
+               # segmentation this run would never have produced.
+               as_chr1(gr_options("tokenizer"), "?"),
                unclass(rec$ingest), unclass(rec$segment), unclass(rec$read),
                as_chr1(client$model, "?"), as_chr1(client$api, "?"),
                as_chr1(client$base_url, "?"),

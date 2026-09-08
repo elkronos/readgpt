@@ -120,6 +120,30 @@ verify_spans <- function(spans, sources) {
              stringsAsFactors = FALSE)
 }
 
+#' The plural a citation marker may be written with.
+#'
+#' "studies" is irregular, so it cannot be derived from "study" by rule.
+#' @noRd
+.gr_cite_plural <- c(study = "stud(?:y|ies)", chunk = "chunks?")
+
+#' The grammar of a citation marker.
+#'
+#' ONE definition, used by the checker and by the renderer. They had two, and
+#' they disagreed: the checker matched only `[study 3]` while the renderer also
+#' understood `[studies 1 and 2]` -- the combined form the synthesis prompt
+#' explicitly asks for. So a section citing three studies that way rendered as
+#' "(Garcia, 2022; Lee & Petrov, 2021; Smith & Okafor, 2019)" while the check
+#' reported it cited nothing: no reference list for the studies it named, and,
+#' worse, `[studies 1 and 99]` over three studies passed as clean. A fabricated
+#' citation slipping through the fabrication check is the exact failure this
+#' pipeline exists to prevent, and the two regexes drifting apart is how it got
+#' there. They cannot drift now.
+#' @noRd
+cite_pattern <- function(word) {
+  w <- .gr_cite_plural[[word]] %||% sprintf("%ss?", word)
+  sprintf("\\[%s[[:space:]]+[0-9]+(?:[[:space:]]*(?:,|and|&)[[:space:]]*[0-9]+)*\\]", w)
+}
+
 #' Numbered ids a piece of generated text claims to cite.
 #'
 #' One regex, two callers: `[chunk 3]` in a cited answer and `[study 7]` in a
@@ -128,11 +152,15 @@ verify_spans <- function(spans, sources) {
 #' convincing kind, because it looks like the thing that would let you check.
 #' @noRd
 cited_ids <- function(text, word) {
-  m <- gregexpr(sprintf("\\[%s[[:space:]]+([0-9]+)\\]", word), as_chr1(text),
-                perl = TRUE, ignore.case = TRUE)
-  hits <- regmatches(as_chr1(text), m)[[1]]
+  txt <- as_chr1(text)
+  m <- gregexpr(cite_pattern(word), txt, perl = TRUE, ignore.case = TRUE)
+  hits <- regmatches(txt, m)[[1]]
   if (!length(hits)) return(integer(0))
-  unique(as.integer(gsub("[^0-9]", "", hits)))
+  ids <- unlist(regmatches(hits, gregexpr("[0-9]+", hits)), use.names = FALSE)
+  # as.character(): `unlist()` on an empty list is NULL, not character(0), and
+  # as.integer(NULL) is integer(0) only by luck of the coercion.
+  if (!length(ids)) return(integer(0))
+  unique(as.integer(as.character(ids)))
 }
 
 #' @noRd

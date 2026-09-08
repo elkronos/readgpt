@@ -221,7 +221,10 @@ cache_files <- function(dir) {
 cache_key <- function(client, messages, model, max_output, temperature,
                       schema, schema_name, extra) {
   parts <- c(
-    "readgpt-cache-v1",
+    # v2: gr_hash() now carries names at every depth, and `temperature` reaches
+    # this function resolved. Both change what a key is, so old entries must not
+    # be mixed with new ones -- which is what this string is for.
+    "readgpt-cache-v2",
     as_chr1(client$api, "?"),
     as_chr1(client$base_url, "?"),
     # Present only on clients whose behaviour is an R closure rather than a URL.

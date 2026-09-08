@@ -476,6 +476,17 @@ client_dispatch <- function(client, messages, model, max_output, temperature,
     return(replay_lookup(client, messages, model, params))
   }
 
+  # Resolved BEFORE the key, not after. `temperature` arrives NULL whenever the
+  # caller did not name one, and build_request_body() then filled it from
+  # gr_options("temperature") -- after cache_key() had already hashed the NULL.
+  # So two runs that sent different temperatures to the API computed the same
+  # key: a temperature sweep through one cache directory explored nothing and
+  # reported the first sample's answer for every setting. The reasoning-model
+  # drop moves here for the mirror-image reason -- the body does not carry a
+  # temperature for those models, so the key must not vary with one.
+  temperature <- temperature %||% gr_options("temperature")
+  if (isTRUE(info$reasoning) || !isTRUE(info$supports_temperature)) temperature <- NULL
+
   cache <- client$.cache
   key <- NULL
   if (inherits(cache, "gr_cache")) {

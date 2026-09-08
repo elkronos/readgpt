@@ -4,7 +4,13 @@
 \alias{gr_calibrate}
 \title{Measure the screener against a hand-screened sample}
 \usage{
-gr_calibrate(screening, reference, positive = "include", min_positives = 10L)
+gr_calibrate(
+  screening,
+  reference,
+  positive = "include",
+  min_positives = 10L,
+  of = NULL
+)
 }
 \arguments{
 \item{screening}{A \code{gr_screening} from \code{\link[=gr_screen]{gr_screen()}}.}
@@ -16,6 +22,10 @@ filled-in CSV, or any data frame with \code{document} and \code{human_decision}.
 
 \item{min_positives}{Below this many eligible studies in the sample, the
 sensitivity estimate is reported but marked inadequate.}
+
+\item{of}{Which part of the screening run the reference was drawn from:
+\code{"excluded"}, \code{"kept"} or \code{"all"}. Normally recovered from the file
+\code{\link[=gr_reference]{gr_reference()}} wrote; give it explicitly for a reference built by hand.}
 }
 \value{
 An object of class \code{gr_calibration}:

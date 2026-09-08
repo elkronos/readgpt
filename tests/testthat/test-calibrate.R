@@ -29,7 +29,7 @@ test_that("the confusion matrix and its rates are what they should be", {
                     human_decision = c("include", "exclude", "include", "exclude",
                                        "exclude", "include", "include", "exclude"),
                     stringsAsFactors = FALSE)
-  cal <- gr_calibrate(scr, ref)
+  cal <- gr_calibrate(scr, ref, of = "all")
 
   expect_identical(unname(cal$counts[c("tp", "fn", "fp", "tn")]), c(3L, 1L, 1L, 3L))
   est <- function(m) cal$metrics$estimate[cal$metrics$metric == m]
@@ -124,6 +124,8 @@ test_that("a sample of kept records reports what is worth keeping, not a sensiti
   ref <- gr_reference(scr, n = Inf, of = "kept")
   expect_equal(nrow(ref), 10L)
   ref$human_decision <- c(rep("include", 6), rep("exclude", 4))
+  # No `of =` here: the frame comes from gr_reference() and must survive as an
+  # attribute, which is half of what this test is about.
   cal <- gr_calibrate(scr, ref)
 
   expect_setequal(cal$metrics$metric, c("eligible among those kept", "deferred to a person"))
@@ -172,7 +174,7 @@ test_that("an unfilled row is not an exclusion, and a bad one is not guessed at"
   ref <- data.frame(document = paste0("d", 1:4, ".pdf"),
                     human_decision = c("include", NA, "", "exclude"),
                     stringsAsFactors = FALSE)
-  expect_warning(cal <- gr_calibrate(scr, ref), class = "gr_reference_incomplete")
+  expect_warning(cal <- gr_calibrate(scr, ref, of = "all"), class = "gr_reference_incomplete")
   expect_equal(cal$n, 2L)          # the two that were actually judged
 
   bad <- data.frame(document = "d1.pdf", human_decision = "maybe", stringsAsFactors = FALSE)
@@ -193,7 +195,7 @@ test_that("a document that was never read is left out of the comparison", {
   ref <- data.frame(document = paste0("d", 1:4, ".pdf"),
                     human_decision = c("include", "include", "exclude", "include"),
                     stringsAsFactors = FALSE)
-  cal <- gr_calibrate(scr, ref)
+  cal <- gr_calibrate(scr, ref, of = "all")
   expect_equal(cal$n, 3L)
   expect_equal(cal$n_positives, 2L)
   expect_equal(cal$metrics$estimate[cal$metrics$metric == "sensitivity (as deployed)"], 1)
@@ -206,7 +208,7 @@ test_that("too few eligible studies is said out loud rather than printed as a ra
   ref <- data.frame(document = paste0("d", 1:10, ".pdf"),
                     human_decision = c("include", "include", rep("exclude", 8)),
                     stringsAsFactors = FALSE)
-  cal <- gr_calibrate(scr, ref)
+  cal <- gr_calibrate(scr, ref, of = "all")
   expect_equal(cal$metrics$estimate[cal$metrics$metric == "sensitivity (as deployed)"], 1)
   expect_false(cal$adequate)
   expect_equal(cal$n_positives, 2L)
@@ -220,7 +222,7 @@ test_that("too few eligible studies is said out loud rather than printed as a ra
   ref2 <- data.frame(document = paste0("d", 1:32, ".pdf"),
                      human_decision = c(rep("include", 12), rep("exclude", 20)),
                      stringsAsFactors = FALSE)
-  expect_true(gr_calibrate(big, ref2)$adequate)
+  expect_true(gr_calibrate(big, ref2, of = "all")$adequate)
 })
 
 test_that("duplicates are not screened twice into the calibration", {

@@ -175,7 +175,10 @@ bib_keys <- function(used, cols, form = "parenthetical") {
 #' @noRd
 render_citations <- function(text, used, keys, style) {
   if (identical(style, "marker") || !nzchar(trimws(as_chr1(text)))) return(text)
-  one <- "\\[stud(?:y|ies)[[:space:]]+[0-9]+(?:[[:space:]]*(?:,|and|&)[[:space:]]*[0-9]+)*\\]"
+  # cite_pattern(), not a second copy: the checker and the renderer disagreeing
+  # about what a citation looks like is how a marker got rendered into published
+  # prose that the check had reported as citing nothing.
+  one <- cite_pattern("study")
   # Runs of ADJACENT markers collapse into one citation. A model asked for three
   # supporting studies writes "[study 1] [study 2] [study 3]", and rendering each
   # separately gives "(Garcia, 2022) (Lee & Petrov, 2021) (Smith & Okafor, 2019)"
@@ -214,6 +217,15 @@ reference_list <- function(used, keys, cited, cols, style) {
     v <- trimws(as_chr1(used[[cols[[role]]]][i]))
     if (identical(v, "NA")) "" else v
   }
+  # The a/b suffix bib_keys() assigned. `keys` was in this signature and unused,
+  # so the prose said "(Smith & Okafor, 2019a)" and "(Smith & Okafor, 2019b)"
+  # against two identical reference entries -- neither citation resolvable,
+  # which is the one thing a reference list has to do.
+  suffix <- function(i) {
+    if (is.null(keys) || i > length(keys) || is.na(keys[i])) return("")
+    m <- regmatches(keys[i], regexpr("[0-9]{3,4}[a-z]+", keys[i]))
+    if (!length(m)) "" else sub("^[0-9]{3,4}", "", m)
+  }
   entries <- vapply(hit, function(i) {
     # Each part is trimmed of its own trailing punctuation before the parts are
     # joined with ". ". Without it an authors field ending in an initial --
@@ -225,7 +237,7 @@ reference_list <- function(used, keys, cited, cols, style) {
     # printing it makes the output look machine-made.
     authors <- gsub(";[[:space:]]*", ", ", tidy(fld(i, "authors")))
     bits <- c(authors,
-              if (nzchar(fld(i, "year"))) sprintf("(%s)", tidy(fld(i, "year"))) else "",
+              if (nzchar(fld(i, "year"))) sprintf("(%s%s)", tidy(fld(i, "year")), suffix(i)) else "",
               tidy(fld(i, "title")), tidy(fld(i, "venue")), tidy(fld(i, "doi")))
     bits <- bits[nzchar(bits)]
     line <- paste(bits, collapse = ". ")

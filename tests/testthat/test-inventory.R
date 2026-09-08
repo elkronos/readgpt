@@ -290,7 +290,10 @@ test_that("a transport failure on one document is reported as partial, not as an
 
 test_that("on_error = 'stop' is the opt-in, and is not the default", {
   d <- hostile_corpus()
-  expect_error(quiet(gr_read_many(d, "Q?", "fast", client = mock_echo(), on_error = "stop")))
+  # The class matters: without it this passed on any error at all, including one
+  # raised unconditionally by code that ignored `on_error` entirely.
+  expect_error(quiet(gr_read_many(d, "Q?", "fast", client = mock_echo(), on_error = "stop")),
+               class = "gr_error")
   expect_no_error(quiet(gr_read_many(d, "Q?", "fast", client = mock_echo())))
 })
 

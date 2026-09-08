@@ -114,6 +114,11 @@ gr_reference <- function(screening, n = 50, of = c("excluded", "kept", "all"),
   # sensitivity of 0% and a specificity of 100% -- both artifacts of the frame.
   ref$sampled_from <- of
   ref$frame_n <- nrow(pool)
+  # screened_n as a column for the same reason as the two above, which it was
+  # missing: without it gr_calibrate() fell back to nrow(tab), which counts rows
+  # the screener never decided, and the printed denominator quietly changed
+  # meaning between the in-memory frame and the file read back.
+  ref$screened_n <- sum(judged)
   rownames(ref) <- NULL
   attr(ref, "of") <- of
   attr(ref, "frame_n") <- nrow(pool)
@@ -184,6 +189,9 @@ as_screening_table <- function(screening) {
 #' @param reference The completed frame from [gr_reference()], a path to the
 #'   filled-in CSV, or any data frame with `document` and `human_decision`.
 #' @param positive Which human decision counts as eligible.
+#' @param of Which part of the screening run the reference was drawn from:
+#'   `"excluded"`, `"kept"` or `"all"`. Normally recovered from the file
+#'   [gr_reference()] wrote; give it explicitly for a reference built by hand.
 #' @param min_positives Below this many eligible studies in the sample, the
 #'   sensitivity estimate is reported but marked inadequate.
 #' @return An object of class `gr_calibration`:
@@ -210,7 +218,8 @@ as_screening_table <- function(screening) {
 #'                                      "exclude", "include", "include", "exclude"),
 #'                   stringsAsFactors = FALSE)
 #' gr_calibrate(structure(list(table = tab), class = "gr_screening"), ref)
-gr_calibrate <- function(screening, reference, positive = "include", min_positives = 10L) {
+gr_calibrate <- function(screening, reference, positive = "include", min_positives = 10L,
+                         of = NULL) {
   tab <- as_screening_table(screening)
   ref <- read_reference(reference)
 
@@ -260,7 +269,31 @@ gr_calibrate <- function(screening, reference, positive = "include", min_positiv
   # them a fact about the screener. What that frame DOES estimate is the false
   # omission rate, which is the most useful number here anyway: of everything
   # thrown away, how much should not have been.
-  of <- attr(ref, "of") %||% "unknown"
+  of <- as_chr1(of %||% attr(ref, "of") %||% "unknown", "unknown")
+  if (identical(of, "mixed")) {
+    # Two strata stacked into one file. This is not a corner case: it is what
+    # following this package's own advice produces -- judge everything kept AND
+    # a sample of what was discarded -- and gr_calibrate() takes one reference,
+    # so people rbind() them. The kept stratum is then sampled at 100% and the
+    # excluded stratum at a few percent, and the unweighted figures are not
+    # merely imprecise, they are wrong in a flattering direction: on a screener
+    # that really missed 14% of eligible studies, this reported sensitivity
+    # 100% with a 95% interval that excluded the truth.
+    gr_abort(paste0("This reference stacks more than one sampling frame (",
+                    paste(sort(unique(as.character(ref$sampled_from))), collapse = " and "),
+                    "). An unweighted figure over stratified samples is wrong, not just ",
+                    "imprecise. Calibrate each frame separately -- one gr_calibrate() call ",
+                    "per file -- or pass `of =` if the rows really are one frame."),
+             class = "gr_mixed_frame")
+  }
+  if (identical(of, "unknown")) {
+    gr_warn(paste0("This reference does not say which part of the screening run it came ",
+                   "from, so the figures below assume a sample of EVERYTHING screened. If ",
+                   "it is a sample of one stratum -- the exclusions, say -- sensitivity ",
+                   "and specificity are artifacts of that frame rather than facts about ",
+                   "the screener. Pass `of = \"excluded\"`, `\"kept\"` or `\"all\"` to say which."),
+            class = "gr_unknown_frame")
+  }
   metrics <- switch(
     of,
     excluded = rbind(
@@ -275,6 +308,10 @@ gr_calibrate <- function(screening, reference, positive = "include", min_positiv
       prop_row("specificity", counts[["tn"]], counts[["tn"]] + counts[["fp"]]),
       prop_row("deferred to a person", sum(model == "unclear"), length(model)),
       prop_row("reading avoided", sum(!kept), length(model))))
+  # Kept before rounding, because the projection multiplies by the frame size:
+  # 1/30 rounded to 0.0333 across 30,000 exclusions reports 999 studies lost
+  # where the arithmetic says 1000, and the gap grows with the corpus.
+  exact <- metrics
   metrics$estimate <- round(metrics$estimate, 4)
   metrics$lower <- round(metrics$lower, 4); metrics$upper <- round(metrics$upper, 4)
 
@@ -302,7 +339,7 @@ gr_calibrate <- function(screening, reference, positive = "include", min_positiv
     # without that multiplication leaves the reader to do it.
     projected = if (identical(of, "excluded") && !is.na(attr(ref, "frame_n") %||% NA)) {
       fr <- attr(ref, "frame_n")
-      m <- metrics[metrics$metric == "eligible among the excluded", ]
+      m <- exact[exact$metric == "eligible among the excluded", ]
       list(frame_n = fr, lost = fr * m$estimate,
            lower = fr * m$lower, upper = fr * m$upper)
     } else NULL
@@ -326,12 +363,21 @@ read_reference <- function(reference) {
   if (is.null(attr(ref, "of")) && !is.null(ref$sampled_from)) {
     v <- unique(as.character(ref$sampled_from))
     v <- v[!is.na(v)]
-    if (length(v) == 1L && v %in% c("excluded", "kept", "all")) attr(ref, "of") <- v
+    # More than one stratum in one file is reported as such rather than left to
+    # fall through to "unknown", which took the corpus-wide branch and computed
+    # sensitivity and specificity from a stratified sample without a word.
+    if (length(v) > 1L) attr(ref, "of") <- "mixed"
+    else if (length(v) == 1L && v %in% c("excluded", "kept", "all")) attr(ref, "of") <- v
   }
   if (is.null(attr(ref, "frame_n")) && !is.null(ref$frame_n)) {
     v <- unique(suppressWarnings(as.integer(ref$frame_n)))
     v <- v[!is.na(v)]
     if (length(v) == 1L) attr(ref, "frame_n") <- v
+  }
+  if (is.null(attr(ref, "screened_n")) && !is.null(ref$screened_n)) {
+    v <- unique(suppressWarnings(as.integer(ref$screened_n)))
+    v <- v[!is.na(v)]
+    if (length(v) == 1L) attr(ref, "screened_n") <- v
   }
   ref
 }

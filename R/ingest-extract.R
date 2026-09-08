@@ -284,7 +284,12 @@ extract_image <- function(path, opts) {
 
 #' @noRd
 register_builtin_extractors <- function() {
-  gr_register_extractor("txt",   c("txt", "text", "log"), extract_txt,   "Plain text")
+  # csv and tsv are here because gr_inventory() documents counting their tokens
+  # and gr_read_many() dropped them: a folder of exported tables surveyed as
+  # readable and then read as nothing. They are plain text with separators, and
+  # extract_txt() is what plain text gets.
+  gr_register_extractor("txt",   c("txt", "text", "log", "csv", "tsv"), extract_txt,
+                        "Plain text, including delimited files")
   gr_register_extractor("md",    c("md", "markdown", "rmd", "qmd"), extract_md,
                         "Markdown, keeping heading structure")
   gr_register_extractor("html",  c("html", "htm", "xhtml"), extract_html,

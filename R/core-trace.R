@@ -78,6 +78,14 @@ trace_record <- function(trace, label, messages, result, params = list()) {
     response = mark_utf8(as_chr1(result$text)),
     error = if (isTRUE(result$ok)) NULL else mark_utf8(as_chr1(result$error)),
     tokens = list(input = result$usage$input %||% 0L, output = result$usage$output %||% 0L),
+    # Recorded because a replay has to be able to reach the same decisions the
+    # live run reached, and this is one a caller acts on:
+    # gr_synthesise(coherence = TRUE) discards a revision whose finish_reason is
+    # "length" -- a review with its ending cut off. Unrecorded, the replay saw
+    # NA, kept the truncated revision, published a different document, and
+    # reported 0 misses: it certified itself as an exact reproduction of a run
+    # it had not reproduced.
+    finish_reason = as_chr1(result$finish_reason, NA_character_),
     params = params[setdiff(names(params), "schema")]
   )))
   invisible(NULL)

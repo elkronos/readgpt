@@ -191,6 +191,15 @@ clamp <- function(x, lo = -Inf, hi = Inf) {
   # established first and wins.
   force(x)
   x <- suppressWarnings(as.numeric(x))
+  # `||` short-circuits on a scalar, so a length-2 x reached `is.na(x)` and R
+  # >= 4.3 stopped with "'length = 2' in coercion to 'logical(1)'" -- a message
+  # naming neither the setting nor the function, from inside gr_budget(), for
+  # every read in the session. A setting that is not one number is a setting to
+  # fix, so say so.
+  if (length(x) > 1L) {
+    gr_abort(sprintf("Expected a single number, got %d values.", length(x)),
+             class = "gr_bad_setting")
+  }
   if (length(x) == 0L || is.na(x)) x <- lo
   min(max(x, lo), hi)
 }
@@ -226,13 +235,45 @@ gr_msg <- function(...) {
 #' Used for cache keys. Never returns NA.
 #' @noRd
 gr_hash <- function(x) {
-  s <- paste(vapply(list(x), function(e) paste(utils::capture.output(utils::str(e, max.level = 3L)), collapse = "|"),
-                    character(1)), collapse = "|")
-  s <- paste0(s, "|", paste(as.character(unlist(x, use.names = TRUE)), collapse = "\u0001"))
+  s <- paste(hash_parts(x), collapse = "\u0001")
   if (requireNamespace("digest", quietly = TRUE)) {
     return(digest::digest(s, algo = "xxhash64"))
   }
   hash_fallback(s)
+}
+
+#' A deterministic serialisation that carries names at EVERY depth.
+#'
+#' The previous one was `str(x, max.level = 3L)` joined to
+#' `as.character(unlist(x, use.names = TRUE))`, and neither half could see a
+#' name nested four levels down: `str()` stops printing at level 3, and
+#' `as.character()` drops the names attribute, so `use.names = TRUE` was inert.
+#' Two JSON schemas differing only in a leaf's NAME therefore hashed
+#' identically, and since the schema is part of the response-cache key, asking
+#' for `{result:{headcount}}` after `{result:{revenue}}` returned the revenue
+#' figure under the headcount question, marked `cached = TRUE`. The same
+#' primitive keys the ingest cache, the corpus store and gr_compare()'s
+#' distinctness check, so the blindness was latent in all of them.
+#' @noRd
+hash_parts <- function(x, prefix = "", depth = 0L) {
+  if (depth > 32L) return(paste0(prefix, "=<depth>"))
+  if (is.null(x)) return(paste0(prefix, "=<null>"))
+  if (is.list(x)) {
+    if (!length(x)) return(paste0(prefix, "=<empty:", class(x)[1], ">"))
+    nms <- names(x)
+    if (is.null(nms)) nms <- rep("", length(x))
+    return(c(sprintf("%s=<%s:%d>", prefix, class(x)[1], length(x)),
+             unlist(lapply(seq_along(x), function(i) {
+               hash_parts(x[[i]],
+                          paste0(prefix, "/", if (nzchar(nms[i])) nms[i] else i),
+                          depth + 1L)
+             }), use.names = FALSE)))
+  }
+  v <- tryCatch(as.character(x), error = function(e) class(x)[1])
+  nms <- names(x)
+  paste0(prefix, "=", class(x)[1], ":",
+         if (is.null(nms)) "" else paste0("[", paste(nms, collapse = ","), "]"),
+         paste(v, collapse = "\u0002"))
 }
 
 #' @noRd

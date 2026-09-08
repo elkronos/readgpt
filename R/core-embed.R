@@ -154,7 +154,9 @@ embed_api <- function(texts, params) {
   client <- params$client
   model <- params$model
   cache <- isTRUE(params$cache)
-  keys <- vapply(texts, function(t) embed_cache_key(params$embedder, model, t),
+  endpoint <- paste0(as_chr1(client$base_url, "?"), "|",
+                     as_chr1(client$.client_id, "<url-addressed>"))
+  keys <- vapply(texts, function(t) embed_cache_key(params$embedder, model, t, endpoint),
                  character(1), USE.NAMES = FALSE)
   out <- vector("list", length(texts))
   todo <- seq_along(texts)
@@ -215,9 +217,15 @@ embed_api <- function(texts, params) {
 #' spaces silently mixed in one matrix, and a cosine similarity computed across
 #' them means nothing at all.
 #' @noRd
-embed_cache_key <- function(embedder, model, text) {
-  gr_hash(list("readgpt-embed-v1", as_chr1(embedder, "?"), as_chr1(model, "?"),
-               key_text(as_chr1(text))))
+embed_cache_key <- function(embedder, model, text, endpoint = "") {
+  # The endpoint, because `embedder` is the literal "api" for every
+  # URL-addressed client: two clients with different `base_url` and the same
+  # model id shared one entry, and the second one's vectors were the first
+  # one's. That is the failure the embedder name was added to prevent -- "two
+  # different vector spaces silently mixed in one matrix" -- reintroduced one
+  # field over, where a cosine similarity is meaningless and looks fine.
+  gr_hash(list("readgpt-embed-v2", as_chr1(embedder, "?"), as_chr1(model, "?"),
+               as_chr1(endpoint, ""), key_text(as_chr1(text))))
 }
 
 #' @noRd

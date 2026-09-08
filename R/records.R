@@ -152,6 +152,15 @@ records_from_ris <- function(lines, source_file) {
   finish_records(do.call(rbind, rows))
 }
 
+#' `@string`, `@preamble` and `@comment` are not records. They match the same
+#' `@word{` opener, and each one became a row with all seventeen fields NA --
+#' which dedupe_records() cannot collapse, because an NA key matches nothing,
+#' and nothing else filters. JabRef, Mendeley and publisher exports all emit
+#' them, so "records identified" -- the first number of a PRISMA flow diagram --
+#' came out too high by however many the file happened to carry.
+#' @noRd
+.gr_bib_skip <- c("string", "preamble", "comment")
+
 #' Split a BibTeX file into entries.
 #'
 #' Brace-counting rather than a regex: a title containing braces -- which is how
@@ -160,14 +169,19 @@ records_from_ris <- function(lines, source_file) {
 #' @noRd
 bib_entries <- function(txt) {
   txt <- paste(txt, collapse = "\n")
-  starts <- gregexpr("@[[:alpha:]]+[[:space:]]*\\{", txt, perl = TRUE)[[1]]
+  m <- gregexpr("@[[:alpha:]]+[[:space:]]*\\{", txt, perl = TRUE)
+  starts <- m[[1]]
   if (starts[1] == -1L) return(list())
+  lens <- attr(starts, "match.length")
+  types <- tolower(sub("[[:space:]]*\\{$", "", sub("^@", "", regmatches(txt, m)[[1]])))
   chars <- strsplit(txt, "", fixed = TRUE)[[1]]
+  nchars <- length(chars)
   out <- list()
-  for (s in starts) {
-    open <- s + attr(starts, "match.length")[which(starts == s)[1]] - 1L
-    depth <- 0L; i <- open; n <- length(chars); close <- NA_integer_
-    while (i <= n) {
+  for (idx in seq_along(starts)) {
+    if (types[idx] %in% .gr_bib_skip) next
+    open <- starts[idx] + lens[idx] - 1L
+    depth <- 0L; i <- open; close <- NA_integer_
+    while (i <= nchars) {
       if (chars[i] == "{") depth <- depth + 1L
       else if (chars[i] == "}") {
         depth <- depth - 1L
@@ -175,7 +189,14 @@ bib_entries <- function(txt) {
       }
       i <- i + 1L
     }
-    if (is.na(close)) next
+    if (is.na(close)) {
+      # Silently dropping it removed a study from the review -- from the counts,
+      # from screening and from the flow diagram -- with nothing to notice.
+      gr_warn(sprintf(paste0("A BibTeX @%s entry beginning at character %d has no closing ",
+                             "brace and was skipped; check the file for an unbalanced '{'."),
+                      types[idx], starts[idx]), class = "gr_bib_unterminated")
+      next
+    }
     out[[length(out) + 1L]] <- substr(txt, open + 1L, close - 1L)
   }
   out
@@ -472,31 +493,56 @@ match_files <- function(recs, files) {
   ambiguous <- unique(live_keys[!is.na(live_keys) & duplicated(live_keys)])
   ay[ay %in% ambiguous] <- NA_character_
 
+  # Every route needs the settlement route 4 has. A key that two live records
+  # share identifies neither of them, and without this the FIRST record listed
+  # took the file while the second went unretrieved -- a coin flip decided by
+  # export order. Two folders each holding a `report.txt`, which is what a
+  # `year/report.pdf` archive looks like, put the 2019 file on the 2020 record
+  # and the 2020 file on the 2019 record, both marked retrieved. That is one
+  # paper's findings published under another paper's authors, year and DOI.
+  settle <- function(k) {
+    lk <- k
+    lk[!live] <- NA_character_
+    k[k %in% unique(lk[!is.na(lk) & duplicated(lk)])] <- NA_character_
+    k
+  }
+  cand_all <- ifelse(is.na(recs$file), NA_character_,
+                     sub("^:+", "", sub(":[[:alpha:]]+$", "", recs$file)))
+  # A full path is unique by construction; only the basename fallback can collide.
+  base_key <- settle(ifelse(is.na(cand_all), NA_character_, basename(cand_all)))
+  doi_key <- settle(vapply(seq_len(n), function(i) {
+    if (is.na(recs$doi[i])) return(NA_character_)
+    sfx <- title_key(sub("^10\\.[0-9]{4,9}/", "", recs$doi[i]))
+    if (is.na(sfx) || nchar(sfx) < 6L) NA_character_ else sfx
+  }, character(1)))
+  ttl_key <- settle(vapply(seq_len(n), function(i) {
+    tk <- title_key(recs$title[i])
+    if (is.na(tk) || nchar(tk) < 12L) NA_character_ else substr(tk, 1, 24)
+  }, character(1)))
+
   claim <- function(i, j) { out[i] <<- paths[j]; taken[j] <<- TRUE }
 
   for (i in seq_len(n)) {
-    # 1. The export said where the file is.
-    f <- recs$file[i]
-    if (!is.na(f)) {
-      # Mendeley writes ":path:pdf"; EndNote writes "internal-pdf://...".
-      cand <- sub("^:+", "", sub(":[[:alpha:]]+$", "", f))
-      j <- which(!taken & (paths == cand | base == basename(cand)))
-      if (length(j)) { claim(i, j[1]); next }
+    # 1. The export said where the file is. Mendeley writes ":path:pdf";
+    # EndNote writes "internal-pdf://...".
+    if (!is.na(cand_all[i])) {
+      j <- which(!taken & paths == cand_all[i])
+      if (!length(j) && !is.na(base_key[i])) j <- which(!taken & base == base_key[i])
+      # `length(j) == 1L`, not `j[1]`: two files of that name on disk is the
+      # same ambiguity as two records claiming one file, seen from the other end.
+      if (length(j) == 1L) { claim(i, j); next }
     }
     # 2. The DOI suffix appears in the filename -- how most managers name files.
-    if (!is.na(recs$doi[i])) {
-      suffix <- title_key(sub("^10\\.[0-9]{4,9}/", "", recs$doi[i]))
-      if (!is.na(suffix) && nchar(suffix) >= 6L) {
-        j <- which(!taken & grepl(suffix, stem, fixed = TRUE))
-        if (length(j) == 1L) { claim(i, j); next }
-      }
+    if (!is.na(doi_key[i])) {
+      j <- which(!taken & grepl(doi_key[i], stem, fixed = TRUE))
+      if (length(j) == 1L) { claim(i, j); next }
     }
     # 3. The title, reduced to letters, is a prefix of the filename or contains
     # it. Requires a long enough overlap that a coincidence is implausible.
     tk <- title_key(recs$title[i])
-    if (!is.na(tk) && nchar(tk) >= 12L) {
+    if (!is.na(ttl_key[i])) {
       j <- which(!taken & !is.na(stem) &
-                   (startsWith(stem, substr(tk, 1, 24)) | startsWith(tk, substr(stem, 1, 24))))
+                   (startsWith(stem, ttl_key[i]) | startsWith(tk, substr(stem, 1, 24))))
       if (length(j) == 1L) { claim(i, j); next }
     }
     # 4. First author's surname and the year both appear in the filename. This

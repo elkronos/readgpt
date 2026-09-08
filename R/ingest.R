@@ -100,8 +100,15 @@ gr_ingest <- function(source, spec = NULL, cache = NULL, trace = NULL) {
   # mistyped filename becomes the document: the model is handed
   # "~/reports/q3_final.pdf" as its source text and answers about the filename,
   # with no warning and partial = FALSE.
-  one_line <- is.character(source) && length(source) == 1L &&
-    !grepl("\n", source) && nchar(source) < 4096
+  # `scalar` and `one_line` are different questions, and conflating them meant a
+  # file whose NAME contains a newline was never looked for: file.exists() was
+  # never consulted, the guard below could not fire either, and the path string
+  # itself became the document text -- status "ok", partial FALSE, the model
+  # answering about a filename. nchar(type = "bytes") because a string holding
+  # invalid UTF-8 makes the default nchar() raise.
+  scalar <- is.character(source) && length(source) == 1L && !is.na(source) &&
+    nchar(source, type = "bytes") < 4096
+  one_line <- scalar && !grepl("\n", source)
   # Only treat a string as a path when its extension is one an extractor
   # actually claims. Matching any 1-6 character suffix rejected ordinary prose
   # ending in a decimal ("...revenue of 45.2") while still swallowing missing
@@ -111,7 +118,7 @@ gr_ingest <- function(source, spec = NULL, cache = NULL, trace = NULL) {
   looks_like_path <- one_line && grepl("\\.[A-Za-z0-9]+$", source) &&
     ext_of(source) %in% known_ext &&
     !grepl("[ \t]{2,}", source) && !grepl("\\.[0-9]+$", source)
-  is_path <- one_line && file.exists(source)
+  is_path <- scalar && file.exists(source)
   if (!is_path && looks_like_path) {
     gr_abort(sprintf(paste0("File not found: '%s'. If you meant to pass document text rather than ",
                             "a path, it must not end in something that looks like a file extension."),

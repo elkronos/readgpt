@@ -178,6 +178,36 @@
   shared by two records matches nothing, so two Smith 2019 papers and one
   `smith2019.pdf` claim nothing at all.
 
+* **`gr_reference()` and `gr_calibrate()` — how often the screener is wrong,
+  measured rather than assumed.** Draw a sample of a screening run for a person
+  to judge blind, read the completed CSV back, and get the rates that sample
+  supports, each with a Wilson interval and each refused when the sample is too
+  small. It is what turns "we used an LLM" into a claim with a number attached,
+  and it is the number a methods section needs.
+
+  Agreement between two model passes is not a substitute. Two passes share
+  weights, priors and blind spots, so their errors are correlated: they agree
+  most confidently where they are both wrong, and the figure would read as
+  reliability while meaning self-consistency.
+
+  **Which rows the sample came from decides which questions it can answer**, and
+  computing the rest anyway is worse than computing nothing. A sample of
+  exclusions contains no kept records, so sensitivity comes out 0% and
+  specificity 100% -- artifacts of the frame that look exactly like findings.
+  That frame reports the false omission rate instead, projected across the whole
+  discarded pile: "about 17 eligible studies lost, 6 to 47". The frame is written
+  as a column in the CSV, because an attribute does not survive `write.csv()`,
+  Excel and a fortnight.
+
+  `"unclear"` counts as kept, not as a miss -- a deferral goes to a person, and
+  penalising it would punish the behaviour that makes the screener safe. Two
+  sensitivities are reported where the frame allows, as deployed and strict, and
+  the gap is the human reading left. Accuracy is not reported at all: at a
+  realistic inclusion rate a screener that excluded everything would score ~95%,
+  so Cohen's kappa is given instead. Intervals are Wilson rather than normal,
+  because screening proportions sit at the ends of the scale where the textbook
+  interval returns [1, 1] from five observations.
+
 ## Fixed
 
 * **A provider that omits its usage block no longer makes the call free.**

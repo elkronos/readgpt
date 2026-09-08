@@ -61,7 +61,9 @@ gr_search(
 \code{\link[=gr_records]{gr_records()}}, \code{\link[=gr_protocol]{gr_protocol()}}, \code{\link[=gr_flow]{gr_flow()}}
 
 Other corpus functions: 
+\code{\link{gr_calibrate}()},
 \code{\link{gr_inventory}()},
-\code{\link{gr_records}()}
+\code{\link{gr_records}()},
+\code{\link{gr_reference}()}
 }
 \concept{corpus functions}

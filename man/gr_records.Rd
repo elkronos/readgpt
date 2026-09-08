@@ -77,7 +77,9 @@ recs$records[, c("authors", "year", "title", "doi", "retrieved")]
 \code{\link[=gr_search]{gr_search()}}, \code{\link[=gr_screen]{gr_screen()}}, \code{\link[=gr_flow]{gr_flow()}}, \code{\link[=gr_inventory]{gr_inventory()}}
 
 Other corpus functions: 
+\code{\link{gr_calibrate}()},
 \code{\link{gr_inventory}()},
+\code{\link{gr_reference}()},
 \code{\link{gr_search}()}
 }
 \concept{corpus functions}

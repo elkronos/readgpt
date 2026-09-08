@@ -741,6 +741,77 @@ people actually name downloads. An ambiguous match is no match: two Smith 2019
 papers and one `smith2019.pdf` claim nothing, because a coin flip presented as a
 match is how one paper's findings get attributed to another.
 
+### Knowing how good the screening is
+
+`gr_screen()` gives every document a decision. Nothing in the run says whether
+those decisions were any good, and a screener that discards a fifth of the
+eligible studies produces a beautifully audited review of the wrong corpus.
+
+The tempting substitute is running the model twice and reporting the agreement.
+It measures the wrong thing: two passes share weights, priors and blind spots,
+so they agree most confidently where they are both wrong. Only a reference
+standard settles it.
+
+```r
+# A screening run: 340 discarded, 72 kept.
+screened <- structure(list(table = data.frame(
+  document = sprintf("rec%03d.pdf", 1:412),
+  decision = c(rep("exclude", 340), rep("include", 60), rep("unclear", 12)),
+  stringsAsFactors = FALSE)), class = "gr_screening")
+
+# Sample what it threw away -- that is where a permanent loss hides.
+check <- gr_reference(screened, n = 60, of = "excluded", seed = 1)
+
+# ... a person fills in `human_decision`, blind to what the model said.
+check$human_decision <- c(rep("exclude", 57), rep("include", 3))
+
+gr_calibrate(screened, check)
+```
+
+```text
+<gr_calibration> 60 hand-screened row(s), 3 eligible
+  sampled from: excluded (340 of 412 screened)
+  eligible among the excluded      5.0%  [1.7%, 13.7%]  n=60
+  correctly excluded              95.0%  [86.3%, 98.3%]  n=60
+  -> across all 340 excluded record(s) that rate implies about 17
+     eligible studies lost (6 to 47 on the interval above).
+  (sampled from exclusions only: this frame estimates what was lost, not
+   sensitivity or specificity -- it contains no kept records to compute them from)
+  ! 3 eligible studies were excluded by the screener:
+      rec329.pdf
+      rec330.pdf
+      rec340.pdf
+  ! only 3 eligible studies in the sample. Every rate above rests on
+    those 3 observations, which is why the intervals are as wide as they are.
+    Hand-screen more before quoting a figure.
+```
+
+Four things about that are deliberate.
+
+**Which rows you sample changes which questions the sample can answer.** A sample
+of exclusions contains no kept records, so sensitivity computes to 0% and
+specificity to 100% — both artifacts of the frame, both alarming or flattering,
+neither a fact about the screener. `gr_calibrate()` reports what the frame
+supports and refuses the rest. The frame travels as a column in the CSV, because
+that file gets emailed, opened in Excel and read back a fortnight later, and an
+attribute survives none of that.
+
+**`"unclear"` is a deferral, not a miss.** A record the screener could not settle
+goes to a person, so counting it as a failure would punish the one behaviour that
+makes it safe. When the frame supports them, two sensitivities are reported — as
+deployed, and strict — and the gap between them is the reading you still have to
+do.
+
+**Accuracy is not reported.** At a realistic inclusion rate a screener that
+excluded everything scores about 95% accurate and finds nothing. Cohen's kappa is
+reported instead, because it is the statistic that notices.
+
+**A rate from three observations is not a finding.** The intervals are Wilson
+score intervals, which stay sensible at zero and one where the textbook interval
+collapses to a point, and `$adequate` says out loud when there were too few
+eligible studies to support a claim. `$missed` is the list of studies the
+screener discarded and a person did not — usually more use than any rate.
+
 ## From a folder to a review
 
 The three axes answer a question. A corpus job usually wants a *table*, and a

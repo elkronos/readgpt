@@ -16,6 +16,19 @@
   author-year and numbered by study otherwise, because the list has to be
   labelled by whatever the prose uses to point into it.
 
+  The writing model is never shown who wrote a study. Adding bibliographic
+  fields to a schema put "authors: Smith, J., Okafor, A." in front of a model
+  asked to cite `[study 1]`, and a model that can see a name will write "Smith
+  and Okafor (2019) found..." instead of the marker -- a citation checked by
+  nothing and rendered by nothing, which is the model asserting an attribution
+  and the one thing this design exists to prevent. The document filename went
+  the same way and for the same reason: academic PDFs are routinely called
+  `Smith2019_CognitiveLoad.pdf`, which leaks an author and a year through the
+  one field nobody thinks of as bibliographic. Both are withheld from the
+  writing prompt and applied afterwards, so a model cannot misattribute a study
+  whose authors it was never told. If a bibliographic value is also a finding,
+  extract it a second time under a name of its own.
+
   The model still writes `[study 3]`, always, and rendering happens afterwards
   from the table. A marker can be checked exactly against the rows that exist;
   verifying "Smith & Okafor (2019)" would mean matching a name the model wrote

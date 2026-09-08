@@ -150,7 +150,7 @@ test_that("rows that were never read are left out, and rows with nothing in them
   expect_identical(s2$skipped, 1L)
 })
 
-test_that("the studies handed to the model carry their values and their document", {
+test_that("the studies handed to the model carry their values, and not their identity", {
   cl <- synth_client()
   x <- two_studies(cl)
   used <- x$table[1:2, ]
@@ -161,7 +161,17 @@ test_that("the studies handed to the model carry their values and their document
   expect_true(grepl("[study 1]", rendered[1], fixed = TRUE))
   expect_true(grepl("design: randomised trial", rendered[1], fixed = TRUE))
   expect_true(grepl("n: 120", rendered[1], fixed = TRUE))
-  expect_true(grepl(used$document[1], rendered[1], fixed = TRUE))
+  # The filename is NOT there. Academic PDFs are routinely called
+  # "Smith2019_CognitiveLoad.pdf", which hands a model asked to cite [study 1]
+  # an author and a year through the one field nobody thinks of as
+  # bibliographic -- and a citation the model writes itself is checked by
+  # nothing. `$citations` resolves the number back to the document for the
+  # audit; the writing model has no use for it.
+  expect_false(grepl(used$document[1], rendered[1], fixed = TRUE))
+  # `hide` takes the rest of the identity out, and leaves the findings in.
+  hidden <- readgpt:::render_studies(used, hide = "design")
+  expect_false(grepl("design:", hidden[1], fixed = TRUE))
+  expect_true(grepl("n: 120", hidden[1], fixed = TRUE))
   # A field nothing reported says so, rather than being silently absent: "not
   # reported" is a finding, and a review that cannot see it cannot report it.
   empty <- used[1, ]; empty$n <- NA_integer_; empty$study <- 1L
@@ -453,4 +463,38 @@ test_that("the register reaches both the section prompt and the coherence prompt
   # whatever voice is asked for.
   expect_true(any(grepl("Cite the record behind every claim", sys, fixed = TRUE)))
   expect_true(any(grepl("may not add anything", sys, fixed = TRUE)))
+})
+
+
+test_that("the writing model is never shown who wrote a study", {
+  # Adding bibliographic fields to a schema put "authors: Smith, J., Okafor, A."
+  # in front of a model asked to cite [study 1], and a model that can see a name
+  # will write "Smith and Okafor (2019) found..." instead of the marker. That
+  # citation is checked by nothing and rendered by nothing -- it is the model
+  # asserting an attribution, which is the one thing this design prevents.
+  # The filename is the same leak by another route: academic PDFs are routinely
+  # called Smith2019_Something.pdf.
+  tab <- bib_table()
+  tab$document <- c("Smith2019_CognitiveLoad.pdf", "Lee2021_Replication.pdf",
+                    "Garcia2022_NoEffect.pdf")
+  cl <- mock_writer()
+  syn <- quiet(gr_synthesise(tab, outline = bib_outline, question = "Q?", client = cl))
+
+  shown <- paste(vapply(cl$calls(), function(x)
+    paste(vapply(x$messages, function(m) as.character(m$content), character(1)), collapse = " "),
+    character(1)), collapse = " ")
+  for (leak in c("Smith", "Okafor", "Lee", "Petrov", "Garcia", "2019", "2021", "2022",
+                 "Cognitive Load", "J Educ Psych")) {
+    expect_false(grepl(leak, shown, fixed = TRUE),
+                 info = sprintf("'%s' reached the writing prompt", leak))
+  }
+  # The findings did reach it -- it is identity that is withheld, not content.
+  expect_true(grepl("quasi-experimental", shown, fixed = TRUE))
+  expect_true(grepl("[study 1]", shown, fixed = TRUE))
+
+  # And the finished prose names them anyway, because that happens afterwards.
+  expect_match(syn$text, "Smith & Okafor, 2019", fixed = TRUE)
+  expect_match(syn$references[1], "Garcia")
+  # The audit still resolves a study number back to its document.
+  expect_true(all(syn$citations$document %in% tab$document))
 })

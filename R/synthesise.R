@@ -178,7 +178,18 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
   trace <- gr_trace(meta = list(stage = "synthesise", question = question,
                                 sections = length(outline), studies = nrow(used)))
 
-  rendered <- render_studies(used)
+  # The writing model is NOT shown who wrote each study. Adding bibliographic
+  # fields to a schema put "authors: Smith, J., Okafor, A." in front of a model
+  # asked to cite `[study 1]`, and a model that can see a name will sooner or
+  # later write "Smith and Okafor (2019) found..." instead of the marker. That
+  # citation is checked by nothing and rendered by nothing: it is the model
+  # asserting an attribution, which is the one thing this design exists to
+  # prevent. Identity is applied afterwards, from the table. A model cannot
+  # misattribute a study whose authors it was never told.
+  #
+  # If a bibliographic value is also a FINDING -- publication year as
+  # chronology, say -- extract it a second time under a name of its own.
+  rendered <- render_studies(used, hide = unlist(bib_columns(used, bib), use.names = FALSE))
   rows <- lapply(seq_along(outline), function(i) {
     heading <- names(outline)[[i]]
     gr_msg(sprintf("[%d/%d] %s", i, length(outline), heading))
@@ -194,7 +205,7 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
   # once, at the very end. Rendering first made the coherence pass compare a
   # rendered draft against a marked revision, so every citation in the revision
   # looked newly added and every honest revision was thrown away.
-  cols <- bib_columns(used, bib)
+  cols <- bib_columns(used, bib)   # already resolved above; cheap and pure
   keys <- bib_keys(used, cols)
   resolved <- resolve_cite_style(cite_style, keys, cols)
   if (!identical(resolved, cite_style) && !identical(cite_style, "auto")) {
@@ -398,17 +409,22 @@ synth_usable <- function(tab, include_unclear) {
 #' synthesis -- `$studies` carries it alongside `document_id` so a citation can
 #' always be resolved back to a document.
 #' @noRd
-render_studies <- function(used) {
+render_studies <- function(used, hide = character(0)) {
   meta <- c("document", "document_id", "status", "duplicate_of", "error",
             "n_filled", "n_unverified", "conflicts", "study")
-  fields <- setdiff(names(used), meta)
+  fields <- setdiff(names(used), c(meta, hide))
   vapply(seq_len(nrow(used)), function(i) {
     vals <- vapply(fields, function(f) {
       v <- used[[f]][i]
       if (is.na(v)) sprintf("%s: not reported", f) else sprintf("%s: %s", f, as_chr1(v))
     }, character(1), USE.NAMES = FALSE)
-    paste0("[study ", used$study[i], "] (", used$document[i], ")\n",
-           paste(vals, collapse = "\n"))
+    # The study NUMBER and nothing else. The filename used to be here, and
+    # academic PDFs are routinely called "Smith2019_CognitiveLoad.pdf" -- which
+    # hands a model asked to cite `[study 1]` an author and a year anyway,
+    # through the one field nobody thought of as bibliographic. `$citations`
+    # resolves the number back to its document for the audit; the writing model
+    # has no use for it.
+    paste0("[study ", used$study[i], "]\n", paste(vals, collapse = "\n"))
   }, character(1), USE.NAMES = FALSE)
 }
 

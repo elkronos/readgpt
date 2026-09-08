@@ -1,4 +1,4 @@
-# readgpt 0.5.1 (in development)
+# readgpt 0.5.1
 
 ## New
 

@@ -27,6 +27,11 @@ gr_defaults <- list(
   model               = "gpt-5.6-terra",
   embedding_model     = "text-embedding-3-small",
   api_base            = "https://api.openai.com/v1",
+  # Extra HTTP headers on every request. A corporate gateway in front of OpenAI
+  # and Anthropic rarely takes a plain bearer: Azure OpenAI authenticates with
+  # `api-key`, API Management wants a subscription key, and most want a
+  # correlation or cost-centre id. Set once here and every client inherits it.
+  api_headers         = character(0),
   api                 = "responses",   # "responses" | "chat"
   temperature         = NULL,          # NULL = let the model decide / omit
   max_retries         = 4L,
@@ -84,6 +89,10 @@ gr_defaults <- list(
 #'   \item{`api` ("responses")}{`"responses"` or `"chat"` request shape.}
 #'   \item{`api_base` ("https://api.openai.com/v1")}{API root; point this at a
 #'     proxy or a compatible endpoint.}
+#'   \item{`api_headers` (none)}{Named character vector of extra HTTP headers
+#'     sent with every request, for gateways that do not authenticate with a
+#'     bearer token. Inherited by every [gr_client()] that does not name its
+#'     own; see that function's `headers` argument for the rules.}
 #'   \item{`temperature` (NULL)}{Default sampling temperature. `NULL` omits the
 #'     field. Dropped automatically for models that reject it.}
 #'   \item{`max_retries` (4)}{Retries for transient failures. HTTP 400 is never

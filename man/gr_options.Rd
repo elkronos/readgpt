@@ -38,6 +38,10 @@ or a name registered via \code{\link[=gr_set_tokenizer]{gr_set_tokenizer()}}.}
 \item{\code{api} ("responses")}{\code{"responses"} or \code{"chat"} request shape.}
 \item{\code{api_base} ("https://api.openai.com/v1")}{API root; point this at a
 proxy or a compatible endpoint.}
+\item{\code{api_headers} (none)}{Named character vector of extra HTTP headers
+sent with every request, for gateways that do not authenticate with a
+bearer token. Inherited by every \code{\link[=gr_client]{gr_client()}} that does not name its
+own; see that function's \code{headers} argument for the rules.}
 \item{\code{temperature} (NULL)}{Default sampling temperature. \code{NULL} omits the
 field. Dropped automatically for models that reject it.}
 \item{\code{max_retries} (4)}{Retries for transient failures. HTTP 400 is never

@@ -66,6 +66,107 @@ gr_api_key <- function(key = NULL) {
   k
 }
 
+#' Normalise a user-supplied header set.
+#'
+#' Accepts a named character vector, or a named list of length-1 values, and
+#' returns a named character vector. `NA` survives and means "do not send this
+#' header at all" -- which is how the automatic `Authorization` is suppressed for
+#' a gateway that would reject it.
+#'
+#' This rejects rather than repairs, in three places. A name that is not a legal
+#' HTTP field name is a typo, not a header. A value carrying a control character
+#' is refused because CR/LF inside a header value is request splitting: the value
+#' ends the header and starts another one the caller never wrote, and these
+#' values come from environment variables and config files, which is exactly
+#' where a stray line ending comes from. And duplicate names are collapsed
+#' case-insensitively, because HTTP field names are case-insensitive but curl is
+#' not -- given both `Authorization` and `authorization` it sends two headers,
+#' and which one the gateway honours is its business rather than ours.
+#' @noRd
+normalise_headers <- function(headers, arg = "headers") {
+  if (is.null(headers) || length(headers) == 0L) {
+    return(stats::setNames(character(0), character(0)))
+  }
+  if (is.list(headers)) {
+    bad <- which(vapply(headers, function(v) length(v) != 1L || !is.atomic(v), logical(1)))
+    if (length(bad)) {
+      gr_abort(sprintf("`%s[[%d]]` must be a single value.", arg, bad[1]),
+               class = "gr_header_error")
+    }
+    nms <- names(headers)
+    headers <- vapply(headers, function(v) if (is.na(v)) NA_character_ else as.character(v),
+                      character(1), USE.NAMES = FALSE)
+    names(headers) <- nms
+  }
+  if (!is.atomic(headers)) {
+    gr_abort(sprintf("`%s` must be a named character vector, e.g. c(\"api-key\" = key).", arg),
+             class = "gr_header_error")
+  }
+  nms <- names(headers)
+  if (is.null(nms) || any(is.na(nms)) || !all(nzchar(nms))) {
+    gr_abort(sprintf("Every element of `%s` must be named, e.g. c(\"api-key\" = key).", arg),
+             class = "gr_header_error")
+  }
+  # Coerced rather than required, because `c(Authorization = NA)` is a LOGICAL
+  # vector -- and that is the exact spelling of "suppress the bearer and send
+  # nothing else", so demanding character here rejected the documented use.
+  headers <- stats::setNames(as.character(headers), nms)
+  ok <- grepl("^[0-9A-Za-z!#$%&'*+.^_|~`-]+$", nms)
+  if (!all(ok)) {
+    gr_abort(sprintf("Not a legal HTTP header name in `%s`: %s.",
+                     arg, paste(sQuote(nms[!ok]), collapse = ", ")),
+             class = "gr_header_error")
+  }
+  headers <- trimws(headers)
+  # An empty value is not a header: curl drops it, so the request goes out
+  # missing the credential and comes back 401. It is what
+  # `c("api-key" = Sys.getenv("GATEWAY_KEY"))` produces when that variable is
+  # not set, which is the single likeliest way to get here by accident.
+  empty <- !is.na(headers) & !nzchar(headers)
+  if (any(empty)) {
+    gr_abort(sprintf(paste0("Header(s) in `%s` have an empty value: %s. ",
+                            "If the value came from Sys.getenv(), that variable ",
+                            "is not set. Use NA to suppress a header on purpose."),
+                     arg, paste(sQuote(nms[empty]), collapse = ", ")),
+             class = "gr_header_error")
+  }
+  bad <- !is.na(headers) & grepl("[[:cntrl:]]", headers)
+  if (any(bad)) {
+    # The NAME, never the value: these carry credentials, and an error message
+    # is the one place a credential is guaranteed to be printed.
+    gr_abort(sprintf(paste0("Header value(s) in `%s` contain a control character: %s. ",
+                            "A newline in a token is usually a stray line ending from the ",
+                            "file or environment variable it was read from."),
+                     arg, paste(sQuote(nms[bad]), collapse = ", ")),
+             class = "gr_header_error")
+  }
+  keep <- !duplicated(tolower(nms), fromLast = TRUE)
+  stats::setNames(headers[keep], nms[keep])
+}
+
+#' The headers one request is actually sent with.
+#'
+#' Returns `NULL` when the client has neither a resolvable key nor any headers of
+#' its own; the caller turns that into "No API key available." without spending a
+#' request.
+#'
+#' Supplying `headers` therefore makes the key optional, and it has to: a gateway
+#' that authenticates with `api-key` or a subscription key needs no bearer, and
+#' nothing here can tell which of a stranger's headers is the credential. The
+#' price is that a client given only non-auth headers and no key learns it is
+#' unauthenticated from the server's 401 rather than from us. The 401 body is
+#' carried back in the error, so that is a slower answer, not a silent one.
+#' @noRd
+request_headers <- function(client) {
+  user <- normalise_headers(client$headers)
+  key <- tryCatch(gr_api_key(client$api_key), error = function(e) NULL)
+  if (is.null(key) && length(user) == 0L) return(NULL)
+  h <- if (is.null(key)) stats::setNames(character(0), character(0))
+       else c(Authorization = paste("Bearer", key))
+  if (length(user)) h <- c(h[!(tolower(names(h)) %in% tolower(names(user)))], user)
+  h[!is.na(h)]
+}
+
 #' Construct a model client
 #'
 #' The client is an object, not a global. Passing it explicitly is what lets a
@@ -81,6 +182,34 @@ gr_api_key <- function(key = NULL) {
 #' @param max_retries,retry_pause_base Retry policy for transient failures.
 #' @param timeout Per-request timeout in seconds.
 #' @param extra_body Named list merged into every request body.
+#' @param headers Named character vector of extra HTTP headers, for endpoints
+#'   that do not authenticate with a bearer token. Defaults to the `api_headers`
+#'   option. `NA` as a value suppresses a header rather than sending it, which
+#'   is how the automatic `Authorization` is dropped.
+#' @section Endpoints behind a company gateway:
+#' `base_url` alone is enough when the gateway speaks the OpenAI shape and takes
+#' `Authorization: Bearer`. It is not enough anywhere else, and most corporate
+#' gateways are somewhere else: Azure OpenAI authenticates with `api-key`, API
+#' Management adds a subscription key, and many require a cost-centre or
+#' correlation id. `headers` covers those.
+#'
+#' Two rules make it predictable. A header you name replaces the automatic
+#' `Authorization` rather than joining it, matched without regard to case; and
+#' naming any header at all makes the API key optional, because nothing here can
+#' tell which of your headers is the credential. So a gateway with its own
+#' scheme needs no `OPENAI_API_KEY` set at all:
+#'
+#' ```r
+#' gr_client(
+#'   base_url = "https://gateway.example.com/openai/v1", api = "chat",
+#'   headers  = c("api-key" = Sys.getenv("GATEWAY_KEY"), Authorization = NA))
+#' ```
+#'
+#' Headers are credentials and routing metadata, not part of what answers, so
+#' they are excluded from the [gr_cache()] key for the same reason `api_key` is
+#' -- a rotating bearer or a per-request correlation id would otherwise make
+#' every cache lookup miss. If a header changes *which* model answers, give that
+#' client its own `base_url` or `model` so the cache can tell them apart.
 #' @return An object of class `gr_client`: a list of the settings above.
 #'   Constructing one makes no request and does not require a key -- the key is
 #'   resolved at call time by [gr_api_key()].
@@ -108,7 +237,8 @@ gr_api_key <- function(key = NULL) {
 #' }
 gr_client <- function(model = NULL, api = NULL, api_key = NULL, base_url = NULL,
                       embedding_model = NULL, max_retries = NULL,
-                      retry_pause_base = NULL, timeout = NULL, extra_body = list()) {
+                      retry_pause_base = NULL, timeout = NULL, extra_body = list(),
+                      headers = NULL) {
   structure(list(
     model            = as_chr1(model %||% gr_options("model")),
     api              = match.arg(as_chr1(api %||% gr_options("api")), c("responses", "chat")),
@@ -118,8 +248,39 @@ gr_client <- function(model = NULL, api = NULL, api_key = NULL, base_url = NULL,
     max_retries      = as.integer(clamp(max_retries %||% gr_options("max_retries"), 0, 10)),
     retry_pause_base = clamp(retry_pause_base %||% gr_options("retry_pause_base"), 0, 60),
     timeout          = clamp(timeout %||% gr_options("request_timeout"), 1, 3600),
-    extra_body       = extra_body
+    extra_body       = extra_body,
+    # Normalised here rather than at call time so a malformed header set is a
+    # construction error, next to the typo, instead of a transport error four
+    # function calls away from it.
+    headers          = if (is.null(headers)) {
+      # Named for what the user would have to edit: a malformed set inherited
+      # from the option is not a problem with the `headers` argument, and being
+      # told it is sends them to the wrong line.
+      normalise_headers(gr_options("api_headers"), arg = "api_headers option")
+    } else normalise_headers(headers)
   ), class = "gr_client")
+}
+
+# Without a method, a client printed at the console as a plain list -- which
+# meant `cl` echoed `api_key` in full, and would now echo every header value
+# too. Both are credentials. Names are shown because they are what you need to
+# see to debug a gateway; values never are.
+#' @export
+print.gr_client <- function(x, ...) {
+  cat(sprintf("<gr_client> model=%s api=%s base_url=%s\n",
+              as_chr1(x$model, "?"), as_chr1(x$api, "?"), as_chr1(x$base_url, "?")))
+  key <- tryCatch(gr_api_key(x$api_key), error = function(e) NULL)
+  hdr <- normalise_headers(x$headers)
+  cat(sprintf("  auth: %s%s\n",
+              if (is.null(key)) "no key resolved" else "bearer key (hidden)",
+              if (length(hdr)) {
+                sprintf(", %d extra header(s), values hidden: %s",
+                        length(hdr), paste(names(hdr), collapse = ", "))
+              } else ""))
+  cat(sprintf("  embeddings=%s timeout=%gs retries=%d cache=%s\n",
+              as_chr1(x$embedding_model, "?"), x$timeout, x$max_retries,
+              if (inherits(x$.cache, "gr_cache")) "attached" else "none"))
+  invisible(x)
 }
 
 #' A deterministic offline client for tests, demos and dry runs
@@ -488,17 +649,22 @@ build_request_body <- function(client, messages, model, max_output, temperature,
 
 #' @noRd
 http_call <- function(client, url, body) {
-  key <- tryCatch(gr_api_key(client$api_key), error = function(e) NULL)
-  if (is.null(key)) {
+  headers <- request_headers(client)
+  if (is.null(headers)) {
     return(gr_result(FALSE, error = "No API key available.", status = 0L))
   }
+  # `.headers =`, not `...`: add_headers() has its own `.headers` argument, so a
+  # header literally named `.headers` -- a legal HTTP field name -- would be
+  # swallowed as that argument by do.call() instead of being sent. Placed after
+  # content_type_json() so a caller who names Content-Type wins.
+  hdr <- httr::add_headers(.headers = headers)
   attempt <- 0L
   repeat {
     attempt <- attempt + 1L
     resp <- tryCatch(
       httr::POST(url,
-                 httr::add_headers(Authorization = paste("Bearer", key)),
                  httr::content_type_json(),
+                 hdr,
                  httr::timeout(client$timeout),
                  body = body, encode = "json"),
       error = function(e) e

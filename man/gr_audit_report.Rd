@@ -10,6 +10,7 @@ gr_audit_report(
   extraction = NULL,
   synthesis = NULL,
   protocol = NULL,
+  records = NULL,
   title = NULL
 )
 }
@@ -22,6 +23,11 @@ gr_audit_report(
 \item{protocol}{The \code{\link[=gr_protocol]{gr_protocol()}} the run was made under. Worth passing even
 when the other objects carry its pieces: the criteria as \emph{written} are what
 a reader checks the decisions against.}
+
+\item{records}{A \code{\link[=gr_records]{gr_records()}}. Adds the search itself to the report --
+which sources, with what query, on what date -- and starts the flow counts
+at identification. Without one the report says so, because a missing search
+is a defect in the review rather than in the report.}
 
 \item{title}{A heading for the report.}
 }

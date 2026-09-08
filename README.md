@@ -663,6 +663,84 @@ cached re-run has the same shape and costs nothing. `paid_calls` is the column
 that falls to zero. A model with no registered price contributes `NA` rather
 than zero, so a total cannot quietly omit it.
 
+## From a search to a review
+
+A folder of PDFs cannot say which databases were searched, with what query, on
+what date, or how many records came back — and no care further down substitutes
+for that. `gr_records()` reads the export your reference manager already
+produces:
+
+```r
+search <- gr_search(
+  databases = c(PubMed = "(spaced practice[tiab]) AND (retention[tiab])",
+                Scopus = 'TITLE-ABS-KEY("spaced practice" AND retention)'),
+  dates = "2026-02-14",
+  limits = "English; 2000 onwards; primary studies only",
+  registration = "PROSPERO CRD42026000000"
+)
+
+# Two exports of the same corpus, as two databases would give them.
+exports <- file.path(tempdir(), "exports"); dir.create(exports, showWarnings = FALSE)
+writeLines(c("TY  - JOUR", "AU  - Smith, J.", "AU  - Okafor, A.",
+             "TI  - Cognitive load and retention", "PY  - 2019",
+             "DO  - https://doi.org/10.1037/EDU0000123", "DB  - Scopus", "ER  - ",
+             "TY  - JOUR", "AU  - Gone, G.", "TI  - Never obtained", "PY  - 2020",
+             "DO  - 10.1000/zzz", "DB  - Scopus", "ER  - "),
+           file.path(exports, "scopus.ris"))
+writeLines(c("TY  - JOUR", "AU  - Smith J", "TI  - Cognitive Load and Retention.",
+             "DP  - 2019 Mar", "DO  - 10.1037/edu0000123", "ER  -"),
+           file.path(exports, "pubmed.ris"))
+
+pdfs <- file.path(tempdir(), "pdfs"); dir.create(pdfs, showWarnings = FALSE)
+writeLines("A randomised trial of spacing.", file.path(pdfs, "smith2019.txt"))
+
+recs <- gr_records(exports, files = pdfs, search = search)
+recs
+```
+
+```text
+<gr_records> 3 record(s) from 2 export(s)
+  Scopus 2, pubmed.ris 1
+  records identified       3
+  duplicates removed       1
+  records screened         2
+  reports sought           2
+  reports retrieved        1
+  reports not retrieved    1
+  ! 1 record(s) have no document. They are part of the review and are
+    reported as sought-but-not-retrieved, not quietly dropped.
+```
+
+Hand that to `gr_screen()` and `gr_extract()` wherever you would have passed a
+folder. Four things follow from it that a folder cannot give you.
+
+**The numbers a review reports.** `gr_flow()` now starts at identification
+rather than at "sources given", which was already past the step that decides
+whether anyone can reproduce you.
+
+**Records with no document are visible.** Fourteen reports sought and not
+retrieved is a finding about the review. A folder represents it as nothing at
+all.
+
+**Duplicates are settled by DOI, not by text.** The same paper from three
+databases is one record, and `duplicate_of` names the row each one repeats.
+Where a DOI is missing — preprints, conference papers — normalised title and
+year are the fallback, but two records that *both* have DOIs and differ are
+never merged, because similar titles happen and merging two studies is the error
+this whole path exists to avoid.
+
+**Authors and years become facts.** `gr_synthesise()` cites by name, and without
+an export those names came from asking a model to read a title page — the one
+part of a citation that must be exactly right, resting on the loosest guarantee
+in the pipeline. From an export they are data, joined onto the extraction table,
+and the model is still never shown them.
+
+Matching records to files uses the path the export recorded, then the DOI in the
+filename, then the title, then first-author surname and year — which is how
+people actually name downloads. An ambiguous match is no match: two Smith 2019
+papers and one `smith2019.pdf` claim nothing, because a coin flip presented as a
+match is how one paper's findings get attributed to another.
+
 ## From a folder to a review
 
 The three axes answer a question. A corpus job usually wants a *table*, and a

@@ -147,6 +147,37 @@
   stamps the readgpt version that wrote it. A run that changed nothing reports
   nothing: the record says what the run did, not thirty defaults.
 
+* **`gr_records()` and `gr_search()` — the review starts at the search, not at a
+  folder.** Reads RIS and BibTeX exports from any number of databases,
+  deduplicates by DOI, matches the surviving records to documents on disk, and
+  reports the counts PRISMA item 16 asks for: identified, duplicates removed,
+  screened, sought, retrieved, not retrieved. `gr_flow()` and the audit report
+  now begin at identification rather than at "sources given", which was already
+  past the step that decides whether a review can be repeated. `gr_search()`
+  carries the databases, queries, dates, limits and registration — items 6, 7
+  and 24 — so what was searched travels with the run instead of living in a lab
+  notebook.
+
+  It also repairs something quieter. `gr_synthesise()` cites by author and year,
+  and until now those came from asking a model to read a title page: the one
+  part of a citation that must be exactly right had the loosest guarantee in the
+  pipeline. From an export they are data, joined onto the extraction table by
+  file path, and the writing model is still never shown them.
+
+  No model is called. Which paper a record is, and whether two records are one
+  paper, are questions a DOI answers exactly. Everything is base R — the parsing
+  is not the hard part, the dialect drift between databases is, and a dependency
+  would only move that somewhere this package cannot see it. `DP` alone is
+  "database provider" in the RIS specification and "date of publication" in what
+  PubMed exports; read as the former, every PubMed record loses its year.
+
+  Two judgements can attribute one paper's findings to another, and both refuse
+  rather than guess. Two records that both carry DOIs are never merged on a
+  title match. And a document is matched by the path the export gave, the DOI in
+  the filename, the title, or first-author-and-year — but an author and year
+  shared by two records matches nothing, so two Smith 2019 papers and one
+  `smith2019.pdf` claim nothing at all.
+
 ## Fixed
 
 * **A provider that omits its usage block no longer makes the call free.**

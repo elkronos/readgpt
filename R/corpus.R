@@ -216,6 +216,9 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
   root <- attr(sources, "root")
   labels <- make.unique(vapply(sources, corpus_label, character(1),
                                root = root, USE.NAMES = FALSE), sep = "#")
+  # Carried through so gr_extract()'s table can join to bibliographic fields the
+  # export supplied, rather than to ones a model read off a title page.
+  from_records <- attr(sources, "records")
 
   trace <- gr_trace(meta = list(recipe = rec$name, question = question,
                                 documents = length(sources)))
@@ -461,6 +464,18 @@ known_extensions <- function() {
 #' survivors is how a directory of 200 `.doc` files reads as an empty corpus.
 #' @noRd
 corpus_sources <- function(sources, recursive = FALSE, quiet = FALSE) {
+  # A record set names the documents a search actually retrieved, which is a
+  # better answer to "what is the corpus" than a folder listing: it excludes
+  # duplicates, and it knows which records have no document rather than being
+  # unable to represent them.
+  if (inherits(sources, "gr_records")) {
+    r <- sources$records
+    keep <- is.na(r$duplicate_of) & !is.na(r$file)
+    out <- r$file[keep]
+    attr(out, "root") <- NULL
+    attr(out, "records") <- r[keep, , drop = FALSE]
+    return(out)
+  }
   if (is.character(sources) && length(sources) == 1L && !is.na(sources) &&
       dir.exists(sources)) {
     ext <- known_extensions()

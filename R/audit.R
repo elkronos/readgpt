@@ -32,6 +32,10 @@
 #' @param screening A `gr_screening` from [gr_screen()], or `NULL`.
 #' @param extraction A `gr_extraction` from [gr_extract()], or `NULL`.
 #' @return A data frame of `stage`, `n` and `note`.
+#' @param records A [gr_records()], so the counts begin where the search did:
+#'   records identified, duplicates removed, reports sought and reports never
+#'   retrieved. Without one the diagram starts at "sources given", which is
+#'   already past the step that decides whether the review can be repeated.
 #' @seealso [gr_audit_report()], [gr_screen()], [gr_extract()]
 #' @export
 #' @examples
@@ -43,11 +47,29 @@
 #' s <- gr_screen(f, question = "What was revenue?",
 #'                include = "Reports a revenue figure", client = cl)
 #' gr_flow(s)
-gr_flow <- function(screening = NULL, extraction = NULL) {
+gr_flow <- function(screening = NULL, extraction = NULL, records = NULL) {
   rows <- list()
   add <- function(stage, n, note = "") {
     rows[[length(rows) + 1L]] <<- data.frame(stage = stage, n = as.integer(n),
                                              note = note, stringsAsFactors = FALSE)
+  }
+  # The rows above "screened", which a folder of PDFs cannot produce and which
+  # PRISMA item 16 requires: how many records the search returned, how many were
+  # the same work, and how many reports were sought but never obtained. Without
+  # a record set the diagram starts at "sources given", which is already past
+  # the step that decides whether the review can be repeated.
+  if (inherits(records, "gr_records")) {
+    for (i in seq_len(nrow(records$counts))) {
+      st <- records$counts$stage[i]
+      add(st, records$counts$n[i],
+          switch(st,
+                 "records identified" = paste(sprintf("%s %d", names(records$by_database),
+                                                      as.integer(records$by_database)),
+                                              collapse = ", "),
+                 "duplicates removed" = sprintf("same work by %s", records$dedupe),
+                 "reports not retrieved" = "no document was found for these records",
+                 ""))
+    }
   }
   if (!is.null(screening)) {
     t <- screening$table
@@ -124,6 +146,10 @@ gr_flow <- function(screening = NULL, extraction = NULL) {
 #' do not exist are all counted near the top. An audit that showed only what
 #' worked would look like diligence and be the opposite.
 #'
+#' @param records A [gr_records()]. Adds the search itself to the report --
+#'   which sources, with what query, on what date -- and starts the flow counts
+#'   at identification. Without one the report says so, because a missing search
+#'   is a defect in the review rather than in the report.
 #' @seealso [gr_flow()], [gr_screen()], [gr_extract()], [gr_synthesise()],
 #'   [gr_verify_evidence()]
 #' @export
@@ -138,7 +164,8 @@ gr_flow <- function(screening = NULL, extraction = NULL) {
 #' out <- gr_audit_report(tempfile(fileext = ".html"), extraction = x)
 #' file.exists(out)
 gr_audit_report <- function(path, screening = NULL, extraction = NULL,
-                            synthesis = NULL, protocol = NULL, title = NULL) {
+                            synthesis = NULL, protocol = NULL, records = NULL,
+                            title = NULL) {
   if (!is_nonblank(path)) gr_abort("`path` must be a file path.")
   for (pair in list(list(screening, "gr_screening", "screening"),
                     list(extraction, "gr_extraction", "extraction"),
@@ -160,11 +187,12 @@ gr_audit_report <- function(path, screening = NULL, extraction = NULL,
   body <- c(
     audit_header(title, question, protocol, screening, extraction, synthesis),
     audit_protocol(protocol, extraction),
-    audit_flow(screening, extraction),
+    audit_flow(screening, extraction, records),
     audit_screening(screening),
     audit_extraction(extraction),
     audit_evidence(extraction),
     audit_synthesis(synthesis),
+    audit_search(records),
     audit_cost(screening, extraction, synthesis),
     audit_caveats()
   )
@@ -272,8 +300,8 @@ audit_protocol <- function(protocol, extraction) {
 }
 
 #' @noRd
-audit_flow <- function(screening, extraction) {
-  fl <- gr_flow(screening, extraction)
+audit_flow <- function(screening, extraction, records = NULL) {
+  fl <- gr_flow(screening, extraction, records)
   if (!nrow(fl)) return(NULL)
   c("<h2>What happened to every document</h2>",
     "<p class='sub'>Every source is accounted for at every stage it reached.</p>",
@@ -420,4 +448,38 @@ html_table <- function(df, numeric_cols = character(0), flag = list()) {
   c("<table>", sprintf("<tr>%s</tr>", paste0(sprintf("<th>%s</th>", esc(names(df))),
                                              collapse = "")),
     sprintf("<tr>%s</tr>", body), "</table>")
+}
+
+
+#' The search, as the review has to report it.
+#'
+#' PRISMA items 6 and 7, and item 7 asks for the full strategy for at least one
+#' database *so that it could be repeated*. Printing it beside the results is
+#' the difference between a report a reader can check and one they must take on
+#' trust -- and when it is absent, saying so is more useful than leaving the
+#' section out, because a missing search is a defect in the review rather than
+#' in the report.
+#' @noRd
+audit_search <- function(records) {
+  se <- if (inherits(records, "gr_records")) records$search else NULL
+  if (is.null(se)) {
+    return(c("<h2>The search</h2>",
+             "<p class='sub'>Not recorded. A systematic review must state which sources were",
+             "searched, with what query and on what date (PRISMA items 6 and 7); attach a",
+             "<code>gr_search()</code> to <code>gr_records()</code> and it appears here.</p>"))
+  }
+  tab <- data.frame(source = names(se$databases), query = unname(se$databases),
+                    searched = se$dates, stringsAsFactors = FALSE)
+  extra <- c(if (!all(is.na(se$limits))) sprintf("<p><b>Limits:</b> %s</p>",
+                                                 esc(paste(se$limits, collapse = "; "))),
+             if (length(se$other)) sprintf("<p><b>Other sources:</b> %s</p>",
+                                           esc(paste(se$other, collapse = "; "))),
+             sprintf("<p><b>Registration:</b> %s</p>",
+                     if (is.na(se$registration))
+                       "<span class='flag'>not registered</span>" else esc(se$registration)),
+             if (!is.na(se$notes)) sprintf("<p>%s</p>", esc(se$notes)))
+  c("<h2>The search</h2>",
+    "<p class='sub'>What was searched, with what query and when. Reproducing the review",
+    "starts here.</p>",
+    html_table(tab), extra)
 }

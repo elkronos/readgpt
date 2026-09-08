@@ -4,12 +4,17 @@
 \alias{gr_flow}
 \title{Count what happened to every document}
 \usage{
-gr_flow(screening = NULL, extraction = NULL)
+gr_flow(screening = NULL, extraction = NULL, records = NULL)
 }
 \arguments{
 \item{screening}{A \code{gr_screening} from \code{\link[=gr_screen]{gr_screen()}}, or \code{NULL}.}
 
 \item{extraction}{A \code{gr_extraction} from \code{\link[=gr_extract]{gr_extract()}}, or \code{NULL}.}
+
+\item{records}{A \code{\link[=gr_records]{gr_records()}}, so the counts begin where the search did:
+records identified, duplicates removed, reports sought and reports never
+retrieved. Without one the diagram starts at "sources given", which is
+already past the step that decides whether the review can be repeated.}
 }
 \value{
 A data frame of \code{stage}, \code{n} and \code{note}.

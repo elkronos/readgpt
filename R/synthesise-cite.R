@@ -219,7 +219,12 @@ reference_list <- function(used, keys, cited, cols, style) {
     # joined with ". ". Without it an authors field ending in an initial --
     # "Garcia, R." -- came out as "Garcia, R.. (2022)".
     tidy <- function(x) sub("[[:space:].,;]+$", "", x)
-    bits <- c(tidy(fld(i, "authors")),
+    # "Smith, J.; Okafor, A." is how records.R normalises an author list
+    # internally, because RIS gives one author per tag. A reference list is not
+    # the place for that convention -- it is an artifact of the parser, and
+    # printing it makes the output look machine-made.
+    authors <- gsub(";[[:space:]]*", ", ", tidy(fld(i, "authors")))
+    bits <- c(authors,
               if (nzchar(fld(i, "year"))) sprintf("(%s)", tidy(fld(i, "year"))) else "",
               tidy(fld(i, "title")), tidy(fld(i, "venue")), tidy(fld(i, "doi")))
     bits <- bits[nzchar(bits)]

@@ -238,3 +238,219 @@ test_that("a protocol supplies the outline and the question", {
   s2 <- quiet(gr_synthesise(x, p, outline = c(Only = "Just this"), client = cl))
   expect_identical(s2$sections$section, "Only")
 })
+
+
+# ---------------------------------------------------------------------------
+# Citations by name, a reference list, and the coherence pass.
+#
+# The model keeps writing `[study 3]`, because that is what can be checked
+# exactly. Everything here happens to that marker AFTER the check, from the
+# table, so a rendered citation is a fact about the extraction rather than
+# something the model asserted.
+# ---------------------------------------------------------------------------
+
+bib_table <- function(n = 3L) {
+  data.frame(
+    document = c("smith.pdf", "lee.pdf", "garcia.pdf")[seq_len(n)],
+    status = "ok", duplicate_of = NA_character_, n_filled = 2L,
+    authors = c("Smith, J., Okafor, A.", "Lee, M., Petrov, K.", "Garcia, R.")[seq_len(n)],
+    year = c(2019L, 2021L, 2022L)[seq_len(n)],
+    title = c("Cognitive Load", "A Replication", "No Effect")[seq_len(n)],
+    venue = c("J Educ Psych 44(2)", "Learn Instr 61(4)", "Appl Cogn Psych 36(1)")[seq_len(n)],
+    design = c("RCT", "quasi-experimental", "RCT")[seq_len(n)],
+    stringsAsFactors = FALSE)
+}
+
+bib_outline <- c("Included studies" = "how many", "Findings" = "what they found")
+
+# Writes markers exactly as the real prompt asks for, so the tests exercise the
+# rendering rather than a shape invented for them.
+mock_writer <- function(revision = NULL,
+                        sec = c("Included studies" = "Three studies [study 1] [study 2] [study 3].",
+                                "Findings" = "Effects varied [study 1] and [study 3].")) {
+  gr_mock_client(function(messages, params) {
+    sys <- messages[[1]]$content
+    if (grepl("one argument", sys, fixed = TRUE)) return(revision %||% "")
+    if (grepl("write the", sys, fixed = TRUE)) {
+      h <- sub(".*write the '([^']+)'.*", "\\1", sys)
+      if (h %in% names(sec)) return(sec[[h]])
+      return("Something [study 1].")
+    }
+    "x"
+  })
+}
+
+test_that("surnames come out of the shapes author lists actually take", {
+  f <- readgpt:::bib_surnames
+  expect_identical(f("Smith, J., Okafor, A."), c("Smith", "Okafor"))
+  expect_identical(f("John Smith and Aisha Okafor"), c("Smith", "Okafor"))
+  expect_identical(f("Smith J, Okafor A"), c("Smith", "Okafor"))
+  expect_identical(f("Smith, J.; Okafor, A.; Lee, M."), c("Smith", "Okafor", "Lee"))
+  expect_identical(f("Smith, J. & Okafor, A."), c("Smith", "Okafor"))
+  # Mixed separators: the last author joined with "and" rather than a comma.
+  expect_identical(f("OConnor, S. and van Dijk, T."), c("OConnor", "van Dijk"))
+  # A lowercase particle is part of the surname. Requiring an initial capital
+  # dropped these silently, which leaves the reference list short by an author
+  # with nothing saying so.
+  expect_identical(f("Chen, W., Dubois, M.-C., van der Berg, P."),
+                   c("Chen", "Dubois", "van der Berg"))
+  expect_identical(f("de la Cruz, M., Smith, J."), c("de la Cruz", "Smith"))
+  expect_identical(f("Garcia, R."), "Garcia")
+  expect_identical(f(""), character(0))
+})
+
+test_that("a citation key takes the form the sentence needs, and disambiguates a shared year", {
+  tab <- bib_table()
+  cols <- readgpt:::bib_columns(tab)
+  expect_identical(cols$authors, "authors")
+  expect_identical(cols$year, "year")
+
+  par <- readgpt:::bib_keys(tab, cols)
+  expect_identical(par, c("Smith & Okafor, 2019", "Lee & Petrov, 2021", "Garcia, 2022"))
+  nar <- readgpt:::bib_keys(tab, cols, form = "narrative")
+  expect_identical(nar[1], "Smith and Okafor (2019)")
+
+  # Two studies by the same authors in the same year get a and b -- and BOTH of
+  # them do. `sub()` is not vectorised over `replacement`, so the obvious
+  # one-liner gave every duplicate the suffix "a" and left them identical,
+  # which is the fault the suffix exists to fix.
+  dup <- rbind(tab, tab[1, ]); dup$document[4] <- "smith2.pdf"
+  k <- readgpt:::bib_keys(dup, cols)
+  expect_identical(k[c(1, 4)], c("Smith & Okafor, 2019a", "Smith & Okafor, 2019b"))
+  expect_equal(anyDuplicated(k), 0L)
+  expect_identical(vapply(c(1, 26, 27), readgpt:::.gr_bib_suffix, character(1)),
+                   c("a", "z", "aa"))
+
+  # Three or more authors are "et al.", one is bare, and a missing year means no
+  # key at all rather than a citation nobody can look up.
+  many <- tab[1, ]; many$authors <- "Chen, W., Dubois, M., van der Berg, P."
+  expect_identical(readgpt:::bib_key(many, cols), "Chen et al., 2019")
+  noyr <- tab[1, ]; noyr$year <- NA_integer_
+  expect_true(is.na(readgpt:::bib_key(noyr, cols)))
+})
+
+test_that("a review cites by name and carries a reference list", {
+  syn <- quiet(gr_synthesise(bib_table(), outline = bib_outline, question = "Q?",
+                             client = mock_writer()))
+  expect_identical(syn$cite_style, "author-year")
+  # Adjacent markers become ONE citation. Rendering them separately gives
+  # "(Garcia, 2022) (Lee & Petrov, 2021)", which no journal would print and
+  # which reads as separate assertions rather than one claim resting on three.
+  expect_match(syn$text, "(Garcia, 2022; Lee & Petrov, 2021; Smith & Okafor, 2019)", fixed = TRUE)
+  expect_false(grepl("[study", syn$text, fixed = TRUE))
+
+  expect_match(syn$text, "## References", fixed = TRUE)
+  expect_length(syn$references, 3L)
+  # No doubled full stop where an authors field already ends in an initial.
+  expect_false(any(grepl("..", syn$references, fixed = TRUE)))
+  expect_match(syn$references[1], "Garcia, R. (2022).", fixed = TRUE)
+
+  # The marker form is kept, so the citation check can be re-run on what was
+  # published rather than only on what was drafted.
+  expect_true("text_marked" %in% names(syn$sections))
+  expect_match(syn$sections$text_marked[1], "[study 1]", fixed = TRUE)
+  expect_setequal(readgpt:::cited_ids(syn$text_marked, "study"), 1:3)
+})
+
+test_that("only cited studies reach the reference list", {
+  # A reference list carrying studies the prose never mentions claims a breadth
+  # the review does not have, and is the easiest padding to produce by accident
+  # here, where every row is right there.
+  one <- mock_writer(sec = c("Included studies" = "One study [study 2].",
+                             "Findings" = "It found something [study 2]."))
+  syn <- quiet(gr_synthesise(bib_table(), outline = bib_outline, question = "Q?", client = one))
+  expect_length(syn$references, 1L)
+  expect_match(syn$references[1], "Lee")
+})
+
+test_that("an unnameable study falls back to markers rather than a name that may be wrong", {
+  tab <- bib_table(); tab$year[2] <- NA_integer_
+  expect_warning(
+    syn <- suppressMessages(gr_synthesise(tab, outline = bib_outline, question = "Q?",
+                                          client = mock_writer(), cite_style = "author-year")),
+    class = "gr_cite_unresolvable")
+  expect_identical(syn$cite_style, "marker")
+  expect_match(syn$text, "[study 1]", fixed = TRUE)
+  # There is still a reference list, but numbered by study rather than
+  # alphabetical: prose citing `[study 2]` needs a list you can get to from
+  # `[study 2]`, and an alphabetical one is unreachable from the text.
+  expect_length(syn$references, 3L)
+  expect_match(syn$references[2], "^2\\. ")
+  # The study whose year was missing is listed without one, not with an
+  # invented one.
+  expect_match(syn$references[2], "Lee")
+  expect_false(grepl("(NA)", syn$references[2], fixed = TRUE))
+
+  # "auto" does the same thing without complaining: it is the mode that means
+  # "name them if you can".
+  expect_silent(s2 <- quiet(gr_synthesise(tab, outline = bib_outline, question = "Q?",
+                                          client = mock_writer())))
+  expect_identical(s2$cite_style, "marker")
+
+  # And a table with no bibliographic columns at all is the ordinary case, not
+  # an error.
+  bare <- bib_table()[, c("document", "status", "duplicate_of", "n_filled", "design")]
+  s3 <- quiet(gr_synthesise(bare, outline = bib_outline, question = "Q?", client = mock_writer()))
+  expect_identical(s3$cite_style, "marker")
+})
+
+test_that("numeric style numbers the citations and the reference list together", {
+  syn <- quiet(gr_synthesise(bib_table(), outline = bib_outline, question = "Q?",
+                             client = mock_writer(), cite_style = "numeric"))
+  expect_identical(syn$cite_style, "numeric")
+  expect_match(syn$text, "(1, 2, 3)", fixed = TRUE)
+  expect_match(syn$references[1], "^1\\. ")
+})
+
+test_that("the coherence pass is kept when it only reorganises prose", {
+  good <- paste0("## Included studies\n\nThree studies [study 1] [study 2] [study 3].\n\n",
+                 "## Findings\n\nBuilding on that, effects varied [study 1] and [study 3].")
+  syn <- quiet(gr_synthesise(bib_table(), outline = bib_outline, question = "Q?",
+                             client = mock_writer(revision = good), coherence = TRUE))
+  expect_true(syn$coherence$ran)
+  expect_true(syn$coherence$kept)
+  expect_match(syn$text, "Building on that", fixed = TRUE)
+  # Rendering happens after the pass, so the published text is named throughout.
+  expect_false(grepl("[study", syn$text, fixed = TRUE))
+  # And the un-revised version is kept for comparison.
+  expect_false(identical(syn$text, syn$draft))
+})
+
+test_that("a coherence pass that changes what is cited is discarded", {
+  # This step may reorganise prose. It may not change what the review cites --
+  # that is the one way it could quietly undo the guarantee the rest of the
+  # pipeline exists to give.
+  base <- paste0("## Included studies\n\nThree studies [study 1] [study 2] [study 3].\n\n",
+                 "## Findings\n\nEffects varied [study 1] and [study 3].")
+  expect_warning(
+    added <- suppressMessages(gr_synthesise(bib_table(), outline = bib_outline, question = "Q?",
+                                            client = mock_writer(revision = paste0(base, " Also [study 9].")),
+                                            coherence = TRUE)),
+    class = "gr_coherence_rejected")
+  expect_false(added$coherence$kept)
+  expect_identical(added$coherence$added, 9L)
+  expect_identical(added$text, added$draft)
+
+  dropped_rev <- paste0("## Included studies\n\nThree studies [study 1].\n\n",
+                        "## Findings\n\nEffects varied [study 1] and [study 3].")
+  expect_warning(
+    dropped <- suppressMessages(gr_synthesise(bib_table(), outline = bib_outline, question = "Q?",
+                                              client = mock_writer(revision = dropped_rev),
+                                              coherence = TRUE)),
+    class = "gr_coherence_rejected")
+  expect_false(dropped$coherence$kept)
+  expect_identical(dropped$coherence$lost, 2L)
+})
+
+test_that("the register reaches both the section prompt and the coherence prompt", {
+  cl <- mock_writer(revision = paste0("## Included studies\n\nThree studies [study 1] [study 2] ",
+                                      "[study 3].\n\n## Findings\n\nEffects varied [study 1] and [study 3]."))
+  quiet(gr_synthesise(bib_table(), outline = bib_outline, question = "Q?", client = cl,
+                      style = "formal academic; hedge claims", coherence = TRUE))
+  sys <- vapply(cl$calls(), function(x) x$messages[[1]]$content, character(1))
+  expect_true(all(grepl("formal academic; hedge claims", sys, fixed = TRUE)))
+  # Appended, not substituted: the rules about citing and not inventing survive
+  # whatever voice is asked for.
+  expect_true(any(grepl("Cite the record behind every claim", sys, fixed = TRUE)))
+  expect_true(any(grepl("may not add anything", sys, fixed = TRUE)))
+})

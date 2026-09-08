@@ -758,6 +758,101 @@ quote, and the quote was checked against the page it is attributed to. None of
 that proves the sentence is true. It makes every step of the way back to the
 document short enough to walk.
 
+### Making it read like a review
+
+`[study 2]` is what gets *checked*. It is not what you publish. Extract the
+bibliographic fields alongside your own and the markers render as citations,
+with a reference list built from the studies the finished text actually cites:
+
+```r
+protocol <- gr_protocol(
+  "spacing-review",
+  question = "Does spaced practice improve retention in adult learners?",
+  include  = "A primary study comparing spaced with massed practice",
+  fields   = gr_fields(
+    authors = "All authors, surname first",
+    year    = gr_field("Year of publication", type = "integer"),
+    title   = "Article title",
+    venue   = "Journal, volume and issue",
+    design  = "Study design",
+    effect  = "Effect size with its interval"
+  ),
+  outline  = c("Included studies" = "How many, of what designs",
+               "Findings"         = "The effect, and where studies disagree")
+)
+
+```
+
+`gr_synthesise()` takes the extraction table, so the shape it needs is easy to
+show directly:
+
+```r
+studies <- data.frame(
+  document = c("smith.pdf", "lee.pdf", "garcia.pdf"),
+  status = "ok", duplicate_of = NA_character_, n_filled = 4L,
+  authors = c("Smith, J., Okafor, A.", "Lee, M., Petrov, K.", "Garcia, R."),
+  year    = c(2019L, 2021L, 2022L),
+  title   = c("Cognitive Load and Retention in Adult Learners",
+              "Spacing Effects in Online Instruction",
+              "No Effect of Spacing on Procedural Skill Acquisition"),
+  venue   = c("Journal of Educational Psychology 44(2)",
+              "Learning and Instruction 61(4)",
+              "Applied Cognitive Psychology 36(1)"),
+  effect  = c("d = 0.61", "d = 0.22", "d = 0.04"),
+  stringsAsFactors = FALSE
+)
+
+writer <- gr_mock_client(function(m, p)
+  "Three studies met the criteria [study 1] [study 2] [study 3].")
+
+review <- gr_synthesise(
+  studies, question = "Does spaced practice improve retention?",
+  outline = c("Included studies" = "How many, of what designs"),
+  client  = writer,
+  style   = "formal academic; hedge claims; past tense for findings"
+)
+cat(review$text)
+```
+
+```text
+## Included studies
+
+Three studies met the criteria (Garcia, 2022; Lee & Petrov, 2021; Smith & Okafor, 2019).
+
+## References
+
+- Garcia, R. (2022). No Effect of Spacing on Procedural Skill Acquisition. Applied Cognitive Psychology 36(1).
+- Lee, M., Petrov, K. (2021). Spacing Effects in Online Instruction. Learning and Instruction 61(4).
+- Smith, J., Okafor, A. (2019). Cognitive Load and Retention in Adult Learners. Journal of Educational Psychology 44(2).
+```
+
+Add `coherence = TRUE` to run one further call over the whole draft, so the
+independently-written sections read as one argument.
+
+Three things about that are deliberate.
+
+**The model still writes `[study 3]`.** Rendering happens afterwards, from the
+table, so a citation in the finished prose is a fact about the extraction rather
+than something the model asserted. Verifying "Smith & Okafor (2019)" would mean
+matching a name the model wrote against a name in the table, and the near-misses
+— Smith for Smyth, 2019 for 2018 — are both the errors that matter and the ones
+fuzzy matching forgives. `review$text_marked` keeps the marker form, so the
+check can be re-run on what you published.
+
+**A study it cannot name makes the whole review fall back to markers.** Citing
+some studies by name and others by number reads as a mistake, and inventing
+"n.d." would assert something the extraction never found. Ask for a `citation`
+field directly if your sources are awkward; parsing an arbitrary author list is
+a heuristic and is treated as one.
+
+**`coherence = TRUE` may reorganise prose but not change what is cited.**
+Sections are written independently — that is what keeps each one answerable to
+its own brief — so nothing joins them: terms drift, a study gets introduced
+twice, there are no transitions. One further call fixes that. The revision is
+then checked, and one that added a citation or lost one is discarded with a
+warning, leaving `review$draft`. It is the one step that could quietly undo
+everything above it, so it is the one step whose output is not trusted.
+
 `gr_audit_report()` writes that chain out as one self-contained HTML file — the
 protocol as fixed in advance, what happened to every document, every value with
 its quote and page and whether the quote is really there, what was written and

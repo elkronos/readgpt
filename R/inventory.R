@@ -70,7 +70,9 @@
 #'   }
 #'
 #'   `status` is one of `"ready"` (an extractor claims it and there is text),
-#'   `"needs_ocr"` (a PDF whose pages have no text layer), `"no_extractor"`,
+#'   `"needs_ocr"` (a PDF whose pages have no text layer), `"needs_package"` (an
+#'   extractor claims it, but that extractor's package is not installed, so
+#'   reading it would abort), `"no_extractor"`,
 #'   `"empty"` (zero bytes, or nothing that reads as text -- `note` says which),
 #'   or `"unreadable"` (it exists but could not be opened, or probing it raised
 #'   an error; `note` carries the reason).
@@ -119,6 +121,17 @@ gr_inventory <- function(sources, recursive = TRUE, model = NULL,
     paths <- paths[!is.na(paths)]
   }
   paths <- sort(paths)
+  # A symlinked directory -- a `latest -> v3` beside the versions it points at,
+  # or an outright loop -- makes `list.files(recursive = TRUE)` return the same
+  # file many times over. One real file became 42 rows. Deduplicate on the
+  # RESOLVED path: two entries that resolve to one file are one file, however
+  # many ways there are to walk to it.
+  if (length(paths) > 1L) {
+    real <- vapply(paths, function(x)
+      tryCatch(normalizePath(x, winslash = "/", mustWork = FALSE),
+               error = function(e) x), character(1), USE.NAMES = FALSE)
+    paths <- paths[!duplicated(real)]
+  }
 
   if (!length(paths)) {
     return(structure(list(files = inventory_frame(), by_status = inventory_status_frame(),
@@ -159,6 +172,9 @@ gr_inventory <- function(sources, recursive = TRUE, model = NULL,
   files <- do.call(rbind, rows)
   rownames(files) <- NULL
 
+  # `needs_package` is not readable: the extractor aborts on it. Counting it as
+  # readable would put its size into a cost estimate for a run that cannot
+  # happen.
   readable <- files$status %in% c("ready", "needs_ocr")
   # A scan's size is genuinely unknown until it is OCR'd, and on a real corpus
   # that is common enough that collapsing the whole total to NA would throw away
@@ -172,8 +188,8 @@ gr_inventory <- function(sources, recursive = TRUE, model = NULL,
   cost <- suppressWarnings(gr_estimate_cost(model, tok, sum(readable) * 500))
 
   by <- as.data.frame(table(factor(files$status,
-                                   levels = c("ready", "needs_ocr", "no_extractor",
-                                              "empty", "unreadable"))),
+                                   levels = c("ready", "needs_ocr", "needs_package",
+                                              "no_extractor", "empty", "unreadable"))),
                       stringsAsFactors = FALSE)
   names(by) <- c("status", "files")
   by$bytes <- vapply(by$status, function(s) sum(files$bytes[files$status == s]), numeric(1))
@@ -201,6 +217,25 @@ inventory_frame <- function() {
 inventory_status_frame <- function() {
   data.frame(status = character(0), files = integer(0), bytes = numeric(0),
              stringsAsFactors = FALSE)
+}
+
+#' Packages a built-in extractor needs before it can read anything at all.
+#'
+#' Only the hard requirements -- the ones whose absence makes the extractor
+#' abort. OCR packages are not here: a PDF with a text layer reads perfectly
+#' without them, and `probe_pdf()` reports separately on the ones that need OCR.
+#' A third-party extractor is not listed and is assumed to be able to run, which
+#' is the safe assumption in the direction that matters: it may still fail, and
+#' will then be a row saying so.
+#' @noRd
+.gr_extractor_deps <- list(pdf = "pdftools", html = "xml2", docx = "xml2",
+                           image = "tesseract")
+
+#' @noRd
+missing_extractor_deps <- function(extractor) {
+  need <- .gr_extractor_deps[[as_chr1(extractor)]]
+  if (!length(need)) return(character(0))
+  need[!vapply(need, requireNamespace, logical(1), quietly = TRUE)]
 }
 
 #' Which registered extractor claims each extension.
@@ -235,6 +270,18 @@ inventory_row <- function(path, ext, extractor, root, ocr_min_chars, max_pdf_pag
   if (is.na(extractor)) {
     out$status <- "no_extractor"
     out$note <- sprintf("no extractor claims '.%s'", ext)
+    return(out)
+  }
+  # An extractor whose package is absent will ABORT on this file the moment
+  # anything reads it. Reporting the file as ready would be the exact failure
+  # this function exists to prevent: a survey saying a corpus is fine, and the
+  # run dying on the first PDF. Caught here it costs nothing to fix.
+  missing <- missing_extractor_deps(extractor)
+  if (length(missing)) {
+    out$status <- "needs_package"
+    out$note <- sprintf("the '%s' extractor needs %s, which %s not installed",
+                        extractor, paste(sprintf("'%s'", missing), collapse = " and "),
+                        if (length(missing) > 1L) "are" else "is")
     return(out)
   }
 
@@ -272,8 +319,11 @@ probe_text <- function(path) {
 #' @noRd
 probe_pdf <- function(path, ocr_min_chars, max_pdf_pages) {
   if (!requireNamespace("pdftools", quietly = TRUE)) {
-    return(list(status = "ready", tokens = NA_real_,
-                note = "install 'pdftools' to see page count and whether it needs OCR"))
+    # Unreachable through gr_inventory(), which settles this earlier. Kept
+    # honest anyway: "ready" here would have been a claim that the file can be
+    # read, and it cannot.
+    return(list(status = "needs_package", tokens = NA_real_,
+                note = "the 'pdf' extractor needs 'pdftools', which is not installed"))
   }
   n <- tryCatch(pdftools::pdf_info(path)$pages, error = function(e) NA_integer_)
   if (is.na(n)) {
@@ -332,6 +382,13 @@ print.gr_inventory <- function(x, ...) {
     cat(sprintf("  ! %d file(s) have no text layer%s\n", nrow(ocr),
                 if (any(stuck)) " and 'tesseract'/'magick' are not installed, so they will read as empty"
                 else "; they will be OCR'd, which is slower"))
+  }
+  dep <- x$files[x$files$status == "needs_package", , drop = FALSE]
+  if (nrow(dep)) {
+    pk <- sort(unique(unlist(regmatches(dep$note, gregexpr("'[^']+'", dep$note)))))
+    cat(sprintf("  ! %d file(s) cannot be read at all until you install %s\n",
+                nrow(dep), paste(setdiff(pk, sprintf("'%s'", unique(dep$extractor))),
+                                 collapse = ", ")))
   }
   none <- x$files[x$files$status == "no_extractor", , drop = FALSE]
   if (nrow(none)) {

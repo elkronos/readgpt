@@ -493,3 +493,36 @@ test_that("a name that is both a recipe and a reader resolves loudly, not silent
   expect_silent(readgpt:::as_recipe("preview"))
   expect_identical(readgpt:::as_recipe("preview")$read$reader, "preview")
 })
+
+
+test_that("a plan that skips every section reads nothing, rather than everything", {
+  # `unlist()` on an empty list returns NULL, not integer(0), and `fit_chunks()`
+  # reads `order %||% seq_len(nrow(df))` -- so a plan marking every section skip
+  # handed it NULL and it read the WHOLE document. The reader did the exact
+  # opposite of what the plan said and charged for it, which is the worst
+  # direction for this bug to point, and nothing in the answer said so.
+  ch <- gr_segment(gr_ingest(sample_doc(3, 2)), list(method = "structural", max_tokens = 200))
+  cl <- mock_planner(rep("skip", 3))
+  a <- quiet(gr_read(ch, "How many participants?", cl, list(reader = "preview")))
+
+  expect_identical(call_labels(cl), "preview.plan")     # the plan call, and nothing else
+  expect_true(is_not_found(a$answer))
+  expect_length(a$chunks_used, 0L)
+  expect_true(a$partial)
+  expect_match(a$notes$reason, "skipped every section")
+  expect_equal(a$notes$read, 0L)
+  expect_equal(a$notes$skipped, 3L)
+})
+
+test_that("a partial plan reads its sections and no others", {
+  ch <- gr_segment(gr_ingest(sample_doc(4, 3)), list(method = "structural", max_tokens = 150))
+  cl <- mock_planner(c("skip", "read", "skip", "skip"))
+  a <- quiet(gr_read(ch, "Q?", cl, list(reader = "preview")))
+  expect_equal(a$notes$read, 1L)
+  expect_equal(a$notes$skipped, 3L)
+  # Exactly the one section's chunks, not all of them and not none.
+  expect_gt(length(a$chunks_used), 0L)
+  expect_lt(length(a$chunks_used), nrow(ch$chunks))
+  in_sec2 <- ch$chunks$chunk_id[ch$chunks$section == unique(ch$chunks$section)[2]]
+  expect_setequal(a$chunks_used, in_sec2)
+})

@@ -803,7 +803,12 @@ read_preview <- function(chunks, question, client, spec, trace) {
   # context window.
   overhead <- prompt_overhead(question, .gr_prompts$answer_system)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
-  read_rows <- sort(unlist(units[treat == "read"], use.names = FALSE))
+  # as.integer(), because `unlist()` on an empty list returns NULL, not
+  # integer(0) -- and `fit_chunks()` reads `order %||% seq_len(nrow(df))`, so a
+  # plan that marked every section skip handed it NULL and it read the WHOLE
+  # document. The reader silently did the opposite of what the plan said, and
+  # charged for it. as.integer(NULL) is integer(0), which `%||%` leaves alone.
+  read_rows <- sort(as.integer(unlist(units[treat == "read"], use.names = FALSE)))
   fit <- fit_chunks(d, bud$input, order = read_rows)
   demoted <- integer(0)
   if (length(fit$dropped)) {
@@ -867,7 +872,7 @@ read_preview <- function(chunks, question, client, spec, trace) {
     tokens = vapply(units, function(rows) sum(d$tokens[rows]), integer(1)),
     treatment = treat, reason = reasons, stringsAsFactors = FALSE)
   rownames(plan_tab) <- NULL
-  skipped_rows <- unlist(units[treat == "skip"], use.names = FALSE)
+  skipped_rows <- as.integer(unlist(units[treat == "skip"], use.names = FALSE))
   trace_note(trace, "preview.plan", list(
     sections = n_units, read = sum(treat == "read"), skimmed = sum(treat == "skim"),
     skipped = sum(treat == "skip"), demoted = length(demoted), degraded = degraded,
@@ -881,9 +886,17 @@ read_preview <- function(chunks, question, client, spec, trace) {
   ), collapse = "\n\n")
 
   if (!nzchar(trimws(body))) {
+    # The same counts the ordinary return carries. Omitting them left
+    # `notes$skipped` NULL on exactly the run where everything was skipped,
+    # which is the run somebody inspecting that field is looking at.
     return(new_answer(.NOT_FOUND, "preview", question, integer(0), trace, partial = TRUE,
                       chunks_sent = d$chunk_id,
-                      notes = list(sections = n_units, plan = plan_tab, degraded = degraded,
+                      notes = list(sections = n_units, plan = plan_tab,
+                                   read = sum(treat == "read"), skimmed = sum(treat == "skim"),
+                                   skipped = sum(treat == "skip"),
+                                   demoted_to_skim = length(demoted), failed_calls = failed,
+                                   degraded = degraded,
+                                   tokens_skipped = sum(d$tokens[skipped_rows]),
                                    reason = "the plan skipped every section, or every skim failed")))
   }
 

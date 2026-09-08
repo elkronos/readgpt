@@ -187,6 +187,18 @@ as_json.gr_answer <- function(x, pretty = TRUE, ...) {
     "only where the section is likely to contain the answer itself. When the outline is too ",
     "thin to tell, prefer 'skim' over 'skip': a skipped section is never looked at again. Give ",
     "a short reason for each decision."),
+  coherence_system = paste0(
+    "You are given the complete draft of a review, written section by section by ",
+    "someone who could not see the other sections while writing. Your job is to make it read as ",
+    "one argument. Fix repetition between sections, add the connective sentences that carry a ",
+    "reader from one section to the next, and make terminology and tense consistent throughout. ",
+    "Keep every heading, in the order given.\n\n",
+    "You may not add anything. No new studies, no new figures, no new claims, no conclusion the ",
+    "draft does not already reach. Every bracketed citation marker must survive exactly as it is ",
+    "written, attached to the same claim -- do not add one, remove one, renumber one, or move one ",
+    "to a different sentence. If a section is thin, leave it thin: that is a finding about the ",
+    "evidence, and padding it would be inventing evidence. Return the full revised document and ",
+    "nothing else."),
   screen_system = paste0(
     "You screen one document against a review's criteria, using only the excerpt supplied. ",
     "Answer 'include' only if the excerpt shows the document meets every inclusion criterion ",

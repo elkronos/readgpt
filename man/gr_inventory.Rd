@@ -46,7 +46,9 @@ relative to \code{sources}, so the folder it came from survives), \code{folder},
 }
 
 \code{status} is one of \code{"ready"} (an extractor claims it and there is text),
-\code{"needs_ocr"} (a PDF whose pages have no text layer), \code{"no_extractor"},
+\code{"needs_ocr"} (a PDF whose pages have no text layer), \code{"needs_package"} (an
+extractor claims it, but that extractor's package is not installed, so
+reading it would abort), \code{"no_extractor"},
 \code{"empty"} (zero bytes, or nothing that reads as text -- \code{note} says which),
 or \code{"unreadable"} (it exists but could not be opened, or probing it raised
 an error; \code{note} carries the reason).

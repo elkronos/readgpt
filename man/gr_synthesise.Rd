@@ -13,7 +13,12 @@ gr_synthesise(
   model = NULL,
   max_section_tokens = 1200L,
   temperature = NULL,
-  include_unclear = FALSE
+  include_unclear = FALSE,
+  cite_style = c("auto", "marker", "author-year", "numeric"),
+  bib = NULL,
+  style = NULL,
+  coherence = FALSE,
+  references = TRUE
 )
 }
 \arguments{
@@ -35,11 +40,62 @@ values say what that section has to cover. As \code{\link[=gr_protocol]{gr_proto
 \item{include_unclear}{Write from rows whose extraction was incomplete. Off by
 default: a row with nothing in it contributes nothing but its own absence,
 and the count of skipped rows is reported either way.}
+
+\item{cite_style}{How citations appear in the finished prose. \code{"auto"} (the
+default) names the studies when the table can name all of them and uses
+markers when it cannot. \code{"author-year"} asks for names and warns if they
+cannot be produced; \code{"numeric"} gives \verb{(1, 2)}; \code{"marker"} leaves
+\verb{[study 1]} as written.
+
+The model always writes \verb{[study N]}, whatever this is set to, and the
+rendering happens afterwards from the table. That is deliberate: a marker
+can be checked exactly against the rows that exist, whereas verifying an
+author-year string would mean matching a name the model wrote against a
+name in the table, and near-misses -- Smith for Smyth, 2019 for 2018 -- are
+both the errors that matter and the ones fuzzy matching forgives. A
+rendered citation is therefore a fact about the extraction rather than
+something the model asserted. \verb{$sections$text_marked} and \verb{$text_marked}
+keep the marker form so the check can be re-run on the published prose.}
+
+\item{bib}{Which columns carry bibliographic identity, as a named list of
+\code{citation}, \code{authors}, \code{year}, \code{title}, \code{venue}, \code{doi}. Omitted, the
+conventional names are looked for, which is why
+\code{gr_protocols("bibliography")} works without configuration. The most
+reliable route is a \code{citation} field asked for during extraction: parsing
+an arbitrary author list is a heuristic, and where it cannot be done
+confidently the run falls back to markers rather than printing a name that
+may be wrong.}
+
+\item{style}{A register instruction, appended to the writing prompts --
+\code{"formal academic; hedge claims; past tense for findings"}. It governs how
+sections are written, never what they may say: the rules about citing every
+claim and inventing nothing hold whatever voice is asked for.}
+
+\item{coherence}{Run one further call over the assembled draft to make the
+independently-written sections read as one argument: repetition removed,
+transitions added, terminology made consistent. The revision is checked, not
+trusted -- one that added a citation or dropped one is discarded with a
+warning, and \verb{$draft} is what you get. Off by default, because it is an
+extra call and an extra chance for the model to touch finished prose.}
+
+\item{references}{Append a \verb{## References} section built from the studies the
+finished text actually cites. Alphabetical under \code{"author-year"}, numbered
+by study otherwise -- the list is labelled by whatever the prose uses to
+point into it.}
 }
 \value{
 An object of class \code{gr_synthesis}:
 \describe{
-\item{\code{text}}{The whole write-up, as markdown.}
+\item{\code{text}}{The whole write-up, as markdown, citations rendered and the
+reference list appended.}
+\item{\code{text_marked}}{The same document with \verb{[study N]} markers intact --
+what the citation check ran on.}
+\item{\code{draft}}{The write-up before the coherence pass, for comparison.}
+\item{\code{references}}{The reference list, or \code{NULL}.}
+\item{\code{cite_style}}{The style actually used, which is not always the one
+asked for.}
+\item{\code{coherence}}{What the coherence pass did, or \code{NULL} if it did not
+run: \code{ran}, \code{kept}, \code{reason}, and any citations \code{added} or \code{lost}.}
 \item{\code{sections}}{One row per section: \code{section}, \code{brief}, \code{text},
 \code{n_cited}, \code{n_unknown}, \code{partial}.}
 \item{\code{citations}}{Long form: \code{section}, \code{study}, \code{document},

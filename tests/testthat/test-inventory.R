@@ -207,10 +207,21 @@ test_that("gr_inventory gives every broken file a row instead of failing", {
   expect_identical(inv$files$status[inv$files$file == "good.txt"], "ready")
   expect_gt(inv$files$tokens[inv$files$file == "good.txt"], 0)
   expect_identical(inv$files$status[inv$files$file == "zero.txt"], "empty")
-  expect_identical(inv$files$status[inv$files$file == "corrupt.pdf"], "unreadable")
-  expect_match(inv$files$note[inv$files$file == "corrupt.pdf"], "PDF")
+  # What a corrupt PDF looks like depends on whether pdftools is installed, and
+  # both answers are correct: "unreadable" when it could be opened and was not a
+  # PDF, "needs_package" when nothing could open it at all. What must never
+  # happen is "ready", which would promise a file that ingestion aborts on.
+  pdf_row <- inv$files[inv$files$file == "corrupt.pdf", ]
+  if (requireNamespace("pdftools", quietly = TRUE)) {
+    expect_identical(pdf_row$status, "unreadable")
+    expect_match(pdf_row$note, "PDF")
+  } else {
+    expect_identical(pdf_row$status, "needs_package")
+    expect_match(pdf_row$note, "pdftools")
+  }
+  expect_false(identical(pdf_row$status, "ready"))
   # Nothing broken is silently counted as readable-and-free.
-  bad <- inv$files$status %in% c("unreadable", "empty")
+  bad <- inv$files$status %in% c("unreadable", "empty", "needs_package")
   expect_true(all(is.na(inv$files$tokens[bad]) | inv$files$tokens[bad] == 0))
 })
 
@@ -295,4 +306,91 @@ test_that("gr_extract gives a failed document an NA row, not a wrong value", {
   # A document that could not be read reports nothing, rather than a value
   # borrowed from whichever document happened to be read before it.
   expect_true(all(is.na(out$table$n[!ok])))
+})
+
+
+test_that("a file whose extractor has no package is not reported as ready", {
+  # CI does not install pdftools, and gr_inventory() said every PDF was "ready"
+  # -- while gr_ingest() on any of them aborts with "Reading PDFs needs the
+  # 'pdftools' package". A survey that promises a corpus is fine, and a run that
+  # dies on the first file, is precisely the failure this function exists to
+  # prevent, so it was the wrong answer in the most damaging direction.
+  d <- withr::local_tempdir()
+  writeLines("The cohort had 482 participants.", file.path(d, "good.txt"))
+  file.create(file.path(d, "paper.pdf"))
+  writeBin(as.raw(rep(65L, 200L)), file.path(d, "paper.pdf"))
+
+  local_mocked_bindings(
+    missing_extractor_deps = function(extractor)
+      if (identical(extractor, "pdf")) "pdftools" else character(0),
+    .package = "readgpt")
+  inv <- suppressWarnings(gr_inventory(d))
+
+  pdf_row <- inv$files[inv$files$file == "paper.pdf", ]
+  expect_identical(pdf_row$status, "needs_package")
+  expect_match(pdf_row$note, "'pdftools'", fixed = TRUE)
+  expect_match(pdf_row$note, "not installed", fixed = TRUE)
+  # Its size is still measured -- only the probe was impossible.
+  expect_gt(pdf_row$bytes, 0)
+
+  # It is not readable, so it is not in the token total or the cost estimate:
+  # sizing a run that cannot happen is worse than not sizing it.
+  expect_identical(inv$totals$readable, 1L)
+  expect_equal(inv$totals$tokens, inv$files$tokens[inv$files$file == "good.txt"])
+  expect_output(print(inv), "cannot be read at all until you install")
+
+  # The readable file beside it is unaffected.
+  expect_identical(inv$files$status[inv$files$file == "good.txt"], "ready")
+})
+
+test_that("the extractor dependency map matches what the extractors actually require", {
+  # A list mirroring something the source owns, with nothing watching for drift
+  # -- the shape that has bitten this suite twice. If an extractor gains a hard
+  # dependency and this map does not, gr_inventory() goes back to promising
+  # files that cannot be read. Writing this caught the map claiming the image
+  # extractor needs 'magick', which it does not.
+  #
+  # "Hard" means precisely: a requireNamespace() whose failure aborts. The OCR
+  # packages are asked for without aborting -- a PDF with a text layer reads
+  # perfectly without them -- and probe_pdf() reports on those separately.
+  ns <- asNamespace("readgpt")
+  hard_deps <- function(nm) {
+    body_txt <- paste(deparse(body(get(paste0("extract_", nm), envir = ns))), collapse = " ")
+    at <- gregexpr('requireNamespace\\("[^"]+"', body_txt)[[1]]
+    if (at[1] == -1L) return(character(0))
+    pkg <- sub('requireNamespace\\("', "", regmatches(body_txt, gregexpr('requireNamespace\\("[^"]+"', body_txt))[[1]])
+    pkg <- sub('"$', "", pkg)
+    aborts <- vapply(seq_along(at), function(k) {
+      grepl("gr_missing_dep", substr(body_txt, at[k], at[k] + 260L), fixed = TRUE)
+    }, logical(1))
+    sort(unique(pkg[aborts]))
+  }
+  for (nm in c("txt", "md", "html", "pdf", "docx", "image")) {
+    expect_identical(sort(readgpt:::.gr_extractor_deps[[nm]] %||% character(0)), hard_deps(nm),
+                     info = sprintf("the map and extract_%s() disagree about what it must have", nm))
+  }
+  # The map is only consulted for names it holds, so a third-party extractor is
+  # assumed able to run -- and if it cannot, it becomes a row saying so.
+  expect_identical(readgpt:::missing_extractor_deps("something_nobody_registered"), character(0))
+})
+
+
+test_that("a file reached by two paths is surveyed once", {
+  # `list.files(recursive = TRUE)` walks into directory symlinks, so a
+  # `latest -> v3` beside the versions it points at returns the same documents
+  # twice, and an outright loop returned one file forty-two times. Two entries
+  # that resolve to one file are one file, however many ways there are to walk
+  # to it.
+  skip_on_os("windows")
+  versions <- withr::local_tempdir()
+  writeLines("The 2019 cohort had 482 participants.", file.path(versions, "doc.txt"))
+  root <- withr::local_tempdir()
+  writeLines("A top-level note.", file.path(root, "top.txt"))
+  ok <- suppressWarnings(file.symlink(versions, file.path(root, "latest")))
+  skip_if_not(isTRUE(ok), "this filesystem does not support symlinks")
+
+  inv <- suppressWarnings(gr_inventory(root))
+  expect_setequal(inv$files$file, c("doc.txt", "top.txt"))
+  expect_equal(nrow(inv$files), 2L)
+  expect_true(all(inv$files$status == "ready"))
 })

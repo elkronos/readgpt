@@ -42,10 +42,56 @@
 #' @param include_unclear Write from rows whose extraction was incomplete. Off by
 #'   default: a row with nothing in it contributes nothing but its own absence,
 #'   and the count of skipped rows is reported either way.
+#' @param cite_style How citations appear in the finished prose. `"auto"` (the
+#'   default) names the studies when the table can name all of them and uses
+#'   markers when it cannot. `"author-year"` asks for names and warns if they
+#'   cannot be produced; `"numeric"` gives `(1, 2)`; `"marker"` leaves
+#'   `[study 1]` as written.
+#'
+#'   The model always writes `[study N]`, whatever this is set to, and the
+#'   rendering happens afterwards from the table. That is deliberate: a marker
+#'   can be checked exactly against the rows that exist, whereas verifying an
+#'   author-year string would mean matching a name the model wrote against a
+#'   name in the table, and near-misses -- Smith for Smyth, 2019 for 2018 -- are
+#'   both the errors that matter and the ones fuzzy matching forgives. A
+#'   rendered citation is therefore a fact about the extraction rather than
+#'   something the model asserted. `$sections$text_marked` and `$text_marked`
+#'   keep the marker form so the check can be re-run on the published prose.
+#' @param bib Which columns carry bibliographic identity, as a named list of
+#'   `citation`, `authors`, `year`, `title`, `venue`, `doi`. Omitted, the
+#'   conventional names are looked for, which is why
+#'   `gr_protocols("bibliography")` works without configuration. The most
+#'   reliable route is a `citation` field asked for during extraction: parsing
+#'   an arbitrary author list is a heuristic, and where it cannot be done
+#'   confidently the run falls back to markers rather than printing a name that
+#'   may be wrong.
+#' @param style A register instruction, appended to the writing prompts --
+#'   `"formal academic; hedge claims; past tense for findings"`. It governs how
+#'   sections are written, never what they may say: the rules about citing every
+#'   claim and inventing nothing hold whatever voice is asked for.
+#' @param coherence Run one further call over the assembled draft to make the
+#'   independently-written sections read as one argument: repetition removed,
+#'   transitions added, terminology made consistent. The revision is checked, not
+#'   trusted -- one that added a citation or dropped one is discarded with a
+#'   warning, and `$draft` is what you get. Off by default, because it is an
+#'   extra call and an extra chance for the model to touch finished prose.
+#' @param references Append a `## References` section built from the studies the
+#'   finished text actually cites. Alphabetical under `"author-year"`, numbered
+#'   by study otherwise -- the list is labelled by whatever the prose uses to
+#'   point into it.
 #'
 #' @return An object of class `gr_synthesis`:
 #'   \describe{
-#'     \item{`text`}{The whole write-up, as markdown.}
+#'     \item{`text`}{The whole write-up, as markdown, citations rendered and the
+#'       reference list appended.}
+#'     \item{`text_marked`}{The same document with `[study N]` markers intact --
+#'       what the citation check ran on.}
+#'     \item{`draft`}{The write-up before the coherence pass, for comparison.}
+#'     \item{`references`}{The reference list, or `NULL`.}
+#'     \item{`cite_style`}{The style actually used, which is not always the one
+#'       asked for.}
+#'     \item{`coherence`}{What the coherence pass did, or `NULL` if it did not
+#'       run: `ran`, `kept`, `reason`, and any citations `added` or `lost`.}
 #'     \item{`sections`}{One row per section: `section`, `brief`, `text`,
 #'       `n_cited`, `n_unknown`, `partial`.}
 #'     \item{`citations`}{Long form: `section`, `study`, `document`,
@@ -92,7 +138,11 @@
 #' s$sections[, c("section", "n_cited", "n_unknown")]
 gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question = NULL,
                           client = NULL, model = NULL, max_section_tokens = 1200L,
-                          temperature = NULL, include_unclear = FALSE) {
+                          temperature = NULL, include_unclear = FALSE,
+                          cite_style = c("auto", "marker", "author-year", "numeric"),
+                          bib = NULL, style = NULL, coherence = FALSE,
+                          references = TRUE) {
+  cite_style <- match.arg(cite_style)
   tab <- if (inherits(extraction, "gr_extraction")) extraction$table else extraction
   if (!is.data.frame(tab) || !nrow(tab)) {
     gr_abort("`extraction` must be a gr_extraction, or a data frame shaped like its $table.",
@@ -132,21 +182,168 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
   rows <- lapply(seq_along(outline), function(i) {
     heading <- names(outline)[[i]]
     gr_msg(sprintf("[%d/%d] %s", i, length(outline), heading))
-    synth_section(heading, outline[[i]], question, rendered, used, client, spec, trace)
+    synth_section(heading, outline[[i]], question, rendered, used, client, spec, trace, style)
   })
 
   sections <- do.call(rbind, lapply(rows, `[[`, "row"))
   citations <- rbind_evidence(lapply(rows, `[[`, "citations"))
+
+  # ORDER MATTERS, and getting it wrong is silent. Everything downstream works
+  # on the MARKER form -- the notation the model actually wrote and the citation
+  # check actually ran on -- and rendering to "(Smith & Okafor, 2019)" happens
+  # once, at the very end. Rendering first made the coherence pass compare a
+  # rendered draft against a marked revision, so every citation in the revision
+  # looked newly added and every honest revision was thrown away.
+  cols <- bib_columns(used, bib)
+  keys <- bib_keys(used, cols)
+  resolved <- resolve_cite_style(cite_style, keys, cols)
+  if (!identical(resolved, cite_style) && !identical(cite_style, "auto")) {
+    gr_warn(paste0("`cite_style = \"", cite_style, "\"` needs a citation key for every study, and ",
+                   "the table does not carry one for all of them. Falling back to markers rather ",
+                   "than printing a name that may be wrong. Extract a `citation` field, or an ",
+                   "`authors` and a `year` field, or point `bib` at the columns that hold them."),
+            class = "gr_cite_unresolvable")
+  }
+
+  marked <- synth_document(sections)
+  revised <- if (isTRUE(coherence)) {
+    synth_coherence(marked, question, client, spec, trace, style)
+  } else NULL
+  final_marked <- revised$text %||% marked
+
+  # The reference list follows what the FINISHED text cites, not what the
+  # sections cited before revision. A reference list carrying a study the final
+  # prose never mentions claims a breadth the review does not have.
+  cited <- cited_ids(final_marked, "study")
+  refs <- if (isTRUE(references)) reference_list(used, keys, cited, cols, resolved) else NULL
+
+  render <- function(x) render_citations(x, used, keys, resolved)
+  # Kept because it is what the citation check ran on, so the check can be
+  # re-run on the published prose at any point.
+  sections$text_marked <- sections$text
+  sections$text <- vapply(sections$text, render, character(1), USE.NAMES = FALSE)
+
   structure(list(
-    text = synth_document(sections),
+    text = append_references(render(final_marked), refs),
+    text_marked = final_marked,
+    draft = append_references(render(marked), refs),
     sections = sections,
+    references = refs,
     citations = citations %||% synth_empty_citations(),
     studies = used,
     skipped = sum(!keep),
     question = question,
     outline = outline,
+    cite_style = resolved,
+    coherence = revised$report,
     trace = trace
   ), class = "gr_synthesis")
+}
+
+#' Which citation style can actually be honoured.
+#'
+#' "auto" is the only one that silently changes: name the studies when the table
+#' can name all of them, and use markers when it cannot. Asking for author-year
+#' outright and not getting it is worth a warning, because the caller expected
+#' something the data cannot support.
+#' @noRd
+resolve_cite_style <- function(want, keys, cols) {
+  if (identical(want, "marker")) return("marker")
+  if (identical(want, "numeric")) return(if (length(cols)) "numeric" else "marker")
+  if (is.null(keys)) return("marker")
+  if (identical(want, "auto")) "author-year" else want
+}
+
+#' One pass over the assembled draft, to make it read as one argument.
+#'
+#' Sections are written independently and cannot see each other, which is what
+#' keeps each one answerable to its own brief and to the table. The cost is that
+#' nothing joins them: terms drift, the same study is introduced twice, and
+#' there are no transitions. This fixes that and nothing else.
+#'
+#' What comes back is checked, not trusted. A revision that added a citation, or
+#' lost one, is discarded -- those are the two ways this step could quietly
+#' undo the guarantee the rest of the pipeline exists to give.
+#' @noRd
+synth_coherence <- function(drafted, question, client, spec, trace, style = NULL) {
+  before <- cited_ids(drafted, "study")
+  sys <- .gr_prompts$coherence_system
+  if (is_nonblank(style)) sys <- paste0(sys, "\n\nRegister: ", as_chr1(style))
+  overhead <- prompt_overhead(question, sys)
+
+  # This step returns the WHOLE document, not a section, so it must be budgeted
+  # for the whole document. Sizing it by `max_section_tokens` -- which is what a
+  # section writer needs -- asked a model revising a 4800-token review for 300
+  # tokens of output. The reply is then truncated mid-review, and the citation
+  # check below rejects it for "dropping" citations that were never written,
+  # reporting a budgeting mistake as a model failure.
+  need <- as.integer(ceiling(gr_count_tokens(drafted) * 1.15) + 64L)
+  info <- gr_model_info(spec$model)
+  room <- as.integer(info$max_output)
+  if (need > room) {
+    gr_warn(sprintf(paste0("The draft is about %d tokens and '%s' can emit at most %d, so the ",
+                           "coherence pass was skipped rather than returning a review cut off ",
+                           "part-way. The sections are as written; a shorter outline or a model ",
+                           "with a larger output limit would let it run."),
+                    gr_count_tokens(drafted), spec$model, room),
+            class = "gr_coherence_skipped")
+    return(list(text = NULL, report = list(ran = FALSE, reason = "draft exceeds the output limit",
+                                           kept = FALSE)))
+  }
+  bud <- gr_budget(spec$model, reserve_output = need, overhead = overhead)
+  if (gr_count_tokens(drafted) > bud$input) {
+    gr_warn(paste0("The draft does not fit one prompt alongside room to rewrite it, so the ",
+                   "coherence pass was skipped. The sections are as written; revise by hand, or ",
+                   "use a model with a larger context window."),
+            class = "gr_coherence_skipped")
+    return(list(text = NULL, report = list(ran = FALSE, reason = "draft exceeds the context window",
+                                           kept = FALSE)))
+  }
+  if (!trace_can_call(trace)) {
+    return(list(text = NULL, report = list(ran = FALSE, reason = "call cap reached", kept = FALSE)))
+  }
+  res <- gr_call(client, list(
+    list(role = "system", content = sys),
+    list(role = "user", content = paste0("Review question: ", question)),
+    list(role = "user", content = paste0("<draft>\n", drafted, "\n</draft>"))
+  ), model = spec$model, max_output = need,
+     temperature = spec$temperature, trace = trace, label = "synthesise.coherence")
+
+  if (!usable_text(res)) {
+    return(list(text = NULL, report = list(ran = TRUE, reason = "the revision call failed",
+                                           kept = FALSE)))
+  }
+  # A revision that hit the output limit is a review with its ending cut off.
+  # The citation check below would usually catch it -- the lost citations are
+  # the ones in the missing tail -- but not when the truncation happens to land
+  # after the last marker, and a review silently missing its conclusion is worse
+  # than one that was never revised.
+  if (identical(as_chr1(res$finish_reason), "length")) {
+    gr_warn(paste0("The coherence pass was cut off by the model's output limit, so its revision ",
+                   "was discarded and the section-by-section draft is what you have."),
+            class = "gr_coherence_rejected")
+    return(list(text = NULL, report = list(ran = TRUE, reason = "revision truncated", kept = FALSE,
+                                           added = integer(0), lost = integer(0))))
+  }
+  after <- cited_ids(res$text, "study")
+  added <- setdiff(after, before); lost <- setdiff(before, after)
+  if (length(added) || length(lost)) {
+    gr_warn(sprintf(paste0("The coherence pass %s, so its revision was discarded and the ",
+                           "section-by-section draft is what you have. This step may reorganise ",
+                           "prose; it may not change what the review cites."),
+                    paste(c(if (length(added)) sprintf("added citation(s) to stud%s %s",
+                                                       if (length(added) == 1L) "y" else "ies",
+                                                       paste(added, collapse = ", ")),
+                            if (length(lost)) sprintf("dropped citation(s) to stud%s %s",
+                                                      if (length(lost) == 1L) "y" else "ies",
+                                                      paste(lost, collapse = ", "))),
+                          collapse = " and ")),
+            class = "gr_coherence_rejected")
+    return(list(text = NULL, report = list(ran = TRUE, reason = "citations changed", kept = FALSE,
+                                           added = added, lost = lost)))
+  }
+  list(text = res$text, report = list(ran = TRUE, reason = NA_character_, kept = TRUE,
+                                      added = integer(0), lost = integer(0)))
 }
 
 #' @export
@@ -216,8 +413,13 @@ render_studies <- function(used) {
 }
 
 #' @noRd
-synth_section <- function(heading, brief, question, rendered, used, client, spec, trace) {
+synth_section <- function(heading, brief, question, rendered, used, client, spec, trace,
+                          style = NULL) {
   system_prompt <- sprintf(.gr_prompts$synthesise_system, heading)
+  # Appended rather than replacing: the register is how it is written, not what
+  # it may say, and the rules above about citing and not inventing hold whatever
+  # voice is asked for.
+  if (is_nonblank(style)) system_prompt <- paste0(system_prompt, " Register: ", as_chr1(style))
   ask <- paste0("Review question: ", question,
                 "\n\nSection: ", heading, "\nThis section must cover: ", brief)
   overhead <- prompt_overhead(ask, system_prompt)
@@ -293,6 +495,12 @@ synth_batches <- function(rendered, budget) {
 #' @noRd
 synth_document <- function(sections) {
   paste(sprintf("## %s\n\n%s", sections$section, trimws(sections$text)), collapse = "\n\n")
+}
+
+#' @noRd
+append_references <- function(body, references) {
+  if (!length(references)) return(body)
+  paste0(body, "\n\n## References\n\n", paste(references, collapse = "\n"))
 }
 
 #' @noRd

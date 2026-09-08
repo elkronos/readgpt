@@ -2,6 +2,46 @@
 
 ## New
 
+* **A review that reads like a review: citations by name, a reference list, and
+  a coherence pass.** `gr_synthesise()` produced prose citing `[study 3]`, with
+  no reference list and no connective tissue between sections. It is now capable
+  of the thing people actually need to publish.
+
+  `cite_style` renders the markers as `(Smith & Okafor, 2019)` — merging
+  adjacent markers into one citation, disambiguating a shared author-year as
+  2019a and 2019b, and handling the author-list shapes that turn up, including
+  the lowercase particles (`van der Berg`, `de la Cruz`) that a
+  requires-a-capital rule drops silently. `references = TRUE` appends a list
+  built from the studies the finished text actually cites, alphabetical under
+  author-year and numbered by study otherwise, because the list has to be
+  labelled by whatever the prose uses to point into it.
+
+  The model still writes `[study 3]`, always, and rendering happens afterwards
+  from the table. A marker can be checked exactly against the rows that exist;
+  verifying "Smith & Okafor (2019)" would mean matching a name the model wrote
+  against a name in the table, and near-misses -- Smith for Smyth, 2019 for
+  2018 -- are both the errors that matter and the ones fuzzy matching forgives.
+  A rendered citation is therefore a fact about the extraction, and
+  `$text_marked` keeps the marker form so the check can be re-run on what was
+  published. A study that cannot be named makes the whole run fall back to
+  markers rather than mixing names and numbers or inventing "n.d.".
+
+  `coherence = TRUE` runs one further call over the assembled draft, so the
+  independently-written sections read as one argument. Its output is checked
+  rather than trusted: a revision that added a citation, dropped one, or ran
+  into the model's output limit is discarded with a warning and `$draft` is what
+  you get. It is the one step that could quietly undo the guarantee the rest of
+  the pipeline exists to give. It is budgeted for a whole document rather than a
+  section -- sized by `max_section_tokens` it asked a model rewriting a
+  4800-token review for 300 tokens of output, and the citation check then
+  rejected the truncated reply for "dropping" citations that were never written,
+  reporting a budgeting mistake as a model failure.
+
+  `style` carries a register -- `"formal academic; hedge claims; past tense for
+  findings"` -- into both the section and coherence prompts, appended rather
+  than substituted, so the rules about citing every claim and inventing nothing
+  hold whatever voice is asked for.
+
 * **`gr_inventory()` — what is in a folder, before you read any of it.** Every
   other pre-run check here is per document and happens once the run is already
   going: `preflight()` estimates a document's cost as `gr_read()` is called, and
@@ -16,7 +56,14 @@
 
   One row per file **including** the ones that will not be read, because "180 of
   your files were skipped" is the finding and a table of survivors cannot report
-  it. No file can stop the survey either: a corrupt PDF, a binary file wearing a
+  it. A file whose extractor's package is absent is `needs_package`, not
+  `ready`: without `pdftools` every PDF was reported ready while `gr_ingest()`
+  on any of them aborts, which is this function's own failure mode -- a survey
+  promising a corpus is fine, and a run dying on the first file. Those files are
+  excluded from the token total and the cost floor too, because sizing a run
+  that cannot happen is worse than not sizing it. A file reachable by two paths
+  -- a `latest -> v3` symlink beside the versions it points at -- is surveyed
+  once; walking into directory symlinks had one file appearing forty-two times. No file can stop the survey either: a corrupt PDF, a binary file wearing a
   `.txt` extension, a broken symlink or anything unforeseen becomes a row saying
   so, which is the contract [`gr_read_many()`] has always given a corpus run. It chooses nothing for you: no automatic routing of files to recipes,
   because a router that reads one document with `retrieve` and another with
@@ -65,6 +112,11 @@
   mention defaults to **read**, never to skip — silence must not be able to
   lose a document's contents. When no usable plan comes back at all, the reader
   reads everything, warns `gr_preview_degraded`, and marks the answer partial.
+
+  A plan that marks every section skip reads nothing. It read the *whole
+  document*: `unlist()` on an empty list gives `NULL`, not `integer(0)`, and
+  `fit_chunks()` reads `order %||% seq_len(nrow(df))`, so the reader did the
+  exact opposite of what the plan said and charged for it.
 
   It is called `preview` and not `survey` because a recipe already owns
   `survey`, and `as_recipe()` resolves recipes before readers — so a reader of

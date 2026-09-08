@@ -112,5 +112,9 @@ inv$files[, c("file", "folder", "ext", "status", "tokens")]
 \seealso{
 \code{\link[=gr_read_many]{gr_read_many()}}, \code{\link[=gr_extract]{gr_extract()}}, \code{\link[=gr_extractors]{gr_extractors()}},
 \code{\link[=gr_ingest_spec]{gr_ingest_spec()}} for the OCR settings this predicts
+
+Other corpus functions: 
+\code{\link{gr_records}()},
+\code{\link{gr_search}()}
 }
 \concept{corpus functions}

@@ -192,6 +192,10 @@ gr_extract <- function(sources, fields, goal = NULL, recipe = "research",
   # It is not a preference: a document restored from `store` hands its answer
   # back or nothing at all, so a resumed run with keep_answers = FALSE would
   # produce a table with empty rows for everything it had already done.
+  bib_from <- if (inherits(sources, "gr_records")) {
+    rr <- sources$records
+    rr[is.na(rr$duplicate_of) & !is.na(rr$file), , drop = FALSE]
+  } else NULL
   out <- gr_read_many(sources, goal, rec, client = client, store = store,
                       on_error = on_error, max_total_usd = max_total_usd,
                       keep_answers = TRUE, recursive = recursive, ...)
@@ -201,7 +205,8 @@ gr_extract <- function(sources, fields, goal = NULL, recipe = "research",
   names(answers) <- docs
 
   structure(list(
-    table    = extraction_table(docs, answers, fields, out$summary),
+    table    = attach_record_fields(extraction_table(docs, answers, fields, out$summary),
+                                    bib_from, out$sources),
     evidence = extraction_evidence(docs, answers, out$summary$document_id),
     fields   = fields,
     summary  = out$summary,
@@ -392,4 +397,29 @@ extraction_evidence <- function(docs, answers, ids = NULL) {
   out <- do.call(rbind, parts)
   rownames(out) <- NULL
   out[, cols, drop = FALSE]
+}
+
+
+#' Join the export's bibliographic fields onto the extraction table.
+#'
+#' Who wrote a paper, when, and where it appeared are facts the search export
+#' already states. Asking a model to read them off a title page instead makes
+#' the one part of a citation that must be exactly right rest on the loosest
+#' guarantee in the pipeline -- and a misread author is invisible, because the
+#' review still looks like a review.
+#'
+#' Joined on the file path, which is what `gr_records()` matched and what
+#' `gr_read_many()` read, so the identity cannot drift from the document. A
+#' field the extraction already produced is left alone: an explicit schema is
+#' the caller saying what they want, and silently overwriting it would be this
+#' function deciding it knows better.
+#' @noRd
+attach_record_fields <- function(tab, recs, sources) {
+  if (is.null(recs) || !nrow(recs) || !nrow(tab)) return(tab)
+  paths <- as.character(unlist(sources %||% character(0), use.names = FALSE))
+  if (length(paths) != nrow(tab)) return(tab)
+  hit <- match(paths, recs$file)
+  add <- intersect(c("authors", "year", "title", "venue", "doi"), names(recs))
+  for (nm in setdiff(add, names(tab))) tab[[nm]] <- recs[[nm]][hit]
+  tab
 }

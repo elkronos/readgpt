@@ -370,6 +370,32 @@ test_that("a category nobody studied needs the schema to be visible", {
   expect_match(with_schema$detail[with_schema$kind == "declared but unstudied"], "qualitative")
 })
 
+test_that("selecting columns from a gaps table gives a table", {
+  # `[` on a classed data frame keeps the class and drops every other attribute,
+  # so g[, cols] was still dispatched to print.gr_gaps() -- which then reported
+  # "NA study/studies" and "no schema given" about a perfectly good object,
+  # because the attributes carrying both had just been thrown away by the subset.
+  # The vignette is where that showed up: it printed the warning about a schema
+  # that had in fact been supplied.
+  tab <- claims_table(); tab$design <- "cohort"
+  cl <- claims_client(claims = paste0(
+    '{"claims":[{"claim":"One cohort found it.","kind":"finding","supported_by":[1],',
+    '"contradicted_by":[],"moderator":null,"scope":null}]}'))
+  cm <- quiet(gr_claims(tab, question = "Q?", client = cl))
+  g <- gr_gaps(cm)
+  expect_s3_class(g, "gr_gaps")
+  expect_gt(nrow(g), 0L)
+
+  cols <- g[, c("kind", "dimension")]
+  expect_false(inherits(cols, "gr_gaps"))
+  expect_s3_class(cols, "data.frame")
+  expect_identical(names(cols), c("kind", "dimension"))
+  # A row subset is still a subset, and the print method still says the truth
+  # about the whole object.
+  expect_equal(nrow(g[g$kind == "unreplicated", ]), 1L)
+  expect_output(print(g), "over 4 study/studies")
+})
+
 test_that("the gaps a section may state are the ones that were computed", {
   cl <- claims_client(claims = one_claim)
   cm <- quiet(gr_claims(claims_table(), question = "Q?", client = cl))

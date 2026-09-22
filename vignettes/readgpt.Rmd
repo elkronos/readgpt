@@ -427,6 +427,65 @@ review$citations
 cat(review$text)
 ```
 
+### Writing from claims instead of from rows
+
+That write-up was drafted from the table, one section at a time, and the prose
+shows it — the model walks the rows. The structure shows it too: the outline was
+fixed before anything was read, so the shape of the review is a hypothesis rather
+than a finding.
+
+`gr_claims()` computes the relations between studies first. Each claim names what
+supports it, what contradicts it, and which field distinguishes the two:
+
+```{r}
+claim_writer <- gr_mock_client(function(messages, params) {
+  sys <- messages[[1]]$content
+  if (grepl("turn a table of studies", sys, fixed = TRUE)) {
+    return(paste0('{"claims":[{"claim":"Revenue is higher in the south than the north.",',
+                  '"kind":"finding","supported_by":[2],"contradicted_by":[1],',
+                  '"moderator":"region","scope":"one report per region"},',
+                  '{"claim":"The northern region reported for fiscal 2024.",',
+                  '"kind":"finding","supported_by":[1],"contradicted_by":[],',
+                  '"moderator":null,"scope":"one report"}]}'))
+  }
+  if (grepl("sections of a review", sys, fixed = TRUE)) {
+    return(paste0('{"sections":[{"heading":"Where revenue is higher","brief":"the ',
+                  'regional comparison","claims":[1,2],"rationale":"one comparison"}]}'))
+  }
+  "Revenue was higher in the south [study 2] than in the north [study 1]."
+})
+
+cm <- gr_claims(table, question = protocol$question, client = claim_writer)
+cm$claims[, c("claim", "moderator", "n_support", "n_contradict")]
+```
+
+Every study number in that table was checked against the extraction before it got
+there. A number that is not in the table is dropped, a claim left with no
+supporting study is dropped entirely, and a `moderator` naming a column that does
+not exist is cleared — `cm$dropped` says what went and why, so a thin claims table
+can be told apart from a thin literature.
+
+`gr_outline()` then derives the sections from the claims, and `gr_gaps()` computes
+what the corpus does not contain — with no model call, so the gap list is
+something you can check by counting:
+
+```{r}
+outline <- gr_outline(cm, client = claim_writer)
+names(outline)
+gr_gaps(cm, extraction = table)[, c("kind", "dimension", "detail")]
+```
+
+```{r}
+from_claims <- gr_synthesise(table, outline = outline, question = protocol$question,
+                             client = claim_writer, claims = cm,
+                             gaps = gr_gaps(cm, extraction = table))
+from_claims$sections[, c("section", "n_claims", "claims_missed", "partial")]
+```
+
+Each section now argues its own claims and is shown only the studies those claims
+rest on. `claims_missed` is the citation check run backwards: a section handed a
+claim and not writing it up did not do what the outline promised, and says so.
+
 `gr_audit_report()` writes the whole chain out as one self-contained HTML file
 for somebody who did not run it:
 

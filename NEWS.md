@@ -397,6 +397,22 @@
   package since 0.4 on the strength of a published finding and has never been
   measured here.
 
+* **The README and the vignette describe what the package now does.** The
+  section on revising a draft still said `coherence = TRUE` runs "one further
+  call" and that the only check is on citations — both true until this release
+  and neither true now. Rewritten around the three passes and the claim-strength
+  guard. The claims layer, `restate`, and a short section on the registries you
+  can query without spending anything (`gr_models()`, `gr_extractors()`,
+  `gr_reader_signature()` and the rest — fourteen exported functions appeared
+  nowhere in either document) are documented for the first time.
+
+* **Selecting columns from a `gr_gaps()` result gives a table again.** `[` on a
+  classed data frame keeps the class and drops every other attribute, so
+  `g[, c("kind", "dimension")]` was still dispatched to the print method — which
+  then reported "NA study/studies" and warned that no schema had been given,
+  about an object built from a schema. Writing the vignette is what surfaced it:
+  the printed warning contradicted the code three lines above it.
+
 ## Fixed
 
 * **An adversarial sweep of the whole package, from six angles at once.** Every

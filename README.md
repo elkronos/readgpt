@@ -397,6 +397,26 @@ rehearsal and interference in human memory, mechanisms a transformer does not
 have; the reason here is positional attention, and it argues about placement
 rather than about what to select.
 
+**`restate` — the question at both ends.** The question is always asked *after*
+the excerpts, which is the position that gets followed. Over a few thousand
+tokens of context, an instruction appearing once at the bottom is a long way from
+the top, so `"auto"` repeats it before the body as well once the body is long
+enough to bury it. `"always"` and `"never"` override.
+
+Both of these are settings rather than rules, and for the same reason: whether
+either helps is a question about your corpus and your model, not something a
+package can assert. `gr_compare()` is the machinery to answer it — two recipes
+differing in one setting, over documents where you already know the answer:
+
+```r
+gr_compare(
+  my_papers, "What was the primary outcome?",
+  list(gr_recipe("plain", read = list(reader = "retrieve", context_order = "relevance")),
+       gr_recipe("edged", read = list(reader = "retrieve", context_order = "edges"))),
+  client = cl
+)$summary
+```
+
 ## Reading a run
 
 Nothing degrades silently. Everything below is recorded on the answer.
@@ -990,8 +1010,11 @@ Three studies met the criteria (Garcia, 2022; Lee & Petrov, 2021; Smith & Okafor
 - Smith, J., Okafor, A. (2019). Cognitive Load and Retention in Adult Learners. Journal of Educational Psychology 44(2).
 ```
 
-Add `coherence = TRUE` to run one further call over the whole draft, so the
-independently-written sections read as one argument.
+Add `coherence = TRUE` to revise the assembled draft, so the
+independently-written sections read as one argument. That is three passes, not
+one — `"structure"` reorders and merges, `"cut"` removes repetition, `"register"`
+polishes sentences — and each is forbidden from doing the others' job. Name a
+subset if you want fewer: `coherence = "cut"`.
 
 Three things about that are deliberate.
 
@@ -1009,18 +1032,103 @@ some studies by name and others by number reads as a mistake, and inventing
 field directly if your sources are awkward; parsing an arbitrary author list is
 a heuristic and is treated as one.
 
-**`coherence = TRUE` may reorganise prose but not change what is cited.**
-Sections are written independently — that is what keeps each one answerable to
-its own brief — so nothing joins them: terms drift, a study gets introduced
-twice, there are no transitions. One further call fixes that. The revision is
-then checked, and one that added a citation or lost one is discarded with a
-warning, leaving `review$draft`. It is the one step that could quietly undo
-everything above it, so it is the one step whose output is not trusted.
+**A revision pass may reorganise prose. It may not make the review claim more
+than the draft did.** Sections are written independently — that is what keeps
+each one answerable to its own brief — so nothing joins them: terms drift, a
+study gets introduced twice, there are no transitions. The revision passes fix
+that, and their output is the one thing in this pipeline that is not trusted,
+because they are the one step that could quietly undo everything above them.
+
+A revision that added or lost a citation is discarded, leaving `review$draft`.
+That check is necessary and it is not sufficient, because the most damaging thing
+an editing pass does leaves the citations exactly where they were: editing for
+impact means deleting hedges, and the hedges are where the uncertainty lives.
+"Three small trials suggest a modest benefit" comes back as "trials show a
+benefit" — same markers, same studies, a claim the evidence does not carry. So a
+revision is also discarded if it introduces a universal quantifier that was not
+there, introduces a booster ("demonstrates", "establishes", "confirms") that was
+not there, or carries fewer hedges per claim-bearing sentence than the draft did.
+
+That last test is a *rate*, not a total, so cutting a whole redundant sentence
+carries its hedges away with it and passes, while stripping the hedges off the
+sentences that remain does not. Only sentences carrying a citation are measured —
+headings, framing and transitions are exactly what an editing pass should be free
+to rewrite. `review$coherence` is one row per pass: what ran, what was kept, and
+why anything was thrown away.
+
+### Writing from claims instead of from rows
+
+Everything above writes each section from the whole table of studies, which has a
+cost you can see in the prose: the model goes row by row. "Smith (2019) found X.
+Garcia (2022) found Y." That enumeration is the clearest marker of a weak review,
+and it follows directly from what the prompt holds. Worse, the `outline` is fixed
+before the reading — so the review's structure is your hypothesis, when often the
+strongest thing a review has to say *is* structural: that a literature splits
+into three incompatible measures, and that the argument about effect size is
+really an argument about measurement.
+
+`gr_claims()` computes the relations first. Each claim names the studies that
+support it, the studies that contradict it, and the field that distinguishes
+them:
+
+```r
+cm <- gr_claims(x, question = protocol$question, client = cl)
+cm$claims[, c("claim", "moderator", "n_support", "n_contradict")]
+cm$support        # long: claim_id, study, role -- join it to reach documents and quotes
+cm$dropped        # what verification removed, and why
+```
+
+Every study number is verified against the table — the same check the `[study N]`
+markers in finished prose already get, one link earlier. A number that is not
+there is dropped and counted. A claim left with no supporting study is dropped
+entirely, because a claim attached to nothing is an opinion. A `moderator` naming
+a column the table does not have is cleared, because an invented explanation for
+a real disagreement is the most convincing error this layer can make. `$dropped`
+records all of it, so a thin claims table can be told from a thin literature.
+
+`gr_outline()` then derives the sections *from* the claims and hands them back as
+an ordinary outline you can accept, edit or throw away. `gr_gaps()` computes what
+the corpus does not contain — a declared category nobody studied, a dimension
+with no variation, a claim nobody has replicated, a disagreement nothing explains
+— in R, with no model call, so the gap list is a fact you can check by counting:
+
+```r
+o <- gr_outline(cm, client = cl)
+o                        # headings and briefs; attr(o, "claims") is the assignment
+g <- gr_gaps(cm, extraction = x)
+
+review <- gr_synthesise(x, outline = o, question = protocol$question,
+                        client = cl, claims = cm, gaps = g,
+                        cite_style = "author-year", coherence = TRUE)
+```
+
+Each section now argues its own claims and is shown only the studies those claims
+rest on, ordered so a twelve-person pilot stops getting the same space as a
+two-thousand-person trial. A section handed a claim and not writing it up is
+marked partial and says which — the citation check in reverse.
+
+The schema this wants as input is the `claims` protocol
+(`gr_protocols("claims")`): `design` and `finding` are coded as enums so studies
+can be compared mechanically, each paired with the paper's own wording so the
+coding can be checked rather than trusted. `finding` is coded relative to *your*
+question, which is what lets a non-interventional literature have contradictions
+at all — and why that template is refused until you replace the placeholder
+question in it.
+
+Two things it deliberately does not do. It does not rank study designs when
+deciding emphasis: that would assert a cohort study beats a qualitative one, and
+totalling per-item scores into one number is what Cochrane says plainly is
+discouraged. Design is a grouping variable here — what distinguishes the sides of
+a disagreement — not a score. And nothing asks a model to judge which of its own
+inputs are stale or wrong; if two studies conflict, both are reported and the
+conflict is named, because "the model decided this one was wrong" is not
+something anyone can check.
 
 `gr_audit_report()` writes that chain out as one self-contained HTML file — the
 protocol as fixed in advance, what happened to every document, every value with
 its quote and page and whether the quote is really there, what was written and
-which rows each claim rests on, and what it cost. It is not for you; it is for
+which rows each claim rests on, every claim with the studies for and against it
+and where each one ended up, and what it cost. It is not for you; it is for
 the reviewer or co-author whose question is "how do you know?" — the call is in
 the block above.
 
@@ -1131,6 +1239,36 @@ identical(
 
 One thing still does not replay: a trace does not record the JSON schema a call
 requested, so two calls differing only by schema share a recording.
+
+## Seeing what is there
+
+Every registry answers what it holds, and none of these makes a model call:
+
+```r
+gr_extractors()          # which file types have an extractor, and what each needs
+gr_segmenters()          # the seven chunkers, with their settings
+gr_readers()             # the twelve reading strategies
+gr_embedders()           # api, lexical, and anything you registered
+gr_protocols()           # the four schema templates
+gr_models()              # context windows and prices, as this package knows them
+gr_model_limits("gpt-4o")
+
+gr_tokenizer()           # which counter is in use
+gr_set_tokenizer("tiktoken")   # exact counts, with reticulate; "heuristic" is the default
+
+gr_cache_stats(cache)    # entries, bytes, hits, misses, writes
+gr_cache_clear(cache)
+gr_reader_signature("skim")    # select|calls|state -- how a reader traverses a document
+```
+
+`gr_models()` is worth a look before a long run: an unregistered model falls back
+to a conservative 128k window with no price, so budgets and cost estimates go
+quiet rather than wrong. `gr_register_model()` fixes that in one line.
+
+`gr_reader_signature()` is the answer to "are these strategies actually
+different?" — it reports how each one selects chunks, how many calls it makes and
+whether it carries state, so two readers claiming to differ can be checked rather
+than believed.
 
 ## Extending it
 

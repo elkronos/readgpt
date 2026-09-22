@@ -883,6 +883,22 @@ gr_gaps <- function(claims, extraction = NULL, max_cells = 40L, min_reported = 0
             studies = nrow(st), had_schema = !is.null(fields))
 }
 
+# `[` on a classed data frame keeps the class and loses every other attribute, so
+# `g[, c("kind", "dimension")]` was still dispatched to print.gr_gaps() -- which
+# then reported "NA study/studies" and "no schema given" about a perfectly good
+# object, because the attributes carrying both had been dropped by the subset.
+# Selecting columns from a table should give a table.
+#' @export
+`[.gr_gaps` <- function(x, ...) {
+  out <- NextMethod()
+  if (is.data.frame(out)) {
+    class(out) <- "data.frame"
+    attr(out, "studies") <- NULL
+    attr(out, "had_schema") <- NULL
+  }
+  out
+}
+
 #' @export
 print.gr_gaps <- function(x, ...) {
   cat(sprintf("<gr_gaps> %d gap(s) over %s study/studies\n", nrow(x),

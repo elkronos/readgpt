@@ -106,8 +106,10 @@ what the citation check ran on.}
 \item{\code{references}}{The reference list, or \code{NULL}.}
 \item{\code{cite_style}}{The style actually used, which is not always the one
 asked for.}
-\item{\code{coherence}}{What the coherence pass did, or \code{NULL} if it did not
-run: \code{ran}, \code{kept}, \code{reason}, and any citations \code{added} or \code{lost}.}
+\item{\code{coherence}}{One row per revision pass, or \code{NULL} if none ran:
+\code{pass} (which of \code{"structure"}, \code{"cut"}, \code{"register"}), \code{ran}, \code{kept},
+\code{lost} and \code{added} (citations, if the revision changed them), and
+\code{reason} for anything discarded.}
 \item{\code{sections}}{One row per section: \code{section}, \code{brief}, \code{text},
 \code{n_cited}, \code{n_unknown}, \code{partial}.}
 \item{\code{citations}}{Long form: \code{section}, \code{study}, \code{document},

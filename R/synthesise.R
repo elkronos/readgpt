@@ -98,8 +98,10 @@
 #'     \item{`references`}{The reference list, or `NULL`.}
 #'     \item{`cite_style`}{The style actually used, which is not always the one
 #'       asked for.}
-#'     \item{`coherence`}{What the coherence pass did, or `NULL` if it did not
-#'       run: `ran`, `kept`, `reason`, and any citations `added` or `lost`.}
+#'     \item{`coherence`}{One row per revision pass, or `NULL` if none ran:
+#'       `pass` (which of `"structure"`, `"cut"`, `"register"`), `ran`, `kept`,
+#'       `lost` and `added` (citations, if the revision changed them), and
+#'       `reason` for anything discarded.}
 #'     \item{`sections`}{One row per section: `section`, `brief`, `text`,
 #'       `n_cited`, `n_unknown`, `partial`.}
 #'     \item{`citations`}{Long form: `section`, `study`, `document`,
@@ -384,6 +386,19 @@ synth_usable <- function(tab, include_unclear) {
   ok & distinct & filled
 }
 
+#' The fields `render_studies()` actually shows the model.
+#'
+#' Shared so that a check on what the model may name cannot drift from what the
+#' model was shown. `claims_verify()` used the reserved-field list instead, which
+#' differs from this in both directions, and accepted a moderator naming a column
+#' that had been withheld from the prompt.
+#' @noRd
+study_fields <- function(used, hide = character(0)) {
+  meta <- c("document", "document_id", "status", "duplicate_of", "error",
+            "n_filled", "n_unverified", "conflicts", "study")
+  setdiff(names(used), c(meta, hide))
+}
+
 #' The table as text the model can cite.
 #'
 #' One block per row, numbered, with the field values and the document it came
@@ -392,9 +407,7 @@ synth_usable <- function(tab, include_unclear) {
 #' always be resolved back to a document.
 #' @noRd
 render_studies <- function(used, hide = character(0)) {
-  meta <- c("document", "document_id", "status", "duplicate_of", "error",
-            "n_filled", "n_unverified", "conflicts", "study")
-  fields <- setdiff(names(used), c(meta, hide))
+  fields <- study_fields(used, hide)
   vapply(seq_len(nrow(used)), function(i) {
     vals <- vapply(fields, function(f) {
       v <- used[[f]][i]
@@ -441,7 +454,14 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
     ask <- paste0(ask, "\n\n<gaps>\n", as_chr1(gaps), "\n</gaps>\n",
                   "State only the gaps listed above. Do not add others.")
   }
-  overhead <- prompt_overhead(ask, system_prompt)
+  # The brief is repeated after the studies (see below), and a restatement that
+  # is not in the overhead is a prompt that overruns the window by exactly its
+  # length. `ask` itself is sent once, hence "never" there; the tail is counted
+  # on its own because it restates the section brief, not the whole of `ask`.
+  again <- paste0("write the '", heading, "' section, which must cover: ", brief)
+  overhead <- prompt_overhead(ask, system_prompt, "never") +
+    if (identical(as_chr1(spec$restate, "auto"), "never")) 0L else
+      gr_count_tokens(paste0("\n\nAgain, the question: ", again))
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
 
   body <- paste(rendered, collapse = "\n\n")
@@ -455,9 +475,7 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
       # instruction given once at the top is a long way from where the writing
       # happens.
       list(role = "user", content = paste0("<studies>\n", body, "\n</studies>",
-                                           restate_tail(body, paste0("write the '", heading,
-                                                                     "' section, which must cover: ",
-                                                                     brief))))
+                                           restate_tail(body, again, spec$restate)))
     ), model = spec$model, max_output = spec$max_answer_tokens,
        temperature = spec$temperature, trace = trace, label = "synthesise.section")
     if (usable_text(res)) res$text else ""

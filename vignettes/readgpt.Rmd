@@ -361,7 +361,7 @@ protocol <- gr_protocol(
 protocol
 ```
 
-`gr_protocols()` lists three templates to start from, and
+`gr_protocols()` lists four templates to start from, and
 `gr_protocol_save()`/`gr_protocol_read()` round-trip one through a JSON file so
 it can be shared and cited alongside the results.
 
@@ -491,7 +491,7 @@ for somebody who did not run it:
 
 ```{r eval = FALSE}
 gr_audit_report("audit.html", screening = screened, extraction = table,
-                review, protocol = protocol)
+                synthesis = review, protocol = protocol)
 ```
 
 Every `[study n]` is parsed back out and checked against the rows that exist;

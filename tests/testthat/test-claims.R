@@ -494,3 +494,225 @@ test_that("the report carries every claim, its studies, and where it ended up", 
   expect_true("claims drawn" %in% fl$stage)
   expect_equal(fl$n[fl$stage == "claims drawn"], nrow(f$claims$claims))
 })
+
+# ---------------------------------------------------------------------------
+# Adversarial sweep of the claims layer: every one of these was reproduced
+# against the layer as first written.
+# ---------------------------------------------------------------------------
+
+test_that("a malformed claims reply returns nothing rather than erroring", {
+  # A JSON array of STRINGS parses to a list of characters, and `e$claim` on a
+  # character vector is an error -- so gr_claims() died with "$ operator is
+  # invalid for atomic vectors" instead of warning that no claims came back.
+  for (bad in list(list("a", "b"), 1:3, "a string", list(list()), character(0))) {
+    expect_silent(got <- readgpt:::claim_rows(bad))
+    expect_null(got)
+  }
+  for (bad in list(list("A", "B"), 1:2, list(list()))) {
+    expect_silent(got <- readgpt:::outline_rows(bad))
+    expect_null(got)
+  }
+  # A well-formed entry beside a malformed one survives; the malformed one goes.
+  expect_equal(nrow(readgpt:::claim_rows(list(list(claim = "x", supported_by = 1L), "b"))), 1L)
+  expect_equal(nrow(readgpt:::outline_rows(list(list(heading = "A", brief = "b"), "B"))), 1L)
+})
+
+test_that("a claim with no text is not a claim", {
+  # It used to reach claims_verify(), which drops a claim only when it also has
+  # no supporting study -- so an entry that was all ids and no sentence became a
+  # row in `$claims`, and gr_outline() wrote a section arguing it.
+  expect_null(readgpt:::claim_rows(list(list(claim = "   ", supported_by = list(1L)))))
+})
+
+test_that("a merge that moves a contradiction onto the supporting side says so", {
+  # `.contradict` is setdiff(contradicts, supports), so a study that supported
+  # one member of a group and contradicted another vanished from the
+  # contradicting side: n_contradict went 1 -> 0 with nothing in `note`. A merge
+  # manufactured a consensus no study agreed to.
+  A <- paste0('{"claims":[{"claim":"The drug lowers mortality in trials.","kind":"finding",',
+              '"supported_by":[1,3],"contradicted_by":[2],"moderator":"design","scope":"t"}]}')
+  B <- paste0('{"claims":[{"claim":"The drug lowers mortality.","kind":"finding",',
+              '"supported_by":[2],"contradicted_by":[4],"moderator":null,"scope":"all"}]}')
+  cl <- gr_mock_client(function(messages, params) {
+    if (grepl("Group the ones", messages[[1]]$content, fixed = TRUE)) return('{"groups":[[1,2]]}')
+    "x"
+  })
+  before <- readgpt:::claims_verify(
+    rbind(readgpt:::claim_rows(jsonlite::fromJSON(A)$claims),
+          readgpt:::claim_rows(jsonlite::fromJSON(B)$claims)),
+    readgpt:::synth_studies(claims_table(), FALSE))$claims
+  got <- quiet(readgpt:::claims_reconcile(before, "Q?", cl, gr_read_spec("stuff"), gr_trace()))
+  expect_equal(nrow(got), 1L)
+  expect_equal(got$.support[[1]], c(1L, 2L, 3L))
+  expect_equal(got$.contradict[[1]], 4L)
+  expect_match(got$note[1], "study 2 contradicted a claim merged into this one")
+})
+
+test_that("two sections with the same heading are one section", {
+  # Everything downstream keys the outline by heading, so a repeated heading was
+  # written twice and each copy took the union of both claim sets: three claims
+  # came out as five section slots.
+  secs <- data.frame(heading = c("Findings", "Findings", "Other"),
+                     brief = c("first", "second", "third"),
+                     rationale = NA_character_, stringsAsFactors = FALSE)
+  secs$.claims <- list(1L, 2L, 3L)
+  cw <- data.frame(claim_id = 1:3, kind = "finding", claim = c("a", "b", "c"),
+                   stringsAsFactors = FALSE)
+  ol <- quiet(readgpt:::finish_outline(secs, cw, NULL, 10L))
+  expect_equal(names(ol), c("Findings", "Other"))
+  map <- attr(ol, "claims")
+  expect_equal(nrow(map), 3L)
+  expect_equal(sort(map$claim_id[map$section == "Findings"]), c(1L, 2L))
+  expect_false(anyDuplicated(names(attr(ol, "rationale"))) > 0L)
+})
+
+test_that("a moderator naming a column the model never saw is cleared", {
+  # The check used the reserved-field list, which leaves the bibliographic
+  # columns in -- but render_studies() withholds them, precisely so a claim
+  # cannot be attributed to a name or a year. A claim could name `year` as the
+  # moderator of a disagreement and be accepted.
+  tab <- claims_table()
+  tab$author <- c("Smith", "Jones", "Lee", "Diaz")
+  tab$year <- c(2019L, 2020L, 2021L, 2022L)
+  cl <- claims_client(claims = paste0(
+    '{"claims":[{"claim":"It works in the later studies.","kind":"finding",',
+    '"supported_by":[1,3],"contradicted_by":[2],"moderator":"year","scope":"x"}]}'))
+  cm <- quiet(gr_claims(tab, question = "Q?", client = cl))
+  expect_true(is.na(cm$claims$moderator))
+  expect_match(cm$claims$note, "cleared moderator 'year'")
+  expect_true("moderator is not a column in the table" %in% cm$dropped$reason)
+  # A column that IS shown is still accepted.
+  cl2 <- claims_client(claims = paste0(
+    '{"claims":[{"claim":"It works in trials.","kind":"finding","supported_by":[1,3],',
+    '"contradicted_by":[2],"moderator":"design","scope":"x"}]}'))
+  expect_equal(quiet(gr_claims(tab, question = "Q?", client = cl2))$claims$moderator, "design")
+})
+
+test_that("study_weight() reads an `n` that is written out in words", {
+  # as.numeric("900 participants") is NA, NA scored 0, and 0 is the bottom of the
+  # scale -- so a 900-participant study weighed LESS than one with 25 and
+  # claim_order() put the small study's claim first.
+  chr <- data.frame(study = 1:2, n = c("900 participants", "25"), stringsAsFactors = FALSE)
+  num <- data.frame(study = 1:2, n = c(900, 25))
+  expect_equal(unname(readgpt:::study_weight(chr)), unname(readgpt:::study_weight(num)))
+  expect_gt(readgpt:::study_weight(chr)[["1"]], readgpt:::study_weight(chr)[["2"]])
+  # A cell holding two numbers is a cell this column did not get -- 12060 is not
+  # a better reading of "120 (60 per arm)" than a miss -- and an unknown `n` sits
+  # at the mean of what IS known rather than at the bottom of the scale.
+  mixed <- data.frame(study = 1:4, n = c("900", "25", "120 (60 per arm)", NA),
+                      stringsAsFactors = FALSE)
+  w <- readgpt:::study_weight(mixed)
+  expect_equal(w[["3"]], w[["4"]])
+  expect_lt(w[["3"]], w[["1"]])
+  expect_gt(w[["3"]], w[["2"]])
+})
+
+test_that("gr_gaps() does not describe the reporters as the whole table", {
+  # "every study reports 'cohort'" was printed when 2 of 4 studies reported it,
+  # because the missing cells are dropped before the values are counted. And the
+  # crosstab compared UNTRIMMED values while rule 2 trimmed, so " cohort" was
+  # simultaneously the only value reported and an unstudied combination.
+  tab <- claims_table()
+  # Both cells carry the untrimmed value, so the untrimmed crosstab has no entry
+  # for ("cohort", "urban") at all -- with one trimmed row present, that row
+  # covered the cell and the bug hid.
+  tab$design <- c(" cohort", " cohort", NA, NA)
+  tab$setting <- c("urban ", "urban ", NA, NA)
+  cl <- claims_client(claims = paste0(
+    '{"claims":[{"claim":"A cohort found it.","kind":"finding","supported_by":[1],',
+    '"contradicted_by":[],"moderator":null,"scope":"one"}]}'))
+  cm <- quiet(gr_claims(tab, question = "Q?", client = cl))
+  fl <- gr_fields(design = gr_field("design", type = "enum", values = c("cohort", "trial")),
+                  setting = gr_field("setting", type = "enum", values = c("urban", "rural")))
+  g <- gr_gaps(cm, extraction = fl)
+  nov <- g$detail[g$kind == "no variation" & g$dimension == "design"]
+  expect_match(nov, "^the 2 of 4 studies that report it all say 'cohort'$")
+  combos <- g$detail[g$kind == "combination unstudied"]
+  expect_false(any(grepl("design = 'cohort' with setting = 'urban'", combos, fixed = TRUE)))
+  expect_true(any(grepl("design = 'trial' with setting = 'rural'", combos, fixed = TRUE)))
+})
+
+# ---------------------------------------------------------------------------
+# The strength guard: matched as substrings, compared as sets, and rated with
+# floor(). Each of the three let a real escalation through.
+# ---------------------------------------------------------------------------
+
+test_that("booster stems match whole words, not substrings", {
+  sg <- readgpt:::strength_guard
+  # "improved" contains "prove", so the draft appeared to already use the
+  # booster and the revision's "proves" was not new.
+  expect_false(sg("Outcomes improved in a small subgroup [study 1].",
+                  "The small subgroup data proves the drug works [study 1].")$ok)
+  # And a revision that ADDS a hedge was rejected for introducing a booster.
+  expect_true(sg("The benefit may be real [study 1].",
+                 "The benefit may be real but is unproven [study 1].")$ok)
+  expect_true(sg("Blood pressure may have fallen in a small trial [study 1].",
+                 "Blood pressure may have improved in a small trial [study 1].")$ok)
+})
+
+test_that("saying a booster more often is introducing it", {
+  # setdiff() on the pattern SETS: the draft said "demonstrates" once, so the
+  # set was unchanged however many times the revision said it. The revision below
+  # keeps the hedging rate up deliberately, so the only rule that can reject it
+  # is the booster count -- otherwise the test passes for the wrong reason.
+  r <- readgpt:::strength_guard(
+    "Study one demonstrates a benefit [study 1]. Mortality may fall [study 2].",
+    paste("Study one demonstrates a benefit [study 1].",
+          "It demonstrates it in trials, which may matter [study 2].",
+          "The data demonstrates the effect, which may be small [study 3]."))
+  expect_false(r$ok)
+  expect_match(r$reason, "demonstrat")
+})
+
+test_that("merging two hedged sentences into one unhedged sentence is refused", {
+  # floor(1/2 * 1) = 0, so the revision had to carry no hedges at all. This is
+  # the exact edit the guard exists to catch.
+  expect_false(readgpt:::strength_guard(
+    "Mortality may be reduced [study 1]. Readmission was lower [study 2].",
+    "Mortality is reduced [study 1] and readmission is lower [study 2].")$ok)
+})
+
+test_that("a booster in uncited framing prose is still a booster", {
+  # Boosters are measured over all prose except headings: "the evidence
+  # demonstrates a clear benefit" carries no marker, and an editing pass has no
+  # business writing it anywhere.
+  expect_false(readgpt:::strength_guard(
+    "The effect may be small [study 1].",
+    "The evidence demonstrates a clear benefit. The effect may be small [study 1].")$ok)
+  # Universals are not, because they have ordinary non-claim uses in framing.
+  expect_true(readgpt:::strength_guard(
+    "This section is organised by design. Two trials suggest a benefit [study 1].",
+    paste("We now turn to the evidence, all of which is clearly relevant.",
+          "Two trials suggest a benefit [study 1]."))$ok)
+})
+
+test_that("an abbreviation does not end a sentence, and a heading is not part of one", {
+  # "(e.g. those over 65)" was split after "e.g.", so the half carrying the hedge
+  # was discarded and the guard measured "those over 65) [study 1]."
+  s <- "It is possible that the effect holds in adults (e.g. those over 65) [study 1]."
+  expect_equal(readgpt:::claim_sentences(s), s)
+  expect_true(readgpt:::strength_guard(
+    "It is possible that the effect holds in older adults [study 1].", s)$ok)
+  # A heading has no terminator, so it used to glue onto the first sentence of
+  # its section.
+  expect_equal(readgpt:::claim_sentences("## Findings\nThe effect may be small [study 1]."),
+               "The effect may be small [study 1].")
+})
+
+test_that("a draft with no room for its own rewrite is skipped, not sent", {
+  # gr_budget() shrinks the output reserve to the floor rather than failing when
+  # the window is tight, which makes bud$input LARGER -- so the draft passed the
+  # input test and the call went out with max_output = need anyway.
+  gr_register_model("revise-tight", context_window = 4000L, max_output = 3900L,
+                    input_usd = 0, output_usd = 0)
+  draft <- paste(rep("The effect may be small [study 1].", 330), collapse = " ")
+  need <- as.integer(ceiling(gr_count_tokens(draft) * 1.15) + 64L)
+  expect_lt(need, 3900L)   # the output-limit guard is NOT what catches this
+  cl <- gr_mock_client(function(messages, params) draft)
+  r <- quiet(readgpt:::revise_once(
+    draft, "Q?", cl, gr_read_spec("stuff", model = "revise-tight", max_answer_tokens = 300L),
+    gr_trace(), NULL, "cut"))
+  expect_false(r$ran)
+  expect_length(cl$calls(), 0L)
+  expect_equal(r$reason, "draft exceeds the context window")
+})

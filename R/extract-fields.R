@@ -253,3 +253,22 @@ numeric_token <- function(x, exponent = FALSE) {
   if (length(hits) != 1L) return(NULL)
   suppressWarnings(as.numeric(gsub(",", "", hits)))
 }
+
+#' A sample-size column read the way [numeric_token()] reads a value.
+#'
+#' A stored `n` is whatever the extraction put there, and that is often
+#' "900 participants" rather than 900. as.numeric() makes that NA, and a weight
+#' built on it then treats a large study as an unreported one.
+#'
+#' Vectorised, and deliberately as strict as numeric_token(): a cell holding two
+#' numbers is a cell this column did not get, not an invitation to guess which
+#' one is the sample size.
+#' @noRd
+n_column <- function(x) {
+  if (is.numeric(x)) return(as.numeric(x))
+  vapply(as.character(x), function(v) {
+    if (is.na(v) || !nzchar(trimws(v))) return(NA_real_)
+    t <- numeric_token(v)
+    if (is.null(t) || !length(t) || !is.finite(t[1])) NA_real_ else as.numeric(t[1])
+  }, numeric(1), USE.NAMES = FALSE)
+}

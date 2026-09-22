@@ -165,8 +165,10 @@ gr_claims <- function(extraction, question = NULL, protocol = NULL, client = NUL
   # Same withholding as the write-up: a model that can see who wrote a study
   # will attribute to the name rather than to the number, and a claim attributed
   # to a name is checked by nothing.
-  rendered <- render_studies(used, hide = unlist(bib_columns(used), use.names = FALSE))
-  overhead <- prompt_overhead(question, .gr_prompts$claims_system)
+  hidden <- unlist(bib_columns(used), use.names = FALSE)
+  rendered <- render_studies(used, hide = hidden)
+  # "never": claims_batch() sends the question once.
+  overhead <- prompt_overhead(question, .gr_prompts$claims_system, "never")
   bud <- gr_budget(spec$model, reserve_output = max_claim_tokens, overhead = overhead)
   groups <- synth_batches(rendered, bud$input)
 
@@ -183,7 +185,13 @@ gr_claims <- function(extraction, question = NULL, protocol = NULL, client = NUL
     return(new_claims(empty_claim_rows(), used, question, empty_dropped(), trace))
   }
 
-  checked <- claims_verify(got, used)
+  # The columns the model was SHOWN, not every column in the table. The moderator
+  # check used the reserved-field list, which leaves the bibliographic columns in
+  # -- so a claim could name `year` as the moderator of a disagreement, be
+  # accepted, and carry an explanation drawn from a column render_studies()
+  # withheld precisely so it could not be used. An invented explanation for a
+  # real disagreement is the most convincing error this layer can make.
+  checked <- claims_verify(got, used, cols = study_fields(used, hide = hidden))
   if (!nrow(checked$claims)) {
     gr_warn(paste0("Every claim was dropped in verification -- see `$dropped`. The usual cause is ",
                    "a model citing study numbers that are not in the table."),
@@ -247,7 +255,15 @@ claim_rows <- function(x) {
   if (is.null(x)) return(NULL)
   # A single claim can arrive as a bare named list rather than a one-row frame.
   if (!is.data.frame(x) && is.list(x) && !is.null(names(x))) x <- list(x)
+  # Anything else the reply might be. A JSON array of strings parses to a list
+  # of CHARACTERS, and `e$claim` on a character vector is an error, not a miss:
+  # `$ operator is invalid for atomic vectors` came out of gr_claims() as a crash
+  # rather than as "no claims came back". A bare vector reached the frame branch
+  # and died in rep(NA, nrow(x)) on a NULL nrow.
+  if (!is.data.frame(x) && !is.list(x)) return(NULL)
   if (is.list(x) && !is.data.frame(x)) {
+    x <- x[vapply(x, function(e) is.list(e) && !is.null(names(e)), logical(1))]
+    if (!length(x)) return(NULL)
     flat <- lapply(x, function(e) list(
       claim = as_chr1(e$claim), kind = as_chr1(e$kind, "finding"),
       moderator = as_chr1(e$moderator, NA_character_), scope = as_chr1(e$scope, NA_character_),
@@ -276,6 +292,13 @@ claim_rows <- function(x) {
   x$scope[!nzchar(x$scope)] <- NA_character_
   x$.support <- sup
   x$.contradict <- con
+  # A claim with no text is not a claim. It used to survive to claims_verify(),
+  # which drops it only if it also has no supporting study -- so an entry that
+  # was all ids and no sentence became a row in `$claims` with an empty claim,
+  # and gr_outline() then wrote a section arguing it. outline_rows() has always
+  # dropped blank headings; this is the same rule one file over.
+  x <- x[nzchar(trimws(x$claim)), , drop = FALSE]
+  if (!nrow(x)) return(NULL)
   x
 }
 
@@ -295,9 +318,8 @@ claim_rows <- function(x) {
 #'     explanation for a real disagreement is the most convincing kind of error
 #'     this layer can make.
 #' @noRd
-claims_verify <- function(got, used) {
+claims_verify <- function(got, used, cols = study_fields(used)) {
   ids <- used$study
-  cols <- setdiff(names(used), c("study", .gr_reserved_fields))
   drops <- list()
   note <- rep(NA_character_, nrow(got))
   add <- function(claim, reason, detail) {
@@ -396,12 +418,24 @@ claims_reconcile <- function(claims, question, client, spec, trace) {
     first$moderator <- if (length(mods)) mods[1] else NA_character_
     sc <- stats::na.omit(claims$scope[v])
     first$scope <- if (length(sc)) sc[which.max(nchar(sc))] else NA_character_
+    sup <- sort(unique(unlist(claims$.support[v], use.names = FALSE)))
+    con <- sort(unique(unlist(claims$.contradict[v], use.names = FALSE)))
+    # A study that supported one member of this group and contradicted another
+    # is a DISAGREEMENT, and the setdiff below files it on the supporting side.
+    # Silently: `n_contradict` went 1 -> 0 with nothing in `note`, so a merge
+    # manufactured consensus that no study agreed to. The study still belongs on
+    # the supporting side -- it does support the merged wording -- but the reader
+    # has to be told, because this is exactly the kind of loss the claims layer
+    # exists to make visible.
+    flipped <- intersect(con, sup)
     nts <- stats::na.omit(claims$note[v])
+    if (length(flipped)) {
+      nts <- c(nts, sprintf(paste0("study %s contradicted a claim merged into this one; ",
+                                   "kept as supporting"), paste(flipped, collapse = ", ")))
+    }
     first$note <- if (length(nts)) paste(unique(nts), collapse = "; ") else NA_character_
-    first$.support <- list(sort(unique(unlist(claims$.support[v], use.names = FALSE))))
-    first$.contradict <- list(sort(setdiff(unique(unlist(claims$.contradict[v],
-                                                        use.names = FALSE)),
-                                           unlist(claims$.support[v], use.names = FALSE))))
+    first$.support <- list(sup)
+    first$.contradict <- list(setdiff(con, sup))
     first
   })
   reindex_claims(do.call(rbind, merged))
@@ -511,11 +545,21 @@ print.gr_claims <- function(x, ...) {
 #' A principled weighting waits on `gr_appraise()` and a named instrument.
 #' @noRd
 study_weight <- function(used) {
-  n <- suppressWarnings(as.numeric(used$n %||% rep(NA, nrow(used))))
+  # numeric_token(), not as.numeric(): an `n` column reading "900 participants"
+  # is not missing data, and as.numeric() made it NA. NA then scored 0 -- the
+  # bottom of the scale -- so a 900-participant study weighed LESS than one with
+  # 25, and claim_order() put the small study's claim first.
+  n <- n_column(used$n %||% rep(NA, nrow(used)))
   # log1p, because the difference between 20 and 200 participants matters far
   # more than the difference between 2000 and 2180.
-  size <- log1p(ifelse(is.na(n) | n < 0, 0, n))
-  size <- if (max(size) > 0) size / max(size) else rep(0, length(size))
+  size <- log1p(ifelse(is.na(n) | n < 0, NA_real_, n))
+  mx <- suppressWarnings(max(size, na.rm = TRUE))
+  size <- if (is.finite(mx) && mx > 0) size / mx else rep(NA_real_, length(size))
+  # An `n` nobody reported is UNKNOWN, not zero -- the same distinction the
+  # `filled` term below already makes by scoring NA at 0.5 rather than 0. Zero
+  # punished a study for a cell the extraction could not fill.
+  mid <- if (any(!is.na(size))) mean(size, na.rm = TRUE) else 0
+  size[is.na(size)] <- mid
   filled <- suppressWarnings(as.numeric(used$n_filled %||% rep(NA, nrow(used))))
   unver <- suppressWarnings(as.numeric(used$n_unverified %||% rep(0, nrow(used))))
   unver[is.na(unver)] <- 0
@@ -662,7 +706,12 @@ gr_outline <- function(claims, question = NULL, client = NULL, model = NULL,
 outline_rows <- function(x) {
   if (is.null(x)) return(NULL)
   if (!is.data.frame(x) && is.list(x) && !is.null(names(x))) x <- list(x)
+  # Same two shapes claim_rows() guards against: a JSON array of strings, and a
+  # bare vector. Both crashed rather than returning "no outline came back".
+  if (!is.data.frame(x) && !is.list(x)) return(NULL)
   if (is.list(x) && !is.data.frame(x)) {
+    x <- x[vapply(x, function(e) is.list(e) && !is.null(names(e)), logical(1))]
+    if (!length(x)) return(NULL)
     ids <- lapply(x, function(e) as_id_list(list(e$claims), 1L)[[1]])
     out <- do.call(rbind, lapply(x, function(e) data.frame(
       heading = as_chr1(e$heading), brief = as_chr1(e$brief),
@@ -728,6 +777,22 @@ finish_outline <- function(secs, cw, closing, max_sections) {
   if (length(unplaced)) {
     gr_msg(sprintf("%d claim(s) were not placed by the outline and went to the closing section.",
                    length(unplaced)))
+  }
+
+  # Everything downstream keys the outline by HEADING -- gr_synthesise() writes
+  # one section per name and looks its claims up by that name -- so two sections
+  # called the same thing wrote the same heading twice and each copy took the
+  # union of both claim sets. Three claims came out as five section slots. Merge
+  # rather than rename: a reply that proposed "Findings" twice meant one section.
+  if (anyDuplicated(secs$heading)) {
+    dup <- duplicated(secs$heading)
+    for (h in unique(secs$heading[dup])) {
+      j <- which(secs$heading == h)
+      secs$.claims[[j[1]]] <- sort(unique(unlist(secs$.claims[j], use.names = FALSE)))
+    }
+    gr_msg(sprintf("%d duplicate section heading(s) in the outline were merged into one.",
+                   sum(dup)))
+    secs <- secs[!dup, , drop = FALSE]
   }
 
   map <- do.call(rbind, lapply(seq_len(nrow(secs)), function(i) {
@@ -825,7 +890,15 @@ gr_gaps <- function(claims, extraction = NULL, max_cells = 40L, min_reported = 0
     # 2. A field every study answers the same way cannot explain a disagreement,
     #    and cannot bound a claim's scope either.
     if (length(v) > 1L && length(unique(v)) == 1L) {
-      add("no variation", nm, sprintf("every study reports '%s'", unique(v)), length(v))
+      # "every study reports 'cohort'" was printed when 2 of 10 studies reported
+      # it and the other 8 left the cell empty -- `v` drops the missing ones, so
+      # the sentence described the reporters as the whole table. A gap report
+      # that overstates what the literature says is worse than none.
+      add("no variation", nm,
+          if (length(v) == nrow(st)) sprintf("every study reports '%s'", unique(v))
+          else sprintf("the %d of %d studies that report it all say '%s'",
+                       length(v), nrow(st), unique(v)),
+          length(v))
     }
     # 3. A field most studies do not report is a gap in the literature's
     #    reporting, which is a finding about the literature.
@@ -843,7 +916,12 @@ gr_gaps <- function(claims, extraction = NULL, max_cells = 40L, min_reported = 0
     pairs <- utils::combn(sort(enums), 2L, simplify = FALSE)
     for (pr in pairs) {
       a <- fields[[pr[1]]]$values; b <- fields[[pr[2]]]$values
-      seen <- unique(paste(st[[pr[1]]], st[[pr[2]]], sep = "\u0001"))
+      # trimws(), because vals() trims and this did not: a cell holding " cohort"
+      # counted as studied for rule 2 and as UNSTUDIED here, so the same table
+      # produced "every study reports 'cohort'" and "design = 'cohort' with ...
+      # unstudied" in one report.
+      seen <- unique(paste(trimws(as.character(st[[pr[1]]])),
+                           trimws(as.character(st[[pr[2]]])), sep = "\u0001"))
       for (x in a) for (y in b) {
         if (cells >= max_cells) break
         if (!paste(x, y, sep = "\u0001") %in% seen) {

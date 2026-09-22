@@ -36,7 +36,8 @@ read_screen <- function(chunks, question, client, spec, trace) {
   }
   d <- chunks$chunks
   listing <- criteria_prompt(include, exclude)
-  overhead <- prompt_overhead(paste(question, listing), .gr_prompts$screen_system)
+  # "never": the message list below carries the question once.
+  overhead <- prompt_overhead(paste(question, listing), .gr_prompts$screen_system, "never")
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   cap <- min(bud$input, as_int1(spec[["screen_tokens"]], bud$input))
 

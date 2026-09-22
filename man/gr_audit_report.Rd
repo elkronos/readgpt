@@ -8,11 +8,11 @@ gr_audit_report(
   path,
   screening = NULL,
   extraction = NULL,
-  claims = NULL,
   synthesis = NULL,
   protocol = NULL,
-  records = NULL,
-  title = NULL
+  title = NULL,
+  claims = NULL,
+  records = NULL
 )
 }
 \arguments{
@@ -21,20 +21,20 @@ gr_audit_report(
 \item{screening, extraction, synthesis}{The objects from \code{\link[=gr_screen]{gr_screen()}},
 \code{\link[=gr_extract]{gr_extract()}} and \code{\link[=gr_synthesise]{gr_synthesise()}}.}
 
-\item{claims}{A \code{\link[=gr_claims]{gr_claims()}} result, or \code{NULL} to take the one the synthesis
-carries. It adds the link the rest of the report cannot make: the claim a
-sentence is making, back to the studies meant to support it.}
-
 \item{protocol}{The \code{\link[=gr_protocol]{gr_protocol()}} the run was made under. Worth passing even
 when the other objects carry its pieces: the criteria as \emph{written} are what
 a reader checks the decisions against.}
+
+\item{title}{A heading for the report.}
+
+\item{claims}{A \code{\link[=gr_claims]{gr_claims()}} result, or \code{NULL} to take the one the synthesis
+carries. It adds the link the rest of the report cannot make: the claim a
+sentence is making, back to the studies meant to support it.}
 
 \item{records}{A \code{\link[=gr_records]{gr_records()}}. Adds the search itself to the report --
 which sources, with what query, on what date -- and starts the flow counts
 at identification. Without one the report says so, because a missing search
 is a defect in the review rather than in the report.}
-
-\item{title}{A heading for the report.}
 }
 \value{
 \code{path}, invisibly.

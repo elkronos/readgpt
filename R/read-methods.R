@@ -24,7 +24,7 @@
 #' @noRd
 read_stuff <- function(chunks, question, client, spec, trace) {
   d <- chunks$chunks
-  overhead <- prompt_overhead(question, .gr_prompts$answer_system)
+  overhead <- prompt_overhead(question, answer_system(spec$cite), spec$restate)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   fit <- fit_chunks(d, bud$input)
 
@@ -117,7 +117,11 @@ read_refine <- function(chunks, question, client, spec, trace) {
   draft <- NULL; used <- integer(0); revisions <- 0L; failures <- 0L; truncated <- 0L
   # The draft grows with every revision, so unlike the other readers this one
   # can outgrow the context window mid-run. Budget for it explicitly.
-  overhead <- prompt_overhead(question, .gr_prompts$refine_system)
+  # Two different system prompts go out of this reader -- answer_messages() for
+  # the first chunk, refine_system for every revision after it -- so budget
+  # against the longer of the two rather than whichever is named here.
+  overhead <- max(prompt_overhead(question, .gr_prompts$refine_system, spec$restate),
+                  prompt_overhead(question, answer_system(spec$cite), spec$restate))
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   for (i in seq_len(nrow(d))) {
     if (!trace_can_call(trace)) break
@@ -196,7 +200,7 @@ read_skim <- function(chunks, question, client, spec, trace) {
   # copied out of the document, so it is the one that has to prove its quotes.
   ev <- evidence_table(d$chunk_id[keep], txt[keep], d$page[keep], d$section[keep],
                        source_text = d$text[keep], kind = "extracted")
-  overhead <- prompt_overhead(question, .gr_prompts$answer_system)
+  overhead <- prompt_overhead(question, answer_system(spec$cite), spec$restate)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   body <- paste(sprintf("[chunk %d]\n%s", ev$chunk_id, ev$text), collapse = "\n\n")
   dropped <- 0L
@@ -250,7 +254,7 @@ read_retrieve <- function(chunks, question, client, spec, trace) {
   keep <- mmr_select(rel, chunk_emb, k, lambda)
   if (!length(keep)) keep <- order(scores, decreasing = TRUE)[1]
 
-  overhead <- prompt_overhead(question, .gr_prompts$answer_system)
+  overhead <- prompt_overhead(question, answer_system(spec$cite), spec$restate)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   fit <- fit_chunks(d, bud$input, order = keep)
   # Fit first, then arrange: what gets in is a relevance question, where it sits
@@ -350,7 +354,7 @@ read_rerank <- function(chunks, question, client, spec, trace) {
   }
   keep_ord <- utils::head(keep_ord, as.integer(clamp(spec$top_k, 1, length(keep_ord))))
 
-  overhead <- prompt_overhead(question, .gr_prompts$answer_system)
+  overhead <- prompt_overhead(question, answer_system(spec$cite), spec$restate)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   fit <- fit_chunks(d, bud$input, order = as.integer(keep_ord))
   fit$idx <- arrange_context(fit$idx, spec$context_order)
@@ -403,7 +407,9 @@ read_hierarchical <- function(chunks, question, client, spec, trace) {
     got
   }
 
-  overhead <- prompt_overhead(question, .gr_prompts$answer_system)
+  # FALSE, not spec$cite: the merge call below asks for summaries without
+  # citation markers, so that is the system prompt it sends.
+  overhead <- prompt_overhead(question, answer_system(FALSE), spec$restate)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
 
   level <- 1L
@@ -502,6 +508,16 @@ read_iterative <- function(chunks, question, client, spec, trace) {
                    answer = list(type = "string"),
                    next_query = list(type = "string")))
 
+  # Built once and used for BOTH the budget and the call. Budgeting against
+  # `answer_system` alone while sending this understated the overhead by 88
+  # tokens a round, and the excerpts were sized to fill the gap.
+  step_system <- paste0(
+    .gr_prompts$answer_system,
+    " You are reading iteratively. If the excerpts so far are sufficient, set can_answer ",
+    "true and give the answer. If not, set can_answer false and put in next_query the ",
+    "specific missing information to search for -- a phrase you would expect to appear in ",
+    "the document, not a restatement of the question.")
+
   while (rounds < spec$max_rounds) {
     rounds <- rounds + 1L
     q_emb <- gr_embed(client, queries[length(queries)], trace = trace)
@@ -518,18 +534,20 @@ read_iterative <- function(chunks, question, client, spec, trace) {
 
     if (!trace_can_call(trace)) { done_reason <- "call cap"; break }
     obud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens,
-                      overhead = prompt_overhead(question, .gr_prompts$answer_system))
+                      overhead = prompt_overhead(question, step_system, spec$restate))
     step <- iterative_fit(d, seen, seen_score, obud$input, spec$context_order)
     body <- step$body
     dropped <- step$dropped
 
+    # Nothing gathered fits one prompt. The call was made anyway, with an empty
+    # <excerpts></excerpts>, and a model asked a question with no document in
+    # front of it answers from its own prior -- which came back as the
+    # document's answer, can_answer = true, chunks_used empty. An answer with no
+    # excerpt behind it is the one thing this package must not return.
+    if (!length(step$rows)) { done_reason <- "no gathered chunk fits one prompt"; break }
+
     out <- gr_call_json(client, list(
-      list(role = "system", content = paste0(
-        .gr_prompts$answer_system,
-        " You are reading iteratively. If the excerpts so far are sufficient, set can_answer ",
-        "true and give the answer. If not, set can_answer false and put in next_query the ",
-        "specific missing information to search for -- a phrase you would expect to appear in ",
-        "the document, not a restatement of the question.")),
+      list(role = "system", content = step_system),
       list(role = "user", content = paste0("Question: ", question)),
       # The question again after the excerpts when there are enough of them to
       # bury it. Every other reader asks last, through answer_messages(); this
@@ -584,7 +602,7 @@ read_iterative <- function(chunks, question, client, spec, trace) {
   # chunks routinely exceed the window, and the call was simply rejected by the
   # provider after the whole loop had been paid for.
   fbud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens,
-                    overhead = prompt_overhead(question, .gr_prompts$answer_system))
+                    overhead = prompt_overhead(question, answer_system(spec$cite), spec$restate))
   final <- iterative_fit(d, seen, seen_score, fbud$input, spec$context_order)
   sub <- d[final$rows, , drop = FALSE]
   res <- if (!nrow(sub)) {
@@ -872,7 +890,7 @@ read_preview <- function(chunks, question, client, spec, trace) {
   # DEMOTED to skim rather than dropped: the section still gets looked at, for
   # one call, instead of vanishing because the plan was more ambitious than the
   # context window.
-  overhead <- prompt_overhead(question, .gr_prompts$answer_system)
+  overhead <- prompt_overhead(question, answer_system(spec$cite), spec$restate)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   # as.integer(), because `unlist()` on an empty list returns NULL, not
   # integer(0) -- and `fit_chunks()` reads `order %||% seq_len(nrow(df))`, so a

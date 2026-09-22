@@ -350,6 +350,17 @@ restate_tail <- function(body, question, how = "auto") {
   paste0("\n\nAgain, the question: ", as_chr1(question))
 }
 
+#' The system prompt `answer_messages()` will actually send.
+#'
+#' Named rather than inlined so that the budget can be computed from the same
+#' string the call sends. Budgeting with `answer_system` and then sending
+#' `answer_system_cited` understates the overhead by 22 tokens whenever
+#' `cite = TRUE`, and the excerpts are then sized to fill the gap.
+#' @noRd
+answer_system <- function(cite = FALSE) {
+  if (isTRUE(cite)) .gr_prompts$answer_system_cited else .gr_prompts$answer_system
+}
+
 #' Build the standard question-answering message list.
 #' @noRd
 answer_messages <- function(question, body, cite = FALSE, label = "Excerpts",
@@ -361,7 +372,7 @@ answer_messages <- function(question, body, cite = FALSE, label = "Excerpts",
   # nothing that indexes these positionally shifts.
   lead <- if (restate_now(body, restate)) paste0("Question: ", question, "\n\n") else ""
   list(
-    list(role = "system", content = if (cite) .gr_prompts$answer_system_cited else .gr_prompts$answer_system),
+    list(role = "system", content = answer_system(cite)),
     list(role = "user", content = paste0(lead, "<", tolower(label), ">\n", body,
                                          "\n</", tolower(label), ">")),
     list(role = "user", content = paste0("Question: ", question))
@@ -398,8 +409,19 @@ fit_chunks <- function(df, budget_tokens, order = NULL, prefix = FALSE) {
 
 #' Standard overhead accounting for a reader's prompt.
 #' @noRd
-prompt_overhead <- function(question, system_prompt) {
-  sum(gr_count_tokens(c(as_chr1(question), as_chr1(system_prompt)))) + 64L
+prompt_overhead <- function(question, system_prompt, restate = "auto") {
+  # The question is counted TWICE unless restatement is off, because that is how
+  # many times it appears. `answer_messages()` adds a second copy before the body
+  # once the body is long, and the body was sized against a budget computed here
+  # -- so the prompt overran the window by exactly the length of the question.
+  # With a long question and a model whose window the run nearly fills,
+  # gr_call() refused to dispatch at all and the reader returned NOT_IN_DOCUMENT
+  # with nothing in it but `notes$error`. The default is the safe direction:
+  # reserving room that goes unused costs a little context, under-reserving
+  # costs the answer.
+  again <- if (identical(as_chr1(restate, "auto"), "never")) 0L else
+    gr_count_tokens(as_chr1(question))
+  sum(gr_count_tokens(c(as_chr1(question), as_chr1(system_prompt)))) + again + 64L
 }
 
 #' Turn per-chunk extraction results into an evidence table.
@@ -484,7 +506,10 @@ tree_merge <- function(client, question, pieces, spec, trace, label = "merge",
   prev_n <- length(pieces) + 1L
   repeat {
     level <- level + 1L
-    overhead <- prompt_overhead(question, system_prompt)
+    # "never": tree_merge() builds its own messages below and does not restate,
+    # so the question appears once. Left at the default it would reserve room
+    # for a second copy that is never sent and shrink every merge group.
+    overhead <- prompt_overhead(question, system_prompt, "never")
     bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
 
     # A single finding larger than the whole merge budget cannot be reduced by

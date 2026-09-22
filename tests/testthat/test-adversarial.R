@@ -460,3 +460,187 @@ test_that("a failed batch marks the section partial instead of vanishing from it
                                       client = cl, model = "gpt-4", cite_style = "marker"))
   expect_true(any(s$sections$partial))
 })
+
+# ---------------------------------------------------------------------------
+# The prompt budget and the prompt that is actually sent had drifted apart.
+#
+# Every reader sizes its excerpts against `gr_budget(overhead = ...)`. Three
+# separate things were added to the prompts after that arithmetic was written --
+# the tail restatement, the iterative step's extra system block, and the cited
+# variant of the answer system prompt -- and none of them was added to the
+# overhead. The prompt then overran the window by exactly the amount that was
+# not counted.
+# ---------------------------------------------------------------------------
+
+# deparse() wraps and pads, so a source-shape assertion has to normalise
+# whitespace before it can match what was written.
+squash <- function(x) gsub("\\s+", " ", paste(x, collapse = " "))
+
+test_that("prompt_overhead() counts the question twice unless restatement is off", {
+  q <- paste(rep("a long multi clause information need", 20), collapse = " ")
+  sys <- "system"
+  once <- readgpt:::prompt_overhead(q, sys, "never")
+  twice <- readgpt:::prompt_overhead(q, sys, "auto")
+  expect_equal(twice - once, gr_count_tokens(q))
+  expect_equal(readgpt:::prompt_overhead(q, sys, "always"), twice)
+  # The default is the safe direction: over-reserving costs a little context,
+  # under-reserving cost the whole answer.
+  expect_equal(readgpt:::prompt_overhead(q, sys), twice)
+})
+
+test_that("restate = 'auto' still leaves room for the call it is going to make", {
+  # Reproduction: with a long question and a model whose window the run nearly
+  # fills, the body was fitted to bud$input and answer_messages() then prepended
+  # the question again. gr_call() refused to dispatch and the reader returned
+  # NOT_IN_DOCUMENT with nothing in it but notes$error -- on the DEFAULT setting.
+  gr_register_model("restate-ctx", context_window = 3000L, max_output = 200L,
+                    input_usd = 0, output_usd = 0)
+  doc <- gr_ingest(paste(vapply(1:60, function(i)
+    paste(rep(sprintf("para %d words", i), 20), collapse = " "), character(1)),
+    collapse = "\n\n"))
+  ch <- quiet(gr_segment(doc, list(method = "paragraph", max_tokens = 60)))
+  q <- paste(rep("a multi clause information need about the primary outcome", 60),
+             collapse = " ")
+  for (rs in c("never", "auto", "always")) {
+    cl <- mock_echo()
+    ans <- quiet(gr_read(ch, q, cl, list(reader = "stuff", model = "restate-ctx",
+                                         max_answer_tokens = 200L, restate = rs)))
+    expect_length(cl$calls(), 1L)
+    expect_equal(ans$answer, "MOCK ANSWER", label = paste("restate =", rs))
+  }
+})
+
+test_that("the budget uses the system prompt the call actually sends", {
+  # answer_messages(cite = TRUE) sends answer_system_cited, which is longer than
+  # answer_system. Budgeting against the short one understated the overhead by
+  # the difference on every cited read.
+  expect_gt(gr_count_tokens(readgpt:::answer_system(TRUE)),
+            gr_count_tokens(readgpt:::answer_system(FALSE)))
+  msgs <- readgpt:::answer_messages("Q?", "body", cite = TRUE)
+  expect_identical(msgs[[1]]$content, readgpt:::answer_system(TRUE))
+  msgs <- readgpt:::answer_messages("Q?", "body", cite = FALSE)
+  expect_identical(msgs[[1]]$content, readgpt:::answer_system(FALSE))
+  # Every reader that goes on to call answer_messages(cite = spec$cite) budgets
+  # against the same function, not against the short prompt by name.
+  for (fn in c("read_stuff", "read_skim", "read_retrieve", "read_rerank", "read_preview")) {
+    src <- squash(deparse(get(fn, envir = asNamespace("readgpt"))))
+    expect_match(src, "prompt_overhead(question, answer_system(spec$cite)", fixed = TRUE,
+                 info = fn)
+  }
+  # hierarchical sends cite = FALSE explicitly, so it budgets for that.
+  src <- squash(deparse(readgpt:::read_hierarchical))
+  expect_match(src, "prompt_overhead(question, answer_system(FALSE)", fixed = TRUE)
+})
+
+test_that("the iterative step budgets for the system prompt it sends", {
+  # The step call sends answer_system PLUS an iterative instruction block. The
+  # overhead counted only the first, so the excerpts were sized to fill the gap.
+  gr_register_model("iter-ctx", context_window = 2000L, max_output = 300L,
+                    input_usd = 0, output_usd = 0)
+  doc <- gr_ingest(paste(vapply(1:12, function(i)
+    paste(rep(sprintf("paragraph %d topic %d", i, i), 12), collapse = " "), character(1)),
+    collapse = "\n\n"))
+  ch <- quiet(gr_segment(doc, list(method = "paragraph", max_tokens = 60)))
+  cl <- gr_mock_client(function(messages, params) {
+    if (grepl("reading iteratively", messages[[1]]$content, fixed = TRUE)) {
+      return('{"can_answer": true, "answer": "FOUND IT", "next_query": ""}')
+    }
+    "x"
+  })
+  quiet(gr_read(ch, "What is topic 7?", cl, list(reader = "iterative", model = "iter-ctx",
+                                                 max_rounds = 2L, top_k = 3L)))
+  step <- Filter(function(c) identical(c$label, "iterative.step"), cl$calls())
+  expect_gt(length(step), 0L)
+  sent <- gr_count_tokens(paste(vapply(step[[1]]$messages,
+                                       function(m) as.character(m$content), character(1)),
+                                collapse = "\n"))
+  room <- gr_budget("iter-ctx", reserve_output = 1500L)$context_window
+  expect_lt(sent + 300L, floor(room * (1 - gr_options("safety_margin"))))
+  # And the guarantee itself, which is a source-shape one because the defect was
+  # source drift: the string is built once and used for BOTH the budget and the
+  # call, so the two cannot describe different prompts.
+  src <- squash(deparse(readgpt:::read_iterative))
+  expect_match(src, "prompt_overhead(question, step_system, spec$restate)", fixed = TRUE)
+  expect_match(src, 'content = step_system', fixed = TRUE)
+})
+
+test_that("iterative does not answer from an empty excerpt block", {
+  # Nothing gathered fit one prompt, the call went out with
+  # <excerpts></excerpts>, and the model answered from its own prior -- which
+  # came back as the document's answer, can_answer true, chunks_used empty.
+  gr_register_model("micro-ctx", context_window = 600L, max_output = 400L,
+                    input_usd = 0, output_usd = 0)
+  doc <- gr_ingest(paste(vapply(1:6, function(i)
+    paste(rep(sprintf("paragraph %d content words here", i), 60), collapse = " "),
+    character(1)), collapse = "\n\n"))
+  ch <- quiet(gr_segment(doc, list(method = "paragraph", max_tokens = 300)))
+  cl <- gr_mock_client(function(messages, params)
+    '{"can_answer": true, "answer": "ANSWER FROM THE MODEL PRIOR", "next_query": ""}')
+  ans <- quiet(gr_read(ch, "What is paragraph 3 about?", cl,
+                       list(reader = "iterative", model = "micro-ctx",
+                            max_rounds = 2L, top_k = 2L)))
+  expect_length(cl$calls(), 0L)
+  expect_false(grepl("PRIOR", ans$answer))
+  expect_true(ans$partial)
+})
+
+test_that("the synthesis section budgets for its own tail restatement", {
+  # restate_tail() was called with two arguments, so `spec$restate` could not
+  # reach it -- and its tokens were not in the overhead either, so the studies
+  # were fitted to a budget the tail then overran.
+  expect_equal(length(formals(readgpt:::restate_tail)), 3L)
+  gr_register_model("sec-ctx", context_window = 2600L, max_output = 300L,
+                    input_usd = 0, output_usd = 0)
+  used <- data.frame(study = 1:40,
+                     document = paste0("d", 1:40, ".pdf"),
+                     document_id = paste0("h", 1:40), status = "ok",
+                     duplicate_of = NA_character_, n_filled = 1L, n_unverified = 0L,
+                     conflicts = NA_character_,
+                     finding = paste("a reasonably wordy finding sentence number", 1:40),
+                     stringsAsFactors = FALSE)
+  rendered <- readgpt:::render_studies(used)
+  usable <- floor(2600 * (1 - gr_options("safety_margin")))
+  tails <- list()
+  for (rs in c("always", "never")) {
+    cl <- mock_echo("Something [study 1].")
+    quiet(readgpt:::synth_section(
+      "Findings", "what the evidence supports", "Does it work?", rendered, used, cl,
+      gr_read_spec("stuff", model = "sec-ctx", max_answer_tokens = 300L, restate = rs),
+      gr_trace()))
+    calls <- cl$calls()
+    expect_gt(length(calls), 0L)
+    for (cc in calls) {
+      sent <- gr_count_tokens(paste(vapply(cc$messages, function(m) as.character(m$content),
+                                           character(1)), collapse = "\n"))
+      expect_lt(sent + 300L, usable, label = paste("restate =", rs))
+    }
+    msgs <- calls[[1]]$messages
+    tails[[rs]] <- as.character(msgs[[length(msgs)]]$content)
+  }
+  # `spec$restate` reaches restate_tail(), and the tail carries the section brief
+  # rather than the whole of `ask`.
+  expect_match(tails$always, "Again, the question: write the 'Findings' section")
+  expect_false(grepl("Again, the question", tails$never, fixed = TRUE))
+})
+
+# ---------------------------------------------------------------------------
+# gr_audit_report(): a new argument in the middle rebinds every existing call.
+# ---------------------------------------------------------------------------
+
+test_that("the arguments gr_audit_report() had in 0.5.0 keep their positions", {
+  # `claims` was inserted fourth and `records` seventh, so a positional
+  # gr_audit_report(p, s, x, syn) filed the synthesis as claims and wrote a
+  # report with no synthesis section in it, silently.
+  expect_equal(names(formals(gr_audit_report))[1:6],
+               c("path", "screening", "extraction", "synthesis", "protocol", "title"))
+  expect_true(all(c("claims", "records") %in% names(formals(gr_audit_report))[7:8]))
+})
+
+test_that("gr_audit_report() rejects a wrong object in claims or records", {
+  # A stub is enough: the type checks run before the report is built.
+  x <- structure(list(), class = "gr_extraction")
+  expect_error(gr_audit_report(tempfile(), extraction = x, claims = list(claims = 1)),
+               class = "gr_bad_audit_input")
+  expect_error(gr_audit_report(tempfile(), extraction = x, records = data.frame(a = 1)),
+               class = "gr_bad_audit_input")
+})

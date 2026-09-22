@@ -39,11 +39,11 @@
   published. A study that cannot be named makes the whole run fall back to
   markers rather than mixing names and numbers or inventing "n.d.".
 
-  `coherence = TRUE` runs one further call over the assembled draft, so the
-  independently-written sections read as one argument. Its output is checked
-  rather than trusted: a revision that added a citation, dropped one, or ran
-  into the model's output limit is discarded with a warning and `$draft` is what
-  you get. It is the one step that could quietly undo the guarantee the rest of
+  `coherence = TRUE` runs the revision passes over the assembled draft, so the
+  independently-written sections read as one argument (see "Three revision
+  passes" below for what they are). Their output is checked rather than trusted:
+  a revision that added a citation, dropped one, or ran into the model's output
+  limit is discarded with a warning and `$draft` is what you get. It is the one step that could quietly undo the guarantee the rest of
   the pipeline exists to give. It is budgeted for a whole document rather than a
   section -- sized by `max_section_tokens` it asked a model rewriting a
   4800-token review for 300 tokens of output, and the citation check then
@@ -346,14 +346,24 @@
   So there are now three passes — `"structure"`, `"cut"`, `"register"` — each
   forbidden from doing the others' job, each run on what survived the last, and
   each measured for escalation. A revision is discarded if it introduces a
-  universal quantifier that was not there, introduces a booster stem that was not
-  there, or carries fewer hedges per claim-bearing sentence than the draft did.
-  The hedge test is a **rate**, not a total, so cutting a whole redundant
-  sentence — the `cut` pass doing its job — carries that sentence's hedges away
-  with it and passes, while stripping the hedges off the sentences that remain
-  does not. Only sentences carrying a citation are measured: headings, framing
-  and transitions are exactly what an editing pass should be free to rewrite.
-  `coherence = TRUE` still means all three.
+  universal quantifier that was not there, uses a booster stem more often than
+  the draft did, or carries fewer hedges than the draft's rate implies.
+
+  All three are matched on whole words. As bare substrings, "improved" counted as
+  an instance of the booster "prove" — so a draft saying "outcomes improved"
+  licensed a revision saying "proves the drug works", and a revision that ADDED
+  the hedge "unproven" was rejected for introducing a booster. Boosters are
+  compared by count, not by which stems are present, so saying "demonstrates"
+  three times where the draft said it once is introducing it.
+
+  The hedge test scales with how much claim-bearing prose survived, so a shorter
+  revision may carry fewer hedges — but never none, if the draft had any. What it
+  does not promise is that every legitimate cut passes: removing the most heavily
+  hedged sentence lowers the rate and is refused, leaving the draft standing.
+  Hedges and universals are measured on sentences carrying a citation; boosters
+  on all the prose except headings, because uncited framing between the claims is
+  where "the evidence demonstrates a clear benefit" actually gets written.
+  `coherence = TRUE` still means all three passes.
 
 * **`iterative` was cutting the wrong end of what it had gathered, and never
   fitted its final prompt at all.** Two faults in the one reader that accumulates
@@ -396,6 +406,81 @@
   settle it. The same goes for `context_order = "edges"`, which has been in the
   package since 0.4 on the strength of a published finding and has never been
   measured here.
+
+* **Every prompt is now budgeted against the prompt that is actually sent.** The
+  readers size their excerpts with `gr_budget(overhead = ...)`, and four separate
+  things had been added to the prompts without being added to that arithmetic.
+  The prompt then overran the window by exactly the amount nobody counted, and
+  the provider refused the call after the run had been paid for.
+
+  The tail restatement above is the worst of them, because it is on by default:
+  the body was fitted to the budget and the question was then prepended to it, so
+  with a long question and a model whose window the run nearly fills, `gr_read()`
+  returned `NOT_IN_DOCUMENT` with nothing in it but `notes$error`. The
+  `iterative` step prompt adds 88 tokens of instruction to the answer system
+  prompt and budgeted for the short one. `gr_synthesise()`'s section prompt
+  restates the section brief after the studies and did not budget for it — and
+  called `restate_tail()` with two arguments, so the `restate` setting could not
+  reach it at all. And `cite = TRUE` sends a longer system prompt than `cite =
+  FALSE`: that one shipped in 0.5.0, understating the overhead on every cited
+  read.
+
+  The system prompt is now built once and used for both the budget and the call
+  wherever the two could drift, and `prompt_overhead()` counts the question twice
+  unless restatement is off. Reserving room that goes unused costs a little
+  context; under-reserving cost the answer.
+
+* **`iterative` no longer answers a question with no document in front of it.**
+  When nothing gathered fit one prompt, the step call went out with an empty
+  `<excerpts></excerpts>` — and a model asked a question with no excerpt answers
+  from its own prior, which came back as the document's answer with `can_answer`
+  true and `chunks_used` empty. The loop now stops and reports, and the reader
+  returns `NOT_IN_DOCUMENT` marked partial.
+
+* **`gr_audit_report()` gained two arguments in the middle of its signature.**
+  `claims` was inserted fourth and `records` seventh, which silently rebound the
+  positional arguments of every call written against 0.5.0:
+  `gr_audit_report(p, screening, extraction, review)` filed the synthesis as
+  `claims` and wrote a report with no synthesis section in it. Both are now at
+  the end, where a new argument belongs, and both are type-checked like the
+  others rather than accepted and misused.
+
+* **Fixes in the claims layer, all found by reading it adversarially against
+  itself.** A reconcile merge that moved a study from the contradicting side to
+  the supporting side did so silently — `n_contradict` went 1 to 0 with nothing
+  in `note` — so a merge could manufacture a consensus no study agreed to; the
+  flip is now recorded. Two proposed sections with the same heading were written
+  twice, each taking the union of both claim sets, because everything downstream
+  keys the outline by heading; they are merged into one. A moderator naming a
+  bibliographic column was accepted even though `render_studies()` withholds
+  those columns from the prompt, so a disagreement could be explained by a column
+  the model never saw; the check now uses the fields that were actually shown. A
+  reply shaped as an array of strings crashed `gr_claims()` with "$ operator is
+  invalid for atomic vectors" instead of warning that no claims came back, and a
+  claim with no text survived to be written up. `study_weight()` read `n` with
+  `as.numeric()`, so an `n` of "900 participants" became `NA`, `NA` scored zero —
+  the bottom of the scale — and a 900-participant study weighed less than one
+  with 25; it is read with the same single-number rule the extractor uses, and an
+  unreported `n` sits at the mean of what is known rather than at the bottom.
+  `gr_gaps()` said "every study reports 'cohort'" when two of four studies
+  reported it, and its crosstab compared untrimmed values while the rest of the
+  function trimmed, so one table could report a value as both the only one
+  present and an unstudied combination.
+
+* **The claim-strength guard was matching substrings.** "improved" contains
+  "prove", so a draft saying "outcomes improved" licensed a revision saying
+  "proves the drug works", and a revision that added the hedge "unproven" was
+  rejected for introducing a booster — a guard wrong in both directions from one
+  missing word boundary. Alongside it: boosters were compared as pattern *sets*,
+  so saying "demonstrates" three times where the draft said it once was not
+  introducing it; `floor()` on the hedge rate made the implied minimum zero
+  whenever the revision had fewer claim sentences, so merging two hedged
+  sentences into one unhedged sentence passed; the sentence split broke at
+  "e.g.", discarding the half that carried the hedge; and a markdown heading with
+  no terminator glued itself to the first sentence of its section. A draft with no
+  room for its own rewrite was also being sent rather than skipped, because
+  `gr_budget()` shrinks the output reserve when the window is tight and the larger
+  input budget that produced was read as permission.
 
 * **The README and the vignette describe what the package now does.** The
   section on revising a draft still said `coherence = TRUE` runs "one further

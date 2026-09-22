@@ -111,8 +111,10 @@ cmp$summary[, c("recipe", "segmenter", "chunks", "reader", "signature", "setting
 differing only in a number are not two identical-looking rows. The same facts
 land on the trace, and survive `gr_trace_save()`.
 
-(The bundled example is deliberately small — 573 tokens by `gr_count_tokens()`
-— so `fast` and `thorough` fit it in one chunk. On a real report they would not.)
+(The bundled example is deliberately small — 573 tokens as `gr_ingest()` counts
+them, which is per block and so a little above the 515 `gr_count_tokens()` gives
+for the joined text — so `fast` and `thorough` fit it in one chunk. On a real
+report they would not.)
 
 Build a pipeline by hand:
 
@@ -558,7 +560,7 @@ continuing to spend. Both raise a classed error naming the option to change.
 
 `gr_budget()` is the single arithmetic chokepoint for context math and is
 incapable of returning a non-positive input budget — it raises an actionable
-error instead. `gr_options()` documents all 21 settings; see `?gr_options`.
+error instead. `gr_options()` documents all 22 settings; see `?gr_options`.
 
 ## Many documents
 
@@ -857,7 +859,7 @@ review wants a table plus the account of it. Four functions cover that:
 A protocol is what you fix **before** reading anything: which documents count,
 what to collect from the ones that do, and what the write-up has to cover. That
 is the point of it — a criterion invented while reading is a criterion fitted to
-what was found. `gr_protocols()` lists three templates to start from, and
+what was found. `gr_protocols()` lists four templates to start from, and
 `gr_protocol_save()` round-trips one through a JSON file so it can be shared,
 diffed and cited alongside the results.
 
@@ -893,7 +895,7 @@ extracted <- gr_extract(screened$included, protocol, client = reply(), recipe = 
 review   <- gr_synthesise(extracted, protocol, client = reply())
 
 gr_audit_report(file.path(tempdir(), "audit.html"), screening = screened,
-                extraction = extracted, review, protocol = protocol)
+                extraction = extracted, synthesis = review, protocol = protocol)
 
 extracted$table[, c("document", "region", "revenue", "n_unverified")]
 #>    document region revenue n_unverified
@@ -1046,15 +1048,30 @@ impact means deleting hedges, and the hedges are where the uncertainty lives.
 "Three small trials suggest a modest benefit" comes back as "trials show a
 benefit" — same markers, same studies, a claim the evidence does not carry. So a
 revision is also discarded if it introduces a universal quantifier that was not
-there, introduces a booster ("demonstrates", "establishes", "confirms") that was
-not there, or carries fewer hedges per claim-bearing sentence than the draft did.
+there, uses a booster ("demonstrates", "establishes", "confirms") more often than
+the draft did, or carries fewer hedges than the draft's rate implies.
 
-That last test is a *rate*, not a total, so cutting a whole redundant sentence
-carries its hedges away with it and passes, while stripping the hedges off the
-sentences that remain does not. Only sentences carrying a citation are measured —
-headings, framing and transitions are exactly what an editing pass should be free
-to rewrite. `review$coherence` is one row per pass: what ran, what was kept, and
-why anything was thrown away.
+All three are matched on whole words, which matters more than it sounds: as bare
+substrings, "improved" counted as an instance of "prove", so a draft saying
+"outcomes improved" licensed a revision saying "proves the drug works", and a
+revision that added the hedge "unproven" was rejected for introducing a booster.
+Boosters are counted rather than merely listed, so saying "demonstrates" three
+times where the draft said it once is introducing it.
+
+The hedge test scales with how much claim-bearing prose survived, so a shorter
+revision may carry fewer hedges — but never none, if the draft had any. It does
+not promise that every legitimate cut passes: a pass that removes the most
+heavily hedged sentence lowers the rate and is refused. The cost of that is a
+discarded pass and a warning; the draft stands.
+
+Hedges and universal quantifiers are measured on sentences carrying a citation,
+because headings, framing and transitions are exactly what an editing pass should
+be free to rewrite, and "the evidence, all of which is relevant" is not a claim.
+Boosters are measured on all of the prose except headings, because there is no
+register in which an editing pass should introduce "demonstrates" into a review at
+all, and the uncited framing between the claims is where such a sentence actually
+gets written. `review$coherence` is one row per pass: what ran, what was kept,
+and why anything was thrown away.
 
 ### Writing from claims instead of from rows
 
@@ -1129,8 +1146,16 @@ protocol as fixed in advance, what happened to every document, every value with
 its quote and page and whether the quote is really there, what was written and
 which rows each claim rests on, every claim with the studies for and against it
 and where each one ended up, and what it cost. It is not for you; it is for
-the reviewer or co-author whose question is "how do you know?" — the call is in
-the block above.
+the reviewer or co-author whose question is "how do you know?" It takes the
+objects the run already produced:
+
+```r
+gr_audit_report("audit.html", extraction = x, synthesis = review, claims = cm,
+                protocol = protocol)
+```
+
+`screening =` and `records =` take the earlier stages when the run had them, and
+every argument is optional except the path and at least one stage to report on.
 
 The report does not flatter the run. Unverified quotes, documents that could not
 be read, screening calls the model declined to make and citations pointing at
@@ -1246,7 +1271,7 @@ Every registry answers what it holds, and none of these makes a model call:
 
 ```r
 gr_extractors()          # which file types have an extractor, and what each needs
-gr_segmenters()          # the seven chunkers, with their settings
+gr_segmenters()          # the nine chunkers, with their settings
 gr_readers()             # the twelve reading strategies
 gr_embedders()           # api, lexical, and anything you registered
 gr_protocols()           # the four schema templates

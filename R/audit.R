@@ -177,14 +177,21 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims 
 #'
 #' out <- gr_audit_report(tempfile(fileext = ".html"), extraction = x)
 #' file.exists(out)
-gr_audit_report <- function(path, screening = NULL, extraction = NULL, claims = NULL,
-                            synthesis = NULL, protocol = NULL, records = NULL,
-                            title = NULL) {
+gr_audit_report <- function(path, screening = NULL, extraction = NULL,
+                            synthesis = NULL, protocol = NULL, title = NULL,
+                            claims = NULL, records = NULL) {
+  # `claims` and `records` are APPENDED, not slotted in where they belong
+  # thematically. Inserting `claims` fourth silently rebound the fourth
+  # positional argument of every existing call -- gr_audit_report(p, s, x, syn)
+  # wrote a report with the synthesis filed as claims and no synthesis section
+  # in it, and nothing said so. A new argument goes at the end.
   if (!is_nonblank(path)) gr_abort("`path` must be a file path.")
   for (pair in list(list(screening, "gr_screening", "screening"),
                     list(extraction, "gr_extraction", "extraction"),
                     list(synthesis, "gr_synthesis", "synthesis"),
-                    list(protocol, "gr_protocol", "protocol"))) {
+                    list(protocol, "gr_protocol", "protocol"),
+                    list(claims, "gr_claims", "claims"),
+                    list(records, "gr_records", "records"))) {
     if (!is.null(pair[[1]]) && !inherits(pair[[1]], pair[[2]])) {
       gr_abort(sprintf("`%s` must be a %s object.", pair[[3]], pair[[2]]),
                class = "gr_bad_audit_input")

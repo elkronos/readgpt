@@ -409,7 +409,7 @@ extractor <- gr_mock_client(function(messages, params) {
           rg, n, yr, line, line, line)
 })
 
-table <- gr_extract(screened$included, protocol, client = extractor, recipe = "fast")
+table <- gr_extract(screened, protocol, client = extractor, recipe = "fast")
 table$table[, c("document", "region", "revenue", "year", "n_unverified")]
 ```
 

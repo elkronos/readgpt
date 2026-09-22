@@ -759,6 +759,31 @@ test_that("gr_synthesise() stops at the run's ceiling like every other stage", {
   quiet(gr_synthesise(big, question = "Q?", client = cl4, model = "synth-tiny",
                       max_section_tokens = 200L, outline = c(A = "first")))
   expect_lte(length(cl4$calls()), 2L)
+
+  # A capped batch still marks its section partial. Counting capped batches apart
+  # from failed ones for the MESSAGE removed the only thing that set `partial`,
+  # so a section that silently dropped a quarter of the corpus read as complete
+  # while the warning said it had been marked partial.
+  gr_options(max_calls = 3L)
+  sy2 <- quiet(gr_synthesise(big, question = "Q?", client = mock_echo("Something [study 1]."),
+                             model = "synth-tiny", max_section_tokens = 200L,
+                             outline = c(A = "first", B = "second")))
+  expect_true(all(sy2$sections$partial))
+
+  # And the latch is this function's own, not trace$budget_stop: tree_merge()
+  # sets that too, while still returning usable text, so a run whose merge
+  # tripped the ceiling suppressed the warning for every section after it and
+  # those sections came back empty in silence.
+  for (mc in 3:5) {
+    gr_options(max_calls = mc)
+    seen2 <- character(0)
+    withCallingHandlers(
+      suppressMessages(gr_synthesise(big, question = "Q?", client = mock_echo("Something [study 1]."),
+                                     model = "synth-tiny", max_section_tokens = 200L,
+                                     outline = c(A = "first", B = "second", C = "third"))),
+      warning = function(z) { seen2 <<- c(seen2, class(z)[1]); invokeRestart("muffleWarning") })
+    expect_true("gr_synth_capped" %in% seen2, label = sprintf("max_calls = %d", mc))
+  }
 })
 
 test_that("one corpus behaves the same whether named as a folder or as its files", {
@@ -817,14 +842,46 @@ test_that("the search travels with the corpus it produced", {
   h <- paste(readLines(p, warn = FALSE), collapse = "\n")
   expect_false(grepl("Not recorded", h, fixed = TRUE))
 
-  # And across the hand-off, which is where it matters: gr_extract() takes a
-  # character vector of paths, so the record set rides on `$included` or it is
-  # lost. Without this the NEWS claim that gr_extraction carries it was false in
-  # the only flow anybody uses.
-  x <- quiet(gr_extract(sc$included, gr_fields(n = gr_field("N", type = "number")),
-                        goal = "Q?", client = gr_mock_client(function(messages, params)
-                          '{"n":482,"n__quote":"A randomised trial of 482 adults found a benefit."}')))
+  # And across the hand-off, which is where it matters. gr_extract() takes a
+  # character vector of paths, so `screened$included` cannot carry anything;
+  # passing the screening object itself is what does. An attribute on `included`
+  # would have worked too and was rejected: print(screened$included) would then
+  # dump the whole record set under a list of file paths.
+  ex <- gr_mock_client(function(messages, params)
+    '{"n":482,"n__quote":"A randomised trial of 482 adults found a benefit."}')
+  expect_null(quiet(gr_extract(sc$included, gr_fields(n = gr_field("N", type = "number")),
+                               goal = "Q?", client = ex))$records)
+  x <- quiet(gr_extract(sc, gr_fields(n = gr_field("N", type = "number")),
+                        goal = "Q?", client = ex))
   expect_s3_class(x$records, "gr_records")
+  # Routing through the screening object also joins the bibliographic fields the
+  # export supplied, as extracting from the record set directly does.
+  expect_true("year" %in% names(x$table))
+  # And `included` is still a plain character vector, printable as one -- as is
+  # `$sources` on the corpus, which carried the record set for a while and
+  # printed the whole thing under a list of file paths.
+  expect_identical(sc$included, as.character(sc$included))
+  expect_length(capture.output(print(sc$included)), 1L)
+  expect_null(attributes(sc$included))
+  corp <- quiet(gr_read_many(recs, "Q?", client = gr_mock_client(function(messages, params) "x"),
+                             recipe = "fast"))
+  expect_null(attributes(corp$sources))
+  expect_length(capture.output(print(corp$sources)), 1L)
+
+  # The record set survives a file that has since moved: relying on the
+  # all-paths-exist branch to carry it meant one deleted file lost the search.
+  gone <- withr::local_tempdir()
+  file.copy(sc$included, file.path(gone, basename(sc$included)))
+  sc2 <- sc
+  sc2$included <- c(sc$included, file.path(gone, "not-here.txt"))
+  expect_s3_class(attr(readgpt:::corpus_sources(sc2), "record_set"), "gr_records")
+
+  # A screening that kept nothing says so, rather than telling somebody who
+  # passed a screening result to pass file paths.
+  sc3 <- sc; sc3$included <- character(0)
+  expect_error(quiet(gr_extract(sc3, gr_fields(n = gr_field("N", type = "number")),
+                                goal = "Q?", client = ex)),
+               "Screening kept no documents", class = "gr_no_sources")
   p2 <- withr::local_tempfile(fileext = ".html")
   quiet(gr_audit_report(p2, extraction = x))         # extraction only
   h2 <- paste(readLines(p2, warn = FALSE), collapse = "\n")
@@ -902,6 +959,30 @@ test_that("a shared trace accumulates the review without becoming its budget", {
   expect_equal(sum(nums[!is.na(nums)]), tr$calls)
 })
 
+test_that("a parent trace keeps what a run spent before it aborted", {
+  # Folding into the parent only on the success path meant a run that aborted
+  # part-way -- a cost cap, an unreadable file under on_error = "stop" -- handed
+  # the parent nothing, and a review then reported itself cheaper than it was.
+  d <- withr::local_tempdir()
+  writeLines(paste(rep("Small doc one about revenue.", 20), collapse = " "),
+             file.path(d, "a.txt"))
+  writeLines(paste(rep("Small doc two about revenue.", 20), collapse = " "),
+             file.path(d, "b.txt"))
+  writeLines(paste(rep("Huge doc three about revenue and many other things.", 4000),
+                   collapse = " "), file.path(d, "c.txt"))
+  old <- gr_options("max_cost_usd")
+  on.exit(gr_options(max_cost_usd = old), add = TRUE)
+  gr_options(max_cost_usd = 0.05)
+
+  cl <- mock_echo("An answer [chunk 1].")
+  tr <- gr_trace()
+  expect_error(quiet(gr_read_many(sort(list.files(d, full.names = TRUE)), "Q?", client = cl,
+                                  recipe = "fast", trace = tr, on_error = "stop")),
+               class = "gr_cost_cap")
+  expect_gt(length(cl$calls()), 0L)          # the fixture really does spend first
+  expect_equal(tr$calls, length(cl$calls()))
+})
+
 test_that("a trace or a ceiling that cannot be compared is refused, not ignored", {
   # is.finite() alone failed OPEN: NA, Inf and a character value all made the
   # ceiling FALSE, so it was skipped silently -- and the notice that would have
@@ -916,11 +997,24 @@ test_that("a trace or a ceiling that cannot be compared is refused, not ignored"
     expect_error(quiet(gr_read_many(d, "Q?", client = mock_echo(), recipe = "fast", trace = bad)),
                  class = "gr_bad_trace")
   }
-  for (bad in list(NA, "2", TRUE, c(2, 4), list(2), -5)) {
+  for (bad in list(NA, "2", TRUE, c(2, 4), list(2), -5, -Inf, NaN)) {
     expect_error(quiet(gr_read_many(d, "Q?", client = mock_echo(), recipe = "fast",
                                     max_total_calls = bad)),
                  class = "gr_bad_ceiling")
+    # The cost ceiling was left unvalidated when the call ceiling was fixed, so
+    # it kept the same fail-open -- and once the worst-case notice was gated on
+    # it, a silently unenforced ceiling silenced the notice too.
+    expect_error(quiet(gr_read_many(d, "Q?", client = mock_echo(), recipe = "fast",
+                                    max_total_usd = bad)),
+                 class = "gr_bad_ceiling")
   }
+  # A ceiling above .Machine$integer.max must stay comparable. as.integer(1e10)
+  # is NA, and the loop guard then compared against NA, so `if` threw a bare
+  # simpleError -- the exact failure the validator exists to prevent.
+  expect_equal(readgpt:::as_call_ceiling(1e10), 1e10)
+  expect_silent(readgpt:::as_call_ceiling(1e10))
+  expect_error(quiet(gr_read_many(d, "Q?", client = mock_echo(), recipe = "fast",
+                                  max_total_calls = 1e10)), NA)
   # Inf is a legitimate way to say "no ceiling", and saying it that way must not
   # cost the notice that the run is uncapped.
   msgs <- character(0)

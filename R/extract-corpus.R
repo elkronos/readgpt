@@ -24,7 +24,11 @@
 #' every document and returns a tidy table, one row per document and one column
 #' per field, with a separate long table saying where every value came from.
 #'
-#' @param sources As [gr_read_many()]: file paths, a directory, or raw text.
+#' @param sources As [gr_read_many()]: file paths, a directory, or raw text --
+#'   and, additionally, a [gr_screen()] result. Passing the screening object
+#'   rather than `screened$included` is what carries the search forward, so
+#'   [gr_audit_report()] can show it and the bibliographic fields the export
+#'   supplied are joined to the table.
 #' @param fields A [gr_fields()] schema, or a [gr_protocol()] -- a protocol
 #'   carries its own schema, question and recipe, so passing one is the same as
 #'   passing its three parts and it is the shorter way to say it.
@@ -194,8 +198,14 @@ gr_extract <- function(sources, fields, goal = NULL, recipe = "research",
   # It is not a preference: a document restored from `store` hands its answer
   # back or nothing at all, so a resumed run with keep_answers = FALSE would
   # produce a table with empty rows for everything it had already done.
-  bib_from <- if (inherits(sources, "gr_records")) {
-    rr <- sources$records
+  # A gr_screening carries the record set it was run over, so extracting from one
+  # joins the bibliographic fields the export supplied exactly as extracting from
+  # the record set directly does. Without this, routing through screening -- the
+  # normal thing to do -- silently lost the authors and years.
+  bib_src <- if (inherits(sources, "gr_records")) sources else
+    if (inherits(sources, "gr_screening")) sources$records else NULL
+  bib_from <- if (inherits(bib_src, "gr_records")) {
+    rr <- bib_src$records
     rr[is.na(rr$duplicate_of) & !is.na(rr$file), , drop = FALSE]
   } else NULL
   max_total_calls <- as_call_ceiling(max_total_calls)

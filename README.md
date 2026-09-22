@@ -910,7 +910,7 @@ reply <- function() gr_mock_client(function(messages, params) {
 
 reports  <- file.path(tempdir(), "reports")
 screened <- gr_screen(reports, protocol, client = reply())
-extracted <- gr_extract(screened$included, protocol, client = reply(), recipe = "fast")
+extracted <- gr_extract(screened, protocol, client = reply(), recipe = "fast")
 review   <- gr_synthesise(extracted, protocol, client = reply())
 
 gr_audit_report(file.path(tempdir(), "audit.html"), screening = screened,
@@ -928,7 +928,9 @@ remove a source before one is recorded; a file that could not be read gets
 `status = "failed"` and *no* decision rather than a silent exclusion; and
 `"unclear"` is an answer rather than a forced guess, because forcing a binary
 call on an excerpt that does not settle it is how automated screening loses
-studies. `screened$included` is the argument to hand to `gr_extract()`, and
+studies. Hand `screened` itself to `gr_extract()` -- `screened$included` works
+too, but a character vector of paths cannot carry the search forward, so the
+audit's search section and the bibliographic columns are lost with it. And
 `table(screened$table$criterion)` is the breakdown a flow diagram asks for.
 
 **Extraction gives you a typed table, not prose.** A paragraph about one paper

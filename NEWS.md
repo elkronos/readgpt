@@ -478,8 +478,13 @@
 
   *The search travels with the corpus it produced.* `gr_screening` and
   `gr_extraction` now carry the `gr_records()` they were run over, and
-  `gr_audit_report()` picks it up. `$included` carries it too, because the next
-  stage takes a character vector of paths and there was nowhere else to put it. Forgetting to hand the same object over a
+  `gr_audit_report()` picks it up. `gr_extract()` also takes the screening object
+  itself now, which is what carries the search across the hand-off: a character
+  vector of paths cannot, so `gr_extract(screened)` keeps the search and the
+  bibliographic fields while `gr_extract(screened$included)` keeps neither.
+  Hanging them off `$included` as an attribute was tried first and rejected --
+  `print(screened$included)` then dumped the whole record set under a list of
+  file paths. Forgetting to hand the same object over a
   second time at the end used to produce a report whose search section read "Not
   recorded" and whose flow diagram began at "sources given" — which the README's
   own end-to-end example did.

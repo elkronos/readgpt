@@ -226,6 +226,7 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
   parent <- as_parent_trace(trace)
   trace <- gr_trace(meta = list(stage = "synthesise", question = question,
                                 sections = length(outline), studies = nrow(used)))
+  if (!is.null(parent)) on.exit(trace_absorb(parent, trace), add = TRUE)
 
   # The writing model is NOT shown who wrote each study. Adding bibliographic
   # fields to a schema put "authors: Smith, J., Okafor, A." in front of a model
@@ -243,6 +244,9 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
   # caller never has to know which.
   if (inherits(gaps, "gr_gaps") || is.data.frame(gaps)) gaps <- render_gaps(gaps)
   weights <- if (is.null(claims)) NULL else study_weight(used)
+  # One latch for the whole write-up, so the ceiling is reported once rather
+  # than once per section.
+  capped <- new.env(parent = emptyenv())
   rows <- lapply(seq_along(outline), function(i) {
     heading <- names(outline)[[i]]
     gr_msg(sprintf("[%d/%d] %s", i, length(outline), heading))
@@ -252,7 +256,8 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
                   claims = claims, claim_ids = ids, weights = weights,
                   # Gaps reach exactly one section, the one gr_outline() marked.
                   # Handing them to every section makes every section recite them.
-                  gaps = if (!is.na(closing) && identical(heading, closing)) gaps else NULL)
+                  gaps = if (!is.na(closing) && identical(heading, closing)) gaps else NULL,
+                  capped = capped)
   })
 
   sections <- do.call(rbind, lapply(rows, `[[`, "row"))
@@ -293,8 +298,6 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
   # re-run on the published prose at any point.
   sections$text_marked <- sections$text
   sections$text <- vapply(sections$text, render, character(1), USE.NAMES = FALSE)
-
-  if (!is.null(parent)) trace_absorb(parent, trace)
 
   structure(list(
     text = append_references(render(final_marked), refs),
@@ -437,7 +440,7 @@ render_studies <- function(used, hide = character(0)) {
 #' @noRd
 synth_section <- function(heading, brief, question, rendered, used, client, spec, trace,
                           style = NULL, claims = NULL, claim_ids = integer(0),
-                          weights = NULL, gaps = NULL) {
+                          weights = NULL, gaps = NULL, capped = NULL) {
   # With claims, the section argues a list of claims and sees only the studies
   # those claims rest on. Without, it sees every study and writes from rows --
   # which is what produces "Smith (2019) found X. Garcia (2022) found Y."
@@ -477,11 +480,12 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
 
   body <- paste(rendered, collapse = "\n\n")
   lost_batches <- 0L
-  # Read BEFORE the check, because trace_can_call() latches `budget_stop` as a
-  # side effect. That latch is what keeps this to one warning per run instead of
-  # one per section -- a twelve-section outline produced twelve identical
-  # warnings, which is how a real one gets skimmed past.
-  first_stop <- !isTRUE(trace$budget_stop)
+  # A latch of this function's own, not `trace$budget_stop`. tree_merge() calls
+  # trace_can_call() too, and sets budget_stop while still returning usable text
+  # -- so a run whose merge tripped the ceiling suppressed the warning for every
+  # section after it, and those sections came back empty in silence.
+  capped <- capped %||% new.env(parent = emptyenv())
+  first_stop <- !isTRUE(capped$warned)
   capped_batches <- 0L
   text <- if (!trace_can_call(trace)) {
     # Every other stage checks the run's ceiling before it spends -- gr_claims(),
@@ -490,6 +494,7 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
     # An empty section is already marked partial below, which is the right
     # outcome: the ceiling was the user's instruction.
     if (first_stop) {
+      capped$warned <- TRUE
       gr_warn(sprintf(paste0("Section '%s' was not written, nor is any section after it: the run ",
                              "reached its call or cost ceiling first. They are marked partial."),
                       heading),
@@ -571,6 +576,7 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
                     heading, lost_batches), class = "gr_synth_batch_failed")
   }
   if (capped_batches > 0L && first_stop) {
+    capped$warned <- TRUE
     gr_warn(sprintf(paste0("Section '%s': %d batch(es) of studies were not read, nor is any ",
                            "section after this one: the run reached its call or cost ceiling. ",
                            "They are marked partial."),
@@ -583,8 +589,13 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
                      # nothing at all, is not a section anyone should paste into a
                      # manuscript unread.
                      n_claims = length(claim_ids), claims_missed = length(missed),
+                     # `capped_batches` counts here as well as `lost_batches`.
+                     # Separating the two for the MESSAGE removed the only thing
+                     # that marked the section partial, so a section that
+                     # silently dropped a quarter of the corpus read as complete
+                     # while the warning said it had been marked partial.
                      partial = length(unknown) > 0L || !nzchar(trimws(text)) ||
-                       lost_batches > 0L || length(missed) > 0L,
+                       lost_batches > 0L || capped_batches > 0L || length(missed) > 0L,
                      stringsAsFactors = FALSE),
     citations = if (!length(known)) NULL else
       data.frame(section = heading, study = known,

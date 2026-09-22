@@ -92,9 +92,12 @@ gr_trace_cost <- function(trace) {
 #' code against.
 #'
 #' @param sources A character vector of file paths, or a single directory, or
-#'   raw text. A directory is expanded to the files in it whose extensions any
-#'   registered extractor claims -- so which files are picked up follows
-#'   [gr_extractors()], including any you registered yourself.
+#'   raw text -- or a [gr_records()] or a [gr_screen()] result, either of which
+#'   also carries the search forward to the audit. A directory, and a vector of
+#'   paths that all exist, are both filtered to the extensions some registered
+#'   extractor claims -- so which files are picked up follows [gr_extractors()],
+#'   including any you registered yourself. Raw text, a mixed vector and a
+#'   `list()` of sources are passed through untouched.
 #' @param question The question, asked of every document.
 #' @param recipe One recipe, applied to every document.
 #' @param client A `gr_client`. Wrap it in [gr_cache_client()] for a long run:
@@ -226,6 +229,11 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
   if (!length(sources)) {
     below <- attr(sources, "below") %||% character(0)
     gone <- attr(sources, "skipped") %||% character(0)
+    if (isTRUE(attr(sources, "screened_out"))) {
+      gr_abort(paste0("Screening kept no documents, so there is nothing to read. `$table` says ",
+                      "why each one was excluded, and `$summary` says which could not be read ",
+                      "at all."), class = "gr_no_sources")
+    }
     gr_abort(paste0(
       # "Pass file paths" is not useful advice to somebody who just passed file
       # paths. When every one of them was filtered, say that instead.
@@ -265,8 +273,17 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
   # reporting the whole review's cost instead of its own.
   parent <- as_parent_trace(trace)
   max_total_calls <- as_call_ceiling(max_total_calls)
+  # Same treatment: gated on is.finite() at the point of use, this failed open
+  # for NA and for a value read from a config file as text -- and once the notice
+  # below was gated on it as well, a silently unenforced ceiling also silenced
+  # the line that would have said the run was uncapped.
+  max_total_usd <- as_usd_ceiling(max_total_usd)
   trace <- gr_trace(meta = list(recipe = rec$name, question = question,
                                 documents = length(sources)))
+  # on.exit, not a line at the end: a run that aborts part-way -- a cost cap, an
+  # unreadable file under on_error = "stop" -- has still spent whatever it spent,
+  # and a parent that loses it reports a review as cheaper than it was.
+  if (!is.null(parent)) on.exit(trace_absorb(parent, trace), add = TRUE)
   # What the per-document ceiling does NOT bound, said once, before the money is
   # spent. `max_calls` is per document by design -- one enormous document must
   # not starve the rest -- but that makes the run's own exposure the product of
@@ -312,9 +329,10 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
     if (!stopped && !is.null(max_total_calls) && trace$calls >= max_total_calls) {
       stopped <- TRUE
       gr_warn(sprintf(paste0("Stopped before document %d of %d: the run has made %d call(s), at ",
-                             "or above the %d `max_total_calls` ceiling. The remaining documents ",
+                             "or above the %s `max_total_calls` ceiling. The remaining documents ",
                              "are marked 'skipped'."),
-                      i, length(sources), trace$calls, max_total_calls),
+                      i, length(sources), trace$calls,
+                      format(max_total_calls, scientific = FALSE, trim = TRUE)),
               class = "gr_corpus_call_cap")
     }
     if (stopped) {
@@ -429,8 +447,7 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
 
     # A ceiling on a cost nobody can compute is not a ceiling. Say so once,
     # rather than letting an unpriced model run past a limit the user set.
-    if (!is.null(max_total_usd) && is.finite(max_total_usd) && is.na(spent) &&
-        is.null(warned_unpriced)) {
+    if (!is.null(max_total_usd) && is.na(spent) && is.null(warned_unpriced)) {
       warned_unpriced <- TRUE
       gr_warn(paste0("`max_total_usd` cannot be enforced: at least one model in this run has no ",
                      "registered price, so what it costs is unknown rather than zero. Register ",
@@ -438,8 +455,7 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
                      "ceiling. The run continues, uncapped."),
               class = "gr_corpus_cost_unknown")
     }
-    if (!is.null(max_total_usd) && is.finite(max_total_usd) && !is.na(spent) &&
-        spent >= max_total_usd) {
+    if (!is.null(max_total_usd) && !is.na(spent) && spent >= max_total_usd) {
       stopped <- TRUE
       if (i < length(sources)) {
         gr_warn(sprintf(paste0("Stopped after %d of %d documents: the run has spent about ",
@@ -450,8 +466,6 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
       }
     }
   }
-
-  if (!is.null(parent)) trace_absorb(parent, trace)
 
   structure(list(summary = do.call(rbind, rows), answers = answers,
                  # The sources as they were actually read, aligned row for row
@@ -540,13 +554,6 @@ known_extensions <- function() {
   tolower(unique(trimws(ext[nzchar(ext)])))
 }
 
-#' Attach a record set to a character vector of paths.
-#' @noRd
-with_record_set <- function(paths, records) {
-  if (inherits(records, "gr_records")) attr(paths, "record_set") <- records
-  paths
-}
-
 #' A run-level call ceiling, or nothing.
 #'
 #' `is.finite()` alone failed OPEN: NA, Inf, and a character value read from a
@@ -554,24 +561,34 @@ with_record_set <- function(paths, records) {
 #' notice that would have said the run was uncapped was suppressed at the same
 #' time, because that was gated on `is.null()`.
 #' @noRd
-as_call_ceiling <- function(x, arg = "max_total_calls") {
+as_ceiling <- function(x, arg, whole = FALSE) {
   if (is.null(x)) return(NULL)
   if (length(x) != 1L || !is.numeric(x) || is.na(x)) {
     gr_abort(sprintf(paste0("`%s` must be a single number, or NULL for no ceiling. A ceiling that ",
                             "cannot be compared is not a ceiling."), arg),
              class = "gr_bad_ceiling")
   }
+  # The sign test comes FIRST, so -Inf is refused rather than falling into the
+  # "no ceiling" branch below. max(integer(0)) is -Inf, so a ceiling computed
+  # from an empty set meant "unlimited".
+  if (x < 0) gr_abort(sprintf("`%s` cannot be negative.", arg), class = "gr_bad_ceiling")
   # Inf is a legitimate way to say "no ceiling", and saying it that way should
-  # not cost the notice.
+  # not cost the notice that the run is uncapped.
   if (!is.finite(x)) return(NULL)
-  if (x < 0) {
-    gr_abort(sprintf("`%s` cannot be negative.", arg), class = "gr_bad_ceiling")
-  }
-  # Whole calls, and the same number the message prints as the comparison uses:
-  # 1.5 compared as 1.5 and printed as 1 said the run stopped at a ceiling it
-  # had not reached.
-  as.integer(floor(x))
+  # A DOUBLE, floored -- not as.integer(). as.integer(1e10) is NA with a warning,
+  # and the loop guard then compared against NA, so `if` threw a bare
+  # simpleError: the exact failure this function exists to prevent, reintroduced
+  # by the coercion meant to fix it. Whole, so the message and the comparison
+  # agree: 1.5 compared as 1.5 and printed as 1 said a run had stopped at a
+  # ceiling it had not reached.
+  if (whole) floor(x) else x
 }
+
+#' @noRd
+as_call_ceiling <- function(x, arg = "max_total_calls") as_ceiling(x, arg, whole = TRUE)
+
+#' @noRd
+as_usd_ceiling <- function(x, arg = "max_total_usd") as_ceiling(x, arg, whole = FALSE)
 
 #' Expand a directory to the files some extractor actually handles.
 #'
@@ -581,6 +598,21 @@ as_call_ceiling <- function(x, arg = "max_total_calls") {
 #' survivors is how a directory of 200 `.doc` files reads as an empty corpus.
 #' @noRd
 corpus_sources <- function(sources, recursive = FALSE, quiet = FALSE) {
+  # A screening result names the documents that survived screening AND the search
+  # that found them. Hanging the record set off `included` instead would have
+  # made print(screened$included) dump the whole record set under a list of file
+  # paths, which is the thing a user looks at most.
+  if (inherits(sources, "gr_screening")) {
+    rs <- sources$records
+    inc <- as.character(sources$included %||% character(0))
+    # Explicitly, not by falling through: the file-vector branch below requires
+    # every path to exist, so one moved or deleted file dropped the record set
+    # and the search vanished from the audit.
+    out <- if (!length(inc)) structure(character(0), screened_out = TRUE) else
+      corpus_sources(inc, recursive = recursive, quiet = quiet)
+    if (inherits(rs, "gr_records")) attr(out, "record_set") <- rs
+    return(out)
+  }
   # A record set names the documents a search actually retrieved, which is a
   # better answer to "what is the corpus" than a folder listing: it excludes
   # duplicates, and it knows which records have no document rather than being
@@ -653,7 +685,8 @@ corpus_sources <- function(sources, recursive = FALSE, quiet = FALSE) {
     # gr_screen() puts the record set on `included`, so the search survives the
     # hand-off to gr_extract() -- which takes a character vector, not the
     # gr_records, and so could never have carried it otherwise.
-    attr(out, "record_set") <- attr(sources, "record_set")
+    rs <- attr(sources, "record_set")
+    if (inherits(rs, "gr_records")) attr(out, "record_set") <- rs
     return(out)
   }
   if (is.list(sources)) return(sources)
@@ -737,7 +770,11 @@ corpus_key <- function(src, question, rec, client) {
 #' and `file.exists(x$sources)` both do the wrong thing on a list of strings.
 #' @noRd
 simplify_sources <- function(x) {
-  if (!is.list(x)) return(x)
+  # Attributes stripped: `$sources` is a list of paths a user prints and
+  # subsets, and carrying `record_set` on it made print() dump the whole record
+  # set underneath -- the objection that moved the record set off `$included` in
+  # the first place.
+  if (!is.list(x)) return(`attributes<-`(x, NULL))
   if (all(vapply(x, function(e) is.character(e) && length(e) == 1L, logical(1)))) {
     unlist(x, use.names = FALSE)
   } else x

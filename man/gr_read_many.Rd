@@ -21,9 +21,12 @@ gr_read_many(
 }
 \arguments{
 \item{sources}{A character vector of file paths, or a single directory, or
-raw text. A directory is expanded to the files in it whose extensions any
-registered extractor claims -- so which files are picked up follows
-\code{\link[=gr_extractors]{gr_extractors()}}, including any you registered yourself.}
+raw text -- or a \code{\link[=gr_records]{gr_records()}} or a \code{\link[=gr_screen]{gr_screen()}} result, either of which
+also carries the search forward to the audit. A directory, and a vector of
+paths that all exist, are both filtered to the extensions some registered
+extractor claims -- so which files are picked up follows \code{\link[=gr_extractors]{gr_extractors()}},
+including any you registered yourself. Raw text, a mixed vector and a
+\code{list()} of sources are passed through untouched.}
 
 \item{question}{The question, asked of every document.}
 

@@ -129,9 +129,12 @@ read_screen <- function(chunks, question, client, spec, trace) {
 #'       `decision`, `reason`, `criterion`, `quote`, `verified`, `seen_tokens`,
 #'       `document_tokens`, `truncated`, `status`, `duplicate_of`, `error`.}
 #'     \item{`included`}{The distinct sources whose decision was `"include"` --
-#'       the paths, not the display labels, so this is the argument to hand
-#'       straight to [gr_extract()]. Duplicates are left out; they are the same
-#'       study, and `table` still has their rows.}
+#'       the paths, not the display labels. Duplicates are left out; they are
+#'       the same study, and `table` still has their rows. `gr_extract()` takes
+#'       this, but prefer handing it the whole screening object: a character
+#'       vector of paths cannot carry the search, so `gr_extract(screened)`
+#'       keeps it and `gr_extract(screened$included)` does not.}
+#'     \item{`records`}{The [gr_records()] the run was made over, or `NULL`.}
 #'     \item{`summary`,`answers`,`trace`,`store`}{As [gr_extract()].}
 #'   }
 #'
@@ -223,12 +226,8 @@ gr_screen <- function(sources, protocol = NULL, question = NULL, include = NULL,
     # back to a file -- gr_extract(screened$included) then failed with "file not
     # found" on every row. And distinct: a duplicate is the same study, so
     # extracting it again buys nothing but the chance of counting it twice.
-    # The record set rides along on the paths, because the next stage takes a
-    # character vector and there is nowhere else to put it. corpus_sources()
-    # carries it through the filter, so gr_extract(screened$included) knows
-    # which search produced the corpus without being told a second time.
-    included = with_record_set(out$sources[!is.na(tab$decision) & tab$decision == "include" &
-                                             is.na(tab$duplicate_of)], out$records),
+    included = out$sources[!is.na(tab$decision) & tab$decision == "include" &
+                             is.na(tab$duplicate_of)],
     include  = include,
     exclude  = exclude,
     summary  = out$summary,

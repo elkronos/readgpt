@@ -14,7 +14,7 @@ With \code{name}, a \code{\link[=gr_protocol]{gr_protocol()}}. Without, a data f
 \code{question} and \code{description}.
 }
 \description{
-Three starting points. They are \strong{templates, not standards}: the package
+Four starting points. They are \strong{templates, not standards}: the package
 knows the shape a protocol has, not what your criteria should be, and every
 field of a built-in is meant to be edited before it is used.
 }
@@ -25,6 +25,11 @@ No screening -- everything is included -- so it is the cheapest way to
 turn a folder into a reference list you can check.}
 \item{\code{evidence_table}}{One row per study: design, population, comparison,
 outcome, effect. No synthesis outline; the table is the output.}
+\item{\code{claims}}{The same ground as \code{evidence_table}, coded so studies can be
+compared mechanically rather than only read: \code{design} and \code{finding} are
+enums, each paired with the paper's own wording or figures so the coding
+can be checked. \code{finding} is relative to \emph{your} question, so this template
+means nothing until you replace it.}
 \item{\code{systematic_review}}{Criteria, a schema and a write-up outline, in
 the shape a report following a standard like PRISMA expects. Filling it in
 is your work, not the package's.}

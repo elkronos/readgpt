@@ -137,7 +137,7 @@ gr_register_protocol <- function(name, protocol) {
 
 #' Protocols that ship with the package, and any you have registered
 #'
-#' Three starting points. They are **templates, not standards**: the package
+#' Four starting points. They are **templates, not standards**: the package
 #' knows the shape a protocol has, not what your criteria should be, and every
 #' field of a built-in is meant to be edited before it is used.
 #'
@@ -147,6 +147,11 @@ gr_register_protocol <- function(name, protocol) {
 #'     turn a folder into a reference list you can check.}
 #'   \item{`evidence_table`}{One row per study: design, population, comparison,
 #'     outcome, effect. No synthesis outline; the table is the output.}
+#'   \item{`claims`}{The same ground as `evidence_table`, coded so studies can be
+#'     compared mechanically rather than only read: `design` and `finding` are
+#'     enums, each paired with the paper's own wording or figures so the coding
+#'     can be checked. `finding` is relative to *your* question, so this template
+#'     means nothing until you replace it.}
 #'   \item{`systematic_review`}{Criteria, a schema and a write-up outline, in
 #'     the shape a report following a standard like PRISMA expects. Filling it in
 #'     is your work, not the package's.}
@@ -289,6 +294,44 @@ as_protocol <- function(x) {
 }
 
 #' @noRd
+# Anchored, and on the whole word. A template's placeholders all BEGIN with
+# "REPLACE" -- "REPLACE THIS with your review question", "REPLACE: the
+# population the review is about" -- while a real protocol that happens to
+# contain the string has it somewhere in the middle, as the name of a trial.
+# Anchoring is the difference between catching an unedited template and
+# refusing a review of the REPLACE trial.
+.gr_protocol_placeholder <- "^REPLACE\\b"
+
+#' Refuse a template that was never edited.
+#'
+#' `systematic_review` and `claims` ship with "REPLACE THIS with your review
+#' question" as their question, because a protocol whose question is implicit is
+#' one whose question moved and there is no honest default. Nothing checked, so a
+#' run could screen a whole corpus against the criterion "REPLACE: the population
+#' the review is about", spending the entire budget to produce a table framed by
+#' an instruction to supply the framing.
+#'
+#' It matters most for `claims`, whose `finding` values are defined RELATIVE to
+#' the question. With the placeholder still in place, "supports" and "contradicts"
+#' mean nothing -- and they are exactly what the claims layer reads to decide that
+#' two studies disagree.
+#' @noRd
+check_protocol_edited <- function(protocol, what = "run it") {
+  if (!inherits(protocol, "gr_protocol")) return(invisible(protocol))
+  parts <- list(question = as_chr1(protocol$question),
+                include = as.character(protocol$include %||% character(0)),
+                exclude = as.character(protocol$exclude %||% character(0)))
+  hit <- names(parts)[vapply(parts, function(v)
+    any(grepl(.gr_protocol_placeholder, v)), logical(1))]
+  if (!length(hit)) return(invisible(protocol))
+  gr_abort(sprintf(paste0("Protocol '%s' is still a template: its %s %s with 'REPLACE'. Edit ",
+                          "it before you %s -- a review framed by an instruction to supply the ",
+                          "framing costs exactly as much as a real one."),
+                   as_chr1(protocol$name, "?"), paste(hit, collapse = " and "),
+                   if (length(hit) > 1L) "start" else "starts", what),
+           class = "gr_protocol_unedited")
+}
+
 register_builtin_protocols <- function() {
   gr_register_protocol("bibliography", gr_protocol(
     "bibliography",
@@ -322,6 +365,64 @@ register_builtin_protocols <- function() {
                             type = "enum",
                             values = c("favours intervention", "favours control",
                                        "no difference", "unclear"))
+    ),
+    recipe = "research"))
+
+  # The one template shaped for a MACHINE to relate rather than a person to
+  # read, and the difference is entirely where the enums are. `evidence_table`
+  # records the design "in the paper's own words", which is right for a table
+  # somebody reads and wrong for one that gets crosstabbed: "RCT", "randomised
+  # trial" and "randomized controlled trial" become three designs, so a gap
+  # analysis reports a design as absent while three of them sit in the table.
+  # Every coded field here is paired with the paper's own wording, so the coding
+  # can be CHECKED rather than trusted -- the same bargain the evidence quotes
+  # make for the values.
+  gr_register_protocol("claims", gr_protocol(
+    "claims",
+    question = "REPLACE THIS with your review question, in one sentence.",
+    description = paste0("Coded where studies must be compared, verbatim where they must be ",
+                         "quoted. The input a claims-level synthesis needs."),
+    include = c("Reports original empirical research bearing on the question",
+                "REPLACE: the population, exposure or setting the question is about"),
+    exclude = c("Commentary, editorial or letter with no original data",
+                "Protocol or registration only, with no results"),
+    fields = gr_fields(
+      design = gr_field(
+        paste0("The study design. Choose the closest value below; the paper's own wording goes ",
+               "in `design_note` rather than being forced in here."),
+        type = "enum",
+        values = c("randomised trial", "non-randomised trial", "cohort", "case-control",
+                   "cross-sectional", "case study or series", "qualitative",
+                   "modelling or simulation", "secondary analysis of existing data",
+                   "review or synthesis", "other")),
+      design_note = paste0("The design in the paper's own words, so the coded value above can ",
+                           "be checked against what the paper actually says"),
+      population = "Who was studied: who they were, how many, where, and in what setting",
+      n = gr_field("Number of participants or units analysed", type = "integer"),
+      measure = paste0("How the main construct was MEASURED: the instrument, scale, operational ",
+                       "definition or cut-off used. Not what was found with it."),
+      finding = gr_field(
+        paste0("What this study's primary result says about the REVIEW'S question -- not about ",
+               "the study's own hypothesis, which may be a different question."),
+        type = "enum",
+        values = c("supports", "contradicts", "mixed", "no clear finding", "not applicable")),
+      effect = paste0("The primary result with its interval or test statistic, exactly as ",
+                      "reported. Do not convert it into another metric."),
+      limitation = paste0("The main limitation the AUTHORS state, in their own words -- not a ",
+                          "limitation you can see and they do not mention.")
+    ),
+    # Claims-shaped, not topic-shaped: these four headings are what a claims
+    # table can actually support. gr_outline() will replace them with sections
+    # derived from the claims themselves once it exists.
+    outline = c(
+      "What has been studied" =
+        "Which populations, designs and measures this literature covers, and which it does not",
+      "What it finds" =
+        "The claims the evidence supports, each with the studies standing behind it",
+      "Where it disagrees" =
+        "The contradictions, and what distinguishes the studies on each side of them",
+      "What is missing" =
+        "The questions this body of work cannot answer, and why it cannot"
     ),
     recipe = "research"))
 

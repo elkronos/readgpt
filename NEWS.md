@@ -250,6 +250,41 @@
   the console printed as a plain list with `api_key` in it, in full. Header
   values would have joined it there. Names are shown; values never are.
 
+* **The `claims` protocol — a schema coded so studies can be compared, not only
+  read.** The first step of a claims-level synthesis, and the constraint it
+  removes is the one everything downstream was capped by: a synthesis can only
+  relate studies on dimensions the extraction table holds.
+
+  `evidence_table` records the design "in the paper's own words", which is right
+  for a table a person reads and wrong for one that gets crosstabbed — "RCT",
+  "randomised trial" and "randomized controlled trial" become three designs, so
+  a gap analysis reports a design as absent while three of them sit in the table.
+  So `claims` codes `design` and `finding` as enums and pairs each with the
+  paper's own wording (`design_note`, `effect`), which is the same bargain the
+  evidence quotes already make for values: the coding can be checked rather than
+  trusted. `effect` stays a string deliberately — effect metrics are not
+  commensurable across studies, and coercing "d = 0.42 (0.11, 0.73)" to a number
+  is the shape of fault that turned "120 (60 per arm)" into 12060.
+
+  Two fields the other templates lack, because they are what a synthesis argues
+  from. `measure` is how the construct was measured, which is what surfaces the
+  strongest thing a review can say — that a disagreement about effect size is
+  really a disagreement about measurement. `limitation` is the one the *authors*
+  state, in their words, so it is quotable and therefore checkable, unlike a
+  limitation a model infers.
+
+  `finding` is coded relative to **your** question rather than to an
+  intervention (`supports` / `contradicts` / `mixed` / `no clear finding` /
+  `not applicable`), which is what lets a non-interventional literature have
+  contradictions at all — and it is why an unedited template is now refused.
+  A run could previously screen a whole corpus against "REPLACE: the population
+  the review is about" and extract against "REPLACE THIS with your review
+  question", paying in full for a table framed by an instruction to supply the
+  framing. `gr_extract()`, `gr_screen()` and `gr_synthesise()` now refuse a
+  protocol whose question or criteria still begin with `REPLACE`, before
+  anything is spent. The check is anchored on the whole word: there are real
+  trials called REPLACE, and a review of one is not a template.
+
 ## Fixed
 
 * **An adversarial sweep of the whole package, from six angles at once.** Every

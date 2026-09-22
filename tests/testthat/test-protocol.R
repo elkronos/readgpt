@@ -46,7 +46,7 @@ test_that("the built-in protocols are usable schemas, not prose", {
   # are held to the same rule as a user's schema -- which is how the systematic
   # review template's `conflicts` field was caught.
   tab <- gr_protocols()
-  expect_setequal(tab$name, c("bibliography", "evidence_table", "systematic_review"))
+  expect_setequal(tab$name, c("bibliography", "claims", "evidence_table", "systematic_review"))
   for (nm in tab$name) {
     p <- gr_protocols(nm)
     expect_s3_class(p, "gr_protocol")
@@ -174,4 +174,92 @@ test_that("a protocol with no schema says so before spending anything", {
   expect_error(gr_extract(f, screening_only, client = cl), class = "gr_no_fields")
   expect_error(gr_extract(f, screening_only, client = cl), "Protocol 'screen' has no")
   expect_identical(length(cl$calls()), 0L)
+})
+
+# ---------------------------------------------------------------------------
+# The `claims` template, and refusing a template nobody edited.
+# ---------------------------------------------------------------------------
+
+test_that("the claims template codes what must be compared and quotes what must be checked", {
+  p <- gr_protocols("claims")
+  f <- p$fields
+
+  # The point of this template. `evidence_table` records the design "in the
+  # paper's own words", which is right for a table a person reads and wrong for
+  # one that gets crosstabbed: "RCT", "randomised trial" and "randomized
+  # controlled trial" become three designs, and a gap analysis then reports a
+  # design as absent while three of them sit in the table.
+  expect_identical(f$design$type, "enum")
+  expect_identical(f$finding$type, "enum")
+  expect_gt(length(f$design$values), 5L)
+  # Coded FOR the review question, not for an intervention -- which is what lets
+  # a non-interventional literature have contradictions at all.
+  expect_setequal(f$finding$values,
+                  c("supports", "contradicts", "mixed", "no clear finding", "not applicable"))
+
+  # Every coded field is paired with the paper's own wording, so the coding can
+  # be checked rather than trusted.
+  expect_true("design_note" %in% names(f))
+  expect_identical(f$design_note$type, "string")
+
+  # An effect stays a STRING. Effect metrics are not commensurable across
+  # studies, and coercing "d = 0.42 (0.11, 0.73)" to a number is the shape of
+  # fault that turned "120 (60 per arm)" into 12060.
+  expect_identical(f$effect$type, "string")
+  expect_identical(f$n$type, "integer")
+
+  # The fields the other templates lack, and the reason this one exists.
+  expect_true(all(c("measure", "limitation") %in% names(f)))
+  expect_silent(readgpt:::check_field_names(names(f)))
+  # An outline it can actually support, rather than a topic list.
+  expect_gt(length(p$outline), 1L)
+})
+
+test_that("a template nobody edited is refused before anything is spent", {
+  # A run could screen a whole corpus against "REPLACE: the population the
+  # review is about" and extract against "REPLACE THIS with your review
+  # question", paying in full for a table framed by an instruction to supply the
+  # framing. It matters most for `claims`, whose `finding` values are defined
+  # relative to the question: unedited, "supports" and "contradicts" mean
+  # nothing, and they are what the claims layer reads to find a disagreement.
+  cl <- gr_mock_client(function(m, p) "{}")
+  f <- withr::local_tempfile(fileext = ".txt")
+  writeLines("We ran a randomised trial and it worked.", f)
+
+  # A one-row table, so the synthesis path can be reached without an extraction.
+  tab <- data.frame(document = "d1.pdf", document_id = "h1", status = "ok",
+                    duplicate_of = NA_character_, n_filled = 1L, n_unverified = 0L,
+                    conflicts = NA_character_, finding = "supports",
+                    stringsAsFactors = FALSE)
+  for (nm in c("claims", "systematic_review")) {
+    p <- gr_protocols(nm)
+    expect_error(gr_extract(f, p, client = cl), class = "gr_protocol_unedited")
+    expect_error(gr_screen(f, protocol = p, client = cl), class = "gr_protocol_unedited")
+    # And the write-up, which is where the unedited question does the most
+    # damage: it becomes the framing of every section.
+    expect_error(gr_synthesise(tab, protocol = p, client = cl),
+                 class = "gr_protocol_unedited")
+  }
+  # Nothing was spent finding out.
+  expect_length(cl$calls(), 0L)
+
+  # Editing the question is all it takes.
+  ok <- gr_protocol("mine", question = "Does spacing improve retention?",
+                    fields = gr_protocols("claims")$fields, recipe = "fast")
+  expect_silent(readgpt:::check_protocol_edited(ok))
+})
+
+test_that("the placeholder guard does not refuse a real protocol that says REPLACE", {
+  # Anchored, on the whole word: there are real trials called REPLACE, and a
+  # review of one is not a template.
+  p <- gr_protocol("mine", question = "Did the REPLACE trial change practice?",
+                   include = "Cites the REPLACE trial",
+                   fields = gr_fields(x = "Anything at all"))
+  expect_silent(readgpt:::check_protocol_edited(p))
+
+  # And it looks at the criteria, not only the question.
+  q <- gr_protocol("mine", question = "A real question about a real thing?",
+                   include = c("REPLACE: the population", "Reports original data"),
+                   fields = gr_fields(x = "Anything at all"))
+  expect_error(readgpt:::check_protocol_edited(q), class = "gr_protocol_unedited")
 })

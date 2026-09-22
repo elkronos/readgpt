@@ -154,6 +154,7 @@ gr_extract <- function(sources, fields, goal = NULL, recipe = "research",
   # passing both and disagreeing.
   if (inherits(fields, "gr_protocol")) {
     p <- fields
+    check_protocol_edited(p, "extract against it")
     if (is.null(p$fields)) {
       gr_abort(sprintf(paste0("Protocol '%s' has no `fields`, so there is nothing to extract. ",
                               "Add a schema with gr_protocol(fields = gr_fields(...))."), p$name),

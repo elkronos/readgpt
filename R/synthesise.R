@@ -152,6 +152,7 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
     if (!inherits(protocol, "gr_protocol")) {
       gr_abort("`protocol` must come from gr_protocol().", class = "gr_bad_protocol")
     }
+    check_protocol_edited(protocol, "write against it")
     if (is.null(outline)) outline <- protocol$outline
     if (is.null(question)) question <- protocol$question
   }

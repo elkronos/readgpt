@@ -174,6 +174,7 @@ gr_screen <- function(sources, protocol = NULL, question = NULL, include = NULL,
     if (!inherits(protocol, "gr_protocol")) {
       gr_abort("`protocol` must come from gr_protocol().", class = "gr_bad_protocol")
     }
+    check_protocol_edited(protocol, "screen against it")
     if (is.null(question)) question <- protocol$question
     if (is.null(include)) include <- protocol$include
     if (is.null(exclude)) exclude <- protocol$exclude

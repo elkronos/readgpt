@@ -722,6 +722,17 @@ test_that("gr_synthesise() stops at the run's ceiling like every other stage", {
                                                 outline = c(A = "first", B = "second"))),
                  class = "gr_synth_capped")
 
+  # Once per run, not once per section. Twelve identical warnings is how a real
+  # one gets skimmed past, and the corpus ceiling beside it already warns once.
+  gr_options(max_calls = 0L)
+  seen <- character(0)
+  withCallingHandlers(
+    suppressMessages(gr_synthesise(tab, question = "Q?", client = mock_echo(),
+                                   outline = stats::setNames(paste("brief", 1:12),
+                                                             paste0("S", 1:12)))),
+    warning = function(z) { seen <<- c(seen, class(z)[1]); invokeRestart("muffleWarning") })
+  expect_equal(sum(seen == "gr_synth_capped"), 1L)
+
   # The batched path too: a section with more studies than fit one prompt drafts
   # them in batches and merges, and each of those calls has to be checked as
   # well. Only the single-prompt branch was guarded at first, so a big section
@@ -805,16 +816,34 @@ test_that("the search travels with the corpus it produced", {
   quiet(gr_audit_report(p, screening = sc))          # records NOT passed
   h <- paste(readLines(p, warn = FALSE), collapse = "\n")
   expect_false(grepl("Not recorded", h, fixed = TRUE))
+
+  # And across the hand-off, which is where it matters: gr_extract() takes a
+  # character vector of paths, so the record set rides on `$included` or it is
+  # lost. Without this the NEWS claim that gr_extraction carries it was false in
+  # the only flow anybody uses.
+  x <- quiet(gr_extract(sc$included, gr_fields(n = gr_field("N", type = "number")),
+                        goal = "Q?", client = gr_mock_client(function(messages, params)
+                          '{"n":482,"n__quote":"A randomised trial of 482 adults found a benefit."}')))
+  expect_s3_class(x$records, "gr_records")
+  p2 <- withr::local_tempfile(fileext = ".html")
+  quiet(gr_audit_report(p2, extraction = x))         # extraction only
+  h2 <- paste(readLines(p2, warn = FALSE), collapse = "\n")
+  expect_false(grepl("Not recorded", h2, fixed = TRUE))
+  expect_match(h2, "spaced practice AND retention", fixed = TRUE)
   expect_match(h, "spaced practice AND retention", fixed = TRUE)
   # And the flow begins at the search rather than at "sources given".
   expect_match(h, "records identified", fixed = TRUE)
   expect_match(h, "reports not retrieved", fixed = TRUE)
 })
 
-test_that("a review can be one trace instead of four", {
-  # Each stage started its own, so the audit printed three cost rows, there was
-  # no figure for the review as a whole, and gr_trace_save() could only ever
-  # save a stage.
+test_that("a shared trace accumulates the review without becoming its budget", {
+  # A trace does two jobs: it is the ledger of what a run did, and it is the
+  # counter trace_can_call() measures `max_calls` against. Running a stage
+  # directly on a shared trace conflated them -- screening's calls were charged
+  # against the write-up's per-stage ceiling and every section came back blank,
+  # and each stage's `$trace` then reported the whole review's cost, so the
+  # audit's three cost rows each claimed the full total. A given trace is the
+  # PARENT; the stage still runs on its own and folds into it at the end.
   expect_true("trace" %in% names(formals(gr_screen)))
   expect_true("trace" %in% names(formals(gr_extract)))
   expect_true("trace" %in% names(formals(gr_synthesise)))
@@ -838,11 +867,68 @@ test_that("a review can be one trace instead of four", {
                         goal = "Q?", client = cl, trace = tr))
   rv <- quiet(gr_synthesise(x, question = "Q?", client = cl,
                             outline = c(Findings = "what it shows"), trace = tr))
-  expect_identical(sc$trace, tr)
-  expect_identical(x$trace, tr)
-  expect_identical(rv$trace, tr)
-  expect_equal(gr_trace_summary(tr)$calls, tr$calls)
+  # Each stage keeps its own, so its cost is its own.
+  expect_false(identical(sc$trace, tr))
+  expect_false(identical(x$trace, tr))
+  expect_false(identical(rv$trace, tr))
+  expect_gt(sc$trace$calls, 0L)
+  # And the parent is the review.
+  expect_equal(tr$calls, sc$trace$calls + x$trace$calls + rv$trace$calls)
   expect_gt(tr$calls, 2L)
+  # The stage's own metadata survives being given a parent.
+  expect_equal(rv$trace$meta$stage, "synthesise")
+  expect_equal(tr$meta$review, "one")
+
+  # The defect this arrangement exists to prevent: a ceiling already spent by an
+  # earlier stage must not silently blank the write-up.
+  old <- gr_options("max_calls")
+  on.exit(gr_options(max_calls = old), add = TRUE)
+  gr_options(max_calls = 3L)
+  tab <- data.frame(document = paste0(letters[1:3], ".pdf"), document_id = paste0("h", 1:3),
+                    status = "ok", duplicate_of = NA_character_, n_filled = 1L,
+                    n_unverified = 0L, conflicts = NA_character_,
+                    finding = c("up", "down", "flat"), stringsAsFactors = FALSE)
+  tr2 <- gr_trace()
+  quiet(gr_screen(d, question = "Q?", include = "c", client = cl, trace = tr2))
+  expect_gte(tr2$calls, 1L)
+  sy <- quiet(gr_synthesise(tab, question = "Q?", client = cl, trace = tr2,
+                            outline = c(A = "first", B = "second", C = "third")))
+  expect_equal(sum(nzchar(trimws(sy$sections$text))), 3L)
+
+  # And the audit's per-stage costs still add up to the review's.
+  rows <- readgpt:::audit_cost(sc, x, rv)
+  nums <- as.numeric(regmatches(rows, regexpr("(?<=<td class=\"num\">)[0-9]+(?=</td>)",
+                                              rows, perl = TRUE)))
+  expect_equal(sum(nums[!is.na(nums)]), tr$calls)
+})
+
+test_that("a trace or a ceiling that cannot be compared is refused, not ignored", {
+  # is.finite() alone failed OPEN: NA, Inf and a character value all made the
+  # ceiling FALSE, so it was skipped silently -- and the notice that would have
+  # said the run was uncapped was suppressed at the same time, being gated on
+  # is.null(). A trace was not checked at all: a wrong value ran the whole
+  # corpus, discarded every counter, and produced an object print() could not
+  # render.
+  d <- withr::local_tempdir()
+  for (i in 1:3) writeLines(paste(rep(sprintf("Doc %d about revenue.", i), 20), collapse = " "),
+                            file.path(d, sprintf("doc%d.txt", i)))
+  for (bad in list(list(), "abc", NA, 42)) {
+    expect_error(quiet(gr_read_many(d, "Q?", client = mock_echo(), recipe = "fast", trace = bad)),
+                 class = "gr_bad_trace")
+  }
+  for (bad in list(NA, "2", TRUE, c(2, 4), list(2), -5)) {
+    expect_error(quiet(gr_read_many(d, "Q?", client = mock_echo(), recipe = "fast",
+                                    max_total_calls = bad)),
+                 class = "gr_bad_ceiling")
+  }
+  # Inf is a legitimate way to say "no ceiling", and saying it that way must not
+  # cost the notice that the run is uncapped.
+  msgs <- character(0)
+  withCallingHandlers(
+    suppressWarnings(gr_read_many(d, "Q?", client = mock_echo(), recipe = "fast",
+                                  max_total_calls = Inf)),
+    message = function(m) { msgs <<- c(msgs, conditionMessage(m)); invokeRestart("muffleMessage") })
+  expect_true(any(grepl("PER DOCUMENT", msgs, fixed = TRUE)))
 })
 
 test_that("how good the screening is reaches the report", {

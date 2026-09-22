@@ -96,8 +96,10 @@ than being handed every study and writing a paragraph per row. Needs an
 section \code{\link[=gr_outline]{gr_outline()}} named, with an instruction to state those gaps and
 no others.}
 
-\item{trace}{A \code{\link[=gr_trace]{gr_trace()}} to record into, so the write-up joins the trace
-the screening and extraction used instead of starting a fourth one.}
+\item{trace}{A \code{\link[=gr_trace]{gr_trace()}} to fold this write-up's accounting into, as in
+\code{\link[=gr_read_many]{gr_read_many()}}. It is a parent, not this stage's counter: \verb{$trace} is
+still the write-up's own, so \code{gr_options(max_calls =)} bounds the write-up
+rather than being spent by the screening that came before it.}
 }
 \value{
 An object of class \code{gr_synthesis}:

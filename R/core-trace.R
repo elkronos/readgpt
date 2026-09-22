@@ -125,6 +125,27 @@ trace_absorb <- function(parent, child) {
   invisible(NULL)
 }
 
+#' A parent trace to fold a stage into, validated.
+#'
+#' `trace` does two jobs at once: it is the ledger of what a run did, and it is
+#' the counter `trace_can_call()` measures `max_calls` against. Those want
+#' opposite things when several stages of one review share it -- the ledger
+#' should accumulate, the counter must not, or screening's calls are charged
+#' against the write-up's per-stage ceiling and every section comes back blank.
+#'
+#' So a `trace` argument on a STAGE means "the parent to fold this stage's
+#' accounting into". The stage still runs on its own, exactly as each document
+#' inside gr_read_many() does, and `$trace` on the result is the stage's own.
+#' @noRd
+as_parent_trace <- function(trace, arg = "trace") {
+  if (is.null(trace)) return(NULL)
+  if (!inherits(trace, "gr_trace")) {
+    gr_abort(sprintf("`%s` must come from gr_trace(), or be NULL.", arg),
+             class = "gr_bad_trace")
+  }
+  trace
+}
+
 #' Would one more call exceed the run's call cap?
 #'
 #' Strategies consult this before fanning out. The old code had no equivalent,

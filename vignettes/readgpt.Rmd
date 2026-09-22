@@ -334,9 +334,11 @@ itself needs its own ceiling, and there are two: `max_total_calls`, checked
 before each document, and `max_total_usd`, checked after one. `store =` makes the
 run resumable.
 
-Passing the same `trace =` to `gr_screen()`, `gr_extract()`, `gr_claims()` and
-`gr_synthesise()` makes a review one run with one cost, rather than four
-unrelated traces.
+Passing the same `trace =` to `gr_screen()`, `gr_extract()` and
+`gr_synthesise()` accumulates the whole review in one place. It is a *parent*:
+each stage still keeps its own trace, which is what `$trace` returns and what
+`gr_options(max_calls =)` is measured against, so the screening cannot spend the
+write-up's ceiling and the audit's per-stage costs still add up to the total.
 
 ## From a folder to a review
 

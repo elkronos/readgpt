@@ -83,8 +83,10 @@
 #' @param gaps A [gr_gaps()] result, or lines of text. Given to the closing
 #'   section [gr_outline()] named, with an instruction to state those gaps and
 #'   no others.
-#' @param trace A [gr_trace()] to record into, so the write-up joins the trace
-#'   the screening and extraction used instead of starting a fourth one.
+#' @param trace A [gr_trace()] to fold this write-up's accounting into, as in
+#'   [gr_read_many()]. It is a parent, not this stage's counter: `$trace` is
+#'   still the write-up's own, so `gr_options(max_calls =)` bounds the write-up
+#'   rather than being spent by the screening that came before it.
 #' @param references Append a `## References` section built from the studies the
 #'   finished text actually cites. Alphabetical under `"author-year"`, numbered
 #'   by study otherwise -- the list is labelled by whatever the prose uses to
@@ -218,11 +220,12 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
   client <- client %||% gr_client(model = model %||% gr_options("model"))
   spec <- gr_read_spec("stuff", model = model, temperature = temperature,
                        max_answer_tokens = max_section_tokens)
-  # Given one, use it. A review is one run, and it used to produce three or four
-  # unrelated traces -- so `gr_audit_report()` printed three cost rows, no single
-  # figure for the review, and `gr_trace_save()` could only ever save a stage.
-  trace <- trace %||% gr_trace(meta = list(stage = "synthesise", question = question,
-                                           sections = length(outline), studies = nrow(used)))
+  # The parent, not the counter -- see as_parent_trace(). Running the write-up on
+  # a trace that screening had already spent meant `trace_can_call()` refused
+  # every section and the review came back as a list of empty headings.
+  parent <- as_parent_trace(trace)
+  trace <- gr_trace(meta = list(stage = "synthesise", question = question,
+                                sections = length(outline), studies = nrow(used)))
 
   # The writing model is NOT shown who wrote each study. Adding bibliographic
   # fields to a schema put "authors: Smith, J., Okafor, A." in front of a model
@@ -290,6 +293,8 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
   # re-run on the published prose at any point.
   sections$text_marked <- sections$text
   sections$text <- vapply(sections$text, render, character(1), USE.NAMES = FALSE)
+
+  if (!is.null(parent)) trace_absorb(parent, trace)
 
   structure(list(
     text = append_references(render(final_marked), refs),
@@ -472,15 +477,24 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
 
   body <- paste(rendered, collapse = "\n\n")
   lost_batches <- 0L
+  # Read BEFORE the check, because trace_can_call() latches `budget_stop` as a
+  # side effect. That latch is what keeps this to one warning per run instead of
+  # one per section -- a twelve-section outline produced twelve identical
+  # warnings, which is how a real one gets skimmed past.
+  first_stop <- !isTRUE(trace$budget_stop)
+  capped_batches <- 0L
   text <- if (!trace_can_call(trace)) {
     # Every other stage checks the run's ceiling before it spends -- gr_claims(),
     # gr_outline(), revise_once() and every reader do. Synthesis did not, so a
     # run that had already hit `max_calls` kept writing sections, one call each.
     # An empty section is already marked partial below, which is the right
     # outcome: the ceiling was the user's instruction.
-    gr_warn(sprintf(paste0("Section '%s' was not written: the run reached its call or cost ",
-                           "ceiling first. The section is marked partial."), heading),
-            class = "gr_synth_capped")
+    if (first_stop) {
+      gr_warn(sprintf(paste0("Section '%s' was not written, nor is any section after it: the run ",
+                             "reached its call or cost ceiling first. They are marked partial."),
+                      heading),
+              class = "gr_synth_capped")
+    }
     ""
   } else if (gr_count_tokens(body) <= bud$input) {
     res <- gr_call(client, list(
@@ -502,10 +516,11 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
     # may not do.
     groups <- synth_batches(rendered, bud$input)
     parts <- vapply(groups, function(g) {
-      # A batch that the ceiling stops is an empty part, which `lost_batches`
-      # counts and warns about below -- the same visible degradation as a batch
-      # whose call failed.
-      if (!trace_can_call(trace)) return("")
+      # Counted apart from a batch whose CALL failed. Both leave an empty part,
+      # but "2 batches of studies failed" points at the model or the network,
+      # and the cause here is the ceiling the caller set. `<<-` is right in this
+      # nested function: it targets synth_section()'s frame, not the global one.
+      if (!trace_can_call(trace)) { capped_batches <<- capped_batches + 1L; return("") }
       res <- gr_call(client, list(
         list(role = "system", content = system_prompt),
         list(role = "user", content = ask),
@@ -522,7 +537,7 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
     # the section, on `partial` or in print() to say so.
     # `<-`, not `<<-`: an if/else block shares the enclosing frame, so `<<-`
     # here would have written to the global environment and left this one at 0.
-    lost_batches <- sum(!nzchar(parts))
+    lost_batches <- sum(!nzchar(parts)) - capped_batches
     m <- tree_merge(client, ask, parts, spec, trace, label = "synthesise.merge",
                     system_prompt = system_prompt, kind = "draft")
     # m$text on failure carries tree_merge()'s own "[merge failed; findings
@@ -554,6 +569,12 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
     gr_warn(sprintf(paste0("Section '%s': %d batch(es) of studies failed, so the studies in ",
                            "them are missing from it. The section is marked partial."),
                     heading, lost_batches), class = "gr_synth_batch_failed")
+  }
+  if (capped_batches > 0L && first_stop) {
+    gr_warn(sprintf(paste0("Section '%s': %d batch(es) of studies were not read, nor is any ",
+                           "section after this one: the run reached its call or cost ceiling. ",
+                           "They are marked partial."),
+                    heading, capped_batches), class = "gr_synth_capped")
   }
   list(
     row = data.frame(section = heading, brief = as_chr1(brief), text = as_chr1(text),

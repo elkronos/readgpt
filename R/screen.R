@@ -106,8 +106,8 @@ read_screen <- function(chunks, question, client, spec, trace) {
 #'
 #' @param sources As [gr_read_many()]: file paths, a directory, or raw text.
 #' @param max_total_calls,trace As [gr_read_many()]. Pass the same `trace` to
-#'   [gr_extract()] and [gr_synthesise()] and the review has one trace and one
-#'   cost rather than one per stage.
+#'   [gr_extract()] and [gr_synthesise()] and it accumulates the whole review,
+#'   while each stage keeps its own for its own cost and its own ceiling.
 #' @param protocol A [gr_protocol()] carrying the criteria and the review
 #'   question. Give this, or `include`/`exclude` directly.
 #' @param question,include,exclude The review question and the criteria, if you
@@ -206,6 +206,7 @@ gr_screen <- function(sources, protocol = NULL, question = NULL, include = NULL,
   rec <- gr_recipe(paste0(base$name, "+screen"), ingest = base$ingest,
                    segment = base$segment, read = rd)
 
+  max_total_calls <- as_call_ceiling(max_total_calls)
   out <- gr_read_many(sources, question, rec, client = client, store = store,
                       on_error = on_error, max_total_usd = max_total_usd,
                       max_total_calls = max_total_calls, keep_answers = TRUE,
@@ -222,8 +223,12 @@ gr_screen <- function(sources, protocol = NULL, question = NULL, include = NULL,
     # back to a file -- gr_extract(screened$included) then failed with "file not
     # found" on every row. And distinct: a duplicate is the same study, so
     # extracting it again buys nothing but the chance of counting it twice.
-    included = out$sources[!is.na(tab$decision) & tab$decision == "include" &
-                             is.na(tab$duplicate_of)],
+    # The record set rides along on the paths, because the next stage takes a
+    # character vector and there is nowhere else to put it. corpus_sources()
+    # carries it through the filter, so gr_extract(screened$included) knows
+    # which search produced the corpus without being told a second time.
+    included = with_record_set(out$sources[!is.na(tab$decision) & tab$decision == "include" &
+                                             is.na(tab$duplicate_of)], out$records),
     include  = include,
     exclude  = exclude,
     summary  = out$summary,

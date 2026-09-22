@@ -37,7 +37,9 @@ collected, because \code{fields} does that. Defaults to a neutral instruction.}
 \item{recipe}{The ingest and segmentation to use. The reader is always
 \code{extract}, whatever the recipe says.}
 
-\item{client, store, on_error, max_total_usd, recursive}{As \code{\link[=gr_read_many]{gr_read_many()}}.}
+\item{client, store, on_error, max_total_usd, recursive}{As \code{\link[=gr_read_many]{gr_read_many()}}.
+\code{store} is worth setting for anything longer than a coffee break: an
+interrupted extraction resumes instead of restarting.}
 
 \item{resolve}{What to do when two parts of one document give different values
 for the same field. \code{"first"} (default) takes the earlier one and records
@@ -50,9 +52,7 @@ thrown away without being asked for, and \code{n_unverified} makes the same
 problem visible without destroying anything. Turn it on for a protocol that
 says no quote, no datum.}
 
-\item{max_total_calls, trace}{As \code{\link[=gr_read_many]{gr_read_many()}}.
-\code{store} is worth setting for anything longer than a coffee break: an
-interrupted extraction resumes instead of restarting.}
+\item{max_total_calls, trace}{As \code{\link[=gr_read_many]{gr_read_many()}}.}
 
 \item{keep_answers}{Keep the underlying \link{gr_answer} objects in \verb{$answers}.
 They hold every chunk's source text, so for a large corpus this is what

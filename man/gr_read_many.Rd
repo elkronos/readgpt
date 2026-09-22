@@ -66,8 +66,12 @@ runs you out of memory.}
 
 \item{recursive}{Descend into subdirectories when \code{sources} is a directory.}
 
-\item{trace}{A \code{\link[=gr_trace]{gr_trace()}} to record into, so several stages of one review
-share one trace and one cost. Omit it and this run gets its own.}
+\item{trace}{A \code{\link[=gr_trace]{gr_trace()}} to fold this run's accounting into, so several
+stages of one review add up to one figure. It is a \emph{parent}: this run still
+gets its own trace, which is what \verb{$trace} returns and what
+\code{gr_options(max_calls =)} is measured against. Running a stage directly on a
+shared trace would charge the previous stage's calls against this one's
+ceiling. Omit it and there is no parent.}
 
 \item{...}{Overrides applied to the recipe, as in \code{\link[=answer_document]{answer_document()}}.}
 }

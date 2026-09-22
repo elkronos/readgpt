@@ -528,14 +528,6 @@ html_table <- function(df, numeric_cols = character(0), flag = list()) {
 }
 
 
-#' The search, as the review has to report it.
-#'
-#' PRISMA items 6 and 7, and item 7 asks for the full strategy for at least one
-#' database *so that it could be repeated*. Printing it beside the results is
-#' the difference between a report a reader can check and one they must take on
-#' trust -- and when it is absent, saying so is more useful than leaving the
-#' section out, because a missing search is a defect in the review rather than
-#' in the report.
 #' How good the screening is, when somebody measured it.
 #'
 #' gr_calibrate() computed sensitivity, specificity and kappa and there was
@@ -575,6 +567,14 @@ audit_calibration <- function(calibration) {
   c("<h2>How good the screening is</h2>", head, html_table(tab), kap, proj, warn, miss)
 }
 
+#' The search, as the review has to report it.
+#'
+#' PRISMA items 6 and 7, and item 7 asks for the full strategy for at least one
+#' database *so that it could be repeated*. Printing it beside the results is
+#' the difference between a report a reader can check and one they must take on
+#' trust -- and when it is absent, saying so is more useful than leaving the
+#' section out, because a missing search is a defect in the review rather than
+#' in the report.
 #' @noRd
 audit_search <- function(records) {
   se <- if (inherits(records, "gr_records")) records$search else NULL

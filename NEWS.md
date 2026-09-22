@@ -464,25 +464,39 @@
   `gr_claims()` beside it stopped at the first. A section the ceiling stops is
   marked partial and says why, rather than appearing as empty prose.
 
-  *One corpus behaves the same however you name it.* `gr_read_many(dir)` skipped
-  the files no extractor claims and warned; `gr_read_many(list.files(dir))`
-  handed each of them to an extractor and recorded a failed row. Every pipeline
-  uses the second form — `gr_extract(screened$included)` is a character vector —
-  so the stage that reads the most documents was getting the worse behaviour.
-  Raw text is still raw text: the filter applies only when every element is a
-  file that exists.
+  *A folder and its file list behave the same.* `gr_read_many(dir)` skipped the
+  files no extractor claims and warned; `gr_read_many(list.files(dir))` handed
+  each of them to an extractor and recorded a failed row. Every pipeline uses
+  the second form — `gr_extract(screened$included)` is a character vector — so
+  the stage that reads the most documents was getting the worse behaviour. The
+  filter applies only when every element is a file that exists, so raw text, a
+  mixed vector and a `list()` of sources are all untouched, and a `gr_records`
+  still produces a failed row per unreadable file rather than dropping it — a
+  record that was retrieved and could not be read is a fact a PRISMA count needs
+  to keep. When the filter removes *everything*, the abort now says so, rather
+  than telling somebody who just passed file paths to pass file paths.
 
   *The search travels with the corpus it produced.* `gr_screening` and
   `gr_extraction` now carry the `gr_records()` they were run over, and
-  `gr_audit_report()` picks it up. Forgetting to hand the same object over a
+  `gr_audit_report()` picks it up. `$included` carries it too, because the next
+  stage takes a character vector of paths and there was nowhere else to put it. Forgetting to hand the same object over a
   second time at the end used to produce a report whose search section read "Not
   recorded" and whose flow diagram began at "sources given" — which the README's
   own end-to-end example did.
 
   *A review can be one trace.* `gr_screen()`, `gr_extract()` and
-  `gr_synthesise()` take a `trace =`, so four stages share one trace, one cost
-  and one thing to save. Each used to start its own, so the audit printed three
-  cost rows and nothing said what the review cost.
+  `gr_synthesise()` take a `trace =`, so the stages of one review add up to one
+  figure. Each used to start its own, and nothing said what the review cost.
+
+  The argument is a **parent**, not the stage's own counter, and that
+  distinction is the whole design: a `gr_trace` is both the ledger of what a run
+  did and the counter `max_calls` is measured against, and those want opposite
+  things. Running a stage directly on a shared trace charged screening's calls
+  against the write-up's per-stage ceiling — every section came back blank, with
+  only `sections$partial` to say so — and made each stage's `$trace` report the
+  whole review, so the audit's three cost rows each claimed the full total. Each
+  stage now runs on its own trace and folds into the parent at the end, exactly
+  as each document inside `gr_read_many()` already did.
 
   *How good the screening is reaches the report.* `gr_calibrate()` computed
   sensitivity, specificity, kappa and the list of eligible studies the screener

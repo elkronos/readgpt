@@ -35,9 +35,9 @@
 #' @param recipe The ingest and segmentation to use. The reader is always
 #'   `extract`, whatever the recipe says.
 #' @param client,store,on_error,max_total_usd,recursive As [gr_read_many()].
-#' @param max_total_calls,trace As [gr_read_many()].
 #'   `store` is worth setting for anything longer than a coffee break: an
 #'   interrupted extraction resumes instead of restarting.
+#' @param max_total_calls,trace As [gr_read_many()].
 #' @param resolve What to do when two parts of one document give different values
 #'   for the same field. `"first"` (default) takes the earlier one and records
 #'   the disagreement in the `conflicts` column, costing nothing. `"model"`
@@ -198,6 +198,7 @@ gr_extract <- function(sources, fields, goal = NULL, recipe = "research",
     rr <- sources$records
     rr[is.na(rr$duplicate_of) & !is.na(rr$file), , drop = FALSE]
   } else NULL
+  max_total_calls <- as_call_ceiling(max_total_calls)
   out <- gr_read_many(sources, goal, rec, client = client, store = store,
                       on_error = on_error, max_total_usd = max_total_usd,
                       max_total_calls = max_total_calls, keep_answers = TRUE,

@@ -44,8 +44,8 @@ stage. Either way the \code{truncated} and \code{seen_tokens} columns say what w
 actually read.}
 
 \item{max_total_calls, trace}{As \code{\link[=gr_read_many]{gr_read_many()}}. Pass the same \code{trace} to
-\code{\link[=gr_extract]{gr_extract()}} and \code{\link[=gr_synthesise]{gr_synthesise()}} and the review has one trace and one
-cost rather than one per stage.}
+\code{\link[=gr_extract]{gr_extract()}} and \code{\link[=gr_synthesise]{gr_synthesise()}} and it accumulates the whole review,
+while each stage keeps its own for its own cost and its own ceiling.}
 
 \item{...}{Recipe overrides, as in \code{\link[=gr_extract]{gr_extract()}}.}
 }

@@ -237,7 +237,11 @@ gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL
     max_chunk_tokens = clamp_warn(na_default(max_chunk_tokens, 700L, "max_chunk_tokens"), 16, 1e6, "max_chunk_tokens"),
     max_summary_tokens = clamp_warn(na_default(max_summary_tokens, 500L, "max_summary_tokens"), 16, 1e6, "max_summary_tokens"),
     top_k = clamp_warn(na_default(top_k, 6L, "top_k"), 1, 1e4, "top_k"),
-    min_score = min_score,
+    # -Inf is the documented "no floor", so a value that cannot be compared has
+    # to be refused rather than silently becoming one: a relevance floor that is
+    # not applied is the same failure as a cost ceiling that is not enforced.
+    min_score = if (identical(min_score, -Inf)) -Inf else
+      na_default(min_score, -Inf, "min_score"),
     # NA falls back to the DEFAULT, not to the bottom of the range. clamp_warn()
     # maps NA to `lo`, which for this setting is 0 -- pure diversity, documented
     # as "will happily pick irrelevant chunks because they are different". A
@@ -257,8 +261,8 @@ gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL
     skim_model = skim_model,
     summary_model = summary_model,
     parallel = parallel %||% gr_options("parallel"),
-    delay_between_calls = clamp_warn(delay_between_calls, 0, 600, "delay_between_calls",
-                                     integer = FALSE),
+    delay_between_calls = clamp_warn(na_default(delay_between_calls, 0, "delay_between_calls"),
+                                     0, 600, "delay_between_calls", integer = FALSE),
     on_overflow = on_overflow
   ), list(...)), class = "gr_read_spec")
   registry_get("readers", spec$reader, "readers")   # fail fast on a typo

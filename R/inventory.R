@@ -329,8 +329,13 @@ probe_pdf <- function(path, ocr_min_chars, max_pdf_pages) {
   if (is.na(n)) {
     return(list(status = "unreadable", tokens = NA_real_, note = "could not open the PDF"))
   }
-  take <- if (is.finite(max_pdf_pages)) seq_len(min(n, max(1L, as.integer(max_pdf_pages))))
-          else seq_len(n)
+  # as_int1(), and a default rather than "no cap": is.finite(NA) is FALSE, so a
+  # missing max_pdf_pages read EVERY page of every PDF -- the opposite of what
+  # the parameter is for -- and as.integer(1e10) is NA, so seq_len(NA) threw and
+  # the file was reported unreadable with a $0 cost floor. gr_inventory() is the
+  # before-you-spend estimate; it must not report a corpus as free.
+  cap <- as_int1(max_pdf_pages, 3L)
+  take <- if (is.na(cap)) seq_len(n) else seq_len(min(n, max(1L, cap)))
   pg <- tryCatch(pdftools::pdf_text(path)[take], error = function(e) NULL)
   if (is.null(pg)) {
     return(list(status = "unreadable", tokens = NA_real_, pages = n,

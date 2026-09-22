@@ -61,6 +61,67 @@ gr_defaults <- list(
   unknown_model_action = "warn"        # "warn" | "error"
 )
 
+#' What each numeric option is allowed to be, checked where it is SET.
+#'
+#' Every consumer used to invent its own opinion of a bad value, and the
+#' opinions pointed the wrong way. `is.finite(max_cost_usd)` as a guard meant NA
+#' or a value read from a config file as text silently removed the cost cap --
+#' $710 spent against a $5 ceiling, no warning. `trace_can_call()` did the same
+#' for `max_calls`, and disagreed with `preflight()`, which parsed a character
+#' cap and enforced it: one option, two answers. `as.integer(min_output_tokens)`
+#' turned 1e10 into NA and `gr_budget()` then raised a bare simpleError.
+#'
+#' Refusing the value here is the only place that fixes all of them at once, and
+#' it is the honest place: a ceiling nobody can compare is not a ceiling, and
+#' the moment to say so is when it is set, not on the call that would have been
+#' stopped by it.
+#' @noRd
+.gr_option_rules <- list(
+  safety_margin        = list(lo = 0,  hi = 0.5,  null_ok = FALSE, whole = FALSE),
+  min_output_tokens    = list(lo = 1,  hi = 1e6,  null_ok = FALSE, whole = TRUE),
+  max_retries          = list(lo = 0,  hi = 100,  null_ok = FALSE, whole = TRUE),
+  retry_pause_base     = list(lo = 0,  hi = 600,  null_ok = FALSE, whole = FALSE),
+  request_timeout      = list(lo = 1,  hi = 86400, null_ok = FALSE, whole = FALSE),
+  workers              = list(lo = 1,  hi = 1024, null_ok = FALSE, whole = TRUE),
+  max_cost_usd         = list(lo = 0,  hi = Inf,  null_ok = TRUE,  whole = FALSE),
+  # lo = 0: "make no calls at all" is a meaningful instruction, and the tests
+  # that assert a reader degrades rather than spending use it.
+  max_calls            = list(lo = 0,  hi = Inf,  null_ok = TRUE,  whole = TRUE),
+  temperature          = list(lo = 0,  hi = 2,    null_ok = TRUE,  whole = FALSE)
+)
+
+#' @noRd
+check_option <- function(name, value) {
+  rule <- .gr_option_rules[[name]]
+  if (is.null(rule)) return(value)
+  if (is.null(value)) {
+    if (isTRUE(rule$null_ok)) return(NULL)
+    gr_abort(sprintf("`%s` cannot be NULL.", name), class = "gr_bad_option")
+  }
+  if (length(value) != 1L || !is.numeric(value) || is.na(value)) {
+    gr_abort(sprintf(paste0("gr_options(%s = ) must be a single number%s, not %s. A limit that ",
+                            "cannot be compared is not a limit, so this is refused here rather ",
+                            "than ignored later."),
+                     name, if (isTRUE(rule$null_ok)) " or NULL" else "",
+                     if (length(value) != 1L) sprintf("a length-%d value", length(value))
+                     else if (is.na(value)) "NA" else sprintf("a %s", class(value)[1])),
+             class = "gr_bad_option")
+  }
+  # Inf is meaningful for the two ceilings -- "no limit", said explicitly -- and
+  # meaningless for the rest.
+  if (!is.finite(value)) {
+    if (isTRUE(rule$null_ok) && value > 0) return(value)
+    gr_abort(sprintf("gr_options(%s = ) must be finite.", name), class = "gr_bad_option")
+  }
+  if (value < rule$lo || value > rule$hi) {
+    gr_abort(sprintf("gr_options(%s = ) must be between %s and %s; got %s.",
+                     name, format(rule$lo), format(rule$hi), format(value)),
+             class = "gr_bad_option")
+  }
+  # A whole number kept as a DOUBLE. as.integer() is what turned 1e10 into NA.
+  if (isTRUE(rule$whole)) floor(value) else value
+}
+
 #' Get or set package options
 #'
 #' `gr_options()` with no arguments returns the full option list. Called with
@@ -165,6 +226,7 @@ gr_options <- function(...) {
     gr_abort(sprintf("Unknown option(s): %s. Known options: %s.",
                      paste(unknown, collapse = ", "), paste(names(gr_defaults), collapse = ", ")))
   }
+  for (nm in names(args)) args[nm] <- list(check_option(nm, args[[nm]]))
   cur <- as.list(gr_state$options %||% list())
   # merged(), not modifyList(). modifyList() DELETES a key whose value is NULL,
   # so once an option had been *stored* as NULL -- which is what restoring a

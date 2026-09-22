@@ -427,6 +427,29 @@ seg_contextual <- function(doc, spec, client, trace) {
   out
 }
 
+#' A list of propositions as a flat character vector, whatever shape it arrived in.
+#'
+#' An array of strings simplifies to a character vector; an array of ARRAYS to a
+#' matrix, which `as.character()` flattens column-major and so transposes; an
+#' array of objects to a data frame, which `as.character()` deparses, putting
+#' the literal text `c("A.", "B.")` into the document. Row-major for the matrix,
+#' the obvious text column for the frame, and nothing at all for anything else.
+#' @noRd
+prop_strings <- function(x) {
+  if (is.null(x)) return(character(0))
+  if (is.matrix(x)) return(as.character(t(x)))
+  if (is.data.frame(x)) {
+    col <- intersect(c("text", "proposition", "sentence"), names(x))
+    return(if (length(col)) as.character(x[[col[1]]]) else character(0))
+  }
+  if (is.list(x)) {
+    x <- unlist(x, use.names = FALSE)
+    if (is.null(x)) return(character(0))
+  }
+  if (!is.atomic(x)) return(character(0))
+  as.character(x)
+}
+
 #' @noRd
 seg_proposition <- function(doc, spec, client, trace) {
   # Dense X-retrieval style: rewrite the text into standalone assertions, each
@@ -457,7 +480,10 @@ seg_proposition <- function(doc, spec, client, trace) {
     ), schema = schema, schema_name = "propositions", trace = trace,
        label = "segment.proposition", max_output = 2000L)
     if (!out$ok) return(character(0))
-    as.character(out$value$propositions %||% character(0))
+    # as.character() on whatever simplifyVector made of it flattened a matrix
+    # column-major (transposing the propositions) and deparsed a data frame
+    # (putting the literal R expression c("A.", "B.") into the document text).
+    prop_strings(json_field(out$value, "propositions", scalar = FALSE))
   }, parallel = spec$parallel, label = "proposition batch", trace = trace)
   props <- unlist(res, use.names = FALSE)
   props <- props[has_content(props)]

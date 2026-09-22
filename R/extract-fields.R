@@ -223,9 +223,15 @@ coerce_field <- function(value, field) {
     # as.character() to strip punctuation it does not contain costs precision
     # (as.character(1/3) is fifteen digits), and coercion runs again on values
     # that have already been coerced once.
-    integer = { if (is.numeric(v) && is.finite(v)) return(as.integer(round(v)))
+    # Above .Machine$integer.max an integer field is stored as a DOUBLE, not
+    # thrown away. as.integer(3e9) is NA, so a person-days or population count
+    # came out as "not reported" and n_filled dropped to 0 -- the extraction
+    # table said the document was silent about a value it had stated plainly.
+    integer = { big <- function(z) if (abs(z) > .Machine$integer.max) round(z) else
+                                     as.integer(round(z))
+                if (is.numeric(v) && is.finite(v)) return(big(v))
                 n <- numeric_token(as_chr1(v))
-                if (is.null(n) || !is.finite(n)) NULL else as.integer(round(n)) },
+                if (is.null(n) || !is.finite(n)) NULL else big(n) },
     number  = { if (is.numeric(v) && is.finite(v)) return(as.numeric(v))
                 n <- numeric_token(as_chr1(v), exponent = TRUE)
                 if (is.null(n) || !is.finite(n)) NULL else n },

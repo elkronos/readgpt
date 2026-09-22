@@ -1057,3 +1057,296 @@ test_that("how good the screening is reaches the report", {
                                calibration = list(metrics = 1)),
                class = "gr_bad_audit_input")
 })
+
+# ---------------------------------------------------------------------------
+# The recurring patterns, swept across the whole package rather than the last
+# diff. Three classes, each with prior occurrences on record: a guard that fails
+# OPEN, a missing value that becomes the most destructive number on a scale, and
+# a parsed model reply read with `$` or assumed to have one shape.
+# ---------------------------------------------------------------------------
+
+test_that("rerank does not answer from a prompt full of [chunk NA]", {
+  # as.numeric("high") is NA; `NA >= thresh` is NA; and an NA logical SUBSCRIPT
+  # selects an NA element rather than dropping it. So the vector kept its length,
+  # the "nothing scored high enough" guard did not fire, d[NA, ] put `[chunk NA]`
+  # and `NA` into the excerpts, and the model answered the question with no
+  # document in front of it -- returned with partial = FALSE and no evidence.
+  doc <- paste(rep(paste("The cohort comprised 482 participants across nine sites.",
+                         "Adherence exceeded 91 percent in the treatment arm.",
+                         "We fitted a mixed-effects model with site as an intercept."), 120),
+               collapse = "\n\n")
+  sent <- new.env(parent = emptyenv())
+  cl <- gr_mock_client(function(messages, params) {
+    if (grepl("Rate how useful", messages[[1]]$content, fixed = TRUE)) {
+      return('{"score": "high", "reason": "r"}')
+    }
+    sent$msgs <- messages
+    "The sample size was 482."
+  })
+  a <- quiet(answer_document(doc, "What was the sample size?", reader = "rerank",
+                             rerank_candidates = 5, top_k = 3, client = cl))
+  body <- as.character(sent$msgs[[2]]$content)
+  expect_false(grepl("[chunk NA]", body, fixed = TRUE))
+  expect_false(any(is.na(a$chunks_used)))
+  expect_true(a$partial)          # it degraded to the lexical ranking, and says so
+
+  # SOME scores unusable and some fine is the case that needs the !is.na() test:
+  # with every score unusable the reader degrades to BM25 and no NA reaches the
+  # comparison at all, so a mixed reply is what exercises the guard.
+  first <- new.env(parent = emptyenv()); first$n <- 0L
+  sent2 <- new.env(parent = emptyenv())
+  cl3 <- gr_mock_client(function(messages, params) {
+    if (grepl("Rate how useful", messages[[1]]$content, fixed = TRUE)) {
+      first$n <- first$n + 1L
+      return(if (first$n == 1L) '{"score": 9, "reason": "r"}' else '{"score": "high", "reason": "r"}')
+    }
+    sent2$msgs <- messages
+    "The sample size was 482."
+  })
+  a3 <- quiet(answer_document(doc, "What was the sample size?", reader = "rerank",
+                              rerank_candidates = 5, top_k = 3, client = cl3))
+  expect_false(any(is.na(a3$chunks_used)))
+  expect_false(grepl("[chunk NA]", as.character(sent2$msgs[[2]]$content), fixed = TRUE))
+
+  # Two more shapes of the same reply that used to crash rather than degrade.
+  ch <- quiet(gr_segment(quiet(gr_ingest(doc)), list(method = "paragraph", max_tokens = 200)))
+  for (reply in c('{"score":[8,9],"reason":"r"}', '{"score":{"v":8},"reason":"r"}')) {
+    cl2 <- gr_mock_client(function(messages, params) {
+      if (grepl("Rate how useful", messages[[1]]$content, fixed = TRUE)) return(reply)
+      "ANSWER"
+    })
+    expect_error(quiet(gr_read(ch, "q", client = cl2,
+                               spec = gr_read_spec(reader = "rerank",
+                                                   rerank_candidates = 3L))), NA)
+  }
+})
+
+test_that("a model reply is read by exact key, never by prefix", {
+  # `$` partial-matches. A reply carrying `decisions` satisfied a read of
+  # `decision` and the screener recorded a real "include" from a key the schema
+  # never defined; `can_answer_now` ended the iterative loop and its answer came
+  # back as final. extract_text() has used [[exact = TRUE]] since the same bug
+  # bit the HTTP layer; the readers were never given the same treatment.
+  f <- withr::local_tempfile(fileext = ".txt")
+  writeLines(paste(rep("The cohort comprised 482 participants across nine sites.", 60),
+                   collapse = " "), f)
+  cl <- gr_mock_client(function(messages, params)
+    '{"decisions":"include","reasoning":"r","criterions":"c","quotes":"x"}')
+  s <- quiet(gr_screen(f, question = "q?", include = "Any study", client = cl))
+  expect_false(identical(as.character(s$table$decision), "include"))
+  expect_true(is.na(s$table$reason) || !identical(s$table$reason, "r"))
+
+  ch <- quiet(gr_segment(quiet(gr_ingest(paste(rep("Topic sentence here.", 80), collapse = " "))),
+                         list(method = "sentence", max_tokens = 60)))
+  cl2 <- gr_mock_client(function(messages, params) {
+    if (grepl("reading iteratively", messages[[1]]$content, fixed = TRUE)) {
+      return('{"can_answer_now": true, "answers": "Yes it was.", "next_query": ""}')
+    }
+    "fallback"
+  })
+  a <- quiet(gr_read(ch, "What was measured?", client = cl2,
+                     spec = gr_read_spec(reader = "iterative", max_rounds = 2L)))
+  expect_false(grepl("Yes it was", a$answer, fixed = TRUE))
+  # And the loop must not have STOPPED on it: `can_answer_now` satisfying a read
+  # of `can_answer` ended the retrieve-assess loop after one round and returned
+  # that round's answer as final.
+  # The mid-loop return skips the final answer call entirely, so its absence is
+  # the signature of the loop having been ended by a key that does not exist.
+  labs <- vapply(cl2$calls(), function(c) as.character(c$label), character(1))
+  expect_true("iterative.final" %in% labs)
+
+  # The accessor itself, on every shape simplifyVector can produce.
+  v <- list(score = 8, both = c(1, 2), obj = list(a = 1), txt = "x")
+  expect_equal(readgpt:::json_field(v, "score"), 8)
+  expect_null(readgpt:::json_field(v, "scor"))        # no prefix match
+  expect_null(readgpt:::json_field(v, "both"))        # not a scalar
+  expect_null(readgpt:::json_field(v, "obj"))
+  expect_equal(readgpt:::json_num(v, "txt", -1), -1)
+})
+
+test_that("a proposition list keeps its order whatever shape it arrived in", {
+  # An array of arrays simplifies to a MATRIX, which as.character() flattens
+  # column-major and so transposes; an array of objects to a data frame, which
+  # as.character() deparses, putting the literal text c("A.", "B.") into the
+  # document that every downstream reader then treats as content.
+  src <- "A1 alpha sentence. A2 second sentence. B1 third one. B2 fourth one here."
+  shapes <- c('{"propositions":["A1.","A2.","B1.","B2."]}',
+              '{"propositions":[["A1.","A2."],["B1.","B2."]]}')
+  flat <- function(cs) paste(trimws(unlist(strsplit(cs$chunks$text, "\n"))), collapse = " ")
+  for (j in shapes) {
+    cl <- gr_mock_client(function(messages, params) j)
+    cs <- quiet(gr_segment(quiet(gr_ingest(src)), list(method = "proposition"), client = cl))
+    # The matrix shape used to come out transposed: "A1. B1. A2. B2."
+    expect_equal(flat(cs), "A1. A2. B1. B2.", info = j)
+  }
+  cl <- gr_mock_client(function(messages, params)
+    '{"propositions":[{"text":"A1."},{"text":"A2."}]}')
+  cs <- quiet(gr_segment(quiet(gr_ingest(src)), list(method = "proposition"), client = cl))
+  expect_false(any(grepl("c(\"", cs$chunks$text, fixed = TRUE)))
+  expect_equal(readgpt:::prop_strings(matrix(c("a", "b", "c", "d"), nrow = 2, byrow = TRUE)),
+               c("a", "b", "c", "d"))
+  expect_equal(readgpt:::prop_strings(NULL), character(0))
+})
+
+test_that("a plan or a claim list that omits a required key degrades, not crashes", {
+  ch <- quiet(gr_segment(quiet(gr_ingest(paste(rep("Topic sentence here.", 80), collapse = " "))),
+                         list(method = "sentence", max_tokens = 60)))
+  # as.integer() on a LIST column is an error, not a warning, so
+  # suppressWarnings() did not catch it and the preview reader crashed instead of
+  # taking its documented "read everything" path.
+  cl <- gr_mock_client(function(messages, params) {
+    if (grepl("You plan how to read", messages[[1]]$content, fixed = TRUE)) {
+      return('{"sections":[{"id":[1,2],"treatment":"skip","reason":"r"}]}')
+    }
+    "A"
+  })
+  expect_error(quiet(gr_read(ch, "q", client = cl,
+                             spec = gr_read_spec(reader = "preview"))), NA)
+
+  # Three of four columns were guarded with %||% and the load-bearing one was
+  # not, so a reply in which NO object carried `claim` died with "arguments
+  # imply differing number of rows: 0, 2".
+  tab <- data.frame(document = c("a.pdf", "b.pdf"), status = "ok",
+                    duplicate_of = NA_character_, n_filled = 1L, n_unverified = 0L,
+                    conflicts = NA_character_, finding = c("x", "y"),
+                    stringsAsFactors = FALSE)
+  noclaim <- gr_mock_client(function(messages, params)
+    '{"claims":[{"kind":"finding","supported_by":[1]},{"kind":"finding","supported_by":[2]}]}')
+  cm <- quiet(gr_claims(tab, question = "Q?", client = noclaim))
+  expect_equal(nrow(cm$claims), 0L)
+  # And the outline equivalent: a reply with no `heading` anywhere yields no
+  # usable sections rather than an error, which is what gr_outline() checks for
+  # before falling back to one section.
+  expect_error(readgpt:::outline_rows(list(list(brief = "b1"), list(brief = "b2"))), NA)
+  expect_equal(nrow(readgpt:::outline_rows(list(list(brief = "b1"),
+                                                list(brief = "b2")))), 0L)
+})
+
+test_that("a limit that cannot be compared is refused where it is set", {
+  # gr_options() validated NAMES only. Every consumer then invented its own
+  # opinion of a bad value and the opinions pointed the wrong way:
+  # is.finite(max_cost_usd) as a guard meant NA, or a value read from a config
+  # file as text, silently removed the cost cap -- $710 against a $5 ceiling.
+  # trace_can_call() did the same for max_calls and DISAGREED with preflight(),
+  # which parsed a character cap and enforced it: one option, two answers.
+  old <- gr_options(max_cost_usd = 5, max_calls = 400L)
+  on.exit(gr_options(old), add = TRUE)
+  for (bad in list(NA, "5", c(1, 2), -1, list(1))) {
+    expect_error(gr_options(max_cost_usd = bad), class = "gr_bad_option")
+    expect_error(gr_options(max_calls = bad), class = "gr_bad_option")
+  }
+  for (bad in list(NA, "x", -1, Inf)) {
+    expect_error(gr_options(safety_margin = bad), class = "gr_bad_option")
+    expect_error(gr_options(min_output_tokens = bad), class = "gr_bad_option")
+  }
+  # NULL and Inf are the two explicit ways to say "no limit", and both survive.
+  gr_options(max_cost_usd = NULL)
+  expect_null(gr_options("max_cost_usd"))
+  expect_equal({ gr_options(max_cost_usd = Inf); gr_options("max_cost_usd") }, Inf)
+  expect_equal({ gr_options(max_calls = 0L); gr_options("max_calls") }, 0)
+  # A whole number stays a comparable DOUBLE: as.integer(1e10) is NA.
+  expect_equal({ gr_options(max_calls = 1e10); gr_options("max_calls") }, 1e10)
+  gr_options(max_calls = 400L, max_cost_usd = 5)
+
+  # And the cap is really enforced, which is the point of refusing the value.
+  gr_register_model("swept-costly", context_window = 2e5, max_output = 16000,
+                    input_usd = 1e5, output_usd = 1e5)
+  doc <- paste(rep("The cohort comprised 482 participants across nine sites.", 200),
+               collapse = " ")
+  expect_error(quiet(answer_document(doc, "n?", reader = "map_reduce",
+                                     model = "swept-costly", client = mock_echo())),
+               class = "gr_cost_cap")
+})
+
+test_that("a missing value never becomes the destructive end of a scale", {
+  # clamp() maps NA to `lo`, and for several settings `lo` is the value the
+  # setting exists to prevent: zero safety margin, zero overhead, the median
+  # semantic boundary. na_default() sends it to the DEFAULT instead, as `mmr`
+  # and `max_tokens` already did.
+  s <- quiet(gr_segment_spec("semantic", semantic_percentile = NA, semantic_window = NA,
+                             overlap_tokens = NA, min_tokens = NA,
+                             proposition_batch_tokens = NA))
+  expect_equal(s$semantic_percentile, 90)
+  expect_equal(s$semantic_window, 2L)
+  expect_equal(s$proposition_batch_tokens, 900L)
+  expect_equal(quiet(gr_read_spec("stuff", delay_between_calls = NA))$delay_between_calls, 0)
+  expect_equal(quiet(gr_read_spec("retrieve", min_score = NA))$min_score, -Inf)
+  expect_equal(quiet(gr_ingest_spec(min_chars = NA))$min_chars, 20L)
+
+  # as_int1()'s range test has to come BEFORE the coercion that creates the NA:
+  # as.integer(3e9) is NA, so the function returned the NA its own contract says
+  # it never returns, and gr_screen(screen_tokens = 3e9) then marked every
+  # document "failed" with "missing value where TRUE/FALSE needed".
+  expect_equal(readgpt:::as_int1(3e9, 999L), 999L)
+  expect_equal(readgpt:::as_int1(5.7, 0L), 5L)
+
+  # An overhead nobody can count would be budgeted as zero, which is the one
+  # direction that overruns the window.
+  expect_error(gr_budget("gpt-4o", overhead = NA), class = "gr_budget_error")
+  expect_error(gr_budget("gpt-4o", overhead = 3e9), class = "gr_budget_error")
+  # A safety margin of NA became ZERO -- no headroom at all, which is the one
+  # condition the margin exists to prevent -- and the input budget went UP.
+  expect_equal(quiet(gr_budget("gpt-4o", overhead = 200, safety_margin = NA))$margin, 0.10)
+  expect_equal(quiet(gr_budget("gpt-4o", overhead = 200, safety_margin = NA))$input,
+               gr_budget("gpt-4o", overhead = 200, safety_margin = 0.10)$input)
+
+  # `4 >= "10"` is TRUE -- R compares as STRINGS -- so a character min_positives
+  # declared an inadequate calibration adequate while still printing 10.
+  tab <- data.frame(document = paste0("d", 1:8, ".pdf"),
+                    decision = c("include", "include", "unclear", "exclude",
+                                 "exclude", "exclude", "include", "exclude"),
+                    stringsAsFactors = FALSE)
+  ref <- data.frame(document = paste0("d", 1:8, ".pdf"),
+                    human_decision = c("include", "exclude", "include", "exclude",
+                                       "exclude", "include", "include", "exclude"),
+                    stringsAsFactors = FALSE)
+  sc <- structure(list(table = tab), class = "gr_screening")
+  for (mp in list(10L, "10", NA)) {
+    cal <- quiet(gr_calibrate(sc, ref, min_positives = mp))
+    expect_false(isTRUE(cal$adequate))
+    expect_error(capture.output(print(cal)), NA)
+  }
+
+  # An integer field above .Machine$integer.max is stored, not thrown away: it
+  # used to become NA, so n_filled dropped to 0 and the table said the document
+  # had not reported a value it stated plainly.
+  fl <- withr::local_tempfile(fileext = ".txt")
+  writeLines("We enrolled 3000000000 person-days of follow-up.", fl)
+  cc <- gr_mock_client(function(messages, params)
+    '{"n": 3000000000, "n__quote": "We enrolled 3000000000 person-days of follow-up."}')
+  x <- quiet(gr_extract(fl, gr_fields(n = gr_field("Person-days", type = "integer")),
+                        client = cc))
+  expect_equal(x$table$n, 3e9)
+  expect_equal(x$table$n_filled, 1L)
+})
+
+test_that("subsetting a reference frame gives a plain data frame", {
+  # `[` on a class that extends data.frame keeps the CLASS and drops every other
+  # attribute, so ref[, cols] still claimed to know which stratum it came from
+  # while `of`, `frame_n`, `screened_n` and `seed` were gone -- and gr_calibrate()
+  # then computed the corpus-wide metric set from a stratified sample. The same
+  # trap, and the same fix, as `[.gr_gaps`.
+  rf <- structure(data.frame(document = c("a", "b"), sampled_from = "excluded",
+                             stringsAsFactors = FALSE),
+                  of = "excluded", frame_n = 30L, screened_n = 100L, seed = 1L,
+                  class = c("gr_reference_frame", "data.frame"))
+  for (sub in list(rf[, "document", drop = FALSE], rf[1, ], rf[, 1:2])) {
+    expect_identical(class(sub), "data.frame")
+    expect_null(attr(sub, "of"))
+    expect_null(attr(sub, "frame_n"))
+  }
+})
+
+test_that("a NULL override does not silently reset a recipe field", {
+  # `x[[nm]] <- NULL` DELETES the element, and gr_recipe() then rebuilt the spec
+  # with do.call(), which supplied the constructor's formal default -- not the
+  # recipe's value and not what the constructor would have made of NULL. The
+  # segmentation changed with no warning, and the trace's `settings` lost the
+  # entry too, so the run record no longer said which cap was used.
+  r <- readgpt:::as_recipe("fast")
+  out <- quiet(readgpt:::apply_overrides(r, list(max_tokens = NULL)))
+  expect_true("max_tokens" %in% names(unclass(out$segment)))
+  # And the constructor is the one that decides what NULL means, loudly.
+  expect_warning(readgpt:::apply_overrides(r, list(max_tokens = NULL)),
+                 class = "gr_bad_setting")
+})

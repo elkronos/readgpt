@@ -52,7 +52,14 @@ as_num1 <- function(x, default = NA_real_) {
 #' @noRd
 as_int1 <- function(x, default = NA_integer_) {
   x <- as_num1(x, NA_real_)
-  if (is.na(x) || is.infinite(x)) default else as.integer(x)
+  if (is.na(x) || is.infinite(x)) return(default)
+  # The range test has to come BEFORE the coercion, not after: as.integer(3e9)
+  # is NA with a warning, so the is.na() guard above ran on the value that could
+  # not yet be NA and the function returned the NA its own contract says it
+  # never returns. gr_screen(screen_tokens = 3e9) then marked every document in
+  # the corpus "failed" with "missing value where TRUE/FALSE needed".
+  if (x > .Machine$integer.max || x < -.Machine$integer.max) return(default)
+  as.integer(x)
 }
 
 #' A short, safe label for whatever the user passed as `source`.

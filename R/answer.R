@@ -247,13 +247,24 @@ apply_overrides <- function(rec, overrides) {
   ing_only <- setdiff(ing_f, c(seg_f, rd_f))
 
   ing <- unclass(rec$ingest); seg <- unclass(rec$segment); rd <- unclass(rec$read)
+  # `x[nm] <- list(v)`, not `x[[nm]] <- v`. `[[<-` with a NULL right-hand side
+  # DELETES the element, and gr_recipe() then rebuilds the spec with
+  # do.call(gr_segment_spec, seg), which supplies the constructor's formal
+  # default -- not the recipe's value and not what the constructor would have
+  # made of NULL. `answer_document(f, q, "fast", max_tokens = NULL)` silently
+  # segmented at 1200 tokens instead of the recipe's 4000, and the trace's
+  # `settings` lost the entry too, so the run record no longer said which cap
+  # was used. Fourteen fields were affected.
+  set1 <- function(x, nm, v) { x[nm] <- list(v); x }
   for (nm in names(overrides)) {
     v <- overrides[[nm]]
-    if (nm %in% seg_only)       seg[[nm]] <- v
-    else if (nm %in% rd_only)   rd[[nm]]  <- v
-    else if (nm %in% ing_only)  ing[[nm]] <- v
-    else if (nm == "parallel") { seg$parallel <- v; rd$parallel <- v; ing$parallel <- v }
-    else if (nm == "method")    seg$method <- v
+    if (nm %in% seg_only)       seg <- set1(seg, nm, v)
+    else if (nm %in% rd_only)   rd  <- set1(rd, nm, v)
+    else if (nm %in% ing_only)  ing <- set1(ing, nm, v)
+    else if (nm == "parallel") { seg <- set1(seg, "parallel", v)
+                                 rd <- set1(rd, "parallel", v)
+                                 ing <- set1(ing, "parallel", v) }
+    else if (nm == "method")    seg <- set1(seg, "method", v)
     else {
       gr_abort(sprintf(paste0("Unknown override '%s'. Ingest fields: %s. Segment fields: %s. ",
                               "Read fields: %s."),

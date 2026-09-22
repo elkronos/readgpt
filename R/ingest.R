@@ -54,7 +54,11 @@ gr_ingest_spec <- function(clean = "standard", ocr = c("auto", "always", "never"
                            cleaner_opts = list()) {
   ocr <- match.arg(ocr)
   structure(list(clean = clean, ocr = ocr, ocr_lang = ocr_lang, ocr_dpi = ocr_dpi,
-                 ocr_min_chars = as.integer(ocr_min_chars), min_chars = as.integer(min_chars),
+                 # na_default + as_int1, not bare as.integer(): NA and 3e9 both became
+                 # NA_integer_, and `sum(nchar(text)) < NA` then failed EVERY document
+                 # with "missing value where TRUE/FALSE needed".
+                 ocr_min_chars = as_int1(na_default(ocr_min_chars, 40L, "ocr_min_chars"), 40L),
+                 min_chars = as_int1(na_default(min_chars, 20L, "min_chars"), 20L),
                  extractor = extractor, parallel = parallel, cleaner_opts = cleaner_opts),
             class = "gr_ingest_spec")
 }

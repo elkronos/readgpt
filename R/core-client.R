@@ -791,6 +791,44 @@ parse_response <- function(resp, api) {
 #' Note what this deliberately does NOT do: collapse newlines. The old code ran
 #' `gsub("\n+", " ", result)` on every response, flattening lists, tables and
 #' code blocks into one line.
+#' One field of a parsed model reply, read EXACTLY and shaped.
+#'
+#' Two traps in one place, both with a history here.
+#'
+#' `$` partial-matches, so a reply using `decisions` satisfied a read of
+#' `decision` and the screener recorded a real "include" from a key that does
+#' not exist; `can_answer_now` ended the iterative loop and its answer was
+#' returned as final. `extract_text()` below has used `[[exact = TRUE]]` since
+#' the same bug bit the HTTP layer -- the readers were never given the same
+#' treatment.
+#'
+#' And `simplifyVector = TRUE` is not type-stable: one element unboxes to a
+#' scalar, several become a vector, an array of arrays becomes a matrix, and an
+#' array of objects becomes a data frame. Asking for a scalar and getting a
+#' length-2 vector crashed `vapply()`; getting a list crashed `as.integer()`;
+#' getting a matrix silently transposed a list of propositions. A wrong shape is
+#' a field the reply did not supply, which is what `default` is for.
+#' @noRd
+json_field <- function(value, name, default = NULL, scalar = TRUE) {
+  if (!is.list(value)) return(default)
+  v <- value[[name, exact = TRUE]]
+  if (is.null(v)) return(default)
+  # A one-element list around a scalar is jsonlite being jsonlite, not a shape
+  # the caller has to know about.
+  if (is.list(v) && length(v) == 1L && is.null(names(v))) v <- v[[1]]
+  if (!scalar) return(v)
+  if (is.list(v) || length(v) != 1L || is.na(v)) return(default)
+  v
+}
+
+#' @noRd
+json_num <- function(value, name, default = NA_real_) {
+  v <- json_field(value, name)
+  if (is.null(v)) return(default)
+  n <- suppressWarnings(as.numeric(v))
+  if (length(n) != 1L || is.na(n) || !is.finite(n)) default else n
+}
+
 #' @noRd
 extract_text <- function(parsed, api) {
   # `[[` with exact = TRUE throughout. `$` on a list partial-matches, so

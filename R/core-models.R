@@ -309,16 +309,31 @@ gr_budget <- function(model = NULL, reserve_output = NULL, overhead = 0,
                       safety_margin = NULL) {
   info <- gr_model_info(model)
   ctx <- info$context_window
-  safety_margin <- clamp(safety_margin %||% gr_options("safety_margin"), 0, 0.5)
+  # na_default(), not bare clamp(): clamp() maps NA to `lo`, and `lo` here is
+  # ZERO margin -- no headroom at all, which is the exact condition the margin
+  # exists to prevent. Same defect the `mmr` setting was fixed for, in the one
+  # place where it decides whether a prompt fits.
+  safety_margin <- clamp(na_default(safety_margin %||% gr_options("safety_margin"),
+                                    0.10, "safety_margin"), 0, 0.5)
   usable <- floor(ctx * (1 - safety_margin))
 
-  min_out <- as.integer(gr_options("min_output_tokens"))
+  min_out <- as_int1(gr_options("min_output_tokens"), 256L)
   reserve_output <- if (is.null(reserve_output)) {
     min(info$max_output, max(min_out, floor(usable / 4)))
   } else {
     as.integer(clamp(reserve_output, 1, info$max_output))
   }
-  overhead <- as.integer(clamp(overhead, 0, Inf))
+  # `overhead` is computed by the caller, not set by a user, so a value that is
+  # not a number is a programming error and gets said out loud. It used to reach
+  # clamp(), which maps NA to `lo` -- zero -- so the system prompt was budgeted
+  # as costing nothing and the input budget went UP, toward overrunning the
+  # window. as_int1() rather than as.integer(), which turns 3e9 into NA.
+  if (length(overhead) != 1L || !is.numeric(overhead) || is.na(overhead)) {
+    gr_abort(paste0("`overhead` must be a single number: an overhead that cannot be counted ",
+                    "would be budgeted as zero, which is the one direction that overruns the ",
+                    "context window."), class = "gr_budget_error")
+  }
+  overhead <- as_int1(clamp(overhead, 0, .Machine$integer.max), 0L)
 
   input <- usable - reserve_output - overhead
   if (input <= 0) {

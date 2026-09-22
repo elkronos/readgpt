@@ -217,7 +217,7 @@ claims_batch <- function(block, question, client, spec, trace) {
      max_output = spec$max_answer_tokens, temperature = spec$temperature,
      trace = trace, label = "claims.draw")
   if (!isTRUE(res$ok)) return(NULL)
-  claim_rows(res$value$claims)
+  claim_rows(json_field(res$value, "claims", scalar = FALSE))
 }
 
 #' Normalise whatever jsonlite made of the reply into a flat frame.
@@ -278,7 +278,12 @@ claim_rows <- function(x) {
     n <- nrow(x)
     sup <- as_id_list(x$supported_by, n)
     con <- as_id_list(x$contradicted_by, n)
-    x <- data.frame(claim = vapply(x$claim, as_chr1, character(1), USE.NAMES = FALSE),
+    # `%||%` on `claim` as well as the rest: a reply in which NO object carries
+    # it gave vapply() a NULL, which is character(0), and data.frame() then died
+    # with "arguments imply differing number of rows: 0, 2" instead of warning
+    # that no claims came back.
+    x <- data.frame(claim = vapply(x$claim %||% rep(NA, n), as_chr1, character(1),
+                                   USE.NAMES = FALSE),
                     kind = vapply(x$kind %||% rep("finding", n), as_chr1, character(1),
                                   USE.NAMES = FALSE),
                     moderator = vapply(x$moderator %||% rep(NA, n), as_chr1, character(1),
@@ -383,7 +388,7 @@ claims_reconcile <- function(claims, question, client, spec, trace) {
      trace = trace, label = "claims.reconcile")
   if (!isTRUE(res$ok)) return(reindex_claims(claims))
 
-  raw <- res$value$groups
+  raw <- json_field(res$value, "groups", scalar = FALSE)
   g <- as_id_list(if (is.list(raw) || is.matrix(raw)) raw else list(raw),
                   if (is.matrix(raw)) nrow(raw) else length(raw))
   # Defence in depth, not load-bearing: `claims[c(1, 99), ]` yields a row of NAs
@@ -583,7 +588,14 @@ claim_order <- function(claims, support, weights) {
   mass <- vapply(claims$claim_id, function(id) {
     s <- support$study[support$claim_id == id]
     if (!length(s)) return(0)
-      sum(weights[as.character(s)], na.rm = TRUE)
+    w <- weights[as.character(s)]
+    # A study with no weight is UNKNOWN, not weightless. na.rm = TRUE gave it
+    # mass 0 -- the bottom of the scale -- which is the anti-pattern this file
+    # documents elsewhere. Unreachable today, because claims_verify() drops
+    # claims citing studies outside the table before this runs; kept honest
+    # because that is one refactor away from being live.
+    if (anyNA(w)) w[is.na(w)] <- mean(w, na.rm = TRUE)
+    sum(w, na.rm = TRUE)
   }, numeric(1))
   order(-breadth, -mass, claims$claim_id)
 }
@@ -690,7 +702,7 @@ gr_outline <- function(claims, question = NULL, client = NULL, model = NULL,
        trace = trace, label = "outline.derive")
   } else list(ok = FALSE, value = NULL)
 
-  secs <- if (isTRUE(res$ok)) outline_rows(res$value$sections) else NULL
+  secs <- if (isTRUE(res$ok)) outline_rows(json_field(res$value, "sections", scalar = FALSE)) else NULL
   if (is.null(secs) || !nrow(secs)) {
     gr_warn(paste0("The outline call did not return usable sections, so every claim was put in ",
                    "one section. Pass an `outline` to gr_synthesise() yourself, or try again."),
@@ -719,8 +731,10 @@ outline_rows <- function(x) {
   } else {
     n <- nrow(x)
     ids <- as_id_list(x$claims, n)
-    out <- data.frame(heading = vapply(x$heading, as_chr1, character(1), USE.NAMES = FALSE),
-                      brief = vapply(x$brief, as_chr1, character(1), USE.NAMES = FALSE),
+    out <- data.frame(heading = vapply(x$heading %||% rep(NA, n), as_chr1, character(1),
+                                       USE.NAMES = FALSE),
+                      brief = vapply(x$brief %||% rep(NA, n), as_chr1, character(1),
+                                     USE.NAMES = FALSE),
                       rationale = vapply(x$rationale %||% rep(NA, n), as_chr1, character(1),
                                          USE.NAMES = FALSE),
                       stringsAsFactors = FALSE)

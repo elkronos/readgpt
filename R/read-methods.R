@@ -323,14 +323,30 @@ read_rerank <- function(chunks, question, client, spec, trace) {
        model = spec$skim_model %||% spec$model, max_output = 200L,
        temperature = spec$temperature, trace = trace, label = "rerank.score")
     if (!out$ok) return(list(i = i, score = 0, reason = "scoring failed"))
-    list(i = i, score = as.numeric(out$value$score %||% 0),
-         reason = as_chr1(out$value$reason))
+    # A score that is not a number is not a score. as.numeric("high") is NA, and
+    # NA then went through `keep_sc >= thresh` as an NA LOGICAL -- which selects
+    # rather than drops -- so `[chunk NA]` reached the prompt and the model
+    # answered the question with no document in front of it, partial = FALSE.
+    sc <- json_num(out$value, "score", NA_real_)
+    list(i = i, score = sc, reason = if (is.na(sc)) "unscorable" else
+           as_chr1(json_field(out$value, "reason")))
   }, parallel = spec$parallel, label = "rerank candidate", trace = trace)
 
-  sc <- vapply(scored, function(s) s$score, numeric(1))
+  sc <- vapply(scored, function(s) as.numeric(s$score)[1], numeric(1))
   ii <- vapply(scored, function(s) s$i, numeric(1))
   n_failed <- sum(vapply(scored, function(s) isTRUE(s$reason == "scoring failed"), logical(1)))
+  n_unscorable <- sum(is.na(sc))
   degraded <- FALSE
+  # A call that succeeded and returned an unusable score is the same situation
+  # as one that failed: nothing was judged. Treated the same way, and said,
+  # rather than letting NA scores through to be selected by a comparison.
+  if (n_failed < length(scored) && n_unscorable == length(scored)) {
+    gr_warn(paste0("Every rerank score came back unusable -- a value that is not a number ",
+                   "between 0 and 10. Falling back to the BM25 prefilter ranking, which is ",
+                   "lexical, not model-judged."), class = "gr_rerank_degraded")
+    sc <- pre[cand]
+    degraded <- TRUE
+  }
   if (n_failed == length(scored)) {
     # Every scoring call failed -- typically an endpoint without structured
     # output support. Degrade to the BM25 prefilter order and SAY SO, rather
@@ -346,10 +362,17 @@ read_rerank <- function(chunks, question, client, spec, trace) {
   keep_ord <- ii[ord]
   keep_sc <- sc[ord]
   thresh <- if (degraded) -Inf else clamp(spec$rerank_min_score, 0, 10)
-  keep_ord <- keep_ord[keep_sc >= thresh]
+  # !is.na() FIRST. `NA >= thresh` is NA, and an NA logical subscript SELECTS an
+  # NA element rather than dropping it -- so the vector kept its length, the
+  # "nothing scored high enough" guard below did not fire, and d[NA, ] put
+  # `[chunk NA]` in the prompt. The model then answered from the question alone
+  # and the answer came back partial = FALSE.
+  keep_ord <- keep_ord[!is.na(keep_sc) & keep_sc >= thresh]
   if (!length(keep_ord)) {
     return(new_answer(.NOT_FOUND, "rerank", question, integer(0), trace,
+                      partial = TRUE,
                       notes = list(candidates = m, scoring_failures = n_failed,
+                                   unscorable = n_unscorable,
                                    reason = sprintf("no candidate scored >= %g", thresh))))
   }
   keep_ord <- utils::head(keep_ord, as.integer(clamp(spec$top_k, 1, length(keep_ord))))
@@ -568,13 +591,13 @@ read_iterative <- function(chunks, question, client, spec, trace) {
       }
       break
     }
-    if (isTRUE(out$value$can_answer)) {
+    if (isTRUE(json_field(out$value, "can_answer"))) {
       trace_note(trace, "iterative.stop", list(rounds = rounds, reason = "model satisfied"))
       # `step$rows`, not `seen`: a chunk that did not fit the prompt was never
       # shown to the model, and reporting it as used -- with a row in the
       # evidence table -- claims provenance the answer does not have.
       keep <- step$rows
-      return(new_answer(as_chr1(out$value$answer, .NOT_FOUND), "iterative", question,
+      return(new_answer(as_chr1(json_field(out$value, "answer"), .NOT_FOUND), "iterative", question,
                         d$chunk_id[keep], trace,
                         evidence = evidence_table(d$chunk_id[keep], d$text[keep],
                                                   d$page[keep], d$section[keep],
@@ -585,7 +608,7 @@ read_iterative <- function(chunks, question, client, spec, trace) {
                                      queries = queries, stop_reason = "model satisfied",
                                      embedding_fallback = degraded_embed)))
     }
-    nq <- as_chr1(out$value$next_query)
+    nq <- as_chr1(json_field(out$value, "next_query"))
     if (!nzchar(nq) || nq %in% queries) { done_reason <- "query loop"; break }
     queries <- c(queries, nq)
     gr_msg(sprintf("Iterative round %d -> searching for: %s", rounds, substr(nq, 1, 90)))
@@ -867,10 +890,17 @@ read_preview <- function(chunks, question, client, spec, trace) {
   reasons <- rep(NA_character_, n_units)
   degraded <- TRUE
   if (isTRUE(plan$ok)) {
-    tab <- plan$value$sections
-    if (is.data.frame(tab) && nrow(tab) && all(c("id", "treatment") %in% names(tab))) {
+    tab <- json_field(plan$value, "sections", scalar = FALSE)
+    # is.atomic() on both columns: an `id` that arrived as an array becomes a
+    # LIST column, and as.integer() on a list is an error, not a warning, so
+    # suppressWarnings() did not catch it and the reader crashed instead of
+    # taking the degraded path three lines below.
+    if (is.data.frame(tab) && nrow(tab) && all(c("id", "treatment") %in% names(tab)) &&
+        is.atomic(tab$id) && is.atomic(tab$treatment)) {
       ids <- suppressWarnings(as.integer(tab$id))
       tr <- tolower(trimws(as.character(tab$treatment)))
+      # Lengths are equal by construction (columns of one frame), so no
+      # recycling here; `ok` is as long as the plan.
       ok <- !is.na(ids) & ids >= 1L & ids <= n_units & tr %in% c("read", "skim", "skip")
       if (any(ok)) {
         # Last entry wins for a duplicated id, matching the registries' rule.

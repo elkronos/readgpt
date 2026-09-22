@@ -12,7 +12,8 @@ gr_audit_report(
   protocol = NULL,
   title = NULL,
   claims = NULL,
-  records = NULL
+  records = NULL,
+  calibration = NULL
 )
 }
 \arguments{
@@ -35,6 +36,11 @@ sentence is making, back to the studies meant to support it.}
 which sources, with what query, on what date -- and starts the flow counts
 at identification. Without one the report says so, because a missing search
 is a defect in the review rather than in the report.}
+
+\item{calibration}{A \code{\link[=gr_calibrate]{gr_calibrate()}} result, to add a section saying how good
+the screening is: sensitivity, specificity, kappa, and how many eligible
+studies the screener threw away. Without it the report says what the run did
+and nothing about whether it did it well.}
 }
 \value{
 \code{path}, invisibly.

@@ -114,15 +114,27 @@ gr_trace_cost <- function(trace) {
 #'   It needs a model with a registered price: against one without, cost is
 #'   *unknown* rather than zero, the ceiling cannot be enforced, and you get a
 #'   `gr_corpus_cost_unknown` warning instead of a silent free pass.
+#' @param max_total_calls Stop *before* a document once the run has made this
+#'   many model calls, marking the rest `"skipped"`. The counterpart to
+#'   `max_total_usd` for runs whose model has no registered price, and the only
+#'   ceiling that bounds the run rather than each document:
+#'   `gr_options(max_calls =)` is per document, so a corpus can make
+#'   `length(sources)` times that many. Checked before each document, because a
+#'   call ceiling noticed after the calls is not a ceiling -- which means the run
+#'   can overshoot by at most one document's worth, exactly as `max_total_usd`
+#'   does.
 #' @param keep_answers Keep every [gr_answer] in the result. Set `FALSE` for a
 #'   large corpus, where holding every trace and evidence table is the thing that
 #'   runs you out of memory.
 #' @param recursive Descend into subdirectories when `sources` is a directory.
+#' @param trace A [gr_trace()] to record into, so several stages of one review
+#'   share one trace and one cost. Omit it and this run gets its own.
 #' @param ... Overrides applied to the recipe, as in [answer_document()].
 #' @return An object of class `gr_corpus`: `summary` (one row per document),
 #'   `answers` (named list, empty when `keep_answers = FALSE`), `sources` (the
 #'   sources as read, aligned row for row with `summary` -- `summary$document` is
-#'   a display label and cannot be turned back into a path), `trace` (every call
+#'   a display label and cannot be turned back into a path), `records` (the
+#'   [gr_records()] the corpus came from, or `NULL`), `trace` (every call
 #'   made *this run*) and `store`.
 #'
 #' @section The summary:
@@ -165,14 +177,22 @@ gr_trace_cost <- function(trace) {
 #' @section Budgets:
 #' Every document gets its own trace, so `gr_options(max_calls =)` and
 #' `gr_options(max_cost_usd =)` apply per document exactly as they would if you
-#' read it alone. One enormous document therefore cannot starve the rest. The
-#' corpus-wide ceiling is `max_total_usd`.
+#' read it alone. One enormous document therefore cannot starve the rest.
+#'
+#' That is a deliberate design and it leaves the run itself unbounded: two
+#' hundred documents under a 400-call ceiling is a *corpus* ceiling of eighty
+#' thousand calls. The run-level ceilings are `max_total_calls`, checked before
+#' each document, and `max_total_usd`, checked after each one because what a
+#' document costs is not knowable until it has been read. With neither set, the
+#' run says once what its worst case is rather than leaving you to multiply.
 #'
 #' @section What this does not do:
 #' It reads documents one at a time. Per-document work is embarrassingly
-#' parallel, but a `gr_trace` accumulates by reference and does not survive
-#' being sent to a worker process, so parallelising it would silently lose the
-#' accounting that is half the point.
+#' parallel, and the per-worker traces the parallel helper already builds would
+#' carry the accounting across, so the obstacle is not the trace: it is that
+#' duplicate detection, the resume store and both run-level ceilings are all
+#' order-dependent, and a parallel loop would have to serialise on each of them. Within a document,
+#' `gr_options(parallel = TRUE)` already applies.
 #'
 #' @seealso [answer_document()], [gr_compare()], [gr_cache_client()],
 #'   [gr_trace_cost()]
@@ -194,8 +214,8 @@ gr_trace_cost <- function(trace) {
 #' gr_trace_cost(out$trace)
 gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
                          store = NULL, on_error = c("continue", "stop"),
-                         max_total_usd = NULL, keep_answers = TRUE,
-                         recursive = FALSE, ...) {
+                         max_total_usd = NULL, max_total_calls = NULL,
+                         keep_answers = TRUE, recursive = FALSE, trace = NULL, ...) {
   on_error <- match.arg(on_error)
   if (!is_nonblank(question)) gr_abort("`question` must be a non-empty string.")
   sources <- corpus_sources(sources, recursive = recursive)
@@ -218,10 +238,23 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
                                root = root, USE.NAMES = FALSE), sep = "#")
   # Carried through so gr_extract()'s table can join to bibliographic fields the
   # export supplied, rather than to ones a model read off a title page.
-  from_records <- attr(sources, "records")
+  from_records <- attr(sources, "record_set")
 
-  trace <- gr_trace(meta = list(recipe = rec$name, question = question,
-                                documents = length(sources)))
+  # Given one, join it. A review is one run: screen, extract, claims and write-up
+  # used to produce four unrelated traces, so nothing could say what the review
+  # cost or replay it as a whole.
+  trace <- trace %||% gr_trace(meta = list(recipe = rec$name, question = question,
+                                           documents = length(sources)))
+  # What the per-document ceiling does NOT bound, said once, before the money is
+  # spent. `max_calls` is per document by design -- one enormous document must
+  # not starve the rest -- but that makes the run's own exposure the product of
+  # the two, and nothing said so.
+  if (is.null(max_total_calls) && length(sources) > 1L) {
+    gr_msg(sprintf(paste0("%d document(s), and gr_options(max_calls) is %d PER DOCUMENT, so this ",
+                          "run may make up to %d call(s). Pass max_total_calls = to cap the run."),
+                   length(sources), as.integer(gr_options("max_calls")),
+                   length(sources) * as.integer(gr_options("max_calls"))))
+  }
   if (!is.null(store)) {
     store <- as_chr1(store)
     if (!dir.exists(store) && !dir.create(store, recursive = TRUE, showWarnings = FALSE)) {
@@ -241,9 +274,22 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
     src <- sources[[i]]
     lab <- labels[[i]]
 
+    # Checked BEFORE the document, not after it: a call ceiling that is only
+    # noticed once the calls are made is not a ceiling. (The cost one below can
+    # only be checked afterwards -- what a document costs is not knowable until
+    # it has been read -- which is why they are enforced in different places.)
+    if (!stopped && !is.null(max_total_calls) && is.finite(max_total_calls) &&
+        trace$calls >= max_total_calls) {
+      stopped <- TRUE
+      gr_warn(sprintf(paste0("Stopped before document %d of %d: the run has made %d call(s), at ",
+                             "or above the %d `max_total_calls` ceiling. The remaining documents ",
+                             "are marked 'skipped'."),
+                      i, length(sources), trace$calls, as.integer(max_total_calls)),
+              class = "gr_corpus_call_cap")
+    }
     if (stopped) {
       rows[[i]] <- corpus_row(lab, status = "skipped",
-                              error = "corpus cost ceiling reached before this document")
+                              error = "corpus ceiling reached before this document")
       next
     }
 
@@ -383,6 +429,12 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
                  # caller that wants to feed a subset of a corpus into the next
                  # stage needs the paths, not the labels.
                  sources = simplify_sources(sources),
+                 # The search that produced the corpus, carried rather than
+                 # discarded. gr_audit_report() asks for it at the very end, and
+                 # a user who does not remember to re-supply the same object
+                 # gets a report whose search section reads "Not recorded" and a
+                 # flow diagram that begins at "sources given".
+                 records = from_records,
                  trace = trace, store = store), class = "gr_corpus")
 }
 
@@ -473,7 +525,9 @@ corpus_sources <- function(sources, recursive = FALSE, quiet = FALSE) {
     keep <- is.na(r$duplicate_of) & !is.na(r$file)
     out <- r$file[keep]
     attr(out, "root") <- NULL
-    attr(out, "records") <- r[keep, , drop = FALSE]
+    # The whole record set, not just its rows: the search strategy lives on the
+    # object, and the audit's "The search" section is built from it.
+    attr(out, "record_set") <- sources
     return(out)
   }
   if (is.character(sources) && length(sources) == 1L && !is.na(sources) &&
@@ -505,6 +559,32 @@ corpus_sources <- function(sources, recursive = FALSE, quiet = FALSE) {
     attr(out, "root") <- sources
     attr(out, "skipped") <- skipped
     attr(out, "below") <- below
+    return(out)
+  }
+  # A vector of paths that all exist gets the SAME filter a directory gets.
+  # Without this, one corpus behaved two ways: gr_read_many(dir) skipped the
+  # files no extractor claims and said so, while gr_read_many(list.files(dir))
+  # handed each of them to an extractor and recorded a failed row. The second
+  # form is what every pipeline uses -- gr_extract(screened$included) is a
+  # character vector -- so the stage that reads the most documents was the one
+  # getting the worse behaviour.
+  if (is.character(sources) && length(sources) && !anyNA(sources) &&
+      all(nzchar(sources)) && all(file.exists(sources)) && !any(dir.exists(sources))) {
+    ext <- known_extensions()
+    keep <- tolower(tools::file_ext(sources)) %in% ext
+    skipped <- sort(sources[!keep])
+    if (!quiet && length(skipped)) {
+      by_ext <- sort(table(tolower(tools::file_ext(skipped))), decreasing = TRUE)
+      nm <- names(by_ext); nm[!nzchar(nm)] <- "(no extension)"
+      gr_warn(sprintf(paste0("%d of the %d file(s) given were skipped: no registered extractor ",
+                             "claims %s. See gr_extractors(), gr_inventory() for the full ",
+                             "picture, or gr_register_extractor() to add one."),
+                      length(skipped), length(sources),
+                      paste(sprintf("%s (%d)", nm, as.integer(by_ext)), collapse = ", ")),
+              class = "gr_sources_skipped")
+    }
+    out <- sources[keep]
+    attr(out, "skipped") <- skipped
     return(out)
   }
   if (is.list(sources)) return(sources)

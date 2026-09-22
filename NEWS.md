@@ -445,6 +445,59 @@
   the end, where a new argument belongs, and both are type-checked like the
   others rather than accepted and misused.
 
+* **Six things the package already had, now connected to the pipeline that needs
+  them.** Each was built, tested and documented on its own, and then nothing
+  called it.
+
+  *The run has its own ceiling.* `gr_options(max_calls =)` is per document by
+  design — one enormous document must not starve the rest — and on its own that
+  left the run unbounded: five documents under a 30-call ceiling made 125 calls,
+  and the only corpus ceiling, `max_total_usd`, is unenforceable against a model
+  with no registered price and is checked only after a document has been paid
+  for. `max_total_calls` is checked *before* each document, so the overshoot is
+  bounded by one document's own ceiling. With neither ceiling set, the run now
+  says once what its worst case is instead of leaving you to multiply.
+
+  *`gr_synthesise()` stops when the ceiling says so.* One model call per section,
+  and neither it nor the batched path checked `trace_can_call()` — so a run that
+  had already spent its ceiling kept writing sections, one call each, while
+  `gr_claims()` beside it stopped at the first. A section the ceiling stops is
+  marked partial and says why, rather than appearing as empty prose.
+
+  *One corpus behaves the same however you name it.* `gr_read_many(dir)` skipped
+  the files no extractor claims and warned; `gr_read_many(list.files(dir))`
+  handed each of them to an extractor and recorded a failed row. Every pipeline
+  uses the second form — `gr_extract(screened$included)` is a character vector —
+  so the stage that reads the most documents was getting the worse behaviour.
+  Raw text is still raw text: the filter applies only when every element is a
+  file that exists.
+
+  *The search travels with the corpus it produced.* `gr_screening` and
+  `gr_extraction` now carry the `gr_records()` they were run over, and
+  `gr_audit_report()` picks it up. Forgetting to hand the same object over a
+  second time at the end used to produce a report whose search section read "Not
+  recorded" and whose flow diagram began at "sources given" — which the README's
+  own end-to-end example did.
+
+  *A review can be one trace.* `gr_screen()`, `gr_extract()` and
+  `gr_synthesise()` take a `trace =`, so four stages share one trace, one cost
+  and one thing to save. Each used to start its own, so the audit printed three
+  cost rows and nothing said what the review cost.
+
+  *How good the screening is reaches the report.* `gr_calibrate()` computed
+  sensitivity, specificity, kappa and the list of eligible studies the screener
+  threw away, and there was nowhere to put them;
+  `gr_audit_report(calibration = )` now writes them as a section.
+
+  Not done, and said plainly rather than left to look like an oversight: the
+  corpus loop still reads documents one at a time. The reason given for that —
+  that a trace does not survive being sent to a worker — was stale, since the
+  parallel helper already builds a trace per worker and absorbs them in order.
+  The real obstacle is that duplicate detection, the resume store and both
+  run-level ceilings are order-dependent, and a parallel loop would have to
+  serialise on each. Within a document, `gr_options(parallel = TRUE)` already
+  applies.
+
 * **Fixes in the claims layer, all found by reading it adversarially against
   itself.** A reconcile merge that moved a study from the contradicting side to
   the supporting side did so silently — `n_contradict` went 1 to 0 with nothing

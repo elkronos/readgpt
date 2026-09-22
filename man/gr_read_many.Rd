@@ -12,8 +12,10 @@ gr_read_many(
   store = NULL,
   on_error = c("continue", "stop"),
   max_total_usd = NULL,
+  max_total_calls = NULL,
   keep_answers = TRUE,
   recursive = FALSE,
+  trace = NULL,
   ...
 )
 }
@@ -48,11 +50,24 @@ It needs a model with a registered price: against one without, cost is
 \emph{unknown} rather than zero, the ceiling cannot be enforced, and you get a
 \code{gr_corpus_cost_unknown} warning instead of a silent free pass.}
 
+\item{max_total_calls}{Stop \emph{before} a document once the run has made this
+many model calls, marking the rest \code{"skipped"}. The counterpart to
+\code{max_total_usd} for runs whose model has no registered price, and the only
+ceiling that bounds the run rather than each document:
+\code{gr_options(max_calls =)} is per document, so a corpus can make
+\code{length(sources)} times that many. Checked before each document, because a
+call ceiling noticed after the calls is not a ceiling -- which means the run
+can overshoot by at most one document's worth, exactly as \code{max_total_usd}
+does.}
+
 \item{keep_answers}{Keep every \link{gr_answer} in the result. Set \code{FALSE} for a
 large corpus, where holding every trace and evidence table is the thing that
 runs you out of memory.}
 
 \item{recursive}{Descend into subdirectories when \code{sources} is a directory.}
+
+\item{trace}{A \code{\link[=gr_trace]{gr_trace()}} to record into, so several stages of one review
+share one trace and one cost. Omit it and this run gets its own.}
 
 \item{...}{Overrides applied to the recipe, as in \code{\link[=answer_document]{answer_document()}}.}
 }
@@ -60,7 +75,8 @@ runs you out of memory.}
 An object of class \code{gr_corpus}: \code{summary} (one row per document),
 \code{answers} (named list, empty when \code{keep_answers = FALSE}), \code{sources} (the
 sources as read, aligned row for row with \code{summary} -- \code{summary$document} is
-a display label and cannot be turned back into a path), \code{trace} (every call
+a display label and cannot be turned back into a path), \code{records} (the
+\code{\link[=gr_records]{gr_records()}} the corpus came from, or \code{NULL}), \code{trace} (every call
 made \emph{this run}) and \code{store}.
 }
 \description{
@@ -114,16 +130,24 @@ two documents here; matching those needs bibliographic metadata, not text.
 
 Every document gets its own trace, so \code{gr_options(max_calls =)} and
 \code{gr_options(max_cost_usd =)} apply per document exactly as they would if you
-read it alone. One enormous document therefore cannot starve the rest. The
-corpus-wide ceiling is \code{max_total_usd}.
+read it alone. One enormous document therefore cannot starve the rest.
+
+That is a deliberate design and it leaves the run itself unbounded: two
+hundred documents under a 400-call ceiling is a \emph{corpus} ceiling of eighty
+thousand calls. The run-level ceilings are \code{max_total_calls}, checked before
+each document, and \code{max_total_usd}, checked after each one because what a
+document costs is not knowable until it has been read. With neither set, the
+run says once what its worst case is rather than leaving you to multiply.
 }
 
 \section{What this does not do}{
 
 It reads documents one at a time. Per-document work is embarrassingly
-parallel, but a \code{gr_trace} accumulates by reference and does not survive
-being sent to a worker process, so parallelising it would silently lose the
-accounting that is half the point.
+parallel, and the per-worker traces the parallel helper already builds would
+carry the accounting across, so the obstacle is not the trace: it is that
+duplicate detection, the resume store and both run-level ceilings are all
+order-dependent, and a parallel loop would have to serialise on each of them. Within a document,
+\code{gr_options(parallel = TRUE)} already applies.
 }
 
 \examples{

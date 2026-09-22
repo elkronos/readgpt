@@ -20,7 +20,8 @@ gr_synthesise(
   coherence = FALSE,
   references = TRUE,
   claims = NULL,
-  gaps = NULL
+  gaps = NULL,
+  trace = NULL
 )
 }
 \arguments{
@@ -94,6 +95,9 @@ than being handed every study and writing a paragraph per row. Needs an
 \item{gaps}{A \code{\link[=gr_gaps]{gr_gaps()}} result, or lines of text. Given to the closing
 section \code{\link[=gr_outline]{gr_outline()}} named, with an instruction to state those gaps and
 no others.}
+
+\item{trace}{A \code{\link[=gr_trace]{gr_trace()}} to record into, so the write-up joins the trace
+the screening and extraction used instead of starting a fourth one.}
 }
 \value{
 An object of class \code{gr_synthesis}:

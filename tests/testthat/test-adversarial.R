@@ -644,3 +644,236 @@ test_that("gr_audit_report() rejects a wrong object in claims or records", {
   expect_error(gr_audit_report(tempfile(), extraction = x, records = data.frame(a = 1)),
                class = "gr_bad_audit_input")
 })
+
+# ---------------------------------------------------------------------------
+# Capabilities that existed and were not connected to anything.
+#
+# Each of these was built, tested and documented on its own, and then the
+# pipeline that needs it did not call it. Nothing below is a new feature; every
+# one is a wire between two parts that were already there.
+# ---------------------------------------------------------------------------
+
+corpus_dir <- function(n = 5L, paras = 8L, env = parent.frame()) {
+  d <- withr::local_tempdir(.local_envir = env)
+  for (i in seq_len(n)) {
+    writeLines(paste(vapply(seq_len(paras), function(j)
+      paste(rep(sprintf("Doc %d paragraph %d about revenue.", i, j), 25), collapse = " "),
+      character(1)), collapse = "\n\n"), file.path(d, sprintf("doc%d.txt", i)))
+  }
+  d
+}
+
+test_that("a corpus run can be capped, not only each document in it", {
+  # `gr_options(max_calls =)` is per document by design. That left the RUN
+  # unbounded: five documents under a 30-call ceiling made 125 calls, and the
+  # only corpus ceiling, max_total_usd, is unenforceable against a model with no
+  # registered price and is checked only after a document has been paid for.
+  d <- corpus_dir()
+  withr::local_options(list())
+  old <- gr_options("max_calls")
+  on.exit(gr_options(max_calls = old), add = TRUE)
+  gr_options(max_calls = 30L)
+
+  cl <- mock_echo("An answer [chunk 1].")
+  free <- quiet(gr_read_many(d, "What was revenue?", client = cl, recipe = "fast",
+                             method = "paragraph", max_tokens = 120, reader = "map_reduce"))
+  expect_true(all(free$summary$calls <= 30L))
+  expect_gt(length(cl$calls()), 30L)          # every document obeyed; the run did not
+
+  cl2 <- mock_echo("An answer [chunk 1].")
+  capped <- NULL
+  expect_warning(
+    capped <- suppressMessages(gr_read_many(d, "What was revenue?", client = cl2,
+                                            recipe = "fast", method = "paragraph",
+                                            max_tokens = 120, reader = "map_reduce",
+                                            max_total_calls = 60L)),
+    class = "gr_corpus_call_cap")
+  expect_lt(length(cl2$calls()), length(cl$calls()))
+  expect_true(any(capped$summary$status == "skipped"))
+  # Checked BEFORE a document, so the overshoot is bounded by one document's own
+  # ceiling -- the same shape as max_total_usd, and the docs say so.
+  expect_lte(length(cl2$calls()), 60L + 30L)
+})
+
+test_that("gr_synthesise() stops at the run's ceiling like every other stage", {
+  # One gr_call() per section, neither guarded by trace_can_call(). A run that
+  # had already spent its ceiling kept writing sections, one call each, while
+  # gr_claims() beside it stopped at the first.
+  tab <- data.frame(document = paste0(letters[1:3], ".pdf"), document_id = paste0("h", 1:3),
+                    status = "ok", duplicate_of = NA_character_, n_filled = 1L,
+                    n_unverified = 0L, conflicts = NA_character_,
+                    finding = c("up", "down", "flat"), stringsAsFactors = FALSE)
+  old <- gr_options("max_calls")
+  on.exit(gr_options(max_calls = old), add = TRUE)
+  gr_options(max_calls = 1L)
+
+  cl <- mock_echo("Something [study 1].")
+  sy <- quiet(gr_synthesise(tab, question = "Q?", client = cl,
+                            outline = c(A = "first", B = "second", C = "third")))
+  expect_length(cl$calls(), 1L)
+  expect_equal(nrow(sy$sections), 3L)
+  # The sections that were not written say so rather than appearing as empty
+  # prose somebody might paste into a manuscript.
+  expect_equal(sum(sy$sections$partial), 2L)
+
+  gr_options(max_calls = 1L)
+  cl2 <- mock_echo("Something [study 1].")
+  expect_warning(suppressMessages(gr_synthesise(tab, question = "Q?", client = cl2,
+                                                outline = c(A = "first", B = "second"))),
+                 class = "gr_synth_capped")
+
+  # The batched path too: a section with more studies than fit one prompt drafts
+  # them in batches and merges, and each of those calls has to be checked as
+  # well. Only the single-prompt branch was guarded at first, so a big section
+  # went on spending after the ceiling while a small one stopped.
+  gr_register_model("synth-tiny", context_window = 1400L, max_output = 400L,
+                    input_usd = 0, output_usd = 0)
+  n <- 120L
+  big <- data.frame(document = paste0("d", seq_len(n), ".pdf"),
+                    document_id = paste0("h", seq_len(n)), status = "ok",
+                    duplicate_of = NA_character_, n_filled = 1L, n_unverified = 0L,
+                    conflicts = NA_character_,
+                    finding = paste("a reasonably wordy finding sentence number", seq_len(n)),
+                    stringsAsFactors = FALSE)
+  gr_options(max_calls = 400L)
+  cl3 <- mock_echo("Something [study 1].")
+  quiet(gr_synthesise(big, question = "Q?", client = cl3, model = "synth-tiny",
+                      max_section_tokens = 200L, outline = c(A = "first")))
+  labs <- vapply(cl3$calls(), function(c) as.character(c$label), character(1))
+  expect_true(any(labs == "synthesise.batch"))   # the fixture really does batch
+  expect_gt(length(cl3$calls()), 2L)
+
+  gr_options(max_calls = 2L)
+  cl4 <- mock_echo("Something [study 1].")
+  quiet(gr_synthesise(big, question = "Q?", client = cl4, model = "synth-tiny",
+                      max_section_tokens = 200L, outline = c(A = "first")))
+  expect_lte(length(cl4$calls()), 2L)
+})
+
+test_that("one corpus behaves the same whether named as a folder or as its files", {
+  # gr_read_many(dir) skipped the files no extractor claims and warned;
+  # gr_read_many(list.files(dir)) handed each of them to an extractor and
+  # recorded a failed row. Every pipeline uses the second form --
+  # gr_extract(screened$included) is a character vector -- so the stage that
+  # reads the most documents was the one getting the worse behaviour.
+  d <- corpus_dir(n = 3L, paras = 2L)
+  writeLines("junk", file.path(d, "notes.pages"))
+  writeLines("junk", file.path(d, "data.sav"))
+
+  by_dir <- NULL; by_files <- NULL
+  expect_warning(
+    by_dir <- suppressMessages(gr_read_many(d, "Q?", client = mock_echo(), recipe = "fast")),
+    class = "gr_sources_skipped")
+  expect_warning(
+    by_files <- suppressMessages(gr_read_many(list.files(d, full.names = TRUE), "Q?",
+                                              client = mock_echo(), recipe = "fast")),
+    class = "gr_sources_skipped")
+
+  expect_equal(nrow(by_files$summary), nrow(by_dir$summary))
+  expect_equal(sort(as.character(by_files$summary$status)),
+               sort(as.character(by_dir$summary$status)))
+  expect_false(any(by_files$summary$status == "failed"))
+  # Raw text is still raw text: the filter only applies when every element is a
+  # file that exists.
+  expect_equal(nrow(suppressMessages(gr_read_many(
+    c("Revenue was 40 million.", "Revenue was 50 million."), "Q?",
+    client = mock_echo(), recipe = "fast"))$summary), 2L)
+})
+
+test_that("the search travels with the corpus it produced", {
+  # gr_audit_report(records = ) had to be handed the same object again at the
+  # end of a run. Forget, and the report's search section reads "Not recorded"
+  # and the flow diagram starts at "sources given" -- which the README's own
+  # end-to-end example did.
+  d <- withr::local_tempdir()
+  f <- file.path(d, "smith2019.txt")
+  writeLines("A randomised trial of 482 adults found a benefit.", f)
+  ris <- file.path(d, "export.ris")
+  writeLines(c("TY  - JOUR", "AU  - Smith, J.", "TI  - A trial", "PY  - 2019",
+               "DO  - 10.1037/edu0000123", sprintf("L1  - %s", f), "ER  - "), ris)
+  # `files =` is what fills the `file` column; an L1 line alone names a path the
+  # export believed in, not one on this disk.
+  recs <- quiet(gr_records(ris, files = f, search = gr_search(
+    databases = c(Scopus = "spaced practice AND retention"), dates = "2026-01-05")))
+
+  cl <- gr_mock_client(function(messages, params)
+    '{"decision":"include","reason":"A trial.","criterion":"c","quote":null}')
+  sc <- quiet(gr_screen(recs, question = "Q?", include = "c", client = cl))
+  expect_s3_class(sc$records, "gr_records")
+
+  p <- withr::local_tempfile(fileext = ".html")
+  quiet(gr_audit_report(p, screening = sc))          # records NOT passed
+  h <- paste(readLines(p, warn = FALSE), collapse = "\n")
+  expect_false(grepl("Not recorded", h, fixed = TRUE))
+  expect_match(h, "spaced practice AND retention", fixed = TRUE)
+  # And the flow begins at the search rather than at "sources given".
+  expect_match(h, "records identified", fixed = TRUE)
+  expect_match(h, "reports not retrieved", fixed = TRUE)
+})
+
+test_that("a review can be one trace instead of four", {
+  # Each stage started its own, so the audit printed three cost rows, there was
+  # no figure for the review as a whole, and gr_trace_save() could only ever
+  # save a stage.
+  expect_true("trace" %in% names(formals(gr_screen)))
+  expect_true("trace" %in% names(formals(gr_extract)))
+  expect_true("trace" %in% names(formals(gr_synthesise)))
+
+  d <- withr::local_tempdir()
+  writeLines("A randomised trial of 412 adults found mortality fell.", file.path(d, "a.txt"))
+  cl <- gr_mock_client(function(messages, params) {
+    sys <- messages[[1]]$content
+    if (grepl("screen", sys, ignore.case = TRUE)) {
+      return('{"decision":"include","reason":"r","criterion":"c","quote":null}')
+    }
+    if (grepl("<studies>", paste(vapply(messages, function(m) as.character(m$content),
+                                        character(1)), collapse = " "), fixed = TRUE)) {
+      return("Mortality fell [study 1].")
+    }
+    '{"n":412,"n__quote":"A randomised trial of 412 adults found mortality fell."}'
+  })
+  tr <- gr_trace(meta = list(review = "one"))
+  sc <- quiet(gr_screen(d, question = "Q?", include = "c", client = cl, trace = tr))
+  x <- quiet(gr_extract(sc$included, gr_fields(n = gr_field("Participants", type = "number")),
+                        goal = "Q?", client = cl, trace = tr))
+  rv <- quiet(gr_synthesise(x, question = "Q?", client = cl,
+                            outline = c(Findings = "what it shows"), trace = tr))
+  expect_identical(sc$trace, tr)
+  expect_identical(x$trace, tr)
+  expect_identical(rv$trace, tr)
+  expect_equal(gr_trace_summary(tr)$calls, tr$calls)
+  expect_gt(tr$calls, 2L)
+})
+
+test_that("how good the screening is reaches the report", {
+  # gr_calibrate() computed sensitivity, specificity and kappa and there was
+  # nowhere to put them, so the one number a reviewer asks about had to be
+  # copied into a methods section by hand.
+  expect_true("calibration" %in% names(formals(gr_audit_report)))
+  d <- withr::local_tempdir()
+  writeLines("A randomised trial of 412 adults found mortality fell.", file.path(d, "a.txt"))
+  writeLines("A survey of 60 adults found no change.", file.path(d, "b.txt"))
+  writeLines("A randomised trial of 900 adults found mortality fell.", file.path(d, "c.txt"))
+  cl <- gr_mock_client(function(messages, params) {
+    seen <- paste(vapply(messages, function(m) as.character(m$content), character(1)),
+                  collapse = " ")
+    if (grepl("survey", seen, fixed = TRUE)) {
+      return('{"decision":"exclude","reason":"A survey.","criterion":"c","quote":null}')
+    }
+    '{"decision":"include","reason":"A trial.","criterion":"c","quote":null}'
+  })
+  sc <- quiet(gr_screen(d, question = "Q?", include = "c", client = cl))
+  ref <- quiet(gr_reference(sc, n = 3, of = "all", seed = 1))
+  ref$human_decision <- c("include", "exclude", "include")
+  cal <- quiet(gr_calibrate(sc, ref, min_positives = 1L))
+
+  p <- withr::local_tempfile(fileext = ".html")
+  quiet(gr_audit_report(p, screening = sc, calibration = cal))
+  h <- paste(readLines(p, warn = FALSE), collapse = "\n")
+  expect_match(h, "How good the screening is", fixed = TRUE)
+  expect_match(h, "sensitivity")
+  # And a wrong object is refused rather than silently filed.
+  expect_error(gr_audit_report(withr::local_tempfile(), screening = sc,
+                               calibration = list(metrics = 1)),
+               class = "gr_bad_audit_input")
+})

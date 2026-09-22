@@ -16,8 +16,10 @@ gr_screen(
   screen_tokens = NULL,
   on_error = c("continue", "stop"),
   max_total_usd = NULL,
+  max_total_calls = NULL,
   keep_answers = FALSE,
   recursive = FALSE,
+  trace = NULL,
   ...
 )
 }
@@ -40,6 +42,10 @@ allows. Setting it to a few hundred is title-and-abstract screening, done
 deliberately: cheaper, and closer to what a human screener sees at this
 stage. Either way the \code{truncated} and \code{seen_tokens} columns say what was
 actually read.}
+
+\item{max_total_calls, trace}{As \code{\link[=gr_read_many]{gr_read_many()}}. Pass the same \code{trace} to
+\code{\link[=gr_extract]{gr_extract()}} and \code{\link[=gr_synthesise]{gr_synthesise()}} and the review has one trace and one
+cost rather than one per stage.}
 
 \item{...}{Recipe overrides, as in \code{\link[=gr_extract]{gr_extract()}}.}
 }

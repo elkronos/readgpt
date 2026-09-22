@@ -643,11 +643,26 @@ Five things it does that a `lapply()` does not:
 and its error in the `error` column; the other hundred and ninety-nine answers
 survive. `on_error = "stop"` if you would rather it aborted.
 
-**Budgets are per document.** Every document gets its own trace, so
-`gr_options(max_calls =)` applies to each one exactly as if you had read it
-alone — one enormous document cannot starve the rest. `max_total_usd` is the
-corpus-wide ceiling; documents after it are marked `"skipped"` rather than
-quietly dropped.
+**Budgets are per document, and the run has its own.** Every document gets its
+own trace, so `gr_options(max_calls =)` applies to each one exactly as if you had
+read it alone — one enormous document cannot starve the rest. That is deliberate,
+and on its own it leaves the *run* unbounded: two hundred documents under a
+400-call ceiling is a corpus ceiling of eighty thousand calls. So there are two
+run-level ceilings.
+
+```r
+gr_screen(papers, protocol, client = cl,
+          max_total_calls = 2000,   # checked BEFORE each document
+          max_total_usd   = 20)     # checked after each one
+```
+
+`max_total_calls` is checked before a document, so the overshoot is bounded by
+one document's own ceiling. `max_total_usd` can only be checked after one, since
+what a document costs is not knowable until it has been read — and it needs a
+model with a registered price, or cost is *unknown* rather than zero and you get
+a `gr_corpus_cost_unknown` warning instead of a silent free pass. Documents past
+either ceiling are marked `"skipped"` rather than quietly dropped. Set neither
+and the run says once what its worst case is.
 
 **A run can be resumed.** Point `store =` at a directory and each result is
 written as it completes and restored on a later run. Combined with a durable
@@ -848,6 +863,10 @@ score intervals, which stay sensible at zero and one where the textbook interval
 collapses to a point, and `$adequate` says out loud when there were too few
 eligible studies to support a claim. `$missed` is the list of studies the
 screener discarded and a person did not — usually more use than any rate.
+
+Pass the result to `gr_audit_report(calibration = )` and it becomes a section of
+the report, so the figure a reviewer asks for sits next to the run it describes
+instead of being copied into a methods section by hand.
 
 ## From a folder to a review
 

@@ -35,6 +35,7 @@
 #' @param recipe The ingest and segmentation to use. The reader is always
 #'   `extract`, whatever the recipe says.
 #' @param client,store,on_error,max_total_usd,recursive As [gr_read_many()].
+#' @param max_total_calls,trace As [gr_read_many()].
 #'   `store` is worth setting for anything longer than a coffee break: an
 #'   interrupted extraction resumes instead of restarting.
 #' @param resolve What to do when two parts of one document give different values
@@ -145,8 +146,8 @@
 gr_extract <- function(sources, fields, goal = NULL, recipe = "research",
                        client = NULL, store = NULL, resolve = c("first", "model"),
                        require_quote = FALSE, on_error = c("continue", "stop"),
-                       max_total_usd = NULL, keep_answers = FALSE,
-                       recursive = FALSE, ...) {
+                       max_total_usd = NULL, max_total_calls = NULL,
+                       keep_answers = FALSE, recursive = FALSE, trace = NULL, ...) {
   # A protocol is a schema plus the two things a schema cannot say: what the
   # reading is FOR, and how to read it. Unpacked here rather than made a separate
   # argument, because `gr_extract(papers, my_protocol)` reads the way people
@@ -199,7 +200,8 @@ gr_extract <- function(sources, fields, goal = NULL, recipe = "research",
   } else NULL
   out <- gr_read_many(sources, goal, rec, client = client, store = store,
                       on_error = on_error, max_total_usd = max_total_usd,
-                      keep_answers = TRUE, recursive = recursive, ...)
+                      max_total_calls = max_total_calls, keep_answers = TRUE,
+                      recursive = recursive, trace = trace, ...)
 
   docs <- out$summary$document
   answers <- out$answers[docs]          # NULL for failed and skipped rows
@@ -212,6 +214,8 @@ gr_extract <- function(sources, fields, goal = NULL, recipe = "research",
     fields   = fields,
     summary  = out$summary,
     answers  = if (isTRUE(keep_answers)) out$answers else list(),
+    # As gr_screen(): the search travels with the corpus it produced.
+    records  = out$records,
     trace    = out$trace,
     store    = out$store
   ), class = "gr_extraction")

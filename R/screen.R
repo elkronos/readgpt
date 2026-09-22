@@ -105,6 +105,9 @@ read_screen <- function(chunks, question, client, spec, trace) {
 #' reason for every one, and nothing dropped on the way.
 #'
 #' @param sources As [gr_read_many()]: file paths, a directory, or raw text.
+#' @param max_total_calls,trace As [gr_read_many()]. Pass the same `trace` to
+#'   [gr_extract()] and [gr_synthesise()] and the review has one trace and one
+#'   cost rather than one per stage.
 #' @param protocol A [gr_protocol()] carrying the criteria and the review
 #'   question. Give this, or `include`/`exclude` directly.
 #' @param question,include,exclude The review question and the criteria, if you
@@ -169,7 +172,8 @@ read_screen <- function(chunks, question, client, spec, trace) {
 gr_screen <- function(sources, protocol = NULL, question = NULL, include = NULL,
                       exclude = NULL, recipe = "research", client = NULL, store = NULL,
                       screen_tokens = NULL, on_error = c("continue", "stop"),
-                      max_total_usd = NULL, keep_answers = FALSE, recursive = FALSE,
+                      max_total_usd = NULL, max_total_calls = NULL,
+                      keep_answers = FALSE, recursive = FALSE, trace = NULL,
                       ...) {
   if (!is.null(protocol)) {
     if (!inherits(protocol, "gr_protocol")) {
@@ -204,7 +208,8 @@ gr_screen <- function(sources, protocol = NULL, question = NULL, include = NULL,
 
   out <- gr_read_many(sources, question, rec, client = client, store = store,
                       on_error = on_error, max_total_usd = max_total_usd,
-                      keep_answers = TRUE, recursive = recursive, ...)
+                      max_total_calls = max_total_calls, keep_answers = TRUE,
+                      recursive = recursive, trace = trace, ...)
 
   docs <- out$summary$document
   answers <- out$answers[docs]
@@ -223,6 +228,9 @@ gr_screen <- function(sources, protocol = NULL, question = NULL, include = NULL,
     exclude  = exclude,
     summary  = out$summary,
     answers  = if (isTRUE(keep_answers)) out$answers else list(),
+    # Carried so the audit can show the search without being handed the record
+    # set a second time at the end of a run.
+    records  = out$records,
     trace    = out$trace,
     store    = out$store
   ), class = "gr_screening")

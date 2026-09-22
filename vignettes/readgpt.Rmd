@@ -329,8 +329,14 @@ out$summary[, c("document", "not_found", "chunks_used", "calls", "status")]
 ```
 
 One unreadable file is one `"failed"` row, not a dead run. Each document gets its
-own budget, so one enormous file cannot starve the rest. `store =` makes the run
-resumable, and `max_total_usd` is a corpus-wide ceiling.
+own budget, so one enormous file cannot starve the rest — which means the run
+itself needs its own ceiling, and there are two: `max_total_calls`, checked
+before each document, and `max_total_usd`, checked after one. `store =` makes the
+run resumable.
+
+Passing the same `trace =` to `gr_screen()`, `gr_extract()`, `gr_claims()` and
+`gr_synthesise()` makes a review one run with one cost, rather than four
+unrelated traces.
 
 ## From a folder to a review
 

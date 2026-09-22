@@ -157,6 +157,10 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims 
 #' do not exist are all counted near the top. An audit that showed only what
 #' worked would look like diligence and be the opposite.
 #'
+#' @param calibration A [gr_calibrate()] result, to add a section saying how good
+#'   the screening is: sensitivity, specificity, kappa, and how many eligible
+#'   studies the screener threw away. Without it the report says what the run did
+#'   and nothing about whether it did it well.
 #' @param claims A [gr_claims()] result, or `NULL` to take the one the synthesis
 #'   carries. It adds the link the rest of the report cannot make: the claim a
 #'   sentence is making, back to the studies meant to support it.
@@ -179,7 +183,7 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims 
 #' file.exists(out)
 gr_audit_report <- function(path, screening = NULL, extraction = NULL,
                             synthesis = NULL, protocol = NULL, title = NULL,
-                            claims = NULL, records = NULL) {
+                            claims = NULL, records = NULL, calibration = NULL) {
   # `claims` and `records` are APPENDED, not slotted in where they belong
   # thematically. Inserting `claims` fourth silently rebound the fourth
   # positional argument of every existing call -- gr_audit_report(p, s, x, syn)
@@ -191,7 +195,8 @@ gr_audit_report <- function(path, screening = NULL, extraction = NULL,
                     list(synthesis, "gr_synthesis", "synthesis"),
                     list(protocol, "gr_protocol", "protocol"),
                     list(claims, "gr_claims", "claims"),
-                    list(records, "gr_records", "records"))) {
+                    list(records, "gr_records", "records"),
+                    list(calibration, "gr_calibration", "calibration"))) {
     if (!is.null(pair[[1]]) && !inherits(pair[[1]], pair[[2]])) {
       gr_abort(sprintf("`%s` must be a %s object.", pair[[3]], pair[[2]]),
                class = "gr_bad_audit_input")
@@ -205,11 +210,16 @@ gr_audit_report <- function(path, screening = NULL, extraction = NULL,
 
   question <- as_chr1(protocol$question %||% synthesis$question %||%
                         screening$summary$document[0] %||% "", "")
+  # The screening and extraction objects now carry the record set they were run
+  # over, so the search reaches the report whether or not the caller remembered
+  # to hand it over a second time at the end. Passing `records` still wins.
+  records <- records %||% screening$records %||% extraction$records
   body <- c(
     audit_header(title, question, protocol, screening, extraction, synthesis),
     audit_protocol(protocol, extraction),
     audit_flow(screening, extraction, records, claims %||% synthesis$claims),
     audit_screening(screening),
+    audit_calibration(calibration),
     audit_extraction(extraction),
     audit_evidence(extraction),
     audit_claims(synthesis, claims),
@@ -526,6 +536,45 @@ html_table <- function(df, numeric_cols = character(0), flag = list()) {
 #' trust -- and when it is absent, saying so is more useful than leaving the
 #' section out, because a missing search is a defect in the review rather than
 #' in the report.
+#' How good the screening is, when somebody measured it.
+#'
+#' gr_calibrate() computed sensitivity, specificity and kappa and there was
+#' nowhere to put them: the number a reviewer actually asks about -- how many
+#' eligible studies the screener threw away -- had to be copied into a methods
+#' section by hand, which is the one place it cannot be checked against the run.
+#' @noRd
+audit_calibration <- function(calibration) {
+  if (!inherits(calibration, "gr_calibration")) return(character(0))
+  m <- calibration$metrics
+  tab <- data.frame(
+    measure = m$metric,
+    estimate = ifelse(is.na(m$estimate), "--", sprintf("%.1f%%", 100 * m$estimate)),
+    interval = ifelse(is.na(m$lower) | is.na(m$upper), "--",
+                      sprintf("%.1f%% to %.1f%%", 100 * m$lower, 100 * m$upper)),
+    n = m$n, stringsAsFactors = FALSE)
+  head <- sprintf(paste0("<p class='sub'>%d record(s) screened by hand, %d of them eligible, ",
+                         "sampled from: %s.</p>"),
+                  calibration$n, calibration$n_positives, esc(as_chr1(calibration$frame$of, "all")))
+  warn <- if (!isTRUE(calibration$adequate)) sprintf(
+    paste0("<p class='flag'>Only %d eligible record(s) in the sample, below the %d this ",
+           "calibration asks for. The intervals are too wide to conclude much.</p>"),
+    calibration$n_positives, calibration$min_positives)
+  kap <- if (!is.na(calibration$kappa))
+    sprintf("<p><b>Cohen's kappa:</b> %.2f</p>", calibration$kappa)
+  proj <- if (!is.null(calibration$projected)) {
+    pr <- calibration$projected
+    sprintf(paste0("<p class='flag'>Across all %s excluded record(s), that rate implies about ",
+                   "%.0f eligible stud%s lost (%.0f to %.0f).</p>"),
+            format(pr$frame_n), pr$lost, if (round(pr$lost) == 1) "y" else "ies",
+            pr$lower, pr$upper)
+  }
+  miss <- if (nrow(calibration$missed)) sprintf(
+    "<p class='flag'>%d eligible stud%s excluded by the screener: %s.</p>",
+    nrow(calibration$missed), if (nrow(calibration$missed) == 1L) "y was" else "ies were",
+    esc(paste(utils::head(calibration$missed$document, 8), collapse = ", ")))
+  c("<h2>How good the screening is</h2>", head, html_table(tab), kap, proj, warn, miss)
+}
+
 #' @noRd
 audit_search <- function(records) {
   se <- if (inherits(records, "gr_records")) records$search else NULL

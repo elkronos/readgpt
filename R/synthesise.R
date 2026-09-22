@@ -69,12 +69,20 @@
 #'   `"formal academic; hedge claims; past tense for findings"`. It governs how
 #'   sections are written, never what they may say: the rules about citing every
 #'   claim and inventing nothing hold whatever voice is asked for.
-#' @param coherence Run one further call over the assembled draft to make the
-#'   independently-written sections read as one argument: repetition removed,
-#'   transitions added, terminology made consistent. The revision is checked, not
-#'   trusted -- one that added a citation or dropped one is discarded with a
-#'   warning, and `$draft` is what you get. Off by default, because it is an
-#'   extra call and an extra chance for the model to touch finished prose.
+#' @param coherence Revision passes over the finished draft: `TRUE` for all
+#'   three, `FALSE` for none, or any of `"structure"` (reorder and merge),
+#'   `"cut"` (remove repetition) and `"register"` (polish sentences) by name.
+#'   Each pass is forbidden from doing the others' job, and each is discarded
+#'   -- with `$draft` kept -- if it changed the citations, arrived truncated,
+#'   or strengthened a claim. Off by default: each is a call, and each is a
+#'   chance for a model to touch finished prose.
+#' @param claims A [gr_claims()] result. With it each section argues that
+#'   section's claims and sees only the studies those claims rest on, rather
+#'   than being handed every study and writing a paragraph per row. Needs an
+#'   `outline` from [gr_outline()], which carries the assignment.
+#' @param gaps A [gr_gaps()] result, or lines of text. Given to the closing
+#'   section [gr_outline()] named, with an instruction to state those gaps and
+#'   no others.
 #' @param references Append a `## References` section built from the studies the
 #'   finished text actually cites. Alphabetical under `"author-year"`, numbered
 #'   by study otherwise -- the list is labelled by whatever the prose uses to
@@ -141,7 +149,7 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
                           temperature = NULL, include_unclear = FALSE,
                           cite_style = c("auto", "marker", "author-year", "numeric"),
                           bib = NULL, style = NULL, coherence = FALSE,
-                          references = TRUE) {
+                          references = TRUE, claims = NULL, gaps = NULL) {
   cite_style <- match.arg(cite_style)
   tab <- if (inherits(extraction, "gr_extraction")) extraction$table else extraction
   if (!is.data.frame(tab) || !nrow(tab)) {
@@ -156,6 +164,11 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
     if (is.null(outline)) outline <- protocol$outline
     if (is.null(question)) question <- protocol$question
   }
+  # Read BEFORE outline_vector(), which rebuilds the vector with setNames() and
+  # drops every attribute -- including the claim assignment gr_outline() put
+  # there. Losing it silently would take every section back to writing from rows.
+  assign_map <- attr(outline, "claims")
+  closing <- as_chr1(attr(outline, "closing"), NA_character_)
   outline <- outline_vector(outline)
   if (!length(outline)) {
     gr_abort(paste0("`outline` is empty. Give the sections to write, as a named character ",
@@ -164,14 +177,38 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
   }
   if (!is_nonblank(question)) gr_abort("`question` must be a non-empty string.")
 
-  keep <- synth_usable(tab, include_unclear)
-  used <- tab[keep, , drop = FALSE]
-  if (!nrow(used)) {
-    gr_abort(paste0("No usable rows: every document either failed, was a duplicate of another, ",
-                    "or had nothing extracted. There is nothing to write from."),
-             class = "gr_no_studies")
+  used <- synth_studies(tab, include_unclear)
+  keep <- attr(used, "keep")
+
+  if (!is.null(claims)) {
+    if (!inherits(claims, "gr_claims")) {
+      gr_abort("`claims` must come from gr_claims().", class = "gr_bad_claims")
+    }
+    # THE guard for this whole layer. A claim number and a `[study N]` marker are
+    # the same identifier, and they agree only because both sides derive it from
+    # synth_studies() over the same table. Hand gr_claims() one extraction and
+    # gr_synthesise() another -- or the same one with a different
+    # `include_unclear` -- and every claim silently points at a different row.
+    # Nothing downstream could detect it: the numbers are all valid, they just
+    # mean other studies, and the review attributes findings to papers that do
+    # not contain them.
+    ident <- function(d) as.character(d$document_id %||% d$document)
+    if (!identical(ident(claims$studies), ident(used))) {
+      gr_abort(paste0("These claims were drawn from a different set of studies than this ",
+                      "synthesis is writing from, so their study numbers point at different ",
+                      "rows. Give gr_claims() and gr_synthesise() the same `extraction` and the ",
+                      "same `include_unclear`."),
+               class = "gr_claims_mismatch")
+    }
+    if (is.null(assign_map)) {
+      gr_abort(paste0("`claims` was given but the outline does not say which claims belong to ",
+                      "which section, so every section would fall back to writing from rows. ",
+                      "Use gr_outline(claims) for the outline, or attach the assignment ",
+                      "yourself with attr(outline, \"claims\") <- data.frame(section = , ",
+                      "claim_id = )."),
+               class = "gr_no_claim_assignment")
+    }
   }
-  used$study <- seq_len(nrow(used))
 
   client <- client %||% gr_client(model = model %||% gr_options("model"))
   spec <- gr_read_spec("stuff", model = model, temperature = temperature,
@@ -191,10 +228,20 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
   # If a bibliographic value is also a FINDING -- publication year as
   # chronology, say -- extract it a second time under a name of its own.
   rendered <- render_studies(used, hide = unlist(bib_columns(used, bib), use.names = FALSE))
+  # gr_gaps() returns a table; a section wants lines. Accepting both means the
+  # caller never has to know which.
+  if (inherits(gaps, "gr_gaps") || is.data.frame(gaps)) gaps <- render_gaps(gaps)
+  weights <- if (is.null(claims)) NULL else study_weight(used)
   rows <- lapply(seq_along(outline), function(i) {
     heading <- names(outline)[[i]]
     gr_msg(sprintf("[%d/%d] %s", i, length(outline), heading))
-    synth_section(heading, outline[[i]], question, rendered, used, client, spec, trace, style)
+    ids <- if (is.null(assign_map)) integer(0) else
+      as.integer(assign_map$claim_id[as.character(assign_map$section) == heading])
+    synth_section(heading, outline[[i]], question, rendered, used, client, spec, trace, style,
+                  claims = claims, claim_ids = ids, weights = weights,
+                  # Gaps reach exactly one section, the one gr_outline() marked.
+                  # Handing them to every section makes every section recite them.
+                  gaps = if (!is.na(closing) && identical(heading, closing)) gaps else NULL)
   })
 
   sections <- do.call(rbind, lapply(rows, `[[`, "row"))
@@ -218,8 +265,9 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
   }
 
   marked <- synth_document(sections)
-  revised <- if (isTRUE(coherence)) {
-    synth_coherence(marked, question, client, spec, trace, style)
+  passes <- revise_passes(coherence)
+  revised <- if (length(passes)) {
+    synth_revise(marked, question, client, spec, trace, style, passes)
   } else NULL
   final_marked <- revised$text %||% marked
 
@@ -246,6 +294,8 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
     skipped = sum(!keep),
     question = question,
     outline = outline,
+    claims = claims,
+    gaps = gaps,
     cite_style = resolved,
     coherence = revised$report,
     trace = trace
@@ -266,97 +316,6 @@ resolve_cite_style <- function(want, keys, cols) {
   if (identical(want, "auto")) "author-year" else want
 }
 
-#' One pass over the assembled draft, to make it read as one argument.
-#'
-#' Sections are written independently and cannot see each other, which is what
-#' keeps each one answerable to its own brief and to the table. The cost is that
-#' nothing joins them: terms drift, the same study is introduced twice, and
-#' there are no transitions. This fixes that and nothing else.
-#'
-#' What comes back is checked, not trusted. A revision that added a citation, or
-#' lost one, is discarded -- those are the two ways this step could quietly
-#' undo the guarantee the rest of the pipeline exists to give.
-#' @noRd
-synth_coherence <- function(drafted, question, client, spec, trace, style = NULL) {
-  before <- cited_ids(drafted, "study")
-  sys <- .gr_prompts$coherence_system
-  if (is_nonblank(style)) sys <- paste0(sys, "\n\nRegister: ", as_chr1(style))
-  overhead <- prompt_overhead(question, sys)
-
-  # This step returns the WHOLE document, not a section, so it must be budgeted
-  # for the whole document. Sizing it by `max_section_tokens` -- which is what a
-  # section writer needs -- asked a model revising a 4800-token review for 300
-  # tokens of output. The reply is then truncated mid-review, and the citation
-  # check below rejects it for "dropping" citations that were never written,
-  # reporting a budgeting mistake as a model failure.
-  need <- as.integer(ceiling(gr_count_tokens(drafted) * 1.15) + 64L)
-  info <- gr_model_info(spec$model)
-  room <- as.integer(info$max_output)
-  if (need > room) {
-    gr_warn(sprintf(paste0("The draft is about %d tokens and '%s' can emit at most %d, so the ",
-                           "coherence pass was skipped rather than returning a review cut off ",
-                           "part-way. The sections are as written; a shorter outline or a model ",
-                           "with a larger output limit would let it run."),
-                    gr_count_tokens(drafted), spec$model, room),
-            class = "gr_coherence_skipped")
-    return(list(text = NULL, report = list(ran = FALSE, reason = "draft exceeds the output limit",
-                                           kept = FALSE)))
-  }
-  bud <- gr_budget(spec$model, reserve_output = need, overhead = overhead)
-  if (gr_count_tokens(drafted) > bud$input) {
-    gr_warn(paste0("The draft does not fit one prompt alongside room to rewrite it, so the ",
-                   "coherence pass was skipped. The sections are as written; revise by hand, or ",
-                   "use a model with a larger context window."),
-            class = "gr_coherence_skipped")
-    return(list(text = NULL, report = list(ran = FALSE, reason = "draft exceeds the context window",
-                                           kept = FALSE)))
-  }
-  if (!trace_can_call(trace)) {
-    return(list(text = NULL, report = list(ran = FALSE, reason = "call cap reached", kept = FALSE)))
-  }
-  res <- gr_call(client, list(
-    list(role = "system", content = sys),
-    list(role = "user", content = paste0("Review question: ", question)),
-    list(role = "user", content = paste0("<draft>\n", drafted, "\n</draft>"))
-  ), model = spec$model, max_output = need,
-     temperature = spec$temperature, trace = trace, label = "synthesise.coherence")
-
-  if (!usable_text(res)) {
-    return(list(text = NULL, report = list(ran = TRUE, reason = "the revision call failed",
-                                           kept = FALSE)))
-  }
-  # A revision that hit the output limit is a review with its ending cut off.
-  # The citation check below would usually catch it -- the lost citations are
-  # the ones in the missing tail -- but not when the truncation happens to land
-  # after the last marker, and a review silently missing its conclusion is worse
-  # than one that was never revised.
-  if (identical(as_chr1(res$finish_reason), "length")) {
-    gr_warn(paste0("The coherence pass was cut off by the model's output limit, so its revision ",
-                   "was discarded and the section-by-section draft is what you have."),
-            class = "gr_coherence_rejected")
-    return(list(text = NULL, report = list(ran = TRUE, reason = "revision truncated", kept = FALSE,
-                                           added = integer(0), lost = integer(0))))
-  }
-  after <- cited_ids(res$text, "study")
-  added <- setdiff(after, before); lost <- setdiff(before, after)
-  if (length(added) || length(lost)) {
-    gr_warn(sprintf(paste0("The coherence pass %s, so its revision was discarded and the ",
-                           "section-by-section draft is what you have. This step may reorganise ",
-                           "prose; it may not change what the review cites."),
-                    paste(c(if (length(added)) sprintf("added citation(s) to stud%s %s",
-                                                       if (length(added) == 1L) "y" else "ies",
-                                                       paste(added, collapse = ", ")),
-                            if (length(lost)) sprintf("dropped citation(s) to stud%s %s",
-                                                      if (length(lost) == 1L) "y" else "ies",
-                                                      paste(lost, collapse = ", "))),
-                          collapse = " and ")),
-            class = "gr_coherence_rejected")
-    return(list(text = NULL, report = list(ran = TRUE, reason = "citations changed", kept = FALSE,
-                                           added = added, lost = lost)))
-  }
-  list(text = res$text, report = list(ran = TRUE, reason = NA_character_, kept = TRUE,
-                                      added = integer(0), lost = integer(0)))
-}
 
 #' @export
 print.gr_synthesis <- function(x, ...) {
@@ -387,6 +346,28 @@ print.gr_synthesis <- function(x, ...) {
 }
 
 # --- internals -------------------------------------------------------------
+
+#' The studies a synthesis works from, numbered.
+#'
+#' Shared by [gr_synthesise()] and [gr_claims()] because the number IS the
+#' identifier: a claim saying it rests on study 3 and a section citing
+#' `[study 3]` have to mean the same row. Two copies of this filter would drift
+#' the moment one of them learned about a new status value, and the symptom
+#' would be a claims table that silently points at the wrong studies -- not an
+#' error, just a review attributing findings to papers that do not contain them.
+#' @noRd
+synth_studies <- function(tab, include_unclear = FALSE) {
+  keep <- synth_usable(tab, include_unclear)
+  used <- tab[keep, , drop = FALSE]
+  if (!nrow(used)) {
+    gr_abort(paste0("No usable rows: every document either failed, was a duplicate of another, ",
+                    "or had nothing extracted. There is nothing to write from."),
+             class = "gr_no_studies")
+  }
+  used$study <- seq_len(nrow(used))
+  attr(used, "keep") <- keep
+  used
+}
 
 #' Which rows a write-up may draw on.
 #'
@@ -431,14 +412,35 @@ render_studies <- function(used, hide = character(0)) {
 
 #' @noRd
 synth_section <- function(heading, brief, question, rendered, used, client, spec, trace,
-                          style = NULL) {
-  system_prompt <- sprintf(.gr_prompts$synthesise_system, heading)
+                          style = NULL, claims = NULL, claim_ids = integer(0),
+                          weights = NULL, gaps = NULL) {
+  # With claims, the section argues a list of claims and sees only the studies
+  # those claims rest on. Without, it sees every study and writes from rows --
+  # which is what produces "Smith (2019) found X. Garcia (2022) found Y."
+  by_claims <- !is.null(claims) && length(claim_ids)
+  if (by_claims) {
+    cw <- claims$claims[claims$claims$claim_id %in% claim_ids, , drop = FALSE]
+    want <- unique(claims$support$study[claims$support$claim_id %in% claim_ids])
+    # Indexing the ALREADY-rendered blocks rather than re-rendering, so the
+    # bibliographic columns stay hidden by exactly the same rule.
+    rendered <- rendered[used$study %in% want]
+    claim_block <- render_claims(cw, claims$support, weights)
+  }
+  system_prompt <- if (by_claims) .gr_prompts$claims_section_system else
+    sprintf(.gr_prompts$synthesise_system, heading)
   # Appended rather than replacing: the register is how it is written, not what
   # it may say, and the rules above about citing and not inventing hold whatever
   # voice is asked for.
   if (is_nonblank(style)) system_prompt <- paste0(system_prompt, " Register: ", as_chr1(style))
   ask <- paste0("Review question: ", question,
                 "\n\nSection: ", heading, "\nThis section must cover: ", brief)
+  if (by_claims) ask <- paste0(ask, "\n\n<claims>\n", claim_block, "\n</claims>")
+  if (is_nonblank(gaps)) {
+    # The gaps are COMPUTED from the table, so the section may state these and
+    # nothing else as a gap. That is the whole reason they are computed.
+    ask <- paste0(ask, "\n\n<gaps>\n", as_chr1(gaps), "\n</gaps>\n",
+                  "State only the gaps listed above. Do not add others.")
+  }
   overhead <- prompt_overhead(ask, system_prompt)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
 
@@ -448,7 +450,14 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
     res <- gr_call(client, list(
       list(role = "system", content = system_prompt),
       list(role = "user", content = ask),
-      list(role = "user", content = paste0("<studies>\n", body, "\n</studies>"))
+      # The section's job again after the studies, for the same reason
+      # answer_messages() asks last: over several thousand tokens of table, an
+      # instruction given once at the top is a long way from where the writing
+      # happens.
+      list(role = "user", content = paste0("<studies>\n", body, "\n</studies>",
+                                           restate_tail(body, paste0("write the '", heading,
+                                                                     "' section, which must cover: ",
+                                                                     brief))))
     ), model = spec$model, max_output = spec$max_answer_tokens,
        temperature = spec$temperature, trace = trace, label = "synthesise.section")
     if (usable_text(res)) res$text else ""
@@ -488,6 +497,21 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
   known <- cited[cited %in% used$study]
   unknown <- setdiff(cited, used$study)
   hits <- match(known, used$study)
+  # The check in the other direction, which the citation check cannot make: a
+  # section handed four claims and citing none of the studies behind one of them
+  # did not write that claim up. The outline promised it would.
+  missed <- if (!by_claims) integer(0) else {
+    claim_ids[!vapply(claim_ids, function(id) {
+      any(claims$support$study[claims$support$claim_id == id] %in% known)
+    }, logical(1))]
+  }
+  if (length(missed)) {
+    gr_warn(sprintf(paste0("Section '%s' was given %d claim(s) and did not write up %d of them ",
+                           "(claim %s). The section is marked partial."),
+                    heading, length(claim_ids), length(missed),
+                    paste(missed, collapse = ", ")),
+            class = "gr_claims_missed")
+  }
   if (lost_batches > 0L) {
     gr_warn(sprintf(paste0("Section '%s': %d batch(es) of studies failed, so the studies in ",
                            "them are missing from it. The section is marked partial."),
@@ -499,8 +523,9 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
                      # A section citing a row that is not in the table, or citing
                      # nothing at all, is not a section anyone should paste into a
                      # manuscript unread.
+                     n_claims = length(claim_ids), claims_missed = length(missed),
                      partial = length(unknown) > 0L || !nzchar(trimws(text)) ||
-                       lost_batches > 0L,
+                       lost_batches > 0L || length(missed) > 0L,
                      stringsAsFactors = FALSE),
     citations = if (!length(known)) NULL else
       data.frame(section = heading, study = known,
@@ -511,6 +536,45 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
                  document_id = if (is.null(used$document_id)) NA_character_ else
                    as.character(used$document_id[hits]),
                  stringsAsFactors = FALSE))
+}
+
+#' The claims a section must argue, in the order they earned.
+#'
+#' The tier is a sentence budget, and it is the whole of step "emphasis": a claim
+#' resting on nine studies and one resting on a single pilot were getting the
+#' same space, which is a claim about the literature that the literature does not
+#' support.
+#' @noRd
+render_claims <- function(cw, support, weights) {
+  ord <- claim_order(cw, support, weights)
+  cw <- cw[ord, , drop = FALSE]
+  n <- nrow(cw)
+  third <- max(1L, n %/% 3L)
+  tier <- rep("one sentence", n)
+  if (n <= 3L) {
+    tier[] <- "two or three sentences"
+  } else {
+    tier[seq_len(third)] <- "two or three sentences"
+    tier[seq(third + 1L, min(n, 2L * third))] <- "one or two sentences"
+  }
+  ids <- function(id, role) {
+    v <- sort(support$study[support$claim_id == id & support$role == role])
+    if (!length(v)) return(NULL)
+    paste(sprintf("[study %d]", v), collapse = " ")
+  }
+  vapply(seq_len(n), function(i) {
+    id <- cw$claim_id[i]
+    paste(c(sprintf("[claim %d] (%s)", id, tier[i]),
+            cw$claim[i],
+            sprintf("supported by: %s", ids(id, "supports")),
+            if (cw$n_contradict[i]) sprintf("contradicted by: %s", ids(id, "contradicts")),
+            if (!is.na(cw$moderator[i])) sprintf("distinguished by: %s", cw$moderator[i]),
+            if (cw$n_contradict[i] && is.na(cw$moderator[i]))
+              "the disagreement is not explained by anything in the table",
+            if (!is.na(cw$scope[i])) sprintf("scope: %s", cw$scope[i])),
+          collapse = "\n")
+  }, character(1), USE.NAMES = FALSE) -> blocks
+  paste(blocks, collapse = "\n\n")
 }
 
 #' @noRd

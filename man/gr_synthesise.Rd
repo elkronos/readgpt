@@ -18,7 +18,9 @@ gr_synthesise(
   bib = NULL,
   style = NULL,
   coherence = FALSE,
-  references = TRUE
+  references = TRUE,
+  claims = NULL,
+  gaps = NULL
 )
 }
 \arguments{
@@ -71,17 +73,27 @@ may be wrong.}
 sections are written, never what they may say: the rules about citing every
 claim and inventing nothing hold whatever voice is asked for.}
 
-\item{coherence}{Run one further call over the assembled draft to make the
-independently-written sections read as one argument: repetition removed,
-transitions added, terminology made consistent. The revision is checked, not
-trusted -- one that added a citation or dropped one is discarded with a
-warning, and \verb{$draft} is what you get. Off by default, because it is an
-extra call and an extra chance for the model to touch finished prose.}
+\item{coherence}{Revision passes over the finished draft: \code{TRUE} for all
+three, \code{FALSE} for none, or any of \code{"structure"} (reorder and merge),
+\code{"cut"} (remove repetition) and \code{"register"} (polish sentences) by name.
+Each pass is forbidden from doing the others' job, and each is discarded
+-- with \verb{$draft} kept -- if it changed the citations, arrived truncated,
+or strengthened a claim. Off by default: each is a call, and each is a
+chance for a model to touch finished prose.}
 
 \item{references}{Append a \verb{## References} section built from the studies the
 finished text actually cites. Alphabetical under \code{"author-year"}, numbered
 by study otherwise -- the list is labelled by whatever the prose uses to
 point into it.}
+
+\item{claims}{A \code{\link[=gr_claims]{gr_claims()}} result. With it each section argues that
+section's claims and sees only the studies those claims rest on, rather
+than being handed every study and writing a paragraph per row. Needs an
+\code{outline} from \code{\link[=gr_outline]{gr_outline()}}, which carries the assignment.}
+
+\item{gaps}{A \code{\link[=gr_gaps]{gr_gaps()}} result, or lines of text. Given to the closing
+section \code{\link[=gr_outline]{gr_outline()}} named, with an instruction to state those gaps and
+no others.}
 }
 \value{
 An object of class \code{gr_synthesis}:

@@ -32,6 +32,7 @@
 #' @param screening A `gr_screening` from [gr_screen()], or `NULL`.
 #' @param extraction A `gr_extraction` from [gr_extract()], or `NULL`.
 #' @return A data frame of `stage`, `n` and `note`.
+#' @param claims A [gr_claims()] result, to add the claim-level counts.
 #' @param records A [gr_records()], so the counts begin where the search did:
 #'   records identified, duplicates removed, reports sought and reports never
 #'   retrieved. Without one the diagram starts at "sources given", which is
@@ -47,7 +48,7 @@
 #' s <- gr_screen(f, question = "What was revenue?",
 #'                include = "Reports a revenue figure", client = cl)
 #' gr_flow(s)
-gr_flow <- function(screening = NULL, extraction = NULL, records = NULL) {
+gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims = NULL) {
   rows <- list()
   add <- function(stage, n, note = "") {
     rows[[length(rows) + 1L]] <<- data.frame(stage = stage, n = as.integer(n),
@@ -95,6 +96,16 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL) {
         "no values; these are outstanding")
     add("values unsupported", sum(t$n_unverified, na.rm = TRUE),
         "no verbatim span in the chunk cited")
+  }
+  if (inherits(claims, "gr_claims")) {
+    cw <- claims$claims
+    add("claims drawn", nrow(cw), "statements about the literature, each attached to studies")
+    add("  contested", sum(cw$n_contradict > 0L), "studies on both sides")
+    add("  unexplained", sum(cw$n_contradict > 0L & is.na(cw$moderator)),
+        "contested with nothing in the table to explain the split")
+    add("  on one study", sum(cw$n_support == 1L), "no replication in this corpus")
+    add("claims dropped", nrow(claims$dropped),
+        "verification removed them; see the claims object's $dropped")
   }
   if (!length(rows)) {
     return(data.frame(stage = character(0), n = integer(0), note = character(0),
@@ -146,6 +157,9 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL) {
 #' do not exist are all counted near the top. An audit that showed only what
 #' worked would look like diligence and be the opposite.
 #'
+#' @param claims A [gr_claims()] result, or `NULL` to take the one the synthesis
+#'   carries. It adds the link the rest of the report cannot make: the claim a
+#'   sentence is making, back to the studies meant to support it.
 #' @param records A [gr_records()]. Adds the search itself to the report --
 #'   which sources, with what query, on what date -- and starts the flow counts
 #'   at identification. Without one the report says so, because a missing search
@@ -163,7 +177,7 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL) {
 #'
 #' out <- gr_audit_report(tempfile(fileext = ".html"), extraction = x)
 #' file.exists(out)
-gr_audit_report <- function(path, screening = NULL, extraction = NULL,
+gr_audit_report <- function(path, screening = NULL, extraction = NULL, claims = NULL,
                             synthesis = NULL, protocol = NULL, records = NULL,
                             title = NULL) {
   if (!is_nonblank(path)) gr_abort("`path` must be a file path.")
@@ -187,10 +201,11 @@ gr_audit_report <- function(path, screening = NULL, extraction = NULL,
   body <- c(
     audit_header(title, question, protocol, screening, extraction, synthesis),
     audit_protocol(protocol, extraction),
-    audit_flow(screening, extraction, records),
+    audit_flow(screening, extraction, records, claims %||% synthesis$claims),
     audit_screening(screening),
     audit_extraction(extraction),
     audit_evidence(extraction),
+    audit_claims(synthesis, claims),
     audit_synthesis(synthesis),
     audit_search(records),
     audit_cost(screening, extraction, synthesis),
@@ -300,8 +315,8 @@ audit_protocol <- function(protocol, extraction) {
 }
 
 #' @noRd
-audit_flow <- function(screening, extraction, records = NULL) {
-  fl <- gr_flow(screening, extraction, records)
+audit_flow <- function(screening, extraction, records = NULL, claims = NULL) {
+  fl <- gr_flow(screening, extraction, records, claims)
   if (!nrow(fl)) return(NULL)
   c("<h2>What happened to every document</h2>",
     "<p class='sub'>Every source is accounted for at every stage it reached.</p>",
@@ -355,6 +370,48 @@ audit_evidence <- function(extraction) {
                flag = list(verified = function(v) !isTRUE_vec(v))))
 }
 
+#' The claims, the studies behind them, and where each one ended up.
+#'
+#' This is the link that makes the layer defensible rather than merely present.
+#' Without it a reader can walk a sentence back to a study and a study back to a
+#' quote, but not the claim the sentence is making back to the studies that were
+#' supposed to support it -- which is the step where a synthesis is either right
+#' or invented.
+#' @noRd
+audit_claims <- function(synthesis, claims = NULL) {
+  cm <- claims %||% synthesis$claims
+  if (!inherits(cm, "gr_claims") || !nrow(cm$claims)) return(NULL)
+  sec <- attr(synthesis$outline, "claims")
+  tab <- cm$claims[, c("claim_id", "claim", "kind", "moderator", "scope",
+                       "n_support", "n_contradict"), drop = FALSE]
+  tab$section <- if (is.null(sec)) NA_character_ else
+    sec$section[match(tab$claim_id, sec$claim_id)]
+  sup <- cm$support
+  docs <- cm$studies$document[match(sup$study, cm$studies$study)]
+  detail <- data.frame(claim_id = sup$claim_id, study = sup$study, role = sup$role,
+                       document = docs, stringsAsFactors = FALSE)
+  contested <- sum(tab$n_contradict > 0L)
+  open <- sum(tab$n_contradict > 0L & is.na(tab$moderator))
+  lone <- sum(tab$n_support == 1L)
+  c("<h2>What the review claims, and what each claim rests on</h2>",
+    sprintf(paste0("<p class='sub'>%d claim(s) over %d study/studies. %d contested, %s. ",
+                   "%d resting on a single study.</p>"),
+            nrow(tab), nrow(cm$studies), contested,
+            if (open) sprintf("<span class='flag'>%d of those with nothing in the table to explain the disagreement</span>", open)
+            else "<span class='ok'>each with a distinguishing field named</span>",
+            lone),
+    html_table(tab, numeric_cols = c("claim_id", "n_support", "n_contradict"),
+               flag = list(n_support = function(v) suppressWarnings(as.numeric(v)) <= 1)),
+    "<h3>Every claim, study by study</h3>",
+    html_table(detail, numeric_cols = c("claim_id", "study"),
+               flag = list(role = function(v) v == "contradicts")),
+    if (nrow(cm$dropped))
+      c("<h3>Dropped in verification</h3>",
+        sprintf(paste0("<p class='sub'>A claims table that looks thin has to be tellable from a ",
+                       "literature that is, so what verification removed is printed too.</p>")),
+        html_table(cm$dropped)))
+}
+
 #' @noRd
 audit_synthesis <- function(synthesis) {
   if (is.null(synthesis)) return(NULL)
@@ -370,6 +427,9 @@ audit_synthesis <- function(synthesis) {
                 s$n_unknown[i]),
       if (s$n_cited[i] == 0L)
         "<p class='flag'>This section cites nothing.</p>",
+      if (!is.null(s$claims_missed) && s$claims_missed[i] > 0L)
+        sprintf(paste0("<p class='flag'>%d of the %d claim(s) this section was given were not ",
+                       "written up.</p>"), s$claims_missed[i], s$n_claims[i]),
       if (!is.null(ci) && nrow(ci))
         html_table(ci[, intersect(c("study", "document"), names(ci)), drop = FALSE],
                    numeric_cols = "study"))

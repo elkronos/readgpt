@@ -285,6 +285,118 @@
   anything is spent. The check is anchored on the whole word: there are real
   trials called REPLACE, and a review of one is not a template.
 
+* **`gr_claims()`, `gr_outline()` and `gr_gaps()` — a review written from an
+  argument instead of from rows.** `gr_synthesise()`'s unit was the section, and
+  sections came from an `outline` fixed before the reading; each was then drafted
+  independently from the whole study table. Three things followed that no
+  downstream editing could repair. The structure was the author's hypothesis
+  rather than a finding — and the strongest sentence a review contains is often
+  structural. Studies arrived as rows, so the model wrote row by row: "Smith
+  (2019) found X. Garcia (2022) found Y." And nothing computed relations between
+  studies, which is what synthesis *is*.
+
+  `gr_claims()` turns the extraction table into statements about the literature,
+  each naming the studies that support it, the studies that contradict it, and
+  the field that distinguishes them. Every number is verified against the table —
+  the check `cited_ids()` already makes on finished prose, moved one link
+  earlier: an id that is not there is dropped and counted, a claim left with no
+  supporting study is dropped entirely, and a `moderator` naming a column the
+  table does not have is cleared, because an invented explanation for a real
+  disagreement is the most convincing error this layer can make. `$dropped`
+  records all of it, so a claims table that looks thin can be told from a
+  literature that is.
+
+  The study numbers are the ones `gr_synthesise()` cites, because both derive
+  them from one function, and passing claims drawn from a different table is
+  refused rather than trusted. Nothing downstream could detect that on its own:
+  the numbers would all be valid and all mean other studies.
+
+  `gr_outline()` derives the sections from the claims and hands them back as an
+  ordinary `outline` you can accept or replace, verifying that every claim lands
+  in exactly one section. `gr_synthesise(claims = )` then gives each section its
+  own claims and only the studies those claims rest on, ordered by breadth so a
+  twelve-person pilot stops getting the same space as a two-thousand-person
+  trial, and marks a section partial if it was handed a claim and did not write
+  it up. `gr_gaps()` computes what the corpus does not contain — a declared
+  category nobody studied, a dimension with no variation, an unreplicated claim,
+  a disagreement nothing explains — in R, with no model call, so the gap list is
+  a fact that can be checked by counting rather than an impression.
+
+  The `claims` protocol from earlier in this release is the schema this wants as
+  input, and `gr_audit_report()` gained a claims section so one document reads
+  claim → studies → quotes → pages.
+
+  Ordering studies for emphasis deliberately does **not** rank designs. That
+  would assert a cohort study beats a qualitative one, which is a methodological
+  claim this package has no standing to make, and adding per-item scores into a
+  total is what Cochrane says plainly is discouraged. Design is a grouping
+  variable — what distinguishes the sides of a disagreement, and what `gr_gaps()`
+  crosstabs. A principled weighting waits on an appraisal instrument.
+
+* **Three revision passes, and a guard the citation check cannot make.**
+  `coherence = TRUE` was one call doing three jobs — reorder, trim, polish — with
+  two guards: the revision must not change the citations, and must not arrive
+  truncated. Both are necessary and neither is sufficient, because the most
+  damaging thing an editing pass does leaves the citations exactly where they
+  were. Editing for impact means deleting hedges, and the hedges are where the
+  uncertainty lives: "three small trials suggest a modest benefit" comes back as
+  "trials show a benefit", same markers, same studies, a claim the evidence does
+  not carry.
+
+  So there are now three passes — `"structure"`, `"cut"`, `"register"` — each
+  forbidden from doing the others' job, each run on what survived the last, and
+  each measured for escalation. A revision is discarded if it introduces a
+  universal quantifier that was not there, introduces a booster stem that was not
+  there, or carries fewer hedges per claim-bearing sentence than the draft did.
+  The hedge test is a **rate**, not a total, so cutting a whole redundant
+  sentence — the `cut` pass doing its job — carries that sentence's hedges away
+  with it and passes, while stripping the hedges off the sentences that remain
+  does not. Only sentences carrying a citation are measured: headings, framing
+  and transitions are exactly what an editing pass should be free to rewrite.
+  `coherence = TRUE` still means all three.
+
+* **`iterative` was cutting the wrong end of what it had gathered, and never
+  fitted its final prompt at all.** Two faults in the one reader that accumulates
+  context across rounds.
+
+  It pasted everything gathered and called `gr_truncate_tokens()` on the result,
+  which keeps the head — so the chunks from the *most recent* round were the ones
+  dropped. In a reader whose whole premise is "that did not answer it, go and get
+  more", it discarded the material it had just decided it needed. And it cut
+  mid-chunk, which breaks the audit chain: a chunk cut in half no longer contains
+  the sentence an answer quotes from it, so `verified` comes back false for a
+  reason that has nothing to do with the document. Now it keeps whole chunks,
+  ranked by the score that justified taking each one, so everything reaching the
+  prompt is intact and still checkable.
+
+  Worse, `chunks_used` and the evidence table were built from everything *seen*,
+  including chunks truncation had removed from the prompt — the answer claimed
+  support from text no model had been shown. Only what actually reached the
+  prompt is reported now, `notes$chunks_dropped` says how much did not, and a run
+  that dropped anything is partial.
+
+  And the final answer call was never budgeted. Every other reader sizes its
+  prompt to the context window; this one rendered everything gathered, so several
+  rounds of `top_k` chunks went out over the window and the provider rejected the
+  call after the entire loop had been paid for.
+
+* **The question is repeated at both ends of a long prompt.** `answer_messages()`
+  already asked last, which is the position that gets followed — but over several
+  thousand tokens of excerpt an instruction that appears once at the bottom is a
+  long way from the top. It now also appears before the body when the body is
+  long enough to bury it, inside the existing message rather than as a new one so
+  nothing indexing those positions shifts. The `iterative` step prompt and
+  `gr_synthesise()`'s section prompt asked *first* and then handed over the bulk;
+  both now ask again at the far end.
+
+  `restate` is a [gr_read_spec()] setting — `"auto"`, `"always"`, `"never"` —
+  rather than a rule, because whether repeating the question helps is a question
+  about a particular corpus and model. `gr_compare()` can take two recipes
+  differing only in it and measure the difference, which is the honest way to
+  settle it. The same goes for `context_order = "edges"`, which has been in the
+  package since 0.4 on the strength of a published finding and has never been
+  measured here.
+
 ## Fixed
 
 * **An adversarial sweep of the whole package, from six angles at once.** Every

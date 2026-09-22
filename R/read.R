@@ -145,6 +145,11 @@ gr_reader_signature <- function(reader) {
 #'   Costs nothing -- the vectors are already computed. `0.7` is a reasonable
 #'   place to start; `0` selects for novelty alone and will happily pick
 #'   irrelevant chunks because they are different.
+#' @param restate Whether to repeat the question before the excerpts as well as
+#'   after them: `"auto"` when the body is long enough to bury the first ask,
+#'   `"always"`, or `"never"`. A setting rather than a rule, because whether it
+#'   helps is a question about your corpus and your model -- point [gr_compare()]
+#'   at two recipes differing only in this and find out.
 #' @param context_order Where the selected chunks sit in the prompt.
 #'   `"relevance"` (default) is most relevant first; `"document"` restores the
 #'   order they appear in the document, which reads better when chunks are
@@ -215,13 +220,14 @@ gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL
                          mmr = 1, context_order = c("relevance", "document", "edges"),
                          rerank_candidates = 20L, rerank_min_score = 4,
                          fan_in = 5L, max_levels = 5L, max_rounds = 4L,
-                         preview_tokens = 1200L,
+                         preview_tokens = 1200L, restate = c("auto", "always", "never"),
                          members = NULL, cite = FALSE,
                          skim_model = NULL, summary_model = NULL,
                          parallel = NULL, delay_between_calls = 0,
                          on_overflow = c("warn", "error"), ...) {
   on_overflow <- match.arg(on_overflow)
   context_order <- match.arg(context_order)
+  restate <- match.arg(restate)
   warn_near_miss(list(...), names(formals(gr_read_spec)), "read")
   spec <- structure(c(list(
     reader = reader,
@@ -238,6 +244,7 @@ gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL
     # missing value must not select the most destructive end of a scale.
     mmr = clamp_warn(na_default(mmr, 1, "mmr"), 0, 1, "mmr", integer = FALSE),
     context_order = context_order,
+    restate = restate,
     rerank_candidates = clamp_warn(na_default(rerank_candidates, 20L, "rerank_candidates"), 1, 1e4, "rerank_candidates"),
     rerank_min_score = clamp_warn(na_default(rerank_min_score, 4, "rerank_min_score"), 0, 10, "rerank_min_score", integer = FALSE),
     fan_in = clamp_warn(na_default(fan_in, 5L, "fan_in"), 2, 32, "fan_in"),

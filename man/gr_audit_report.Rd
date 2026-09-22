@@ -8,6 +8,7 @@ gr_audit_report(
   path,
   screening = NULL,
   extraction = NULL,
+  claims = NULL,
   synthesis = NULL,
   protocol = NULL,
   records = NULL,
@@ -19,6 +20,10 @@ gr_audit_report(
 
 \item{screening, extraction, synthesis}{The objects from \code{\link[=gr_screen]{gr_screen()}},
 \code{\link[=gr_extract]{gr_extract()}} and \code{\link[=gr_synthesise]{gr_synthesise()}}.}
+
+\item{claims}{A \code{\link[=gr_claims]{gr_claims()}} result, or \code{NULL} to take the one the synthesis
+carries. It adds the link the rest of the report cannot make: the claim a
+sentence is making, back to the studies meant to support it.}
 
 \item{protocol}{The \code{\link[=gr_protocol]{gr_protocol()}} the run was made under. Worth passing even
 when the other objects carry its pieces: the criteria as \emph{written} are what

@@ -4,7 +4,7 @@
 \alias{gr_flow}
 \title{Count what happened to every document}
 \usage{
-gr_flow(screening = NULL, extraction = NULL, records = NULL)
+gr_flow(screening = NULL, extraction = NULL, records = NULL, claims = NULL)
 }
 \arguments{
 \item{screening}{A \code{gr_screening} from \code{\link[=gr_screen]{gr_screen()}}, or \code{NULL}.}
@@ -15,6 +15,8 @@ gr_flow(screening = NULL, extraction = NULL, records = NULL)
 records identified, duplicates removed, reports sought and reports never
 retrieved. Without one the diagram starts at "sources given", which is
 already past the step that decides whether the review can be repeated.}
+
+\item{claims}{A \code{\link[=gr_claims]{gr_claims()}} result, to add the claim-level counts.}
 }
 \value{
 A data frame of \code{stage}, \code{n} and \code{note}.

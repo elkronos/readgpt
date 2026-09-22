@@ -280,7 +280,14 @@ mock_writer <- function(revision = NULL,
                                 "Findings" = "Effects varied [study 1] and [study 3].")) {
   gr_mock_client(function(messages, params) {
     sys <- messages[[1]]$content
-    if (grepl("one argument", sys, fixed = TRUE)) return(revision %||% "")
+    # All three revision prompts, not just the first: matching only "one argument"
+    # left `cut` and `register` falling through to the catch-all, so the test
+    # exercised one pass and reported three.
+    if (any(vapply(c("reorder a finished review", "cut a finished review",
+                     "polish the prose of a finished review"),
+                   function(p) grepl(p, sys, fixed = TRUE), logical(1)))) {
+      return(revision %||% "")
+    }
     if (grepl("write the", sys, fixed = TRUE)) {
       h <- sub(".*write the '([^']+)'.*", "\\1", sys)
       if (h %in% names(sec)) return(sec[[h]])
@@ -412,11 +419,12 @@ test_that("numeric style numbers the citations and the reference list together",
   expect_match(syn$references[1], "^1\\. ")
 })
 
-test_that("the coherence pass is kept when it only reorganises prose", {
+test_that("a revision pass is kept when it only reorganises prose", {
   good <- paste0("## Included studies\n\nThree studies [study 1] [study 2] [study 3].\n\n",
                  "## Findings\n\nBuilding on that, effects varied [study 1] and [study 3].")
   syn <- quiet(gr_synthesise(bib_table(), outline = bib_outline, question = "Q?",
-                             client = mock_writer(revision = good), coherence = TRUE))
+                             client = mock_writer(revision = good), coherence = "structure"))
+  expect_identical(syn$coherence$pass, "structure")
   expect_true(syn$coherence$ran)
   expect_true(syn$coherence$kept)
   expect_match(syn$text, "Building on that", fixed = TRUE)
@@ -426,7 +434,24 @@ test_that("the coherence pass is kept when it only reorganises prose", {
   expect_false(identical(syn$text, syn$draft))
 })
 
-test_that("a coherence pass that changes what is cited is discarded", {
+test_that("coherence = TRUE runs the three passes in order, each on the last survivor", {
+  good <- paste0("## Included studies\n\nThree studies [study 1] [study 2] [study 3].\n\n",
+                 "## Findings\n\nBuilding on that, effects varied [study 1] and [study 3].")
+  syn <- quiet(gr_synthesise(bib_table(), outline = bib_outline, question = "Q?",
+                             client = mock_writer(revision = good), coherence = TRUE))
+  expect_identical(syn$coherence$pass, c("structure", "cut", "register"))
+  expect_true(all(syn$coherence$ran))
+  # Named passes are a subset, in the same fixed order whatever order they are asked in.
+  two <- quiet(gr_synthesise(bib_table(), outline = bib_outline, question = "Q?",
+                             client = mock_writer(revision = good),
+                             coherence = c("register", "structure")))
+  expect_identical(two$coherence$pass, c("structure", "register"))
+  expect_error(gr_synthesise(bib_table(), outline = bib_outline, question = "Q?",
+                             client = mock_writer(), coherence = "tighten"),
+               class = "gr_unknown_method")
+})
+
+test_that("a revision pass that changes what is cited is discarded", {
   # This step may reorganise prose. It may not change what the review cites --
   # that is the one way it could quietly undo the guarantee the rest of the
   # pipeline exists to give.
@@ -435,10 +460,11 @@ test_that("a coherence pass that changes what is cited is discarded", {
   expect_warning(
     added <- suppressMessages(gr_synthesise(bib_table(), outline = bib_outline, question = "Q?",
                                             client = mock_writer(revision = paste0(base, " Also [study 9].")),
-                                            coherence = TRUE)),
+                                            coherence = "structure")),
     class = "gr_coherence_rejected")
   expect_false(added$coherence$kept)
-  expect_identical(added$coherence$added, 9L)
+  expect_identical(added$coherence$added, "9")
+  expect_true(is.na(added$coherence$lost))
   expect_identical(added$text, added$draft)
 
   dropped_rev <- paste0("## Included studies\n\nThree studies [study 1].\n\n",
@@ -446,13 +472,13 @@ test_that("a coherence pass that changes what is cited is discarded", {
   expect_warning(
     dropped <- suppressMessages(gr_synthesise(bib_table(), outline = bib_outline, question = "Q?",
                                               client = mock_writer(revision = dropped_rev),
-                                              coherence = TRUE)),
+                                              coherence = "structure")),
     class = "gr_coherence_rejected")
   expect_false(dropped$coherence$kept)
-  expect_identical(dropped$coherence$lost, 2L)
+  expect_identical(dropped$coherence$lost, "2")
 })
 
-test_that("the register reaches both the section prompt and the coherence prompt", {
+test_that("the register reaches both the section prompt and every revision prompt", {
   cl <- mock_writer(revision = paste0("## Included studies\n\nThree studies [study 1] [study 2] ",
                                       "[study 3].\n\n## Findings\n\nEffects varied [study 1] and [study 3]."))
   quiet(gr_synthesise(bib_table(), outline = bib_outline, question = "Q?", client = cl,
@@ -462,7 +488,11 @@ test_that("the register reaches both the section prompt and the coherence prompt
   # Appended, not substituted: the rules about citing and not inventing survive
   # whatever voice is asked for.
   expect_true(any(grepl("Cite the record behind every claim", sys, fixed = TRUE)))
-  expect_true(any(grepl("may not add anything", sys, fixed = TRUE)))
+  # And each pass still carries its own prohibition -- the thing that makes them
+  # three passes rather than one pass run three times.
+  expect_true(any(grepl("DO NOT reword any sentence that makes a claim", sys, fixed = TRUE)))
+  expect_true(any(grepl("keep its hedging", sys, fixed = TRUE)))
+  expect_true(any(grepl("do not strengthen any claim", sys, fixed = TRUE)))
 })
 
 

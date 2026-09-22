@@ -44,7 +44,8 @@ read_stuff <- function(chunks, question, client, spec, trace) {
                       notes = list(reason = "no chunk fits the context window")))
   }
   sub <- d[fit$idx, , drop = FALSE]
-  res <- gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite),
+  res <- gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite,
+                                    restate = spec$restate),
                  model = spec$model, max_output = spec$max_answer_tokens,
                  temperature = spec$temperature, trace = trace, label = "stuff.answer")
   ok <- usable_text(res)
@@ -70,7 +71,7 @@ read_map_reduce <- function(chunks, question, client, spec, trace) {
   res <- gr_lapply(seq_len(nrow(d)), function(i, trace) {
     if (!trace_can_call(trace)) return(list(ok = FALSE, text = "", capped = TRUE))
     r <- gr_call(client, answer_messages(question, render_chunks(d[i, , drop = FALSE]),
-                                         cite = spec$cite),
+                                         cite = spec$cite, restate = spec$restate),
                  model = spec$model, max_output = spec$max_chunk_tokens,
                  temperature = spec$temperature, trace = trace, label = "map.answer")
     if (spec$delay_between_calls > 0) Sys.sleep(spec$delay_between_calls)
@@ -130,7 +131,7 @@ read_refine <- function(chunks, question, client, spec, trace) {
       draft <- gr_truncate_tokens(draft, half); truncated <- truncated + 1L
     }
     msgs <- if (is.null(draft)) {
-      answer_messages(question, excerpt, cite = spec$cite)
+      answer_messages(question, excerpt, cite = spec$cite, restate = spec$restate)
     } else {
       list(
         list(role = "system", content = .gr_prompts$refine_system),
@@ -208,7 +209,8 @@ read_skim <- function(chunks, question, client, spec, trace) {
     dropped <- nrow(ev)
   }
   res2 <- if (trace_can_call(trace)) {
-    gr_call(client, answer_messages(question, body, cite = spec$cite, label = "Evidence"),
+    gr_call(client, answer_messages(question, body, cite = spec$cite, label = "Evidence",
+                                    restate = spec$restate),
             model = spec$model, max_output = spec$max_answer_tokens,
             temperature = spec$temperature, trace = trace, label = "skim.answer")
   } else gr_result(FALSE, error = "call cap reached before the synthesis step")
@@ -264,7 +266,8 @@ read_retrieve <- function(chunks, question, client, spec, trace) {
              list(k = k, kept = nrow(sub), embedding_source = src,
                   mmr = lambda, context_order = as_chr1(spec$context_order, "relevance"),
                   top_scores = round(utils::head(sort(scores, decreasing = TRUE), 5), 4)))
-  res <- gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite),
+  res <- gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite,
+                                    restate = spec$restate),
                  model = spec$model, max_output = spec$max_answer_tokens,
                  temperature = spec$temperature, trace = trace, label = "retrieve.answer")
   new_answer(if (res$ok) res$text else .NOT_FOUND, "retrieve", question, sub$chunk_id, trace,
@@ -357,7 +360,8 @@ read_rerank <- function(chunks, question, client, spec, trace) {
                                           context_order = as_chr1(spec$context_order, "relevance"),
                                           scores = round(utils::head(keep_sc, 10), 2)))
   res <- if (trace_can_call(trace)) {
-    gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite),
+    gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite,
+                                    restate = spec$restate),
             model = spec$model, max_output = spec$max_answer_tokens,
             temperature = spec$temperature, trace = trace, label = "rerank.answer")
   } else gr_result(FALSE, error = "call cap reached before the answer step")
@@ -434,7 +438,8 @@ read_hierarchical <- function(chunks, question, client, spec, trace) {
     # [chunk N] ids -- asking for citations here asks the model to invent ids
     # that are not in front of it, which is how a citing reader starts citing
     # chunks it never saw.
-    gr_call(client, answer_messages(question, body, cite = FALSE, label = "Summaries"),
+    gr_call(client, answer_messages(question, body, cite = FALSE, label = "Summaries",
+                                    restate = spec$restate),
             model = spec$model, max_output = spec$max_answer_tokens,
             temperature = spec$temperature, trace = trace, label = "hier.answer")
   } else gr_result(FALSE, error = "call cap reached before the answer step")
@@ -450,12 +455,44 @@ read_hierarchical <- function(chunks, question, client, spec, trace) {
 # and the loop stops when it says it can answer or the budget runs out. The only
 # strategy where the retrieval query is not the user's question.
 # ---------------------------------------------------------------------------
+#' The gathered chunks that fit one prompt, whole.
+#'
+#' `iterative` used to paste everything gathered and call `gr_truncate_tokens()`
+#' on the result, which was wrong twice over. It cut the TAIL, so the chunks from
+#' the most recent round were the ones dropped -- in a reader whose whole premise
+#' is "that did not answer it, go and get more", it discarded the material it had
+#' just decided it needed. And it cut mid-chunk, which breaks the audit chain: a
+#' chunk cut in half no longer contains the sentence an answer quotes from it, so
+#' `verified` comes back false for a reason that has nothing to do with the
+#' document.
+#'
+#' Whole chunks, ranked by the score that justified taking them -- a chunk's
+#' score at the round it was selected, not its score against the latest query,
+#' because the earlier query is what it was chosen to answer. Everything that
+#' reaches the prompt is intact and therefore still checkable, and what did not
+#' fit is reported instead of being counted as read.
+#' @noRd
+iterative_fit <- function(d, seen, score, budget, how = "relevance") {
+  sub <- d[seen, , drop = FALSE]
+  fit <- fit_chunks(sub, budget, order = order(-score))
+  keep <- fit$idx
+  keep <- switch(as_chr1(how, "relevance"),
+                 # Positional within `sub`, which is accumulation order, so
+                 # document order has to come from the chunk ids themselves.
+                 document = keep[order(sub$chunk_id[keep])],
+                 edges = arrange_context(keep, "edges"),
+                 keep)
+  list(rows = seen[keep], dropped = seen[fit$dropped],
+       body = if (length(keep)) render_chunks(sub[keep, , drop = FALSE]) else "")
+}
+
 #' @noRd
 read_iterative <- function(chunks, question, client, spec, trace) {
   d <- chunks$chunks
   emb <- gr_embed(client, d$text, trace = trace)
   degraded_embed <- isTRUE(attr(emb, "embedding_fallback"))
-  seen <- integer(0); gathered <- character(0); queries <- as_chr1(question)
+  seen <- integer(0); seen_score <- numeric(0); queries <- as_chr1(question)
+  dropped <- integer(0)
   rounds <- 0L; done_reason <- "max rounds"
 
   schema <- list(type = "object", additionalProperties = FALSE,
@@ -477,13 +514,14 @@ read_iterative <- function(chunks, question, client, spec, trace) {
                        as.integer(clamp(spec$top_k, 1, nrow(d))), as_num1(spec$mmr, 1))
     if (!length(take)) { done_reason <- "no unseen chunks"; break }
     seen <- c(seen, take)
-    gathered <- c(gathered, render_chunks(d[take, , drop = FALSE]))
+    seen_score <- c(seen_score, sc[take])
 
     if (!trace_can_call(trace)) { done_reason <- "call cap"; break }
-    body <- paste(gathered, collapse = "\n\n")
     obud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens,
                       overhead = prompt_overhead(question, .gr_prompts$answer_system))
-    if (gr_count_tokens(body) > obud$input) body <- gr_truncate_tokens(body, obud$input)
+    step <- iterative_fit(d, seen, seen_score, obud$input, spec$context_order)
+    body <- step$body
+    dropped <- step$dropped
 
     out <- gr_call_json(client, list(
       list(role = "system", content = paste0(
@@ -493,7 +531,11 @@ read_iterative <- function(chunks, question, client, spec, trace) {
         "specific missing information to search for -- a phrase you would expect to appear in ",
         "the document, not a restatement of the question.")),
       list(role = "user", content = paste0("Question: ", question)),
-      list(role = "user", content = paste0("<excerpts>\n", body, "\n</excerpts>"))
+      # The question again after the excerpts when there are enough of them to
+      # bury it. Every other reader asks last, through answer_messages(); this
+      # one asked first and then handed over several thousand tokens.
+      list(role = "user", content = paste0("<excerpts>\n", body, "\n</excerpts>",
+                                           restate_tail(body, question, spec$restate)))
     ), schema = schema, schema_name = "iterative_step", model = spec$model,
        max_output = spec$max_answer_tokens, temperature = spec$temperature,
        trace = trace, label = "iterative.step")
@@ -510,13 +552,18 @@ read_iterative <- function(chunks, question, client, spec, trace) {
     }
     if (isTRUE(out$value$can_answer)) {
       trace_note(trace, "iterative.stop", list(rounds = rounds, reason = "model satisfied"))
+      # `step$rows`, not `seen`: a chunk that did not fit the prompt was never
+      # shown to the model, and reporting it as used -- with a row in the
+      # evidence table -- claims provenance the answer does not have.
+      keep <- step$rows
       return(new_answer(as_chr1(out$value$answer, .NOT_FOUND), "iterative", question,
-                        d$chunk_id[seen], trace,
-                        evidence = evidence_table(d$chunk_id[seen], d$text[seen],
-                                                  d$page[seen], d$section[seen],
+                        d$chunk_id[keep], trace,
+                        evidence = evidence_table(d$chunk_id[keep], d$text[keep],
+                                                  d$page[keep], d$section[keep],
                                                   kind = "verbatim"),
-                        partial = degraded_embed,
+                        partial = degraded_embed || length(dropped) > 0L,
                         notes = list(rounds = rounds, chunks_seen = length(seen),
+                                     chunks_dropped = length(dropped),
                                      queries = queries, stop_reason = "model satisfied",
                                      embedding_fallback = degraded_embed)))
     }
@@ -532,9 +579,19 @@ read_iterative <- function(chunks, question, client, spec, trace) {
     return(new_answer(.NOT_FOUND, "iterative", question, integer(0), trace, partial = TRUE,
                       notes = list(rounds = rounds, stop_reason = done_reason)))
   }
-  sub <- d[seen, , drop = FALSE]
-  res <- if (trace_can_call(trace)) {
-    gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite),
+  # Fitted, which it never was: every other reader sizes its final prompt to the
+  # budget and this one rendered everything gathered. Several rounds of top_k
+  # chunks routinely exceed the window, and the call was simply rejected by the
+  # provider after the whole loop had been paid for.
+  fbud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens,
+                    overhead = prompt_overhead(question, .gr_prompts$answer_system))
+  final <- iterative_fit(d, seen, seen_score, fbud$input, spec$context_order)
+  sub <- d[final$rows, , drop = FALSE]
+  res <- if (!nrow(sub)) {
+    gr_result(FALSE, error = "no gathered chunk fits the context window")
+  } else if (trace_can_call(trace)) {
+    gr_call(client, answer_messages(question, final$body, cite = spec$cite,
+                                    restate = spec$restate),
             model = spec$model, max_output = spec$max_answer_tokens,
             temperature = spec$temperature, trace = trace, label = "iterative.final")
   } else gr_result(FALSE, error = "call cap reached before the answer step")
@@ -542,7 +599,8 @@ read_iterative <- function(chunks, question, client, spec, trace) {
              evidence = evidence_table(sub$chunk_id, sub$text, sub$page, sub$section,
                                        kind = "verbatim"),
              partial = TRUE,
-             notes = list(rounds = rounds, chunks_seen = length(seen), queries = queries,
+             notes = list(rounds = rounds, chunks_seen = length(seen),
+                          chunks_dropped = length(final$dropped), queries = queries,
                           stop_reason = done_reason, embedding_fallback = degraded_embed))
 }
 
@@ -922,7 +980,7 @@ read_preview <- function(chunks, question, client, spec, trace) {
   }
 
   res2 <- if (trace_can_call(trace)) {
-    gr_call(client, answer_messages(question, body, cite = spec$cite),
+    gr_call(client, answer_messages(question, body, cite = spec$cite, restate = spec$restate),
             model = spec$model, max_output = spec$max_answer_tokens,
             temperature = spec$temperature, trace = trace, label = "preview.answer")
   } else gr_result(FALSE, error = "call cap reached before the answer step")

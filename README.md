@@ -1307,7 +1307,6 @@ gr_models()              # context windows and prices, as this package knows the
 gr_model_limits("gpt-4o")
 
 gr_tokenizer()           # which counter is in use
-gr_set_tokenizer("tiktoken")   # exact counts, with reticulate; "heuristic" is the default
 
 cache <- gr_cache(file.path(tempdir(), "readgpt-cache"))
 gr_cache_stats(cache)    # entries, bytes, hits, misses, writes
@@ -1318,6 +1317,11 @@ gr_reader_signature("skim")    # select|calls|state -- how a reader traverses a 
 `gr_models()` is worth a look before a long run: an unregistered model falls back
 to a conservative 128k window with no price, so budgets and cost estimates go
 quiet rather than wrong. `gr_register_model()` fixes that in one line.
+
+`gr_set_tokenizer("tiktoken")` switches to exact counts where the reticulate
+package and Python's `tiktoken` are installed; the default, `"heuristic"`, needs
+neither. Without them it stops rather than falling back, because a silent
+fallback would change every budget calculation.
 
 `gr_reader_signature()` is the answer to "are these strategies actually
 different?" — it reports how each one selects chunks, how many calls it makes and

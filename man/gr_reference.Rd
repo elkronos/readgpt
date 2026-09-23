@@ -44,8 +44,8 @@ claim with a number attached.
 \section{Which rows to sample}{
 
 \code{of = "excluded"} is usually the right answer and is not the obvious one.
-Sensitivity failures hide among the exclusions — a study the screener threw
-away is gone, and nothing downstream will ever mention it — while the records
+Sensitivity failures hide among the exclusions: a study the screener threw
+away is gone, and nothing downstream will ever mention it, while the records
 it kept are going to be read by a person anyway. Sampling everything at a
 realistic inclusion rate spends most of the sample confirming exclusions that
 were never in doubt, and leaves two or three positives to estimate

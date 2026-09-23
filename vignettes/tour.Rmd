@@ -11,18 +11,18 @@ vignette: >
 knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
 ```
 
-This is the whole package at a glance, for readers who already know the ideas.
-If you are new to language models, start with `vignette("readgpt")`, which
-explains them; `vignette("ingest")` and `vignette("readers")` go into two of the
+This is a short tour of the whole package, for readers who already know the
+ideas. If you are new to language models, start with `vignette("readgpt")`, which
+explains them; `vignette("ingest")` and `vignette("readers")` cover two of the
 decisions below in depth.
 
 Asking a language model a question about a document involves three decisions,
 and they are usually made for you, invisibly, all at once. This package makes
 them separate:
 
-- **ingest** — get text out of the file, and decide what to throw away
-- **segment** — cut that text into pieces small enough to send
-- **read** — decide how the model works through those pieces to an answer
+- **ingest**: get text out of the file, and decide what to throw away
+- **segment**: cut that text into pieces small enough to send
+- **read**: decide how the model works through those pieces to an answer
 
 Each is a registry you can list, swap and extend. Any ingest × any segmenter ×
 any reader composes.
@@ -33,9 +33,8 @@ library(readgpt)
 
 ## Running this vignette without an API key
 
-Everything below runs offline. Two settings make that work, and they are worth
-understanding because they are also how you develop against this package without
-spending anything.
+Everything below runs offline. Two settings make that work, and they are also
+how you develop against this package without spending anything.
 
 ```{r}
 cl <- gr_mock_client(function(messages, params) "Revenue was 45.2 million dollars.")
@@ -49,7 +48,7 @@ pay for it.
 
 `embedder = "lexical"` selects hashed bag-of-words vectors instead of an
 embeddings endpoint. They measure word overlap rather than meaning, so they are
-a poor substitute in production — but they are free, offline, and *deterministic*,
+a poor substitute in production, but they are free, offline, and *deterministic*,
 which is what makes this document reproducible. `gr_embedders()` lists what is
 registered.
 
@@ -87,8 +86,8 @@ the first thing to look at is never `$answer`:
 ans$partial
 ```
 
-`partial` is `TRUE` whenever anything degraded — a call failed, chunks were
-dropped for space, a budget stopped the run early, an embedding fell back to
+`partial` is `TRUE` whenever anything degraded: a call failed, chunks were
+dropped for space, a budget stopped the run early, or an embedding fell back to
 lexical vectors. **Check it before trusting the answer.** When it is `TRUE`,
 `$notes` says what happened.
 
@@ -104,7 +103,7 @@ model-extracted passages for `skim`; per-chunk model answers for `map_reduce`.
 ans$evidence[, c("chunk_id", "page", "section")]
 ```
 
-And `$trace` records every prompt, response and token count from that one run —
+And `$trace` records every prompt, response and token count from that one run,
 not from a second run made to explain the first.
 
 ```{r}
@@ -116,7 +115,7 @@ gr_trace_summary(ans$trace)[, c("calls", "cached", "tokens_in", "tokens_out")]
 For most readers `$evidence` is verbatim chunk text and is true by construction:
 the package put it there. For `skim` it is not. `skim` asks the model to extract
 the passages that bear on the question, and what comes back is whatever the model
-chose to write — presented as a quotation, with nothing checking that it was one.
+chose to write, presented as a quotation, with nothing checking that it was one.
 
 That is the worst gap to leave. A fabricated citation is more convincing than a
 fabricated answer, because it looks like the thing that would let you check.
@@ -136,7 +135,7 @@ gr_verify_evidence(faithful)[, c("kind", "verified", "match")]
 ```
 
 Now a model that invents one. The span is fluent, on topic, attributed to a real
-chunk, and not in the document — the case you cannot catch by eye:
+chunk, and not in the document. You cannot catch this case by eye:
 
 ```{r}
 invented <- gr_read(ch, "What was revenue?",
@@ -152,8 +151,8 @@ Whitespace, curly quotes, dashes, case and the punctuation a model wraps a quote
 in are all folded away, because none of that is fabrication and flagging it would
 make `partial` stop meaning anything. A changed number is not folded away. Below
 an exact match, `match` is the fraction of the span carried by its longest
-consecutive run in the source — a run rather than word overlap, because overlap
-cannot tell a quotation from a paraphrase built from the same words.
+consecutive run in the source. It uses a run rather than word overlap, because
+overlap cannot tell a quotation from a paraphrase built from the same words.
 
 Citations get the same treatment, for every reader. An answer citing a chunk that
 was never sent to it sets `notes$cited_unknown` and is `partial`.
@@ -183,9 +182,9 @@ do.call(rbind, lapply(c(0, 40), function(ov)
                                       overlap_tokens = ov)))))
 ```
 
-## Axis 3: the readers are genuinely different
+## Axis 3: each reader works differently
 
-Twelve strategies, each declaring a *traversal signature* — how it selects chunks,
+Twelve strategies, each declaring a *traversal signature*: how it selects chunks,
 how many calls it makes, and what state it carries between them:
 
 ```{r}
@@ -239,7 +238,7 @@ rbind("mmr = 1 (top-k)" = picked(1), "mmr = 0.3" = picked(0.3))
 ```
 
 `mmr` below 1 trades relevance against redundancy, so the second and third slots
-go to chunks that add something. It costs nothing — the vectors are already
+go to chunks that add something. It costs nothing, since the vectors are already
 computed.
 
 `context_order` is a separate decision about *placement*: transformers attend
@@ -262,7 +261,7 @@ You can also ask what a run would cost before making it:
 gr_estimate_cost("gpt-4o", input_tokens = 120000, output_tokens = 4000)
 ```
 
-And what one did cost afterwards — counting only the calls actually issued,
+And what one did cost afterwards, counting only the calls issued,
 which is not the same as the tokens it moved:
 
 ```{r}
@@ -291,13 +290,13 @@ second <- answer_document(readgpt_example(), "What was revenue?", "fast",
 gr_trace_summary(second$trace)[, c("calls", "cached")]
 ```
 
-`calls - cached` is what a run actually paid for. Failures are never cached: a
+`calls - cached` is what a run paid for. Failures are never cached: a
 rate limit is a property of the moment, and storing one would make a blip
 permanent.
 
 A **replay** goes further. A trace already holds every prompt and every response,
-so with the document it is enough to reproduce the run exactly — no key, no
-network, no spend:
+so with the document it is enough to reproduce the run exactly, with no key, no
+network and no spend:
 
 ```{r}
 f <- file.path(tempdir(), "run.json")
@@ -315,7 +314,7 @@ worse than no replay at all.
 
 Embeddings are not model calls and are not in the trace, so a replay reproduces
 chunk *ranking* only when the recording used a deterministic embedder and the
-replay uses the same one — which is why this vignette set `embedder = "lexical"`
+replay uses the same one. That is why this vignette set `embedder = "lexical"`
 at the top.
 
 ## Many documents
@@ -336,8 +335,8 @@ out$summary[, c("document", "not_found", "chunks_used", "calls", "status")]
 ```
 
 One unreadable file is one `"failed"` row, not a dead run. Each document gets its
-own budget, so one enormous file cannot starve the rest — which means the run
-itself needs its own ceiling, and there are two: `max_total_calls`, checked
+own budget, so one enormous file cannot starve the rest. The run itself
+therefore needs its own ceiling, and there are two: `max_total_calls`, checked
 before each document, and `max_total_usd`, checked after one. `store =` makes the
 run resumable.
 
@@ -357,7 +356,7 @@ compose in one direction:
 
 A protocol is what you fix before reading anything: which documents count, what
 to collect from the ones that do, and what the write-up has to cover. Fixing it
-first is the point — a criterion invented while reading is a criterion fitted to
+first is the point: a criterion invented while reading is a criterion fitted to
 what was found.
 
 ```{r}
@@ -381,7 +380,7 @@ protocol
 it can be shared and cited alongside the results.
 
 Screening is one call per document. Every document gets a decision and a reason,
-and nothing is dropped on the way — a file that could not be read has no
+and nothing is dropped on the way. A file that could not be read has no
 decision rather than a silent exclusion, and `"unclear"` is an answer rather
 than a forced guess.
 
@@ -421,9 +420,9 @@ table$table[, c("document", "region", "revenue", "year", "n_unverified")]
 ```
 
 `n_unverified` is the column to look at before believing a row: zero means every
-value in it can be pointed at in the document. `table$evidence` is the long form
-— one row per supported cell, with the quote, the page it is on, and whether the
-quote really appears there.
+value in it can be pointed at in the document. `table$evidence` is the long
+form: one row per supported cell, with the quote, the page it is on, and whether
+the quote appears there.
 
 ```{r}
 table$evidence[, c("document_id", "field", "quote", "verified")]
@@ -445,7 +444,7 @@ cat(review$text)
 ### Writing from claims instead of from rows
 
 That write-up was drafted from the table, one section at a time, and the prose
-shows it — the model walks the rows. The structure shows it too: the outline was
+shows it: the model walks the rows. The structure shows it too: the outline was
 fixed before anything was read, so the shape of the review is a hypothesis rather
 than a finding.
 
@@ -477,11 +476,11 @@ cm$claims[, c("claim", "moderator", "n_support", "n_contradict")]
 Every study number in that table was checked against the extraction before it got
 there. A number that is not in the table is dropped, a claim left with no
 supporting study is dropped entirely, and a `moderator` naming a column that does
-not exist is cleared — `cm$dropped` says what went and why, so a thin claims table
-can be told apart from a thin literature.
+not exist is cleared. `cm$dropped` says what went and why, so a thin claims
+table can be told apart from a thin literature.
 
 `gr_outline()` then derives the sections from the claims, and `gr_gaps()` computes
-what the corpus does not contain — with no model call, so the gap list is
+what the corpus does not contain. It makes no model call, so the gap list is
 something you can check by counting:
 
 ```{r}
@@ -511,8 +510,8 @@ gr_audit_report("audit.html", screening = screened, extraction = table,
 
 Every `[study n]` is parsed back out and checked against the rows that exist;
 one pointing at a row that is not there is reported and marks the section
-partial. That completes the chain — a sentence cites a study, the study's row
-cites a quote, the quote was checked against the page it is attributed to. None
+partial. That completes the chain: a sentence cites a study, the study's row
+cites a quote, and the quote was checked against the page it is attributed to. None
 of it proves the sentence is true. It makes every step of the way back to the
 document short enough to walk.
 
@@ -535,8 +534,8 @@ Behind a company gateway, `base_url` is usually not enough on its own. It is
 when the gateway speaks the OpenAI shape and takes `Authorization: Bearer`; most
 do not. Azure OpenAI authenticates with `api-key`, API Management adds a
 subscription key, and many require a cost-centre or correlation id. `headers`
-covers those, and naming any header makes the API key optional -- so a gateway
-with its own scheme needs no `OPENAI_API_KEY` set at all:
+covers those. Naming any header makes the API key optional, so a gateway with
+its own scheme needs no `OPENAI_API_KEY` set at all:
 
 ```{r eval = FALSE}
 cl <- gr_client(
@@ -555,14 +554,14 @@ the cache key, like the API key: a rotating token or a per-request correlation
 id would otherwise make every lookup a miss.
 
 Without a key nothing raises. Every call fails, the answer is the
-`"NOT_IN_DOCUMENT"` sentinel and `ans$partial` is `TRUE` — which is why checking
-`partial` is the habit worth forming.
+`"NOT_IN_DOCUMENT"` sentinel and `ans$partial` is `TRUE`, so check `partial`
+every time.
 
 ## Extending it
 
-Every axis is a registry, and an addition behaves exactly like a built-in — same
-token caps, same provenance, same reporting, and it can be named in a recipe or
-put in an `ensemble`.
+Every axis is a registry, and an addition behaves exactly like a built-in. It
+gets the same token caps, provenance and reporting, and it can be named in a
+recipe or put in an `ensemble`.
 
 ```{r}
 gr_register_segmenter("by_bullet", description = "one chunk per bullet",

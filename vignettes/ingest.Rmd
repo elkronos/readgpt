@@ -13,11 +13,10 @@ has_pdftools <- requireNamespace("pdftools", quietly = TRUE)
 ```
 
 Before a model can read a document, the text has to come out of the file. That
-step — *ingestion* — is easy to overlook and hard to undo: text that is lost here,
-or mangled by an over-eager clean-up, is text no model will ever see, however
-good the rest of the pipeline is. This guide covers what readgpt can read, what
-it keeps, what it removes, and how to check a folder before spending anything on
-it.
+step, *ingestion*, is easy to overlook and hard to undo. Text lost here, or
+damaged by too much clean-up, is text no model will see, however good the rest
+of the pipeline is. This guide covers what readgpt can read, what it keeps, what
+it removes, and how to check a folder before spending anything on it.
 
 New to readgpt? `vignette("readgpt")` introduces the package and the ideas used
 here.
@@ -38,7 +37,7 @@ doc <- gr_ingest(readgpt_example())
 doc
 ```
 
-Each block remembers where it came from — the page, for formats that have pages,
+Each block records where it came from: the page, for formats that have pages,
 and the section heading it sits under:
 
 ```{r}
@@ -55,8 +54,8 @@ This *provenance* is what lets an answer point back to where it came from:
 unlist(doc$stats[c("blocks", "chars", "tokens", "chars_removed")])
 ```
 
-You rarely need to call `gr_ingest()` yourself — `answer_document()` does it for
-you — but calling it directly is the way to see what the model will get.
+You rarely need to call `gr_ingest()` yourself, since `answer_document()` does it
+for you. Calling it directly shows you what the model will get.
 
 ## What readgpt can read
 
@@ -70,14 +69,14 @@ gr_extractors()[, c("name", "extensions")]
 |---|---|---|
 | `txt` | paragraphs, split at blank lines | nothing |
 | `md` | paragraphs, plus headings as sections and code blocks and tables marked as such | nothing |
-| `html` | text inside `<h1>`–`<h4>`, `<p>`, `<li>`, `<td>`, `<pre>` and `<blockquote>`; text anywhere else (a bare `<div>`, `<h5>`, `<th>`) is dropped, as are scripts, styles, navigation bars and footers | `xml2` |
+| `html` | text inside `<h1>` to `<h4>`, `<p>`, `<li>`, `<td>`, `<pre>` and `<blockquote>`; text anywhere else (a bare `<div>`, `<h5>`, `<th>`) is dropped, as are scripts, styles, navigation bars and footers | `xml2` |
 | `docx` | paragraphs, with Word's heading styles as sections; images inside the file are read by OCR when `tesseract` is installed | `xml2` |
 | `pdf` | the text of each page, with its page number; pages with no text are read by OCR | `pdftools` (and `tesseract` and `magick` for OCR) |
 | `image` | the text in a picture, by OCR | `tesseract` |
 
-A file whose extension no extractor claims — an old `.doc`, a spreadsheet — is
-not read. `gr_inventory()`, below, finds those before a run rather than during
-one.
+A file whose extension no extractor claims, such as an old `.doc` or a
+spreadsheet, is not read. `gr_inventory()`, below, finds those before a run
+rather than during one.
 
 You can also pass text directly. A string that is not the path of an existing
 file is read as the document itself:
@@ -147,7 +146,7 @@ headers and tables can come out in an order that reads oddly; check a few pages 
 
 A scanned PDF is a picture of text, with no text inside it to extract. Reading it
 needs *optical character recognition* (OCR), which turns the picture back into
-text. OCR is slow — seconds per page — and never perfect, so readgpt uses it only
+text. OCR is slow (seconds per page) and never perfect, so readgpt uses it only
 where it is needed:
 
 ```{r eval = FALSE}
@@ -174,8 +173,8 @@ too little text left is refused outright, as the next section shows. The
 
 Extracted text is rarely clean. PDFs break words across lines with hyphens, repeat
 the page number on every page, and use typographic ligatures ("ﬁ" for "fi").
-readgpt tidies this with a series of *cleaners*, each doing one job, each of which
-you can turn on or off:
+readgpt tidies this with *cleaners*. Each does one job and can be turned on or
+off:
 
 ```{r}
 gr_cleaners()[, c("name", "stage", "default_on")]
@@ -191,12 +190,12 @@ default, and why:
 - `urls` and `emails` remove links and addresses, which are sometimes the answer.
 - `references` cuts everything from a line reading just "References",
   "Bibliography" or "Works cited" to the end of the document, when that line
-  is in the last 40% of the text — which loses the reference list if your
+  is in the last 40% of the text. That loses the reference list if your
   question is about the sources. A Markdown heading such as `## References`
   is not such a line, so it does not trigger the cut.
 
-Cleaning cannot be undone later — whatever it removes, no reader can recover — so
-it is worth knowing what each choice costs.
+Cleaning cannot be undone later: no reader can recover what it removes. Know
+what each choice costs before you make it.
 
 ### Presets
 
@@ -209,7 +208,7 @@ Instead of naming cleaners one by one, use a *preset*:
 | `"standard"` | the default: page numbers, broken hyphens, control characters, ligatures, whitespace |
 | `"academic"` | standard, plus `captions` and `references` |
 | `"scan"` | standard, plus repeated page headers and footers |
-| `"legacy"` | what the first version of this package did, number stripping included — for comparison only |
+| `"legacy"` | what the first version of this package did, number stripping included; for comparison only |
 
 Here is how much text each leaves of the example report:
 
@@ -235,8 +234,9 @@ Every document records what each cleaner took out, in characters:
 vapply(doc$stats$clean_log, function(step) step$chars_removed, integer(1))
 ```
 
-A negative number means a cleaner added characters — expanding "ﬁ" to "fi", say.
-If a cleaner removed far more than you expected, turn it off and compare.
+A negative number means a cleaner added characters, for example by expanding
+"ﬁ" to "fi". If a cleaner removed far more than you expected, turn it off and
+compare.
 
 `gr_clean()` runs cleaners on any text, so you can try a configuration on a few of
 your own lines first. Cleaners always run in two stages, `early` before `late`,
@@ -253,10 +253,10 @@ The second line shows why `remove_numbers` is off by default.
 
 ## When too little text is left
 
-A document with almost no text after cleaning — a scan read without OCR, an empty
-file, a PDF of images — is refused rather than sent to the model, because a model
-shown nothing would answer "not in the document" for a document that may well
-contain the answer:
+A document with almost no text after cleaning (a scan read without OCR, an empty
+file, a PDF of images) is refused rather than sent to the model. A model shown
+nothing would answer "not in the document" for a document that may well contain
+the answer:
 
 ```{r error = TRUE}
 gr_ingest("Tiny.")
@@ -313,7 +313,7 @@ The statuses:
 
 `inv$totals` adds up the tokens and prices one request per readable file with
 your model: its tokens in, and an assumed 500-token answer out. Treat
-`cost_floor_usd` as a rough guide rather than a bound — reading strategies that
+`cost_floor_usd` as a rough guide rather than a bound. Reading strategies that
 make several requests per document cost more, and short answers cost less.
 Files whose size is unknown until they are read by OCR are not in the total;
 `tokens_unknown` counts them.

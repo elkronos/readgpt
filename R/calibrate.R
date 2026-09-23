@@ -40,8 +40,8 @@
 #'
 #' @section Which rows to sample:
 #' `of = "excluded"` is usually the right answer and is not the obvious one.
-#' Sensitivity failures hide among the exclusions — a study the screener threw
-#' away is gone, and nothing downstream will ever mention it — while the records
+#' Sensitivity failures hide among the exclusions: a study the screener threw
+#' away is gone, and nothing downstream will ever mention it, while the records
 #' it kept are going to be read by a person anyway. Sampling everything at a
 #' realistic inclusion rate spends most of the sample confirming exclusions that
 #' were never in doubt, and leaves two or three positives to estimate
@@ -159,12 +159,12 @@ as_screening_table <- function(screening) {
 #' Compares [gr_screen()]'s decisions with a person's on the same documents, and
 #' reports what that sample supports: how much of the eligible literature the
 #' screener kept, how much of the irrelevant literature it removed, and how much
-#' reading it saved — each with an interval, and each refused when the sample is
-#' too small to say.
+#' reading it saved. Each comes with an interval, and each is refused when the
+#' sample is too small to say.
 #'
 #' @section Two sensitivities, and the gap between them:
 #' `"unclear"` is a deferral, not a miss. A record the screener could not settle
-#' goes to a person, so it is not lost — and counting it as a failure would
+#' goes to a person, so it is not lost, and counting it as a failure would
 #' punish the screener for the one behaviour that makes it safe.
 #'
 #' So two figures are reported. **Sensitivity as deployed** asks what fraction of
@@ -201,7 +201,7 @@ as_screening_table <- function(screening) {
 #'   \describe{
 #'     \item{`counts`}{The confusion matrix, as kept/excluded by eligible/not.}
 #'     \item{`metrics`}{One row per statistic: `estimate`, `lower`, `upper`, `n`.}
-#'     \item{`missed`}{The eligible studies the screener excluded — the rows
+#'     \item{`missed`}{The eligible studies the screener excluded: the rows
 #'       themselves, because a list of the misses says more than a rate.}
 #'     \item{`disagreements`}{Every row where the two differ, in either
 #'       direction.}

@@ -28,7 +28,8 @@ names from \code{gr_cleaners()}.}
 \item{ocr_dpi}{Render density for PDF OCR.}
 
 \item{ocr_min_chars}{A page with fewer characters than this is treated as
-needing OCR under \code{ocr = "auto"}.}
+needing OCR under \code{ocr = "auto"}. Zero or more; \code{Inf} marks every page.
+Anything else warns and uses 40.}
 
 \item{min_chars}{Refuse the document if less than this much text survives.}
 

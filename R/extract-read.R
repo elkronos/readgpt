@@ -142,11 +142,14 @@ reconcile_fields <- function(got, fields, d, client, spec, trace) {
     if (!length(hits)) next
 
     vals <- lapply(hits, function(h) h$value)
-    distinct <- !duplicated(vapply(vals, function(v) as_chr1(format(v)), character(1)))
+    # value_key(), not format(). format() keeps seven significant digits, so
+    # 0.123456789 and 0.123456781 -- or two counts above 2^31 -- were the same
+    # value and a real conflict between two parts of one paper was not reported.
+    distinct <- !duplicated(vapply(vals, value_key, character(1)))
     chosen <- hits[[1]]
 
     if (sum(distinct) > 1L) {
-      alt <- vapply(vals[distinct], function(v) as_chr1(format(v)), character(1))
+      alt <- vapply(vals[distinct], value_key, character(1))
       conflicts[[nm]] <- alt
       if (identical(resolve, "model") && trace_can_call(trace)) {
         pick <- resolve_conflict(nm, fields[[nm]], hits[distinct], client, spec, trace)
@@ -167,10 +170,26 @@ reconcile_fields <- function(got, fields, d, client, spec, trace) {
        evidence_quote = ev_quote, evidence_field = ev_field)
 }
 
+#' A value as a string that distinguishes every distinct value.
+#'
+#' Full precision for numbers, because the point is to tell two values apart:
+#' `format()` rounds to seven significant digits and made different values
+#' identical. `%.15g` keeps every digit a value written in a paper can have, so
+#' two such values differ here exactly when they differ on the page; it also
+#' prints a whole number without a decimal point or an exponent.
+#' @noRd
+value_key <- function(v) {
+  if (is.numeric(v)) return(sprintf("%.15g", v[1]))
+  as_chr1(v, "")
+}
+
 #' @noRd
 resolve_conflict <- function(nm, field, hits, client, spec, trace) {
+  # value_key(), for the reason reconcile_fields() uses it: format() showed
+  # 3000000001 and 3000000002 both as "3e+09", and the model was asked to choose
+  # between two options it could not tell apart.
   opts <- vapply(seq_along(hits), function(i)
-    sprintf("%d. %s   (from chunk %s: \"%s\")", i, as_chr1(format(hits[[i]]$value)),
+    sprintf("%d. %s   (from chunk %s: \"%s\")", i, value_key(hits[[i]]$value),
             hits[[i]]$chunk, substr(hits[[i]]$quote, 1, 200)),
     character(1))
   out <- gr_call_json(client, list(
@@ -187,6 +206,7 @@ resolve_conflict <- function(nm, field, hits, client, spec, trace) {
      schema_name = "conflict", model = spec$model, max_output = 100L,
      temperature = spec$temperature, trace = trace, label = "extract.resolve")
   if (!isTRUE(out$ok)) return(NULL)
-  i <- as_int1(out$value$choice, 0L)
+  # json_field(): `$` let a reply keyed `choices` answer a read of `choice`.
+  i <- as_int1(json_field(out$value, "choice"), 0L)
   if (i >= 1L && i <= length(hits)) hits[[i]] else NULL
 }

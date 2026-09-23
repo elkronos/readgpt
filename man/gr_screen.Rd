@@ -16,8 +16,10 @@ gr_screen(
   screen_tokens = NULL,
   on_error = c("continue", "stop"),
   max_total_usd = NULL,
+  max_total_calls = NULL,
   keep_answers = FALSE,
   recursive = FALSE,
+  trace = NULL,
   ...
 )
 }
@@ -41,6 +43,10 @@ deliberately: cheaper, and closer to what a human screener sees at this
 stage. Either way the \code{truncated} and \code{seen_tokens} columns say what was
 actually read.}
 
+\item{max_total_calls, trace}{As \code{\link[=gr_read_many]{gr_read_many()}}. Pass the same \code{trace} to
+\code{\link[=gr_extract]{gr_extract()}} and \code{\link[=gr_synthesise]{gr_synthesise()}} and it accumulates the whole review,
+while each stage keeps its own for its own cost and its own ceiling.}
+
 \item{...}{Recipe overrides, as in \code{\link[=gr_extract]{gr_extract()}}.}
 }
 \value{
@@ -50,9 +56,12 @@ An object of class \code{gr_screening}:
 \code{decision}, \code{reason}, \code{criterion}, \code{quote}, \code{verified}, \code{seen_tokens},
 \code{document_tokens}, \code{truncated}, \code{status}, \code{duplicate_of}, \code{error}.}
 \item{\code{included}}{The distinct sources whose decision was \code{"include"} --
-the paths, not the display labels, so this is the argument to hand
-straight to \code{\link[=gr_extract]{gr_extract()}}. Duplicates are left out; they are the same
-study, and \code{table} still has their rows.}
+the paths, not the display labels. Duplicates are left out; they are
+the same study, and \code{table} still has their rows. \code{gr_extract()} takes
+this, but prefer handing it the whole screening object: a character
+vector of paths cannot carry the search, so \code{gr_extract(screened)}
+keeps it and \code{gr_extract(screened$included)} does not.}
+\item{\code{records}}{The \code{\link[=gr_records]{gr_records()}} the run was made over, or \code{NULL}.}
 \item{\code{summary},\code{answers},\code{trace},\code{store}}{As \code{\link[=gr_extract]{gr_extract()}}.}
 }
 }

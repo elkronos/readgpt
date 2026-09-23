@@ -111,8 +111,10 @@ cmp$summary[, c("recipe", "segmenter", "chunks", "reader", "signature", "setting
 differing only in a number are not two identical-looking rows. The same facts
 land on the trace, and survive `gr_trace_save()`.
 
-(The bundled example is deliberately small — 573 tokens by `gr_count_tokens()`
-— so `fast` and `thorough` fit it in one chunk. On a real report they would not.)
+(The bundled example is deliberately small — 573 tokens as `gr_ingest()` counts
+them, which is per block and so a little above the 515 `gr_count_tokens()` gives
+for the joined text — so `fast` and `thorough` fit it in one chunk. On a real
+report they would not.)
 
 Build a pipeline by hand:
 
@@ -284,7 +286,9 @@ back to `paragraph`; `semantic`, `proposition` and `contextual(context_source =
 "llm")` need a client and fall back without one. Every fallback warns, and the
 downgrade is recorded: in `$method` for `page`, `semantic` and `proposition`
 (e.g. `"semantic->paragraph"`), and in `$extra$context_source` for `contextual`,
-which keeps its method name because only its blurb source changed.
+which keeps its method name because only its blurb source changed. A
+`proposition` batch that cannot be decomposed is kept as written rather than
+dropped, with a warning, and counted in `$extra$batches_kept_as_written`.
 
 Orthogonal to the method: `max_tokens` (always enforced, on every segmenter),
 plus `overlap_tokens` and `min_tokens` — honoured everywhere except `page`
@@ -396,6 +400,26 @@ Note this is *not* the primacy-and-recency effect it resembles. Those come from
 rehearsal and interference in human memory, mechanisms a transformer does not
 have; the reason here is positional attention, and it argues about placement
 rather than about what to select.
+
+**`restate` — the question at both ends.** The question is always asked *after*
+the excerpts, which is the position that gets followed. Over a few thousand
+tokens of context, an instruction appearing once at the bottom is a long way from
+the top, so `"auto"` repeats it before the body as well once the body is long
+enough to bury it. `"always"` and `"never"` override.
+
+Both of these are settings rather than rules, and for the same reason: whether
+either helps is a question about your corpus and your model, not something a
+package can assert. `gr_compare()` is the machinery to answer it — two recipes
+differing in one setting, over documents where you already know the answer:
+
+```r
+gr_compare(
+  readgpt_example(), "What was revenue?",
+  list(gr_recipe("plain", read = list(reader = "retrieve", context_order = "relevance")),
+       gr_recipe("edged", read = list(reader = "retrieve", context_order = "edges"))),
+  client = cl
+)$summary
+```
 
 ## Reading a run
 
@@ -534,11 +558,14 @@ gr_options(max_cost_usd = 5,     # refuse a run whose pre-flight estimate exceed
 
 `max_calls` is re-checked before every subsequent call, so a run that hits it
 mid-flight returns a `partial` answer with `notes$call_cap_reached` rather than
-continuing to spend. Both raise a classed error naming the option to change.
+continuing to spend. Both raise a classed error naming the option to change. A
+ceiling is checked when you set it: `NA`, text or a negative number is refused,
+because a limit that cannot be compared is not a limit. `NULL` or `Inf` removes
+it.
 
 `gr_budget()` is the single arithmetic chokepoint for context math and is
 incapable of returning a non-positive input budget — it raises an actionable
-error instead. `gr_options()` documents all 21 settings; see `?gr_options`.
+error instead. `gr_options()` documents all 22 settings; see `?gr_options`.
 
 ## Many documents
 
@@ -621,11 +648,28 @@ Five things it does that a `lapply()` does not:
 and its error in the `error` column; the other hundred and ninety-nine answers
 survive. `on_error = "stop"` if you would rather it aborted.
 
-**Budgets are per document.** Every document gets its own trace, so
-`gr_options(max_calls =)` applies to each one exactly as if you had read it
-alone — one enormous document cannot starve the rest. `max_total_usd` is the
-corpus-wide ceiling; documents after it are marked `"skipped"` rather than
-quietly dropped.
+**Budgets are per document, and the run has its own.** Every document gets its
+own trace, so `gr_options(max_calls =)` applies to each one exactly as if you had
+read it alone — one enormous document cannot starve the rest. That is deliberate,
+and on its own it leaves the *run* unbounded: two hundred documents under a
+400-call ceiling is a corpus ceiling of eighty thousand calls. So there are two
+run-level ceilings.
+
+```r
+reports <- file.path(tempdir(), "reports")
+out <- gr_read_many(reports, "What was revenue?", "fast", client = cl,
+                    max_total_calls = 2000,   # checked BEFORE each document
+                    max_total_usd   = 20)     # checked after each one
+```
+
+`gr_screen()` and `gr_extract()` take the same two arguments.
+`max_total_calls` is checked before a document, so the overshoot is bounded by
+one document's own ceiling. `max_total_usd` can only be checked after one, since
+what a document costs is not knowable until it has been read — and it needs a
+model with a registered price, or cost is *unknown* rather than zero and you get
+a `gr_corpus_cost_unknown` warning instead of a silent free pass. Documents past
+either ceiling are marked `"skipped"` rather than quietly dropped. Set neither
+and the run says once what its worst case is.
 
 **A run can be resumed.** Point `store =` at a directory and each result is
 written as it completes and restored on a later run. Combined with a durable
@@ -827,6 +871,10 @@ collapses to a point, and `$adequate` says out loud when there were too few
 eligible studies to support a claim. `$missed` is the list of studies the
 screener discarded and a person did not — usually more use than any rate.
 
+Pass the result to `gr_audit_report(calibration = )` and it becomes a section of
+the report, so the figure a reviewer asks for sits next to the run it describes
+instead of being copied into a methods section by hand.
+
 ## From a folder to a review
 
 The three axes answer a question. A corpus job usually wants a *table*, and a
@@ -837,7 +885,7 @@ review wants a table plus the account of it. Four functions cover that:
 A protocol is what you fix **before** reading anything: which documents count,
 what to collect from the ones that do, and what the write-up has to cover. That
 is the point of it — a criterion invented while reading is a criterion fitted to
-what was found. `gr_protocols()` lists three templates to start from, and
+what was found. `gr_protocols()` lists four templates to start from, and
 `gr_protocol_save()` round-trips one through a JSON file so it can be shared,
 diffed and cited alongside the results.
 
@@ -869,11 +917,11 @@ reply <- function() gr_mock_client(function(messages, params) {
 
 reports  <- file.path(tempdir(), "reports")
 screened <- gr_screen(reports, protocol, client = reply())
-extracted <- gr_extract(screened$included, protocol, client = reply(), recipe = "fast")
+extracted <- gr_extract(screened, protocol, client = reply(), recipe = "fast")
 review   <- gr_synthesise(extracted, protocol, client = reply())
 
 gr_audit_report(file.path(tempdir(), "audit.html"), screening = screened,
-                extraction = extracted, review, protocol = protocol)
+                extraction = extracted, synthesis = review, protocol = protocol)
 
 extracted$table[, c("document", "region", "revenue", "n_unverified")]
 #>    document region revenue n_unverified
@@ -887,7 +935,9 @@ remove a source before one is recorded; a file that could not be read gets
 `status = "failed"` and *no* decision rather than a silent exclusion; and
 `"unclear"` is an answer rather than a forced guess, because forcing a binary
 call on an excerpt that does not settle it is how automated screening loses
-studies. `screened$included` is the argument to hand to `gr_extract()`, and
+studies. Hand `screened` itself to `gr_extract()` -- `screened$included` works
+too, but a character vector of paths cannot carry the search forward, so the
+audit's search section and the bibliographic columns are lost with it. And
 `table(screened$table$criterion)` is the breakdown a flow diagram asks for.
 
 **Extraction gives you a typed table, not prose.** A paragraph about one paper
@@ -990,8 +1040,11 @@ Three studies met the criteria (Garcia, 2022; Lee & Petrov, 2021; Smith & Okafor
 - Smith, J., Okafor, A. (2019). Cognitive Load and Retention in Adult Learners. Journal of Educational Psychology 44(2).
 ```
 
-Add `coherence = TRUE` to run one further call over the whole draft, so the
-independently-written sections read as one argument.
+Add `coherence = TRUE` to revise the assembled draft, so the
+independently-written sections read as one argument. That is three passes, not
+one — `"structure"` reorders and merges, `"cut"` removes repetition, `"register"`
+polishes sentences — and each is forbidden from doing the others' job. Name a
+subset if you want fewer: `coherence = "cut"`.
 
 Three things about that are deliberate.
 
@@ -1009,20 +1062,128 @@ some studies by name and others by number reads as a mistake, and inventing
 field directly if your sources are awkward; parsing an arbitrary author list is
 a heuristic and is treated as one.
 
-**`coherence = TRUE` may reorganise prose but not change what is cited.**
-Sections are written independently — that is what keeps each one answerable to
-its own brief — so nothing joins them: terms drift, a study gets introduced
-twice, there are no transitions. One further call fixes that. The revision is
-then checked, and one that added a citation or lost one is discarded with a
-warning, leaving `review$draft`. It is the one step that could quietly undo
-everything above it, so it is the one step whose output is not trusted.
+**A revision pass may reorganise prose. It may not make the review claim more
+than the draft did.** Sections are written independently — that is what keeps
+each one answerable to its own brief — so nothing joins them: terms drift, a
+study gets introduced twice, there are no transitions. The revision passes fix
+that, and their output is the one thing in this pipeline that is not trusted,
+because they are the one step that could quietly undo everything above them.
+
+A revision that added or lost a citation is discarded, leaving `review$draft`.
+That check is necessary and it is not sufficient, because the most damaging thing
+an editing pass does leaves the citations exactly where they were: editing for
+impact means deleting hedges, and the hedges are where the uncertainty lives.
+"Three small trials suggest a modest benefit" comes back as "trials show a
+benefit" — same markers, same studies, a claim the evidence does not carry. So a
+revision is also discarded if it introduces a universal quantifier that was not
+there, uses a booster ("demonstrates", "establishes", "confirms") more often than
+the draft did, or carries fewer hedges than the draft's rate implies.
+
+All three are matched on whole words, which matters more than it sounds: as bare
+substrings, "improved" counted as an instance of "prove", so a draft saying
+"outcomes improved" licensed a revision saying "proves the drug works", and a
+revision that added the hedge "unproven" was rejected for introducing a booster.
+Boosters are counted rather than merely listed, so saying "demonstrates" three
+times where the draft said it once is introducing it.
+
+The hedge test scales with how much claim-bearing prose survived, so a shorter
+revision may carry fewer hedges — but never none, if the draft had any. It does
+not promise that every legitimate cut passes: a pass that removes the most
+heavily hedged sentence lowers the rate and is refused. The cost of that is a
+discarded pass and a warning; the draft stands.
+
+Hedges and universal quantifiers are measured on sentences carrying a citation,
+because headings, framing and transitions are exactly what an editing pass should
+be free to rewrite, and "the evidence, all of which is relevant" is not a claim.
+Boosters are measured on all of the prose except headings, because there is no
+register in which an editing pass should introduce "demonstrates" into a review at
+all, and the uncited framing between the claims is where such a sentence actually
+gets written. `review$coherence` is one row per pass: what ran, what was kept,
+and why anything was thrown away.
+
+### Writing from claims instead of from rows
+
+Everything above writes each section from the whole table of studies, which has a
+cost you can see in the prose: the model goes row by row. "Smith (2019) found X.
+Garcia (2022) found Y." That enumeration is the clearest marker of a weak review,
+and it follows directly from what the prompt holds. Worse, the `outline` is fixed
+before the reading — so the review's structure is your hypothesis, when often the
+strongest thing a review has to say *is* structural: that a literature splits
+into three incompatible measures, and that the argument about effect size is
+really an argument about measurement.
+
+`gr_claims()` computes the relations first. Each claim names the studies that
+support it, the studies that contradict it, and the field that distinguishes
+them:
+
+```r
+cm <- gr_claims(x, question = protocol$question, client = cl)
+cm$claims[, c("claim", "moderator", "n_support", "n_contradict")]
+cm$support        # long: claim_id, study, role -- join it to reach documents and quotes
+cm$dropped        # what verification removed, and why
+```
+
+Every study number is verified against the table — the same check the `[study N]`
+markers in finished prose already get, one link earlier. A number that is not
+there is dropped and counted. A claim left with no supporting study is dropped
+entirely, because a claim attached to nothing is an opinion. A `moderator` naming
+a column the table does not have is cleared, because an invented explanation for
+a real disagreement is the most convincing error this layer can make. `$dropped`
+records all of it, so a thin claims table can be told from a thin literature.
+
+`gr_outline()` then derives the sections *from* the claims and hands them back as
+an ordinary outline you can accept, edit or throw away. `gr_gaps()` computes what
+the corpus does not contain — a declared category nobody studied, a dimension
+with no variation, a claim nobody has replicated, a disagreement nothing explains
+— in R, with no model call, so the gap list is a fact you can check by counting:
+
+```r
+o <- gr_outline(cm, client = cl)
+o                        # headings and briefs; attr(o, "claims") is the assignment
+g <- gr_gaps(cm, extraction = x)
+
+review <- gr_synthesise(x, outline = o, question = protocol$question,
+                        client = cl, claims = cm, gaps = g,
+                        cite_style = "author-year", coherence = TRUE)
+```
+
+Each section now argues its own claims and is shown only the studies those claims
+rest on, ordered so a twelve-person pilot stops getting the same space as a
+two-thousand-person trial. A section handed a claim and not writing it up is
+marked partial and says which — the citation check in reverse.
+
+The schema this wants as input is the `claims` protocol
+(`gr_protocols("claims")`): `design` and `finding` are coded as enums so studies
+can be compared mechanically, each paired with the paper's own wording so the
+coding can be checked rather than trusted. `finding` is coded relative to *your*
+question, which is what lets a non-interventional literature have contradictions
+at all — and why that template is refused until you replace the placeholder
+question in it.
+
+Two things it deliberately does not do. It does not rank study designs when
+deciding emphasis: that would assert a cohort study beats a qualitative one, and
+totalling per-item scores into one number is what Cochrane says plainly is
+discouraged. Design is a grouping variable here — what distinguishes the sides of
+a disagreement — not a score. And nothing asks a model to judge which of its own
+inputs are stale or wrong; if two studies conflict, both are reported and the
+conflict is named, because "the model decided this one was wrong" is not
+something anyone can check.
 
 `gr_audit_report()` writes that chain out as one self-contained HTML file — the
 protocol as fixed in advance, what happened to every document, every value with
 its quote and page and whether the quote is really there, what was written and
-which rows each claim rests on, and what it cost. It is not for you; it is for
-the reviewer or co-author whose question is "how do you know?" — the call is in
-the block above.
+which rows each claim rests on, every claim with the studies for and against it
+and where each one ended up, and what it cost. It is not for you; it is for
+the reviewer or co-author whose question is "how do you know?" It takes the
+objects the run already produced:
+
+```r
+gr_audit_report("audit.html", extraction = x, synthesis = review, claims = cm,
+                protocol = protocol)
+```
+
+`screening =` and `records =` take the earlier stages when the run had them, and
+every argument is optional except the path and at least one stage to report on.
 
 The report does not flatter the run. Unverified quotes, documents that could not
 be read, screening calls the model declined to make and citations pointing at
@@ -1131,6 +1292,41 @@ identical(
 
 One thing still does not replay: a trace does not record the JSON schema a call
 requested, so two calls differing only by schema share a recording.
+
+## Seeing what is there
+
+Every registry answers what it holds, and none of these makes a model call:
+
+```r
+gr_extractors()          # which file types have an extractor, and what each needs
+gr_segmenters()          # the nine chunkers, with their settings
+gr_readers()             # the twelve reading strategies
+gr_embedders()           # api, lexical, and anything you registered
+gr_protocols()           # the four schema templates
+gr_models()              # context windows and prices, as this package knows them
+gr_model_limits("gpt-4o")
+
+gr_tokenizer()           # which counter is in use
+
+cache <- gr_cache(file.path(tempdir(), "readgpt-cache"))
+gr_cache_stats(cache)    # entries, bytes, hits, misses, writes
+gr_cache_clear(cache)
+gr_reader_signature("skim")    # select|calls|state -- how a reader traverses a document
+```
+
+`gr_models()` is worth a look before a long run: an unregistered model falls back
+to a conservative 128k window with no price, so budgets and cost estimates go
+quiet rather than wrong. `gr_register_model()` fixes that in one line.
+
+`gr_set_tokenizer("tiktoken")` switches to exact counts where the reticulate
+package and Python's `tiktoken` are installed; the default, `"heuristic"`, needs
+neither. Without them it stops rather than falling back, because a silent
+fallback would change every budget calculation.
+
+`gr_reader_signature()` is the answer to "are these strategies actually
+different?" — it reports how each one selects chunks, how many calls it makes and
+whether it carries state, so two readers claiming to differ can be checked rather
+than believed.
 
 ## Extending it
 

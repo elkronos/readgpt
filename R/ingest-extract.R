@@ -172,7 +172,9 @@ extract_pdf <- function(path, opts) {
   # PER-PAGE OCR decision. The old code demanded that *every* page be empty
   # before OCRing anything, so mixed scanned/digital PDFs silently lost content.
   ocr_mode <- as_chr1(opts$ocr %||% "auto")
-  min_chars <- as.integer(opts$ocr_min_chars %||% 40L)
+  # as.numeric(), not as.integer(): Inf -- OCR every page -- is a threshold, and
+  # as.integer(Inf) is NA.
+  min_chars <- as.numeric(opts$ocr_min_chars %||% 40L)
   needs <- switch(ocr_mode,
                   never  = rep(FALSE, length(pages)),
                   always = rep(TRUE,  length(pages)),

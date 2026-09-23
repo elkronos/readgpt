@@ -18,7 +18,10 @@ gr_synthesise(
   bib = NULL,
   style = NULL,
   coherence = FALSE,
-  references = TRUE
+  references = TRUE,
+  claims = NULL,
+  gaps = NULL,
+  trace = NULL
 )
 }
 \arguments{
@@ -71,17 +74,32 @@ may be wrong.}
 sections are written, never what they may say: the rules about citing every
 claim and inventing nothing hold whatever voice is asked for.}
 
-\item{coherence}{Run one further call over the assembled draft to make the
-independently-written sections read as one argument: repetition removed,
-transitions added, terminology made consistent. The revision is checked, not
-trusted -- one that added a citation or dropped one is discarded with a
-warning, and \verb{$draft} is what you get. Off by default, because it is an
-extra call and an extra chance for the model to touch finished prose.}
+\item{coherence}{Revision passes over the finished draft: \code{TRUE} for all
+three, \code{FALSE} for none, or any of \code{"structure"} (reorder and merge),
+\code{"cut"} (remove repetition) and \code{"register"} (polish sentences) by name.
+Each pass is forbidden from doing the others' job, and each is discarded
+-- with \verb{$draft} kept -- if it changed the citations, arrived truncated,
+or strengthened a claim. Off by default: each is a call, and each is a
+chance for a model to touch finished prose.}
 
 \item{references}{Append a \verb{## References} section built from the studies the
 finished text actually cites. Alphabetical under \code{"author-year"}, numbered
 by study otherwise -- the list is labelled by whatever the prose uses to
 point into it.}
+
+\item{claims}{A \code{\link[=gr_claims]{gr_claims()}} result. With it each section argues that
+section's claims and sees only the studies those claims rest on, rather
+than being handed every study and writing a paragraph per row. Needs an
+\code{outline} from \code{\link[=gr_outline]{gr_outline()}}, which carries the assignment.}
+
+\item{gaps}{A \code{\link[=gr_gaps]{gr_gaps()}} result, or lines of text. Given to the closing
+section \code{\link[=gr_outline]{gr_outline()}} named, with an instruction to state those gaps and
+no others.}
+
+\item{trace}{A \code{\link[=gr_trace]{gr_trace()}} to fold this write-up's accounting into, as in
+\code{\link[=gr_read_many]{gr_read_many()}}. It is a parent, not this stage's counter: \verb{$trace} is
+still the write-up's own, so \code{gr_options(max_calls =)} bounds the write-up
+rather than being spent by the screening that came before it.}
 }
 \value{
 An object of class \code{gr_synthesis}:
@@ -94,8 +112,10 @@ what the citation check ran on.}
 \item{\code{references}}{The reference list, or \code{NULL}.}
 \item{\code{cite_style}}{The style actually used, which is not always the one
 asked for.}
-\item{\code{coherence}}{What the coherence pass did, or \code{NULL} if it did not
-run: \code{ran}, \code{kept}, \code{reason}, and any citations \code{added} or \code{lost}.}
+\item{\code{coherence}}{One row per revision pass, or \code{NULL} if none ran:
+\code{pass} (which of \code{"structure"}, \code{"cut"}, \code{"register"}), \code{ran}, \code{kept},
+\code{lost} and \code{added} (citations, if the revision changed them), and
+\code{reason} for anything discarded.}
 \item{\code{sections}}{One row per section: \code{section}, \code{brief}, \code{text},
 \code{n_cited}, \code{n_unknown}, \code{partial}.}
 \item{\code{citations}}{Long form: \code{section}, \code{study}, \code{document},

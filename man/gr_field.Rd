@@ -13,7 +13,10 @@ assistant. This is the whole instruction the model gets for this field, so
 length.}
 
 \item{type}{One of \code{"string"}, \code{"integer"}, \code{"number"}, \code{"boolean"} or
-\code{"enum"}.}
+\code{"enum"}. An \code{"integer"} value above \code{.Machine$integer.max} is kept as a
+whole double, so that column is a double whenever one such value is
+present. A value that carries more than one number, such as "120 (60 per
+arm)", is recorded as missing rather than run together.}
 
 \item{values}{For \code{type = "enum"}, the permitted values.}
 }

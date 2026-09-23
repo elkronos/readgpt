@@ -80,6 +80,26 @@ is not in the registry.}
 }
 }
 
+\section{Checked values}{
+
+Numeric options are checked when they are set, and the two kinds are treated
+differently because a wrong value costs different things.
+
+The ceilings, \code{max_cost_usd} and \code{max_calls}, refuse anything that is not a
+single number of zero or more, with an error of class \code{gr_bad_option}: a
+limit that cannot be compared is not a limit, and ignoring it spends money.
+\code{NULL} and \code{Inf} both mean "no limit".
+
+The tuning settings -- \code{safety_margin} [0, 0.5], \code{min_output_tokens}
+[0, 1e6], \code{max_retries} [0, 10], \code{retry_pause_base} [0, 60],
+\code{request_timeout} [1, 3600], \code{workers} [1, 32] and \code{temperature}
+[0, 2] -- read a number written as text as that number. A value they cannot
+read, such as \code{NA} or \code{"x"}, warns (\code{gr_bad_option}) and leaves the current
+setting unchanged; a value outside the range is clamped into it, with the
+same warning. Whole-number settings are rounded down. \code{temperature} also
+takes \code{NULL}, its default.
+}
+
 \examples{
 old <- gr_options(verbose = FALSE)
 gr_options("verbose")

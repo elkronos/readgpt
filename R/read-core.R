@@ -187,6 +187,61 @@ as_json.gr_answer <- function(x, pretty = TRUE, ...) {
     "only where the section is likely to contain the answer itself. When the outline is too ",
     "thin to tell, prefer 'skim' over 'skip': a skipped section is never looked at again. Give ",
     "a short reason for each decision."),
+  claims_system = paste0(
+    "You turn a table of studies into a list of CLAIMS about the literature.\n\n",
+    "A claim is a statement about the body of work, not about one study. ",
+    "\"Trials in clinical samples found a benefit and the two community samples did not\" is a ",
+    "claim. \"Study 4 found a benefit\" is not -- that is a row, and the table already has it.\n\n",
+    "Rules:\n",
+    "- Every claim names the studies it rests on, by the [study N] numbers shown. ",
+    "Use only numbers that appear. Never invent one.\n",
+    "- Where studies disagree, put the ones supporting the claim in supported_by and the ones ",
+    "contradicting it in contradicted_by, and name in `moderator` the FIELD NAME from the table ",
+    "that distinguishes them, copied exactly. Leave `moderator` null if nothing in the table ",
+    "explains the split -- an unexplained disagreement is a finding, and guessing at a reason ",
+    "is worse than reporting it as unexplained.\n",
+    "- A claim may rest on one study, but say so in `scope`.\n",
+    "- Do not write a claim you cannot attach to at least one study.\n",
+    "- Write the claim itself without citations; the numbers go in the fields."),
+  reconcile_system = paste0(
+    "You are given numbered claims drawn from different batches of ONE literature. ",
+    "Group the ones that make the same assertion.\n\n",
+    "- Return every number exactly once, in exactly one group.\n",
+    "- Two claims belong together only if they assert the same thing. Claims about different ",
+    "populations, different measures, or opposite directions are DIFFERENT claims even when ",
+    "they are worded alike.\n",
+    "- A claim that matches nothing else is a group of one.\n",
+    "- Do not write new claims and do not use numbers that were not listed."),
+  outline_system = paste0(
+    "You are given the CLAIMS a body of literature supports. Group them into the sections of a ",
+    "review.\n\n",
+    "The grouping is the review's argument, so group by what the claims are ABOUT -- a shared ",
+    "population, a shared measure, a shared disagreement -- not by the order they are listed ",
+    "in.\n\n",
+    "Rules:\n",
+    "- Every claim number goes in exactly one section. Do not leave one out and do not repeat ",
+    "one.\n",
+    "- Use only the numbers listed.\n",
+    "- A heading names what the section argues, not a topic label. \"Measurement explains the ",
+    "disagreement\" is a heading; \"Measurement\" is a label.\n",
+    "- Order the sections so the review reads as an argument: what was studied before what was ",
+    "found, and disagreements after the claims they are about.\n",
+    "- `rationale` says in one line why those claims belong together."),
+  claims_section_system = paste0(
+    "You write one section of a literature review from a list of CLAIMS and the studies behind ",
+    "them.\n\n",
+    "Argue the claims. Do not walk through the studies one at a time -- the claims are the ",
+    "structure, and a paragraph per study is what this replaces.\n\n",
+    "Rules:\n",
+    "- Every sentence that makes a claim carries the [study N] markers of the studies it rests ",
+    "on. Cite more than one where more than one supports it.\n",
+    "- Use only the numbers shown.\n",
+    "- Where a claim is contested, say so in the same sentence or the next, and give the ",
+    "distinguishing field if one is named. Do not resolve a disagreement the evidence leaves ",
+    "open.\n",
+    "- Keep every claim's hedging. If a claim rests on one small study, the sentence must say ",
+    "something a reader can check that against.\n",
+    "- Cover every claim you are given. Do not add claims that are not in the list."),
   coherence_system = paste0(
     "You are given the complete draft of a review, written section by section by ",
     "someone who could not see the other sections while writing. Your job is to make it read as ",
@@ -271,12 +326,55 @@ render_chunks <- function(df, ids = NULL) {
   }, character(1)), collapse = "\n\n")
 }
 
+#' How long a body has to be before the question is worth repeating.
+#'
+#' A number, and an arbitrary one: what it should be is a question about a
+#' particular corpus and a particular model, which is why `restate` is a read
+#' setting -- gr_compare() can take two recipes differing only in it and measure
+#' the difference, rather than the package asserting one.
+#' @noRd
+.gr_restate_tokens <- 1200L
+
+#' @noRd
+restate_now <- function(body, how = "auto") {
+  how <- as_chr1(how, "auto")
+  if (identical(how, "always")) return(TRUE)
+  if (identical(how, "never")) return(FALSE)
+  gr_count_tokens(as_chr1(body)) > .gr_restate_tokens
+}
+
+#' The question again, after a body long enough to bury the first ask.
+#' @noRd
+restate_tail <- function(body, question, how = "auto") {
+  if (!restate_now(body, how)) return("")
+  paste0("\n\nAgain, the question: ", as_chr1(question))
+}
+
+#' The system prompt `answer_messages()` will actually send.
+#'
+#' Named rather than inlined so that the budget can be computed from the same
+#' string the call sends. Budgeting with `answer_system` and then sending
+#' `answer_system_cited` understates the overhead by 22 tokens whenever
+#' `cite = TRUE`, and the excerpts are then sized to fill the gap.
+#' @noRd
+answer_system <- function(cite = FALSE) {
+  if (isTRUE(cite)) .gr_prompts$answer_system_cited else .gr_prompts$answer_system
+}
+
 #' Build the standard question-answering message list.
 #' @noRd
-answer_messages <- function(question, body, cite = FALSE, label = "Excerpts") {
+answer_messages <- function(question, body, cite = FALSE, label = "Excerpts",
+                            restate = "auto") {
+  # The question is already LAST here, which is the position that gets followed.
+  # What was missing is the other end: over a few thousand tokens of excerpt, an
+  # instruction that appears once at the bottom is easy to lose track of on the
+  # way down. Added INSIDE the existing message rather than as a fourth one, so
+  # nothing that indexes these positionally shifts.
+  lead <- if (restate_now(body, restate)) paste0("Question: ", question, "\n\n") else ""
   list(
-    list(role = "system", content = if (cite) .gr_prompts$answer_system_cited else .gr_prompts$answer_system),
-    list(role = "user", content = paste0("<", tolower(label), ">\n", body, "\n</", tolower(label), ">")),
+    list(role = "system", content = answer_system(cite)),
+    list(role = "user", content = paste0(lead, "<", tolower(label), ">\n", body,
+                                         "\n</", tolower(label), ">")),
     list(role = "user", content = paste0("Question: ", question))
   )
 }
@@ -311,8 +409,19 @@ fit_chunks <- function(df, budget_tokens, order = NULL, prefix = FALSE) {
 
 #' Standard overhead accounting for a reader's prompt.
 #' @noRd
-prompt_overhead <- function(question, system_prompt) {
-  sum(gr_count_tokens(c(as_chr1(question), as_chr1(system_prompt)))) + 64L
+prompt_overhead <- function(question, system_prompt, restate = "auto") {
+  # The question is counted TWICE unless restatement is off, because that is how
+  # many times it appears. `answer_messages()` adds a second copy before the body
+  # once the body is long, and the body was sized against a budget computed here
+  # -- so the prompt overran the window by exactly the length of the question.
+  # With a long question and a model whose window the run nearly fills,
+  # gr_call() refused to dispatch at all and the reader returned NOT_IN_DOCUMENT
+  # with nothing in it but `notes$error`. The default is the safe direction:
+  # reserving room that goes unused costs a little context, under-reserving
+  # costs the answer.
+  again <- if (identical(as_chr1(restate, "auto"), "never")) 0L else
+    gr_count_tokens(as_chr1(question))
+  sum(gr_count_tokens(c(as_chr1(question), as_chr1(system_prompt)))) + again + 64L
 }
 
 #' Turn per-chunk extraction results into an evidence table.
@@ -397,7 +506,10 @@ tree_merge <- function(client, question, pieces, spec, trace, label = "merge",
   prev_n <- length(pieces) + 1L
   repeat {
     level <- level + 1L
-    overhead <- prompt_overhead(question, system_prompt)
+    # "never": tree_merge() builds its own messages below and does not restate,
+    # so the question appears once. Left at the default it would reserve room
+    # for a second copy that is never sent and shrink every merge group.
+    overhead <- prompt_overhead(question, system_prompt, "never")
     bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
 
     # A single finding larger than the whole merge budget cannot be reduced by

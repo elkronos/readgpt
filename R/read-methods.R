@@ -24,7 +24,7 @@
 #' @noRd
 read_stuff <- function(chunks, question, client, spec, trace) {
   d <- chunks$chunks
-  overhead <- prompt_overhead(question, .gr_prompts$answer_system)
+  overhead <- prompt_overhead(question, answer_system(spec$cite), spec$restate)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   fit <- fit_chunks(d, bud$input)
 
@@ -44,7 +44,8 @@ read_stuff <- function(chunks, question, client, spec, trace) {
                       notes = list(reason = "no chunk fits the context window")))
   }
   sub <- d[fit$idx, , drop = FALSE]
-  res <- gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite),
+  res <- gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite,
+                                    restate = spec$restate),
                  model = spec$model, max_output = spec$max_answer_tokens,
                  temperature = spec$temperature, trace = trace, label = "stuff.answer")
   ok <- usable_text(res)
@@ -64,13 +65,16 @@ read_stuff <- function(chunks, question, client, spec, trace) {
 read_map_reduce <- function(chunks, question, client, spec, trace) {
   d <- chunks$chunks
   if (!trace_can_call(trace, nrow(d))) {
-    gr_warn(sprintf("map_reduce needs %d calls but the run cap is %d; reduce the chunk count or raise gr_options(max_calls=).",
-                    nrow(d), gr_options("max_calls")), class = "gr_call_cap")
+    # %s, not %d: max_calls is a whole DOUBLE, and %d refuses one beyond the
+    # integer range.
+    gr_warn(sprintf("map_reduce needs %d calls but the run cap is %s; reduce the chunk count or raise gr_options(max_calls=).",
+                    nrow(d), format(gr_options("max_calls"), scientific = FALSE)),
+            class = "gr_call_cap")
   }
   res <- gr_lapply(seq_len(nrow(d)), function(i, trace) {
     if (!trace_can_call(trace)) return(list(ok = FALSE, text = "", capped = TRUE))
     r <- gr_call(client, answer_messages(question, render_chunks(d[i, , drop = FALSE]),
-                                         cite = spec$cite),
+                                         cite = spec$cite, restate = spec$restate),
                  model = spec$model, max_output = spec$max_chunk_tokens,
                  temperature = spec$temperature, trace = trace, label = "map.answer")
     if (spec$delay_between_calls > 0) Sys.sleep(spec$delay_between_calls)
@@ -116,7 +120,11 @@ read_refine <- function(chunks, question, client, spec, trace) {
   draft <- NULL; used <- integer(0); revisions <- 0L; failures <- 0L; truncated <- 0L
   # The draft grows with every revision, so unlike the other readers this one
   # can outgrow the context window mid-run. Budget for it explicitly.
-  overhead <- prompt_overhead(question, .gr_prompts$refine_system)
+  # Two different system prompts go out of this reader -- answer_messages() for
+  # the first chunk, refine_system for every revision after it -- so budget
+  # against the longer of the two rather than whichever is named here.
+  overhead <- max(prompt_overhead(question, .gr_prompts$refine_system, spec$restate),
+                  prompt_overhead(question, answer_system(spec$cite), spec$restate))
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   for (i in seq_len(nrow(d))) {
     if (!trace_can_call(trace)) break
@@ -130,7 +138,7 @@ read_refine <- function(chunks, question, client, spec, trace) {
       draft <- gr_truncate_tokens(draft, half); truncated <- truncated + 1L
     }
     msgs <- if (is.null(draft)) {
-      answer_messages(question, excerpt, cite = spec$cite)
+      answer_messages(question, excerpt, cite = spec$cite, restate = spec$restate)
     } else {
       list(
         list(role = "system", content = .gr_prompts$refine_system),
@@ -195,7 +203,7 @@ read_skim <- function(chunks, question, client, spec, trace) {
   # copied out of the document, so it is the one that has to prove its quotes.
   ev <- evidence_table(d$chunk_id[keep], txt[keep], d$page[keep], d$section[keep],
                        source_text = d$text[keep], kind = "extracted")
-  overhead <- prompt_overhead(question, .gr_prompts$answer_system)
+  overhead <- prompt_overhead(question, answer_system(spec$cite), spec$restate)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   body <- paste(sprintf("[chunk %d]\n%s", ev$chunk_id, ev$text), collapse = "\n\n")
   dropped <- 0L
@@ -208,7 +216,8 @@ read_skim <- function(chunks, question, client, spec, trace) {
     dropped <- nrow(ev)
   }
   res2 <- if (trace_can_call(trace)) {
-    gr_call(client, answer_messages(question, body, cite = spec$cite, label = "Evidence"),
+    gr_call(client, answer_messages(question, body, cite = spec$cite, label = "Evidence",
+                                    restate = spec$restate),
             model = spec$model, max_output = spec$max_answer_tokens,
             temperature = spec$temperature, trace = trace, label = "skim.answer")
   } else gr_result(FALSE, error = "call cap reached before the synthesis step")
@@ -248,7 +257,7 @@ read_retrieve <- function(chunks, question, client, spec, trace) {
   keep <- mmr_select(rel, chunk_emb, k, lambda)
   if (!length(keep)) keep <- order(scores, decreasing = TRUE)[1]
 
-  overhead <- prompt_overhead(question, .gr_prompts$answer_system)
+  overhead <- prompt_overhead(question, answer_system(spec$cite), spec$restate)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   fit <- fit_chunks(d, bud$input, order = keep)
   # Fit first, then arrange: what gets in is a relevance question, where it sits
@@ -264,7 +273,8 @@ read_retrieve <- function(chunks, question, client, spec, trace) {
              list(k = k, kept = nrow(sub), embedding_source = src,
                   mmr = lambda, context_order = as_chr1(spec$context_order, "relevance"),
                   top_scores = round(utils::head(sort(scores, decreasing = TRUE), 5), 4)))
-  res <- gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite),
+  res <- gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite,
+                                    restate = spec$restate),
                  model = spec$model, max_output = spec$max_answer_tokens,
                  temperature = spec$temperature, trace = trace, label = "retrieve.answer")
   new_answer(if (res$ok) res$text else .NOT_FOUND, "retrieve", question, sub$chunk_id, trace,
@@ -304,8 +314,13 @@ read_rerank <- function(chunks, question, client, spec, trace) {
                  properties = list(
                    score = list(type = "integer", minimum = 0, maximum = 10),
                    reason = list(type = "string")))
+  # `status` records what happened to each candidate. It is kept apart from
+  # `reason`, which is the model's own words and can say anything -- including
+  # "unscorable" -- so counting outcomes by matching it counted a judged chunk
+  # as an unjudged one.
   scored <- gr_lapply(cand, function(i, trace) {
-    if (!trace_can_call(trace)) return(list(i = i, score = 0, reason = "call cap reached"))
+    # A call that was never made judged nothing: NA, like a failed one.
+    if (!trace_can_call(trace)) return(list(i = i, score = NA_real_, status = "capped"))
     out <- gr_call_json(client, list(
       list(role = "system", content = paste0(
         "Rate how useful an excerpt is for answering a question. 0 = irrelevant, ",
@@ -315,39 +330,78 @@ read_rerank <- function(chunks, question, client, spec, trace) {
     ), schema = schema, schema_name = "relevance",
        model = spec$skim_model %||% spec$model, max_output = 200L,
        temperature = spec$temperature, trace = trace, label = "rerank.score")
-    if (!out$ok) return(list(i = i, score = 0, reason = "scoring failed"))
-    list(i = i, score = as.numeric(out$value$score %||% 0),
-         reason = as_chr1(out$value$reason))
+    # NA, not 0. A failed call judged nothing, and scoring it 0 put it through
+    # the threshold at rerank_min_score = 0 as a model-judged score for a chunk
+    # no model had read -- and kept it out of the "was anything judged?" test
+    # below, so a run of failed calls mixed with unusable replies neither
+    # degraded nor warned.
+    if (!out$ok) return(list(i = i, score = NA_real_, status = "failed"))
+    # A score that is not a number is not a score. as.numeric("high") is NA, and
+    # NA then went through `keep_sc >= thresh` as an NA LOGICAL -- which selects
+    # rather than drops -- so `[chunk NA]` reached the prompt and the model
+    # answered the question with no document in front of it, partial = FALSE.
+    sc <- json_num(out$value, "score", NA_real_)
+    list(i = i, score = sc, status = if (is.na(sc)) "unscorable" else "scored")
   }, parallel = spec$parallel, label = "rerank candidate", trace = trace)
 
-  sc <- vapply(scored, function(s) s$score, numeric(1))
+  sc <- vapply(scored, function(s) as.numeric(s$score)[1], numeric(1))
   ii <- vapply(scored, function(s) s$i, numeric(1))
-  n_failed <- sum(vapply(scored, function(s) isTRUE(s$reason == "scoring failed"), logical(1)))
+  status <- vapply(scored, function(s) as_chr1(s$status, "failed"), character(1))
+  n_failed <- sum(status == "failed")
+  n_unscorable <- sum(status == "unscorable")
+  n_capped <- sum(status == "capped")
   degraded <- FALSE
-  if (n_failed == length(scored)) {
-    # Every scoring call failed -- typically an endpoint without structured
-    # output support. Degrade to the BM25 prefilter order and SAY SO, rather
-    # than reporting "nothing relevant" for a document that was never
-    # actually scored.
-    gr_warn(paste0("Every rerank scoring call failed (does this endpoint support JSON schema ",
-                   "output?). Falling back to the BM25 prefilter ranking, which is lexical, ",
-                   "not model-judged."), class = "gr_rerank_degraded")
+  # ONE test: was anything judged at all? Testing "every call failed" and
+  # "every score was unusable" separately left the mixed case -- some of each --
+  # falling through both, so the run returned NOT_IN_DOCUMENT with no warning
+  # for a document no model had scored.
+  if (all(is.na(sc))) {
+    # Every scoring call failed, typically an endpoint without structured output
+    # support, or every reply was unusable. Degrade to the BM25 prefilter order
+    # and SAY SO, rather than reporting "nothing relevant" for a document that
+    # was never actually scored.
+    why <- c(if (n_failed) sprintf("%d call(s) failed", n_failed),
+             if (n_unscorable) sprintf("%d returned a value that is not a number between 0 and 10",
+                                       n_unscorable),
+             if (n_capped) sprintf("%d not made because the call cap was reached", n_capped))
+    gr_warn(if (n_failed == length(scored))
+              paste0("Every rerank scoring call failed (does this endpoint support JSON schema ",
+                     "output?). Falling back to the BM25 prefilter ranking, which is lexical, ",
+                     "not model-judged.")
+            else paste0("No rerank score came back usable (", paste(why, collapse = ", "),
+                        "). Falling back to the BM25 prefilter ranking, which is lexical, ",
+                        "not model-judged."),
+            class = "gr_rerank_degraded")
     sc <- pre[cand]
     degraded <- TRUE
   }
+  # Some candidates were never judged: the ranking is incomplete, and whatever
+  # it concludes -- including "nothing relevant" -- rests on part of the list.
+  unjudged <- !degraded && (n_failed + n_unscorable + n_capped) > 0L
   ord <- order(sc, decreasing = TRUE)
   keep_ord <- ii[ord]
   keep_sc <- sc[ord]
   thresh <- if (degraded) -Inf else clamp(spec$rerank_min_score, 0, 10)
-  keep_ord <- keep_ord[keep_sc >= thresh]
+  # !is.na() FIRST. `NA >= thresh` is NA, and an NA logical subscript SELECTS an
+  # NA element rather than dropping it -- so the vector kept its length, the
+  # "nothing scored high enough" guard below did not fire, and d[NA, ] put
+  # `[chunk NA]` in the prompt. The model then answered from the question alone
+  # and the answer came back partial = FALSE.
+  keep_ord <- keep_ord[!is.na(keep_sc) & keep_sc >= thresh]
   if (!length(keep_ord)) {
+    # Partial only when something was not judged. Every candidate scored and
+    # every score low is a CORRECT negative, and marking it partial put a right
+    # answer and a broken one in the same bucket -- the distinction the screen
+    # reader draws for "unclear", and the one `partial` exists to make.
     return(new_answer(.NOT_FOUND, "rerank", question, integer(0), trace,
+                      partial = unjudged,
                       notes = list(candidates = m, scoring_failures = n_failed,
+                                   unscorable = n_unscorable,
                                    reason = sprintf("no candidate scored >= %g", thresh))))
   }
   keep_ord <- utils::head(keep_ord, as.integer(clamp(spec$top_k, 1, length(keep_ord))))
 
-  overhead <- prompt_overhead(question, .gr_prompts$answer_system)
+  overhead <- prompt_overhead(question, answer_system(spec$cite), spec$restate)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   fit <- fit_chunks(d, bud$input, order = as.integer(keep_ord))
   fit$idx <- arrange_context(fit$idx, spec$context_order)
@@ -357,16 +411,18 @@ read_rerank <- function(chunks, question, client, spec, trace) {
                                           context_order = as_chr1(spec$context_order, "relevance"),
                                           scores = round(utils::head(keep_sc, 10), 2)))
   res <- if (trace_can_call(trace)) {
-    gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite),
+    gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite,
+                                    restate = spec$restate),
             model = spec$model, max_output = spec$max_answer_tokens,
             temperature = spec$temperature, trace = trace, label = "rerank.answer")
   } else gr_result(FALSE, error = "call cap reached before the answer step")
   new_answer(if (res$ok) res$text else .NOT_FOUND, "rerank", question, sub$chunk_id, trace,
              evidence = evidence_table(sub$chunk_id, sub$text, sub$page, sub$section,
                                        sc[match(fit$idx, ii)], kind = "verbatim"),
-             partial = !res$ok || degraded,
+             partial = !res$ok || degraded || unjudged,
              notes = list(chunks = nrow(d), candidates = m, used = nrow(sub),
-                          scoring_failures = n_failed, degraded_to_bm25 = degraded))
+                          scoring_failures = n_failed, unscorable = n_unscorable,
+                          degraded_to_bm25 = degraded))
 }
 
 # ---------------------------------------------------------------------------
@@ -399,7 +455,9 @@ read_hierarchical <- function(chunks, question, client, spec, trace) {
     got
   }
 
-  overhead <- prompt_overhead(question, .gr_prompts$answer_system)
+  # FALSE, not spec$cite: the merge call below asks for summaries without
+  # citation markers, so that is the system prompt it sends.
+  overhead <- prompt_overhead(question, answer_system(FALSE), spec$restate)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
 
   level <- 1L
@@ -434,7 +492,8 @@ read_hierarchical <- function(chunks, question, client, spec, trace) {
     # [chunk N] ids -- asking for citations here asks the model to invent ids
     # that are not in front of it, which is how a citing reader starts citing
     # chunks it never saw.
-    gr_call(client, answer_messages(question, body, cite = FALSE, label = "Summaries"),
+    gr_call(client, answer_messages(question, body, cite = FALSE, label = "Summaries",
+                                    restate = spec$restate),
             model = spec$model, max_output = spec$max_answer_tokens,
             temperature = spec$temperature, trace = trace, label = "hier.answer")
   } else gr_result(FALSE, error = "call cap reached before the answer step")
@@ -450,12 +509,44 @@ read_hierarchical <- function(chunks, question, client, spec, trace) {
 # and the loop stops when it says it can answer or the budget runs out. The only
 # strategy where the retrieval query is not the user's question.
 # ---------------------------------------------------------------------------
+#' The gathered chunks that fit one prompt, whole.
+#'
+#' `iterative` used to paste everything gathered and call `gr_truncate_tokens()`
+#' on the result, which was wrong twice over. It cut the TAIL, so the chunks from
+#' the most recent round were the ones dropped -- in a reader whose whole premise
+#' is "that did not answer it, go and get more", it discarded the material it had
+#' just decided it needed. And it cut mid-chunk, which breaks the audit chain: a
+#' chunk cut in half no longer contains the sentence an answer quotes from it, so
+#' `verified` comes back false for a reason that has nothing to do with the
+#' document.
+#'
+#' Whole chunks, ranked by the score that justified taking them -- a chunk's
+#' score at the round it was selected, not its score against the latest query,
+#' because the earlier query is what it was chosen to answer. Everything that
+#' reaches the prompt is intact and therefore still checkable, and what did not
+#' fit is reported instead of being counted as read.
+#' @noRd
+iterative_fit <- function(d, seen, score, budget, how = "relevance") {
+  sub <- d[seen, , drop = FALSE]
+  fit <- fit_chunks(sub, budget, order = order(-score))
+  keep <- fit$idx
+  keep <- switch(as_chr1(how, "relevance"),
+                 # Positional within `sub`, which is accumulation order, so
+                 # document order has to come from the chunk ids themselves.
+                 document = keep[order(sub$chunk_id[keep])],
+                 edges = arrange_context(keep, "edges"),
+                 keep)
+  list(rows = seen[keep], dropped = seen[fit$dropped],
+       body = if (length(keep)) render_chunks(sub[keep, , drop = FALSE]) else "")
+}
+
 #' @noRd
 read_iterative <- function(chunks, question, client, spec, trace) {
   d <- chunks$chunks
   emb <- gr_embed(client, d$text, trace = trace)
   degraded_embed <- isTRUE(attr(emb, "embedding_fallback"))
-  seen <- integer(0); gathered <- character(0); queries <- as_chr1(question)
+  seen <- integer(0); seen_score <- numeric(0); queries <- as_chr1(question)
+  dropped <- integer(0)
   rounds <- 0L; done_reason <- "max rounds"
 
   schema <- list(type = "object", additionalProperties = FALSE,
@@ -464,6 +555,16 @@ read_iterative <- function(chunks, question, client, spec, trace) {
                    can_answer = list(type = "boolean"),
                    answer = list(type = "string"),
                    next_query = list(type = "string")))
+
+  # Built once and used for BOTH the budget and the call. Budgeting against
+  # `answer_system` alone while sending this understated the overhead by 88
+  # tokens a round, and the excerpts were sized to fill the gap.
+  step_system <- paste0(
+    .gr_prompts$answer_system,
+    " You are reading iteratively. If the excerpts so far are sufficient, set can_answer ",
+    "true and give the answer. If not, set can_answer false and put in next_query the ",
+    "specific missing information to search for -- a phrase you would expect to appear in ",
+    "the document, not a restatement of the question.")
 
   while (rounds < spec$max_rounds) {
     rounds <- rounds + 1L
@@ -477,23 +578,30 @@ read_iterative <- function(chunks, question, client, spec, trace) {
                        as.integer(clamp(spec$top_k, 1, nrow(d))), as_num1(spec$mmr, 1))
     if (!length(take)) { done_reason <- "no unseen chunks"; break }
     seen <- c(seen, take)
-    gathered <- c(gathered, render_chunks(d[take, , drop = FALSE]))
+    seen_score <- c(seen_score, sc[take])
 
     if (!trace_can_call(trace)) { done_reason <- "call cap"; break }
-    body <- paste(gathered, collapse = "\n\n")
     obud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens,
-                      overhead = prompt_overhead(question, .gr_prompts$answer_system))
-    if (gr_count_tokens(body) > obud$input) body <- gr_truncate_tokens(body, obud$input)
+                      overhead = prompt_overhead(question, step_system, spec$restate))
+    step <- iterative_fit(d, seen, seen_score, obud$input, spec$context_order)
+    body <- step$body
+    dropped <- step$dropped
+
+    # Nothing gathered fits one prompt. The call was made anyway, with an empty
+    # <excerpts></excerpts>, and a model asked a question with no document in
+    # front of it answers from its own prior -- which came back as the
+    # document's answer, can_answer = true, chunks_used empty. An answer with no
+    # excerpt behind it is the one thing this package must not return.
+    if (!length(step$rows)) { done_reason <- "no gathered chunk fits one prompt"; break }
 
     out <- gr_call_json(client, list(
-      list(role = "system", content = paste0(
-        .gr_prompts$answer_system,
-        " You are reading iteratively. If the excerpts so far are sufficient, set can_answer ",
-        "true and give the answer. If not, set can_answer false and put in next_query the ",
-        "specific missing information to search for -- a phrase you would expect to appear in ",
-        "the document, not a restatement of the question.")),
+      list(role = "system", content = step_system),
       list(role = "user", content = paste0("Question: ", question)),
-      list(role = "user", content = paste0("<excerpts>\n", body, "\n</excerpts>"))
+      # The question again after the excerpts when there are enough of them to
+      # bury it. Every other reader asks last, through answer_messages(); this
+      # one asked first and then handed over several thousand tokens.
+      list(role = "user", content = paste0("<excerpts>\n", body, "\n</excerpts>",
+                                           restate_tail(body, question, spec$restate)))
     ), schema = schema, schema_name = "iterative_step", model = spec$model,
        max_output = spec$max_answer_tokens, temperature = spec$temperature,
        trace = trace, label = "iterative.step")
@@ -508,19 +616,24 @@ read_iterative <- function(chunks, question, client, spec, trace) {
       }
       break
     }
-    if (isTRUE(out$value$can_answer)) {
+    if (isTRUE(json_field(out$value, "can_answer"))) {
       trace_note(trace, "iterative.stop", list(rounds = rounds, reason = "model satisfied"))
-      return(new_answer(as_chr1(out$value$answer, .NOT_FOUND), "iterative", question,
-                        d$chunk_id[seen], trace,
-                        evidence = evidence_table(d$chunk_id[seen], d$text[seen],
-                                                  d$page[seen], d$section[seen],
+      # `step$rows`, not `seen`: a chunk that did not fit the prompt was never
+      # shown to the model, and reporting it as used -- with a row in the
+      # evidence table -- claims provenance the answer does not have.
+      keep <- step$rows
+      return(new_answer(as_chr1(json_text(out$value, "answer"), .NOT_FOUND), "iterative", question,
+                        d$chunk_id[keep], trace,
+                        evidence = evidence_table(d$chunk_id[keep], d$text[keep],
+                                                  d$page[keep], d$section[keep],
                                                   kind = "verbatim"),
-                        partial = degraded_embed,
+                        partial = degraded_embed || length(dropped) > 0L,
                         notes = list(rounds = rounds, chunks_seen = length(seen),
+                                     chunks_dropped = length(dropped),
                                      queries = queries, stop_reason = "model satisfied",
                                      embedding_fallback = degraded_embed)))
     }
-    nq <- as_chr1(out$value$next_query)
+    nq <- as_chr1(json_text(out$value, "next_query"))
     if (!nzchar(nq) || nq %in% queries) { done_reason <- "query loop"; break }
     queries <- c(queries, nq)
     gr_msg(sprintf("Iterative round %d -> searching for: %s", rounds, substr(nq, 1, 90)))
@@ -532,9 +645,19 @@ read_iterative <- function(chunks, question, client, spec, trace) {
     return(new_answer(.NOT_FOUND, "iterative", question, integer(0), trace, partial = TRUE,
                       notes = list(rounds = rounds, stop_reason = done_reason)))
   }
-  sub <- d[seen, , drop = FALSE]
-  res <- if (trace_can_call(trace)) {
-    gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite),
+  # Fitted, which it never was: every other reader sizes its final prompt to the
+  # budget and this one rendered everything gathered. Several rounds of top_k
+  # chunks routinely exceed the window, and the call was simply rejected by the
+  # provider after the whole loop had been paid for.
+  fbud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens,
+                    overhead = prompt_overhead(question, answer_system(spec$cite), spec$restate))
+  final <- iterative_fit(d, seen, seen_score, fbud$input, spec$context_order)
+  sub <- d[final$rows, , drop = FALSE]
+  res <- if (!nrow(sub)) {
+    gr_result(FALSE, error = "no gathered chunk fits the context window")
+  } else if (trace_can_call(trace)) {
+    gr_call(client, answer_messages(question, final$body, cite = spec$cite,
+                                    restate = spec$restate),
             model = spec$model, max_output = spec$max_answer_tokens,
             temperature = spec$temperature, trace = trace, label = "iterative.final")
   } else gr_result(FALSE, error = "call cap reached before the answer step")
@@ -542,7 +665,8 @@ read_iterative <- function(chunks, question, client, spec, trace) {
              evidence = evidence_table(sub$chunk_id, sub$text, sub$page, sub$section,
                                        kind = "verbatim"),
              partial = TRUE,
-             notes = list(rounds = rounds, chunks_seen = length(seen), queries = queries,
+             notes = list(rounds = rounds, chunks_seen = length(seen),
+                          chunks_dropped = length(final$dropped), queries = queries,
                           stop_reason = done_reason, embedding_fallback = degraded_embed))
 }
 
@@ -791,10 +915,17 @@ read_preview <- function(chunks, question, client, spec, trace) {
   reasons <- rep(NA_character_, n_units)
   degraded <- TRUE
   if (isTRUE(plan$ok)) {
-    tab <- plan$value$sections
-    if (is.data.frame(tab) && nrow(tab) && all(c("id", "treatment") %in% names(tab))) {
+    tab <- json_field(plan$value, "sections", scalar = FALSE)
+    # is.atomic() on both columns: an `id` that arrived as an array becomes a
+    # LIST column, and as.integer() on a list is an error, not a warning, so
+    # suppressWarnings() did not catch it and the reader crashed instead of
+    # taking the degraded path three lines below.
+    if (is.data.frame(tab) && nrow(tab) && all(c("id", "treatment") %in% names(tab)) &&
+        is.atomic(tab$id) && is.atomic(tab$treatment)) {
       ids <- suppressWarnings(as.integer(tab$id))
       tr <- tolower(trimws(as.character(tab$treatment)))
+      # Lengths are equal by construction (columns of one frame), so no
+      # recycling here; `ok` is as long as the plan.
       ok <- !is.na(ids) & ids >= 1L & ids <= n_units & tr %in% c("read", "skim", "skip")
       if (any(ok)) {
         # Last entry wins for a duplicated id, matching the registries' rule.
@@ -814,7 +945,7 @@ read_preview <- function(chunks, question, client, spec, trace) {
   # DEMOTED to skim rather than dropped: the section still gets looked at, for
   # one call, instead of vanishing because the plan was more ambitious than the
   # context window.
-  overhead <- prompt_overhead(question, .gr_prompts$answer_system)
+  overhead <- prompt_overhead(question, answer_system(spec$cite), spec$restate)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   # as.integer(), because `unlist()` on an empty list returns NULL, not
   # integer(0) -- and `fit_chunks()` reads `order %||% seq_len(nrow(df))`, so a
@@ -922,7 +1053,7 @@ read_preview <- function(chunks, question, client, spec, trace) {
   }
 
   res2 <- if (trace_can_call(trace)) {
-    gr_call(client, answer_messages(question, body, cite = spec$cite),
+    gr_call(client, answer_messages(question, body, cite = spec$cite, restate = spec$restate),
             model = spec$model, max_output = spec$max_answer_tokens,
             temperature = spec$temperature, trace = trace, label = "preview.answer")
   } else gr_result(FALSE, error = "call cap reached before the answer step")

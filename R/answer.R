@@ -247,13 +247,48 @@ apply_overrides <- function(rec, overrides) {
   ing_only <- setdiff(ing_f, c(seg_f, rd_f))
 
   ing <- unclass(rec$ingest); seg <- unclass(rec$segment); rd <- unclass(rec$read)
+  # `x[nm] <- list(v)`, not `x[[nm]] <- v`. `[[<-` with a NULL right-hand side
+  # DELETES the element, and gr_recipe() then rebuilds the spec with
+  # do.call(gr_segment_spec, seg), which supplies the constructor's formal
+  # default -- not the recipe's value and not what the constructor would have
+  # made of NULL. `answer_document(f, q, "fast", max_tokens = NULL)` silently
+  # segmented at 1200 tokens instead of the recipe's 4000, and the trace's
+  # `settings` lost the entry too, so the run record no longer said which cap
+  # was used. Fourteen fields were affected.
+  set1 <- function(x, nm, v) { x[nm] <- list(v); x }
+  # NULL is a value only where the constructor itself defaults to NULL -- model,
+  # temperature, skim_model, parallel and the like, where it means "use the
+  # default model / the session option". Anywhere else NULL is not a setting,
+  # and letting it through meant the constructor decided what it meant: a
+  # silent FALSE for prefix_section, a warning and the formal default for
+  # max_tokens, and "Unknown segmenter '<missing>'" for method -- raised after
+  # the document had already been ingested. Refused here, before any work.
+  null_ok <- function(ctor, nm) {
+    f <- formals(ctor)
+    nm %in% names(f) && is.null(f[[nm]])
+  }
   for (nm in names(overrides)) {
     v <- overrides[[nm]]
-    if (nm %in% seg_only)       seg[[nm]] <- v
-    else if (nm %in% rd_only)   rd[[nm]]  <- v
-    else if (nm %in% ing_only)  ing[[nm]] <- v
-    else if (nm == "parallel") { seg$parallel <- v; rd$parallel <- v; ing$parallel <- v }
-    else if (nm == "method")    seg$method <- v
+    if (is.null(v)) {
+      ctor <- if (nm %in% seg_only || nm == "method") gr_segment_spec else
+        if (nm %in% rd_only) gr_read_spec else if (nm %in% ing_only) gr_ingest_spec else NULL
+      if (!is.null(ctor) && nm != "parallel" && !null_ok(ctor, nm)) {
+        gr_abort(sprintf(paste0("`%s = NULL` is not a setting. Leave `%s` out to keep the ",
+                                "recipe's value (%s)."),
+                         nm, nm, paste(format(unclass(
+                           if (identical(ctor, gr_segment_spec)) rec$segment else
+                             if (identical(ctor, gr_read_spec)) rec$read else rec$ingest)[[nm]]),
+                           collapse = ", ")),
+                 class = "gr_bad_override")
+      }
+    }
+    if (nm %in% seg_only)       seg <- set1(seg, nm, v)
+    else if (nm %in% rd_only)   rd  <- set1(rd, nm, v)
+    else if (nm %in% ing_only)  ing <- set1(ing, nm, v)
+    else if (nm == "parallel") { seg <- set1(seg, "parallel", v)
+                                 rd <- set1(rd, "parallel", v)
+                                 ing <- set1(ing, "parallel", v) }
+    else if (nm == "method")    seg <- set1(seg, "method", v)
     else {
       gr_abort(sprintf(paste0("Unknown override '%s'. Ingest fields: %s. Segment fields: %s. ",
                               "Read fields: %s."),

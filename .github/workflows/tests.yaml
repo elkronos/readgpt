@@ -92,6 +92,18 @@ jobs:
             suppressPackageStartupMessages(library(readgpt))
             gr_options(verbose = FALSE, max_cost_usd = NULL,
                        api_base = Sys.getenv("GPTREAD_API_BASE"), max_retries = 0L)
+            # The plain answer every block expects, except that the claims-layer
+            # calls are answered in the shape they ask for -- so the review
+            # walkthrough runs offline, the way the quick start does.
+            reply <- function(m, p) {
+              if (identical(p$schema_name, "claims"))
+                return(paste0("{\"claims\":[{\"claim\":\"Revenue was higher in the south.\",",
+                              "\"kind\":\"finding\",\"supported_by\":[1,2]}]}"))
+              if (identical(p$schema_name, "outline"))
+                return(paste0("{\"sections\":[{\"heading\":\"Findings\",",
+                              "\"brief\":\"How revenue compares\",\"claims\":[1]}]}"))
+              "Revenue was 45.2 million dollars."
+            }
             ran <- 0; skipped <- 0; failed <- character(0)
             starts <- fences[grepl("^```[rR]$", lines[fences])]
             for (s in starts) {
@@ -117,13 +129,41 @@ jobs:
               # whether a block resolved `cl` depended on its position in the
               # file, and a block moved above the first `ans` reference would
               # have failed for no reason a reader could see.
-              assign("cl", gr_mock_client(function(m, p) "Revenue was 45.2 million dollars."),
-                     envir = env)
+              assign("cl", gr_mock_client(reply), envir = env)
               # Lazy: only the blocks that actually reference `ans` pay for it.
               delayedAssign("ans", {
                 answer_document(readgpt_example(), "What was revenue?", "needle",
                                 client = gr_mock_client(function(m, p) "Revenue was 45.2 million dollars."))
               }, assign.env = env)
+              # The review walkthrough continues from a run of your own, as the
+              # quick start continues from `ans`: `protocol`, the extraction `x`,
+              # and the `cm` and `review` built from them. Lazy, like `ans`, and
+              # local(), so nothing but the object itself lands in the block.
+              delayedAssign("protocol", gr_protocol("revenue-review",
+                question = "How did revenue change across the regional reports?",
+                include  = "Reports a revenue figure",
+                fields   = gr_fields(region  = "The region the report covers",
+                                     revenue = gr_field("Revenue in millions", type = "number")),
+                outline  = c(Findings = "How revenue compares across regions")),
+                assign.env = env)
+              delayedAssign("x", local({
+                d <- file.path(tempdir(), "ci-review")
+                dir.create(d, showWarnings = FALSE)
+                writeLines("North region. Revenue was 45.2 million dollars.", file.path(d, "north.txt"))
+                writeLines("South region. Revenue was 51.8 million dollars.", file.path(d, "south.txt"))
+                gr_extract(d, protocol, recipe = "fast", client = gr_mock_client(function(m, p) {
+                  seen <- paste(vapply(m, function(z) as.character(z$content), character(1)),
+                                collapse = " ")
+                  if (grepl("45.2", seen, fixed = TRUE)) "{\"region\":\"north\",\"revenue\":45.2}"
+                  else "{\"region\":\"south\",\"revenue\":51.8}"
+                }))
+              }), eval.env = env, assign.env = env)
+              delayedAssign("cm", gr_claims(x, question = protocol$question, client = cl),
+                            eval.env = env, assign.env = env)
+              delayedAssign("review", gr_synthesise(x, outline = gr_outline(cm, client = cl),
+                                                    question = protocol$question, client = cl,
+                                                    claims = cm),
+                            eval.env = env, assign.env = env)
               # withCallingHandlers, NOT tryCatch(warning=). A warning handler in
               # tryCatch UNWINDS: the block stops at its first warning and is then
               # recorded as having run to completion, so a block that warned and

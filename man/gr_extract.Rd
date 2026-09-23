@@ -15,13 +15,19 @@ gr_extract(
   require_quote = FALSE,
   on_error = c("continue", "stop"),
   max_total_usd = NULL,
+  max_total_calls = NULL,
   keep_answers = FALSE,
   recursive = FALSE,
+  trace = NULL,
   ...
 )
 }
 \arguments{
-\item{sources}{As \code{\link[=gr_read_many]{gr_read_many()}}: file paths, a directory, or raw text.}
+\item{sources}{As \code{\link[=gr_read_many]{gr_read_many()}}: file paths, a directory, or raw text --
+and, additionally, a \code{\link[=gr_screen]{gr_screen()}} result. Passing the screening object
+rather than \code{screened$included} is what carries the search forward, so
+\code{\link[=gr_audit_report]{gr_audit_report()}} can show it and the bibliographic fields the export
+supplied are joined to the table.}
 
 \item{fields}{A \code{\link[=gr_fields]{gr_fields()}} schema, or a \code{\link[=gr_protocol]{gr_protocol()}} -- a protocol
 carries its own schema, question and recipe, so passing one is the same as
@@ -49,6 +55,8 @@ span in the chunk it cited. Off by default: an extracted value is never
 thrown away without being asked for, and \code{n_unverified} makes the same
 problem visible without destroying anything. Turn it on for a protocol that
 says no quote, no datum.}
+
+\item{max_total_calls, trace}{As \code{\link[=gr_read_many]{gr_read_many()}}.}
 
 \item{keep_answers}{Keep the underlying \link{gr_answer} objects in \verb{$answers}.
 They hold every chunk's source text, so for a large corpus this is what

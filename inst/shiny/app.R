@@ -238,8 +238,15 @@ server <- function(input, output, session) {
     if (is.null(client())) {
       showNotification("Enter an API key first.", type = "error"); return()
     }
-    old <- gr_options(max_cost_usd = if (isTruthy(input$max_cost)) input$max_cost else NULL,
-                      parallel = isTRUE(input$parallel))
+    # gr_options() refuses a cost cap it cannot compare, and a refusal raised
+    # here -- outside any tryCatch -- would end the handler with R's error text
+    # instead of a message about the field the user just typed in.
+    cap <- if (isTruthy(input$max_cost)) as.numeric(input$max_cost)[1] else NULL
+    if (!is.null(cap) && (is.na(cap) || cap < 0)) {
+      showNotification("The cost cap must be zero or more, or left blank for none.",
+                       type = "error"); return()
+    }
+    old <- gr_options(max_cost_usd = cap, parallel = isTRUE(input$parallel))
     on.exit(gr_options(old), add = TRUE)
 
     # A blank numericInput sends NA, but before the input has registered it is

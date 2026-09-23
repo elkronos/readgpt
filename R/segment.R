@@ -53,18 +53,30 @@ gr_segment_spec <- function(method = "paragraph", max_tokens = 1200L,
   # ANNOUNCED. Silently rewriting a user's parameter is how v1 ended up feeding
   # documents to the model backwards: a negative token limit went straight into
   # `split(tokens, ceiling(seq_along(tokens) / limit))` with nothing said.
-  max_tokens <- clamp_warn(na_default(max_tokens, 800L, "max_tokens"), 32, 1e6, "max_tokens")
-  overlap_tokens <- clamp_warn(overlap_tokens, 0, max_tokens - 1L, "overlap_tokens")
-  min_tokens <- clamp_warn(min_tokens, 0, max_tokens, "min_tokens")
+  # 1200L, the formal default. This said 800L, so NA and omission gave
+  # different segmentations -- the one mismatch of its kind in the package, and
+  # the reason a test now checks every one of these against formals().
+  max_tokens <- clamp_warn(na_default(max_tokens, 1200L, "max_tokens"), 32, 1e6, "max_tokens")
+  # na_default() on every one of these, as max_tokens above already had.
+  # clamp_warn() maps NA to `lo`, so a missing semantic_percentile became 50 --
+  # splitting at the MEDIAN boundary rather than the 90th percentile, which
+  # multiplies the chunk count and therefore the calls and the cost.
+  overlap_tokens <- clamp_warn(na_default(overlap_tokens, 0L, "overlap_tokens"),
+                               0, max_tokens - 1L, "overlap_tokens")
+  min_tokens <- clamp_warn(na_default(min_tokens, 0L, "min_tokens"), 0, max_tokens, "min_tokens")
   structure(c(list(method = method, max_tokens = max_tokens,
                    overlap_tokens = overlap_tokens, min_tokens = min_tokens,
                    separators = separators, prefix_section = isTRUE(prefix_section),
-                   semantic_window = clamp_warn(semantic_window, 1, 10, "semantic_window"),
-                   semantic_percentile = clamp_warn(semantic_percentile, 50, 99.5,
+                   semantic_window = clamp_warn(na_default(semantic_window, 2L, "semantic_window"),
+                                                1, 10, "semantic_window"),
+                   semantic_percentile = clamp_warn(na_default(semantic_percentile, 90,
+                                                               "semantic_percentile"),
+                                                    50, 99.5,
                                                     "semantic_percentile", integer = FALSE),
                    context_source = context_source,
-                   proposition_batch_tokens = clamp_warn(proposition_batch_tokens, 200, 4000,
-                                                         "proposition_batch_tokens"),
+                   proposition_batch_tokens = clamp_warn(
+                     na_default(proposition_batch_tokens, 900L, "proposition_batch_tokens"),
+                     200, 4000, "proposition_batch_tokens"),
                    parallel = parallel), list(...)),
             class = "gr_segment_spec")
 }

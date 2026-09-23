@@ -276,10 +276,14 @@ test_that("gr_options() survives repeated set-and-restore of a NULL-valued optio
   # "Unknown option(s): NA" -- the second use of the documented pattern, in a
   # function that had already been fixed once for exactly this NULL trap.
   local_registries()
+  # A legal value per option: the numeric ones are validated where they are set
+  # now, so "x" is refused before the round-trip this is testing can happen.
+  fill <- list(embedder = "lexical", temperature = 0.5, max_cost_usd = 1,
+               cache_dir = "x")
   for (opt in c("embedder", "temperature", "max_cost_usd", "cache_dir")) {
     before <- gr_options(opt)
     for (i in 1:3) {
-      old <- do.call(gr_options, stats::setNames(list("x"), opt))
+      old <- do.call(gr_options, stats::setNames(list(fill[[opt]]), opt))
       expect_identical(names(old), opt)
       expect_no_error(gr_options(old))
     }

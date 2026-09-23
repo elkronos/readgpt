@@ -21,6 +21,7 @@ gr_read_spec(
   max_levels = 5L,
   max_rounds = 4L,
   preview_tokens = 1200L,
+  restate = c("auto", "always", "never"),
   members = NULL,
   cite = FALSE,
   skim_model = NULL,
@@ -88,6 +89,12 @@ so every section stays visible to the planner rather than the outline being
 truncated and some sections never being offered to it at all. The planner is
 an LLM call about a long document and so prone to exactly the degradation
 this package manages; keeping its input small is the mitigation.}
+
+\item{restate}{Whether to repeat the question before the excerpts as well as
+after them: \code{"auto"} when the body is long enough to bury the first ask,
+\code{"always"}, or \code{"never"}. A setting rather than a rule, because whether it
+helps is a question about your corpus and your model -- point \code{\link[=gr_compare]{gr_compare()}}
+at two recipes differing only in this and find out.}
 
 \item{members}{For \code{ensemble}: the reader names to combine.}
 

@@ -145,6 +145,11 @@ gr_reader_signature <- function(reader) {
 #'   Costs nothing -- the vectors are already computed. `0.7` is a reasonable
 #'   place to start; `0` selects for novelty alone and will happily pick
 #'   irrelevant chunks because they are different.
+#' @param restate Whether to repeat the question before the excerpts as well as
+#'   after them: `"auto"` when the body is long enough to bury the first ask,
+#'   `"always"`, or `"never"`. A setting rather than a rule, because whether it
+#'   helps is a question about your corpus and your model -- point [gr_compare()]
+#'   at two recipes differing only in this and find out.
 #' @param context_order Where the selected chunks sit in the prompt.
 #'   `"relevance"` (default) is most relevant first; `"document"` restores the
 #'   order they appear in the document, which reads better when chunks are
@@ -215,13 +220,14 @@ gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL
                          mmr = 1, context_order = c("relevance", "document", "edges"),
                          rerank_candidates = 20L, rerank_min_score = 4,
                          fan_in = 5L, max_levels = 5L, max_rounds = 4L,
-                         preview_tokens = 1200L,
+                         preview_tokens = 1200L, restate = c("auto", "always", "never"),
                          members = NULL, cite = FALSE,
                          skim_model = NULL, summary_model = NULL,
                          parallel = NULL, delay_between_calls = 0,
                          on_overflow = c("warn", "error"), ...) {
   on_overflow <- match.arg(on_overflow)
   context_order <- match.arg(context_order)
+  restate <- match.arg(restate)
   warn_near_miss(list(...), names(formals(gr_read_spec)), "read")
   spec <- structure(c(list(
     reader = reader,
@@ -231,13 +237,18 @@ gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL
     max_chunk_tokens = clamp_warn(na_default(max_chunk_tokens, 700L, "max_chunk_tokens"), 16, 1e6, "max_chunk_tokens"),
     max_summary_tokens = clamp_warn(na_default(max_summary_tokens, 500L, "max_summary_tokens"), 16, 1e6, "max_summary_tokens"),
     top_k = clamp_warn(na_default(top_k, 6L, "top_k"), 1, 1e4, "top_k"),
-    min_score = min_score,
+    # -Inf is the documented "no floor", so a value that cannot be compared has
+    # to be refused rather than silently becoming one: a relevance floor that is
+    # not applied is the same failure as a cost ceiling that is not enforced.
+    min_score = if (identical(min_score, -Inf)) -Inf else
+      na_default(min_score, -Inf, "min_score"),
     # NA falls back to the DEFAULT, not to the bottom of the range. clamp_warn()
     # maps NA to `lo`, which for this setting is 0 -- pure diversity, documented
     # as "will happily pick irrelevant chunks because they are different". A
     # missing value must not select the most destructive end of a scale.
     mmr = clamp_warn(na_default(mmr, 1, "mmr"), 0, 1, "mmr", integer = FALSE),
     context_order = context_order,
+    restate = restate,
     rerank_candidates = clamp_warn(na_default(rerank_candidates, 20L, "rerank_candidates"), 1, 1e4, "rerank_candidates"),
     rerank_min_score = clamp_warn(na_default(rerank_min_score, 4, "rerank_min_score"), 0, 10, "rerank_min_score", integer = FALSE),
     fan_in = clamp_warn(na_default(fan_in, 5L, "fan_in"), 2, 32, "fan_in"),
@@ -250,8 +261,8 @@ gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL
     skim_model = skim_model,
     summary_model = summary_model,
     parallel = parallel %||% gr_options("parallel"),
-    delay_between_calls = clamp_warn(delay_between_calls, 0, 600, "delay_between_calls",
-                                     integer = FALSE),
+    delay_between_calls = clamp_warn(na_default(delay_between_calls, 0, "delay_between_calls"),
+                                     0, 600, "delay_between_calls", integer = FALSE),
     on_overflow = on_overflow
   ), list(...)), class = "gr_read_spec")
   registry_get("readers", spec$reader, "readers")   # fail fast on a typo
@@ -352,10 +363,11 @@ preflight <- function(chunks, spec, trace) {
   already <- if (inherits(trace, "gr_trace")) trace$calls else 0L
   if (is.finite(cap) && (already + est_calls) > cap) {
     gr_abort(sprintf(paste0("Reader '%s' over %d chunks would need about %d more model calls ",
-                            "(%d already made this run), above the %d-call cap. Use a larger ",
+                            "(%d already made this run), above the %s-call cap. Use a larger ",
                             "`max_tokens` when segmenting (fewer chunks), pick a top-k reader, ",
                             "or raise gr_options(max_calls = ...)."),
-                     spec$reader, n, est_calls, already, cap), class = "gr_call_cap")
+                     spec$reader, n, est_calls, already, format(cap, scientific = FALSE)),
+             class = "gr_call_cap")
   }
   est_in <- sum(chunks$chunks$tokens) + est_calls * 200L
   # Size the completion estimate by the LARGER of the two caps: only the

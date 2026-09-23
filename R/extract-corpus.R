@@ -24,7 +24,11 @@
 #' every document and returns a tidy table, one row per document and one column
 #' per field, with a separate long table saying where every value came from.
 #'
-#' @param sources As [gr_read_many()]: file paths, a directory, or raw text.
+#' @param sources As [gr_read_many()]: file paths, a directory, or raw text --
+#'   and, additionally, a [gr_screen()] result. Passing the screening object
+#'   rather than `screened$included` is what carries the search forward, so
+#'   [gr_audit_report()] can show it and the bibliographic fields the export
+#'   supplied are joined to the table.
 #' @param fields A [gr_fields()] schema, or a [gr_protocol()] -- a protocol
 #'   carries its own schema, question and recipe, so passing one is the same as
 #'   passing its three parts and it is the shorter way to say it.
@@ -37,6 +41,7 @@
 #' @param client,store,on_error,max_total_usd,recursive As [gr_read_many()].
 #'   `store` is worth setting for anything longer than a coffee break: an
 #'   interrupted extraction resumes instead of restarting.
+#' @param max_total_calls,trace As [gr_read_many()].
 #' @param resolve What to do when two parts of one document give different values
 #'   for the same field. `"first"` (default) takes the earlier one and records
 #'   the disagreement in the `conflicts` column, costing nothing. `"model"`
@@ -145,8 +150,8 @@
 gr_extract <- function(sources, fields, goal = NULL, recipe = "research",
                        client = NULL, store = NULL, resolve = c("first", "model"),
                        require_quote = FALSE, on_error = c("continue", "stop"),
-                       max_total_usd = NULL, keep_answers = FALSE,
-                       recursive = FALSE, ...) {
+                       max_total_usd = NULL, max_total_calls = NULL,
+                       keep_answers = FALSE, recursive = FALSE, trace = NULL, ...) {
   # A protocol is a schema plus the two things a schema cannot say: what the
   # reading is FOR, and how to read it. Unpacked here rather than made a separate
   # argument, because `gr_extract(papers, my_protocol)` reads the way people
@@ -193,13 +198,21 @@ gr_extract <- function(sources, fields, goal = NULL, recipe = "research",
   # It is not a preference: a document restored from `store` hands its answer
   # back or nothing at all, so a resumed run with keep_answers = FALSE would
   # produce a table with empty rows for everything it had already done.
-  bib_from <- if (inherits(sources, "gr_records")) {
-    rr <- sources$records
+  # A gr_screening carries the record set it was run over, so extracting from one
+  # joins the bibliographic fields the export supplied exactly as extracting from
+  # the record set directly does. Without this, routing through screening -- the
+  # normal thing to do -- silently lost the authors and years.
+  bib_src <- if (inherits(sources, "gr_records")) sources else
+    if (inherits(sources, "gr_screening")) sources$records else NULL
+  bib_from <- if (inherits(bib_src, "gr_records")) {
+    rr <- bib_src$records
     rr[is.na(rr$duplicate_of) & !is.na(rr$file), , drop = FALSE]
   } else NULL
+  max_total_calls <- as_call_ceiling(max_total_calls)
   out <- gr_read_many(sources, goal, rec, client = client, store = store,
                       on_error = on_error, max_total_usd = max_total_usd,
-                      keep_answers = TRUE, recursive = recursive, ...)
+                      max_total_calls = max_total_calls, keep_answers = TRUE,
+                      recursive = recursive, trace = trace, ...)
 
   docs <- out$summary$document
   answers <- out$answers[docs]          # NULL for failed and skipped rows
@@ -212,6 +225,8 @@ gr_extract <- function(sources, fields, goal = NULL, recipe = "research",
     fields   = fields,
     summary  = out$summary,
     answers  = if (isTRUE(keep_answers)) out$answers else list(),
+    # As gr_screen(): the search travels with the corpus it produced.
+    records  = out$records,
     trace    = out$trace,
     store    = out$store
   ), class = "gr_extraction")

@@ -52,7 +52,14 @@ as_num1 <- function(x, default = NA_real_) {
 #' @noRd
 as_int1 <- function(x, default = NA_integer_) {
   x <- as_num1(x, NA_real_)
-  if (is.na(x) || is.infinite(x)) default else as.integer(x)
+  if (is.na(x) || is.infinite(x)) return(default)
+  # The range test has to come BEFORE the coercion, not after: as.integer(3e9)
+  # is NA with a warning, so the is.na() guard above ran on the value that could
+  # not yet be NA and the function returned the NA its own contract says it
+  # never returns. gr_screen(screen_tokens = 3e9) then marked every document in
+  # the corpus "failed" with "missing value where TRUE/FALSE needed".
+  if (x > .Machine$integer.max || x < -.Machine$integer.max) return(default)
+  as.integer(x)
 }
 
 #' A short, safe label for whatever the user passed as `source`.
@@ -97,6 +104,24 @@ na_default <- function(x, default, name) {
                     name, format(default)), class = "gr_bad_setting")
   }
   default
+}
+
+#' The OCR threshold, read one way everywhere it is read.
+#'
+#' `gr_inventory()` predicts what ingestion will do, so the two must agree on
+#' what a threshold means: a number of characters, zero or more, where `Inf`
+#' marks every page for OCR. Anything else warns and takes the default. An
+#' integer while it fits one, so the default leaves cache keys as they were.
+#' @noRd
+ocr_threshold <- function(x, default = 40L) {
+  n <- suppressWarnings(as.numeric(x))
+  if (length(n) != 1L || is.na(n) || n < 0) {
+    gr_warn(sprintf(paste0("`ocr_min_chars` must be a number of characters, zero or more; ",
+                           "using the default (%s)."), format(default)),
+            class = "gr_bad_setting")
+    return(default)
+  }
+  if (is.finite(n) && n <= .Machine$integer.max) as.integer(n) else n
 }
 
 #' Vectorised, NA-safe isTRUE.

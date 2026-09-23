@@ -10,8 +10,10 @@ gr_audit_report(
   extraction = NULL,
   synthesis = NULL,
   protocol = NULL,
+  title = NULL,
+  claims = NULL,
   records = NULL,
-  title = NULL
+  calibration = NULL
 )
 }
 \arguments{
@@ -24,12 +26,21 @@ gr_audit_report(
 when the other objects carry its pieces: the criteria as \emph{written} are what
 a reader checks the decisions against.}
 
+\item{title}{A heading for the report.}
+
+\item{claims}{A \code{\link[=gr_claims]{gr_claims()}} result, or \code{NULL} to take the one the synthesis
+carries. It adds the link the rest of the report cannot make: the claim a
+sentence is making, back to the studies meant to support it.}
+
 \item{records}{A \code{\link[=gr_records]{gr_records()}}. Adds the search itself to the report --
 which sources, with what query, on what date -- and starts the flow counts
 at identification. Without one the report says so, because a missing search
 is a defect in the review rather than in the report.}
 
-\item{title}{A heading for the report.}
+\item{calibration}{A \code{\link[=gr_calibrate]{gr_calibrate()}} result, to add a section saying how good
+the screening is: sensitivity, specificity, kappa, and how many eligible
+studies the screener threw away. Without it the report says what the run did
+and nothing about whether it did it well.}
 }
 \value{
 \code{path}, invisibly.

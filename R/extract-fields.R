@@ -29,7 +29,10 @@
 #'   "Number of participants randomised, not the number analysed" earns its
 #'   length.
 #' @param type One of `"string"`, `"integer"`, `"number"`, `"boolean"` or
-#'   `"enum"`.
+#'   `"enum"`. An `"integer"` value above `.Machine$integer.max` is kept as a
+#'   whole double, so that column is a double whenever one such value is
+#'   present. A value that carries more than one number, such as "120 (60 per
+#'   arm)", is recorded as missing rather than run together.
 #' @param values For `type = "enum"`, the permitted values.
 #' @return A `gr_field`.
 #' @seealso [gr_fields()], [gr_extract()]
@@ -223,9 +226,15 @@ coerce_field <- function(value, field) {
     # as.character() to strip punctuation it does not contain costs precision
     # (as.character(1/3) is fifteen digits), and coercion runs again on values
     # that have already been coerced once.
-    integer = { if (is.numeric(v) && is.finite(v)) return(as.integer(round(v)))
+    # Above .Machine$integer.max an integer field is stored as a DOUBLE, not
+    # thrown away. as.integer(3e9) is NA, so a person-days or population count
+    # came out as "not reported" and n_filled dropped to 0 -- the extraction
+    # table said the document was silent about a value it had stated plainly.
+    integer = { big <- function(z) if (abs(z) > .Machine$integer.max) round(z) else
+                                     as.integer(round(z))
+                if (is.numeric(v) && is.finite(v)) return(big(v))
                 n <- numeric_token(as_chr1(v))
-                if (is.null(n) || !is.finite(n)) NULL else as.integer(round(n)) },
+                if (is.null(n) || !is.finite(n)) NULL else big(n) },
     number  = { if (is.numeric(v) && is.finite(v)) return(as.numeric(v))
                 n <- numeric_token(as_chr1(v), exponent = TRUE)
                 if (is.null(n) || !is.finite(n)) NULL else n },
@@ -252,4 +261,23 @@ numeric_token <- function(x, exponent = FALSE) {
   hits <- regmatches(x, gregexpr(pat, x, perl = TRUE))[[1]]
   if (length(hits) != 1L) return(NULL)
   suppressWarnings(as.numeric(gsub(",", "", hits)))
+}
+
+#' A sample-size column read the way [numeric_token()] reads a value.
+#'
+#' A stored `n` is whatever the extraction put there, and that is often
+#' "900 participants" rather than 900. as.numeric() makes that NA, and a weight
+#' built on it then treats a large study as an unreported one.
+#'
+#' Vectorised, and deliberately as strict as numeric_token(): a cell holding two
+#' numbers is a cell this column did not get, not an invitation to guess which
+#' one is the sample size.
+#' @noRd
+n_column <- function(x) {
+  if (is.numeric(x)) return(as.numeric(x))
+  vapply(as.character(x), function(v) {
+    if (is.na(v) || !nzchar(trimws(v))) return(NA_real_)
+    t <- numeric_token(v)
+    if (is.null(t) || !length(t) || !is.finite(t[1])) NA_real_ else as.numeric(t[1])
+  }, numeric(1), USE.NAMES = FALSE)
 }

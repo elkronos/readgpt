@@ -36,7 +36,8 @@ read_screen <- function(chunks, question, client, spec, trace) {
   }
   d <- chunks$chunks
   listing <- criteria_prompt(include, exclude)
-  overhead <- prompt_overhead(paste(question, listing), .gr_prompts$screen_system)
+  # "never": the message list below carries the question once.
+  overhead <- prompt_overhead(paste(question, listing), .gr_prompts$screen_system, "never")
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   cap <- min(bud$input, as_int1(spec[["screen_tokens"]], bud$input))
 
@@ -74,8 +75,11 @@ read_screen <- function(chunks, question, client, spec, trace) {
      temperature = spec$temperature, trace = trace, label = "screen.decide")
 
   v <- if (isTRUE(out$ok)) out$value else list()
-  decision <- screen_decision(v$decision)
-  quote <- as_chr1(v$quote, "")
+  # json_field(): `$` partial-matches, so a reply carrying `decisions` satisfied
+  # a read of `decision` and a real "include" was recorded from a key the schema
+  # never defined.
+  decision <- screen_decision(json_field(v, "decision"))
+  quote <- as_chr1(json_text(v, "quote"), "")
   ev <- if (nzchar(trimws(quote))) {
     evidence_table(sub$chunk_id[1], quote, sub$page[1], sub$section[1],
                    source_text = paste(sub$text, collapse = "\n\n"), kind = "extracted")
@@ -90,8 +94,8 @@ read_screen <- function(chunks, question, client, spec, trace) {
              # title-and-abstract screening is a method, not a defect.
              partial = !isTRUE(out$ok),
              notes = list(decision = decision,
-                          reason = as_chr1(v$reason, NA_character_),
-                          criterion = as_chr1(v$criterion, NA_character_),
+                          reason = as_chr1(json_text(v, "reason"), NA_character_),
+                          criterion = as_chr1(json_text(v, "criterion"), NA_character_),
                           seen_tokens = seen_tokens,
                           document_tokens = as.integer(sum(d$tokens)),
                           truncated = truncated,
@@ -104,6 +108,9 @@ read_screen <- function(chunks, question, client, spec, trace) {
 #' reason for every one, and nothing dropped on the way.
 #'
 #' @param sources As [gr_read_many()]: file paths, a directory, or raw text.
+#' @param max_total_calls,trace As [gr_read_many()]. Pass the same `trace` to
+#'   [gr_extract()] and [gr_synthesise()] and it accumulates the whole review,
+#'   while each stage keeps its own for its own cost and its own ceiling.
 #' @param protocol A [gr_protocol()] carrying the criteria and the review
 #'   question. Give this, or `include`/`exclude` directly.
 #' @param question,include,exclude The review question and the criteria, if you
@@ -125,9 +132,12 @@ read_screen <- function(chunks, question, client, spec, trace) {
 #'       `decision`, `reason`, `criterion`, `quote`, `verified`, `seen_tokens`,
 #'       `document_tokens`, `truncated`, `status`, `duplicate_of`, `error`.}
 #'     \item{`included`}{The distinct sources whose decision was `"include"` --
-#'       the paths, not the display labels, so this is the argument to hand
-#'       straight to [gr_extract()]. Duplicates are left out; they are the same
-#'       study, and `table` still has their rows.}
+#'       the paths, not the display labels. Duplicates are left out; they are
+#'       the same study, and `table` still has their rows. `gr_extract()` takes
+#'       this, but prefer handing it the whole screening object: a character
+#'       vector of paths cannot carry the search, so `gr_extract(screened)`
+#'       keeps it and `gr_extract(screened$included)` does not.}
+#'     \item{`records`}{The [gr_records()] the run was made over, or `NULL`.}
 #'     \item{`summary`,`answers`,`trace`,`store`}{As [gr_extract()].}
 #'   }
 #'
@@ -168,7 +178,8 @@ read_screen <- function(chunks, question, client, spec, trace) {
 gr_screen <- function(sources, protocol = NULL, question = NULL, include = NULL,
                       exclude = NULL, recipe = "research", client = NULL, store = NULL,
                       screen_tokens = NULL, on_error = c("continue", "stop"),
-                      max_total_usd = NULL, keep_answers = FALSE, recursive = FALSE,
+                      max_total_usd = NULL, max_total_calls = NULL,
+                      keep_answers = FALSE, recursive = FALSE, trace = NULL,
                       ...) {
   if (!is.null(protocol)) {
     if (!inherits(protocol, "gr_protocol")) {
@@ -201,9 +212,11 @@ gr_screen <- function(sources, protocol = NULL, question = NULL, include = NULL,
   rec <- gr_recipe(paste0(base$name, "+screen"), ingest = base$ingest,
                    segment = base$segment, read = rd)
 
+  max_total_calls <- as_call_ceiling(max_total_calls)
   out <- gr_read_many(sources, question, rec, client = client, store = store,
                       on_error = on_error, max_total_usd = max_total_usd,
-                      keep_answers = TRUE, recursive = recursive, ...)
+                      max_total_calls = max_total_calls, keep_answers = TRUE,
+                      recursive = recursive, trace = trace, ...)
 
   docs <- out$summary$document
   answers <- out$answers[docs]
@@ -222,6 +235,9 @@ gr_screen <- function(sources, protocol = NULL, question = NULL, include = NULL,
     exclude  = exclude,
     summary  = out$summary,
     answers  = if (isTRUE(keep_answers)) out$answers else list(),
+    # Carried so the audit can show the search without being handed the record
+    # set a second time at the end of a run.
+    records  = out$records,
     trace    = out$trace,
     store    = out$store
   ), class = "gr_screening")

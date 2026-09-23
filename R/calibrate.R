@@ -125,6 +125,9 @@ gr_reference <- function(screening, n = 50, of = c("excluded", "kept", "all"),
   attr(ref, "screened_n") <- sum(judged)
   attr(ref, "seed") <- seed
   class(ref) <- c("gr_reference_frame", "data.frame")
+  # See `[.gr_reference_frame` below: subsetting a classed data frame keeps the
+  # class and drops every other attribute, so a column subset used to hand
+  # gr_calibrate() a frame that still claimed to know where it came from.
 
   if (!is.null(path)) {
     utils::write.csv(ref, path, row.names = FALSE, na = "")
@@ -321,6 +324,17 @@ gr_calibrate <- function(screening, reference, positive = "include", min_positiv
   # chance-corrected agreement, it is arithmetic on a constant.
   kappa <- if (of %in% c("excluded", "kept")) NA_real_ else
     cohen_kappa(model, ifelse(eligible, "include", "exclude"))
+  # A number, compared as a number. `4 >= "10"` is TRUE because R compares as
+  # STRINGS, and as_int1() then turned Inf and anything above 2^31 into the
+  # default of 10 -- so asking for more eligible studies than the sample could
+  # have declared the calibration adequate. A bar that cannot be read falls
+  # back to the default, and says so.
+  min_pos <- suppressWarnings(as.numeric(min_positives))
+  if (length(min_pos) != 1L || is.na(min_pos)) {
+    gr_warn("`min_positives` must be a single number; using the default (10).",
+            class = "gr_bad_setting")
+    min_pos <- 10
+  }
   structure(list(
     counts = counts,
     metrics = metrics,
@@ -329,8 +343,12 @@ gr_calibrate <- function(screening, reference, positive = "include", min_positiv
     disagreements = rows[(eligible & !kept) | (!eligible & strict), , drop = FALSE],
     n = length(model),
     n_positives = n_pos,
-    adequate = n_pos >= min_positives,
-    min_positives = as.integer(min_positives),
+    # as_int1() first. `4 >= "10"` is TRUE -- R compares as STRINGS -- so a
+    # character min_positives declared an inadequate calibration adequate, and
+    # the "too few eligible studies to quote a figure" warning vanished from
+    # print() while the object still displayed 10.
+    adequate = n_pos >= min_pos,
+    min_positives = min_pos,
     frame = list(of = of,
                  frame_n = attr(ref, "frame_n") %||% NA_integer_,
                  screened_n = attr(ref, "screened_n") %||% nrow(tab)),
@@ -418,6 +436,26 @@ cohen_kappa <- function(a, b) {
   pe <- sum(rowSums(m) * colSums(m)) / n^2
   if (isTRUE(all.equal(pe, 1))) return(NA_real_)
   as.numeric((po - pe) / (1 - pe))
+}
+
+#' Subsetting a reference frame gives a plain data frame.
+#'
+#' `[` on an object whose class extends `data.frame` keeps the CLASS and drops
+#' every other attribute -- so `ref[, cols]` came back still claiming to be a
+#' `gr_reference_frame` while `of`, `frame_n`, `screened_n` and `seed` were gone,
+#' and gr_calibrate() then computed the corpus-wide metric set from a stratified
+#' sample. The same trap, and the same fix, as `[.gr_gaps`.
+#' @param x A `gr_reference_frame`.
+#' @param ... Passed to the data frame method.
+#' @return A plain data frame.
+#' @export
+`[.gr_reference_frame` <- function(x, ...) {
+  out <- NextMethod()
+  if (is.data.frame(out)) {
+    class(out) <- "data.frame"
+    for (a in c("of", "frame_n", "screened_n", "seed")) attr(out, a) <- NULL
+  }
+  out
 }
 
 #' @export

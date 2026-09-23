@@ -753,6 +753,57 @@ test_that("a custom segmenter can be written with exported functions only", {
   expect_true("by_bullet" %in% gr_segmenters()$name)
 })
 
+test_that("a registered segmenter's fallback gives one warning, whoever raises it", {
+  local_registries()
+  doc <- gr_ingest(sample_doc(2, 3))
+  # Every gr_segment_fallback warning a call raised, and the chunks.
+  fallbacks <- function(method) {
+    seen <- character(0)
+    out <- withCallingHandlers(
+      gr_segment(doc, list(method = method, max_tokens = 200)),
+      gr_segment_fallback = function(w) {
+        seen <<- c(seen, conditionMessage(w)); invokeRestart("muffleWarning")
+      })
+    list(seen = seen, chunks = out)
+  }
+  to_paragraph <- function(doc, spec, client, trace) {
+    out <- gr_segment(doc, modifyList(unclass(spec), list(method = "paragraph")))
+    out$method <- "mine->paragraph"
+    out
+  }
+
+  # Written as a user writes it: a plain condition of the class, not gr_warn().
+  gr_register_segmenter("says_so", needs_client = TRUE, cost = "llm",
+    fn = function(doc, spec, client, trace) {
+      if (is.null(client)) {
+        warning(warningCondition("No client; using 'paragraph'.",
+                                 class = "gr_segment_fallback"))
+      }
+      to_paragraph(doc, spec, client, trace)
+    })
+  own <- fallbacks("says_so")
+  expect_identical(own$seen, "No client; using 'paragraph'.")
+  expect_equal(own$chunks$method, "mine->paragraph")
+
+  # A silent one gets the generic warning, once, and it travels with the chunks.
+  gr_register_segmenter("silent", needs_client = TRUE, cost = "llm", fn = to_paragraph)
+  quiet_one <- fallbacks("silent")
+  expect_length(quiet_one$seen, 1L)
+  expect_match(quiet_one$seen, "'silent' needs a client and none was supplied", fixed = TRUE)
+  expect_true(any(grepl("'silent' needs a client", quiet_one$chunks$warnings, fixed = TRUE)))
+
+  # A silent segmenter registered under a built-in's name is still warned about.
+  gr_register_segmenter("semantic", needs_client = TRUE, cost = "embedding", fn = to_paragraph)
+  renamed <- fallbacks("semantic")
+  expect_length(renamed$seen, 1L)
+  expect_match(renamed$seen, "'semantic' needs a client and none was supplied", fixed = TRUE)
+
+  # With a client there is nothing to warn about.
+  expect_no_warning(gr_segment(doc, list(method = "silent", max_tokens = 200),
+                               client = mock_echo()),
+                    class = "gr_segment_fallback")
+})
+
 test_that("gr_segment still enforces the cap on a segmenter that ignores it", {
   local_registries()
   gr_register_segmenter("whole_document", description = "one chunk, cap ignored",

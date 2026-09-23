@@ -691,6 +691,14 @@
   string with a directory separator and an unknown extension now raises
   `gr_path_as_text`.
 
+* **A segmenter's fallback gives one warning.** `gr_segment()` decided before a
+  segmenter ran whether to add its own `gr_segment_fallback` warning, from a list
+  of built-in names. A registered segmenter that warned about its own fallback,
+  as `?gr_register_segmenter` advises, got a second warning, and a silent one
+  registered under a built-in's name got none. The generic warning now comes
+  after the segmenter has run, and only when it raised no warning of that class
+  itself.
+
 * **`gr_compare()` answers carry what `answer_document()` answers carry.** They
   had no `$document` and did not resolve evidence to pages. All three entry
   points now finish an answer the same way.

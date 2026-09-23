@@ -111,21 +111,29 @@ gr_segment <- function(doc, spec = NULL, client = NULL, trace = NULL) {
   seg <- registry_get("segmenters", spec$method, "segmenters")
   rec <- warning_recorder()
 
-  if (isTRUE(seg$needs_client) && is.null(client) && !seg$name %in% names(.gr_self_warning_segmenters)) {
-    # The built-ins each emit their own, more specific warning naming what they
-    # fall back TO. Emitting a generic one here as well produced two warnings
-    # for one event, which trains people to ignore both. A third-party segmenter
-    # that declares needs_client and stays silent still gets this one.
-    withCallingHandlers(
-      gr_warn(sprintf("Segmenter '%s' needs a client and none was supplied; it will fall back.",
-                      spec$method), class = "gr_segment_fallback"),
-      gr_warning = rec$record)
-  }
   gr_msg(sprintf("Segmenting with '%s' (cap %d tokens, overlap %d).",
                  spec$method, spec$max_tokens, spec$overlap_tokens))
 
-  out <- withCallingHandlers(seg$fn(doc, spec, client, trace), gr_warning = rec$record)
+  # Whether the segmenter said itself that it fell back, whoever raised the
+  # warning: a registered segmenter cannot call gr_warn(), so its own warning
+  # is a plain condition of the class and not a gr_warning.
+  said_fallback <- FALSE
+  out <- withCallingHandlers(seg$fn(doc, spec, client, trace),
+    gr_warning = rec$record,
+    gr_segment_fallback = function(w) said_fallback <<- TRUE)
   if (!inherits(out, "gr_chunks")) gr_abort(sprintf("Segmenter '%s' did not return a gr_chunks object.", spec$method))
+  # Checked after the segmenter has run, so one fallback gives one warning. The
+  # built-ins name what they fell back to, and so can a registered segmenter;
+  # this generic warning is for one that stays silent. When this was decided
+  # before the call, from a list of built-in names, a registered segmenter that
+  # warned got a second warning and a silent one registered under a built-in's
+  # name got none.
+  if (isTRUE(seg$needs_client) && is.null(client) && !said_fallback) {
+    withCallingHandlers(
+      gr_warn(sprintf("Segmenter '%s' needs a client and none was supplied, so it ran without one.",
+                      spec$method), class = "gr_segment_fallback"),
+      gr_warning = rec$record)
+  }
 
   # Final invariant check. A segmenter that violates the cap is a bug in the
   # segmenter, not something to pass downstream where it becomes an HTTP 400.

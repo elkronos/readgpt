@@ -51,11 +51,13 @@
 #'   UI can warn before it is spent.
 #' @param needs_client Whether the segmenter requires a client. [gr_segmenters()]
 #'   reports it, so a UI can check before offering the strategy. When `TRUE` and
-#'   no client is supplied, [gr_segment()] warns with class
-#'   `"gr_segment_fallback"` before calling `fn`, unless your `fn` emits its own
-#'   fallback warning, which is better, because it can name what it fell back
-#'   *to*. Record the downgrade in the returned `method` (`"mine->paragraph"`)
-#'   so it survives into `gr_chunk_stats()`.
+#'   no client is supplied, [gr_segment()] calls `fn` and then warns with class
+#'   `"gr_segment_fallback"`, unless `fn` raised a warning of that class itself,
+#'   so one fallback gives one warning. Raising your own is better, because it
+#'   can name what `fn` fell back *to*:
+#'   `warning(warningCondition("No client; using 'paragraph'.", class =
+#'   "gr_segment_fallback"))`. Record the downgrade in the returned `method`
+#'   (`"mine->paragraph"`) so it survives into `gr_chunk_stats()`.
 #' @return Invisibly, `name`.
 #' @seealso [new_chunks()] to build the return value, [gr_segmenters()],
 #'   [gr_segment()], [gr_segment_spec()], [gr_recipe()]
@@ -539,8 +541,3 @@ register_builtin_segmenters <- function() {
     description = "Rewrite into standalone factual statements. Expensive; best for dense factual recall.")
   invisible(NULL)
 }
-
-# Built-ins that emit their own, more specific fallback warning. `gr_segment()`
-# skips its generic one for these, so a single event produces a single warning.
-#' @noRd
-.gr_self_warning_segmenters <- list(semantic = TRUE, proposition = TRUE, page = TRUE)

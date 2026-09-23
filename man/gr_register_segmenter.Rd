@@ -29,11 +29,12 @@ UI can warn before it is spent.}
 
 \item{needs_client}{Whether the segmenter requires a client. \code{\link[=gr_segmenters]{gr_segmenters()}}
 reports it, so a UI can check before offering the strategy. When \code{TRUE} and
-no client is supplied, \code{\link[=gr_segment]{gr_segment()}} warns with class
-\code{"gr_segment_fallback"} before calling \code{fn}, unless your \code{fn} emits its own
-fallback warning, which is better, because it can name what it fell back
-\emph{to}. Record the downgrade in the returned \code{method} (\code{"mine->paragraph"})
-so it survives into \code{gr_chunk_stats()}.}
+no client is supplied, \code{\link[=gr_segment]{gr_segment()}} calls \code{fn} and then warns with class
+\code{"gr_segment_fallback"}, unless \code{fn} raised a warning of that class itself,
+so one fallback gives one warning. Raising your own is better, because it
+can name what \code{fn} fell back \emph{to}:
+\code{warning(warningCondition("No client; using 'paragraph'.", class = "gr_segment_fallback"))}. Record the downgrade in the returned \code{method}
+(\code{"mine->paragraph"}) so it survives into \code{gr_chunk_stats()}.}
 }
 \value{
 Invisibly, \code{name}.

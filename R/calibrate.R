@@ -324,6 +324,17 @@ gr_calibrate <- function(screening, reference, positive = "include", min_positiv
   # chance-corrected agreement, it is arithmetic on a constant.
   kappa <- if (of %in% c("excluded", "kept")) NA_real_ else
     cohen_kappa(model, ifelse(eligible, "include", "exclude"))
+  # A number, compared as a number. `4 >= "10"` is TRUE because R compares as
+  # STRINGS, and as_int1() then turned Inf and anything above 2^31 into the
+  # default of 10 -- so asking for more eligible studies than the sample could
+  # have declared the calibration adequate. A bar that cannot be read falls
+  # back to the default, and says so.
+  min_pos <- suppressWarnings(as.numeric(min_positives))
+  if (length(min_pos) != 1L || is.na(min_pos)) {
+    gr_warn("`min_positives` must be a single number; using the default (10).",
+            class = "gr_bad_setting")
+    min_pos <- 10
+  }
   structure(list(
     counts = counts,
     metrics = metrics,
@@ -336,8 +347,8 @@ gr_calibrate <- function(screening, reference, positive = "include", min_positiv
     # character min_positives declared an inadequate calibration adequate, and
     # the "too few eligible studies to quote a figure" warning vanished from
     # print() while the object still displayed 10.
-    adequate = n_pos >= as_int1(min_positives, 10L),
-    min_positives = as_int1(min_positives, 10L),
+    adequate = n_pos >= min_pos,
+    min_positives = min_pos,
     frame = list(of = of,
                  frame_n = attr(ref, "frame_n") %||% NA_integer_,
                  screened_n = attr(ref, "screened_n") %||% nrow(tab)),

@@ -440,7 +440,10 @@ test_that("an unusable setting falls back to its default, whatever kind of unusa
     expect_identical(s$fan_in, 5L)
     expect_identical(s$rerank_candidates, 20L)
   }
-  expect_identical(suppressWarnings(gr_segment_spec("paragraph", max_tokens = NA))$max_tokens, 800L)
+  # The DEFAULT, which is the formal default: this fallback said 800 while the
+  # signature said 1200, so NA and leaving the argument out cut different chunks.
+  expect_identical(suppressWarnings(gr_segment_spec("paragraph", max_tokens = NA))$max_tokens,
+                   formals(gr_segment_spec)$max_tokens)
   # A usable value is still honoured, including one at the destructive extreme.
   expect_identical(gr_read_spec(mmr = 0)$mmr, 0)
   expect_identical(suppressWarnings(gr_read_spec(top_k = 1))$top_k, 1L)

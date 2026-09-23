@@ -786,11 +786,6 @@ parse_response <- function(resp, api) {
             finish_reason = finish, raw = parsed)
 }
 
-#' Pull assistant text out of either API shape.
-#'
-#' Note what this deliberately does NOT do: collapse newlines. The old code ran
-#' `gsub("\n+", " ", result)` on every response, flattening lists, tables and
-#' code blocks into one line.
 #' One field of a parsed model reply, read EXACTLY and shaped.
 #'
 #' Two traps in one place, both with a history here.
@@ -821,6 +816,7 @@ json_field <- function(value, name, default = NULL, scalar = TRUE) {
   v
 }
 
+#' A numeric field, or `default` when the reply's value is not one number.
 #' @noRd
 json_num <- function(value, name, default = NA_real_) {
   v <- json_field(value, name)
@@ -829,6 +825,77 @@ json_num <- function(value, name, default = NA_real_) {
   if (length(n) != 1L || is.na(n) || !is.finite(n)) default else n
 }
 
+#' A TEXT field: everything the reply put there, joined, or `default`.
+#'
+#' Prose is the one kind of field where an array is not a wrong shape. A model
+#' that answers in two sentences may send `["First.", "Second."]`, and reading
+#' only a scalar turned that into "no answer": the iterative reader returned
+#' NOT_IN_DOCUMENT for a question it had answered. Every value is kept, numbers
+#' included, in the order it was written: an answer sent as
+#' `{"participants": 482}` is 482, and losing it is worse than keeping a stray
+#' chunk number beside it.
+#' @noRd
+json_text <- function(value, name, default = NULL) {
+  v <- text_leaves(json_field(value, name, scalar = FALSE))
+  if (!length(v)) default else paste(v, collapse = "\n")
+}
+
+#' The values in a parsed JSON value, as text, in the order they were written.
+#'
+#' `simplifyVector = TRUE` gives one JSON value several R shapes, and each needs
+#' reading in document order: an array of arrays becomes a matrix or array,
+#' which `as.character()` reads column by column, transposing it; an array of
+#' objects becomes a data frame, read here row by row with its list and nested
+#' data-frame columns followed into; a list is read element by element.
+#'
+#' `prefer` names the keys that hold an object's text. An object carrying any of
+#' them is read through those keys only; one carrying none is read through all
+#' of them, so text under an unexpected key is kept rather than lost. With
+#' `object_numbers = FALSE`, a number inside an object is a label -- an `id`, a
+#' page -- and not text. A bare value or array is text whatever its type.
+#' @noRd
+text_leaves <- function(x, prefer = character(0), object_numbers = TRUE,
+                        in_object = FALSE) {
+  if (is.null(x)) return(character(0))
+  again <- function(v, obj) text_leaves(v, prefer, object_numbers, obj)
+  # Decided per OBJECT: a row of a data frame whose text key is empty -- the
+  # reply used a different key for that one -- is read through all its keys.
+  choose <- function(got, nms) {
+    pref <- !is.na(nms) & tolower(nms) %in% prefer
+    if (any(pref & lengths(got) > 0L)) got[pref] else got
+  }
+  if (is.data.frame(x)) {
+    if (!nrow(x) || !ncol(x)) return(character(0))
+    out <- lapply(seq_len(nrow(x)), function(i) {
+      got <- lapply(x, function(col) {
+        # `col[i]` on a nested data-frame column selects its i-th COLUMN.
+        cell <- if (is.data.frame(col)) col[i, , drop = FALSE] else
+          if (is.list(col)) col[[i]] else col[i]
+        again(cell, TRUE)
+      })
+      unlist(choose(got, names(x)), use.names = FALSE)
+    })
+    return(unlist(out, use.names = FALSE) %||% character(0))
+  }
+  # Last index fastest, which is the order the JSON was written in.
+  if (length(dim(x)) > 1L) x <- as.vector(aperm(x))
+  if (is.list(x)) {
+    named <- !is.null(names(x)) && any(nzchar(names(x)))
+    got <- lapply(x, again, obj = in_object || named)
+    if (named) got <- choose(got, names(x))
+    return(unlist(got, use.names = FALSE) %||% character(0))
+  }
+  if (!is.atomic(x)) return(character(0))
+  if (in_object && !object_numbers && !is.character(x)) return(character(0))
+  x <- as.character(x)
+  x[!is.na(x)]
+}
+
+#' Pull assistant text out of either API shape.
+#'
+#' Note what this deliberately does NOT do: collapse newlines. The old code ran
+#' `gsub("\n+", " ", result)` on every response, flattening lists, tables and
+#' code blocks into one line.
 #' @noRd
 extract_text <- function(parsed, api) {
   # `[[` with exact = TRUE throughout. `$` on a list partial-matches, so

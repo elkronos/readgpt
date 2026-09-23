@@ -157,6 +157,11 @@ gr_claims <- function(extraction, question = NULL, protocol = NULL, client = NUL
 
   used <- synth_studies(tab, include_unclear)
   client <- client %||% gr_client(model = model %||% gr_options("model"))
+  # This function's own default, range check and name, not gr_read_spec()'s;
+  # and the budget reserves what the spec settled on. Passed through raw, an NA
+  # reached gr_budget() as the output reserve while the spec said 1500.
+  max_claim_tokens <- clamp_warn(na_default(max_claim_tokens, 1600L, "max_claim_tokens"),
+                                 16, 1e6, "max_claim_tokens")
   spec <- gr_read_spec("stuff", model = model, temperature = temperature,
                        max_answer_tokens = max_claim_tokens)
   trace <- trace %||% gr_trace(meta = list(stage = "claims", question = question,
@@ -169,7 +174,7 @@ gr_claims <- function(extraction, question = NULL, protocol = NULL, client = NUL
   rendered <- render_studies(used, hide = hidden)
   # "never": claims_batch() sends the question once.
   overhead <- prompt_overhead(question, .gr_prompts$claims_system, "never")
-  bud <- gr_budget(spec$model, reserve_output = max_claim_tokens, overhead = overhead)
+  bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   groups <- synth_batches(rendered, bud$input)
 
   raw <- list()
@@ -252,6 +257,10 @@ as_id_list <- function(x, n) {
 
 #' @noRd
 claim_rows <- function(x) {
+  # Exact reads throughout: this is a model's reply, and `$` let `claim_draft`
+  # answer for `claim` and `headings` answer for `heading` -- a key the schema
+  # never defined producing a real row.
+  fx <- function(o, nm) o[[nm, exact = TRUE]]
   if (is.null(x)) return(NULL)
   # A single claim can arrive as a bare named list rather than a one-row frame.
   if (!is.data.frame(x) && is.list(x) && !is.null(names(x))) x <- list(x)
@@ -265,30 +274,30 @@ claim_rows <- function(x) {
     x <- x[vapply(x, function(e) is.list(e) && !is.null(names(e)), logical(1))]
     if (!length(x)) return(NULL)
     flat <- lapply(x, function(e) list(
-      claim = as_chr1(e$claim), kind = as_chr1(e$kind, "finding"),
-      moderator = as_chr1(e$moderator, NA_character_), scope = as_chr1(e$scope, NA_character_),
-      supported_by = list(as_id_list(list(e$supported_by), 1L)[[1]]),
-      contradicted_by = list(as_id_list(list(e$contradicted_by), 1L)[[1]])))
+      claim = as_chr1(fx(e, "claim")), kind = as_chr1(fx(e, "kind"), "finding"),
+      moderator = as_chr1(fx(e, "moderator"), NA_character_), scope = as_chr1(fx(e, "scope"), NA_character_),
+      supported_by = list(as_id_list(list(fx(e, "supported_by")), 1L)[[1]]),
+      contradicted_by = list(as_id_list(list(fx(e, "contradicted_by")), 1L)[[1]])))
     x <- do.call(rbind, lapply(flat, function(e) data.frame(
-      claim = e$claim, kind = e$kind, moderator = e$moderator, scope = e$scope,
+      claim = fx(e, "claim"), kind = fx(e, "kind"), moderator = fx(e, "moderator"), scope = fx(e, "scope"),
       stringsAsFactors = FALSE)))
-    sup <- lapply(flat, function(e) e$supported_by[[1]])
-    con <- lapply(flat, function(e) e$contradicted_by[[1]])
+    sup <- lapply(flat, function(e) fx(e, "supported_by")[[1]])
+    con <- lapply(flat, function(e) fx(e, "contradicted_by")[[1]])
   } else {
     n <- nrow(x)
-    sup <- as_id_list(x$supported_by, n)
-    con <- as_id_list(x$contradicted_by, n)
+    sup <- as_id_list(fx(x, "supported_by"), n)
+    con <- as_id_list(fx(x, "contradicted_by"), n)
     # `%||%` on `claim` as well as the rest: a reply in which NO object carries
     # it gave vapply() a NULL, which is character(0), and data.frame() then died
     # with "arguments imply differing number of rows: 0, 2" instead of warning
     # that no claims came back.
-    x <- data.frame(claim = vapply(x$claim %||% rep(NA, n), as_chr1, character(1),
+    x <- data.frame(claim = vapply(fx(x, "claim") %||% rep(NA, n), as_chr1, character(1),
                                    USE.NAMES = FALSE),
-                    kind = vapply(x$kind %||% rep("finding", n), as_chr1, character(1),
+                    kind = vapply(fx(x, "kind") %||% rep("finding", n), as_chr1, character(1),
                                   USE.NAMES = FALSE),
-                    moderator = vapply(x$moderator %||% rep(NA, n), as_chr1, character(1),
+                    moderator = vapply(fx(x, "moderator") %||% rep(NA, n), as_chr1, character(1),
                                        USE.NAMES = FALSE),
-                    scope = vapply(x$scope %||% rep(NA, n), as_chr1, character(1),
+                    scope = vapply(fx(x, "scope") %||% rep(NA, n), as_chr1, character(1),
                                    USE.NAMES = FALSE),
                     stringsAsFactors = FALSE)
   }
@@ -302,7 +311,7 @@ claim_rows <- function(x) {
   # was all ids and no sentence became a row in `$claims` with an empty claim,
   # and gr_outline() then wrote a section arguing it. outline_rows() has always
   # dropped blank headings; this is the same rule one file over.
-  x <- x[nzchar(trimws(x$claim)), , drop = FALSE]
+  x <- x[nzchar(trimws(fx(x, "claim"))), , drop = FALSE]
   if (!nrow(x)) return(NULL)
   x
 }
@@ -585,17 +594,22 @@ study_weight <- function(used) {
 claim_order <- function(claims, support, weights) {
   if (!nrow(claims)) return(integer(0))
   breadth <- claims$n_support + claims$n_contradict
+  # A study with no weight is UNKNOWN, not weightless: it takes the mean of the
+  # weights that ARE known across the table -- or 1, the middle of
+  # study_weight()'s 0.5-1.5 scale, if none is. Imputing per claim instead gave a
+  # claim whose every weight was missing the mean of nothing, NaN, which
+  # sum(na.rm = TRUE) then made 0: the unknown-becomes-zero pattern this file
+  # documents elsewhere. Unreachable today, because claims_verify() drops claims
+  # citing studies outside the table first; kept honest because that is one
+  # refactor away from being live.
+  known <- weights[!is.na(weights)]
+  neutral <- if (length(known)) mean(known) else 1
   mass <- vapply(claims$claim_id, function(id) {
     s <- support$study[support$claim_id == id]
     if (!length(s)) return(0)
-    w <- weights[as.character(s)]
-    # A study with no weight is UNKNOWN, not weightless. na.rm = TRUE gave it
-    # mass 0 -- the bottom of the scale -- which is the anti-pattern this file
-    # documents elsewhere. Unreachable today, because claims_verify() drops
-    # claims citing studies outside the table before this runs; kept honest
-    # because that is one refactor away from being live.
-    if (anyNA(w)) w[is.na(w)] <- mean(w, na.rm = TRUE)
-    sum(w, na.rm = TRUE)
+    w <- unname(weights[as.character(s)])
+    w[is.na(w)] <- neutral
+    sum(w)
   }, numeric(1))
   order(-breadth, -mass, claims$claim_id)
 }
@@ -716,6 +730,10 @@ gr_outline <- function(claims, question = NULL, client = NULL, model = NULL,
 
 #' @noRd
 outline_rows <- function(x) {
+  # Exact reads throughout: this is a model's reply, and `$` let `claim_draft`
+  # answer for `claim` and `headings` answer for `heading` -- a key the schema
+  # never defined producing a real row.
+  fx <- function(o, nm) o[[nm, exact = TRUE]]
   if (is.null(x)) return(NULL)
   if (!is.data.frame(x) && is.list(x) && !is.null(names(x))) x <- list(x)
   # Same two shapes claim_rows() guards against: a JSON array of strings, and a
@@ -724,18 +742,18 @@ outline_rows <- function(x) {
   if (is.list(x) && !is.data.frame(x)) {
     x <- x[vapply(x, function(e) is.list(e) && !is.null(names(e)), logical(1))]
     if (!length(x)) return(NULL)
-    ids <- lapply(x, function(e) as_id_list(list(e$claims), 1L)[[1]])
+    ids <- lapply(x, function(e) as_id_list(list(fx(e, "claims")), 1L)[[1]])
     out <- do.call(rbind, lapply(x, function(e) data.frame(
-      heading = as_chr1(e$heading), brief = as_chr1(e$brief),
-      rationale = as_chr1(e$rationale, NA_character_), stringsAsFactors = FALSE)))
+      heading = as_chr1(fx(e, "heading")), brief = as_chr1(fx(e, "brief")),
+      rationale = as_chr1(fx(e, "rationale"), NA_character_), stringsAsFactors = FALSE)))
   } else {
     n <- nrow(x)
-    ids <- as_id_list(x$claims, n)
-    out <- data.frame(heading = vapply(x$heading %||% rep(NA, n), as_chr1, character(1),
+    ids <- as_id_list(fx(x, "claims"), n)
+    out <- data.frame(heading = vapply(fx(x, "heading") %||% rep(NA, n), as_chr1, character(1),
                                        USE.NAMES = FALSE),
-                      brief = vapply(x$brief %||% rep(NA, n), as_chr1, character(1),
+                      brief = vapply(fx(x, "brief") %||% rep(NA, n), as_chr1, character(1),
                                      USE.NAMES = FALSE),
-                      rationale = vapply(x$rationale %||% rep(NA, n), as_chr1, character(1),
+                      rationale = vapply(fx(x, "rationale") %||% rep(NA, n), as_chr1, character(1),
                                          USE.NAMES = FALSE),
                       stringsAsFactors = FALSE)
   }

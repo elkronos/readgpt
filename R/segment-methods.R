@@ -432,22 +432,17 @@ seg_contextual <- function(doc, spec, client, trace) {
 #' An array of strings simplifies to a character vector; an array of ARRAYS to a
 #' matrix, which `as.character()` flattens column-major and so transposes; an
 #' array of objects to a data frame, which `as.character()` deparses, putting
-#' the literal text `c("A.", "B.")` into the document. Row-major for the matrix,
-#' the obvious text column for the frame, and nothing at all for anything else.
+#' the literal text `c("A.", "B.")` into the document. [text_leaves()] reads
+#' each shape in the order it was written. An object is read through its text
+#' key when it has one -- `{"statement": ..., "confidence": "high"}` is one
+#' proposition, not two -- and through every string when it has none, so a
+#' proposition under a key nobody anticipated is kept. A number beside the text
+#' is a label, not a proposition.
 #' @noRd
 prop_strings <- function(x) {
-  if (is.null(x)) return(character(0))
-  if (is.matrix(x)) return(as.character(t(x)))
-  if (is.data.frame(x)) {
-    col <- intersect(c("text", "proposition", "sentence"), names(x))
-    return(if (length(col)) as.character(x[[col[1]]]) else character(0))
-  }
-  if (is.list(x)) {
-    x <- unlist(x, use.names = FALSE)
-    if (is.null(x)) return(character(0))
-  }
-  if (!is.atomic(x)) return(character(0))
-  as.character(x)
+  text_leaves(x, prefer = c("text", "proposition", "statement", "sentence", "claim",
+                            "assertion", "content"),
+              object_numbers = FALSE)
 }
 
 #' @noRd
@@ -468,8 +463,15 @@ seg_proposition <- function(doc, spec, client, trace) {
                  required = list("propositions"),
                  properties = list(propositions = list(
                    type = "array", items = list(type = "string"))))
+  # A batch that cannot be decomposed -- the call failed, the run hit its
+  # ceiling, or the reply held nothing usable -- is KEPT AS WRITTEN rather than
+  # dropped. It used to return character(0), so one bad batch in ten silently
+  # removed a tenth of the document from everything downstream; only a run in
+  # which EVERY batch failed noticed, by falling back to sentences. A segmenter
+  # must never lose text.
+  keep <- function(i) list(p = batches$text[i], kept = TRUE)
   res <- gr_lapply(seq_along(batches$text), function(i, trace) {
-    if (!trace_can_call(trace)) return(character(0))
+    if (!trace_can_call(trace)) return(keep(i))
     out <- gr_call_json(client, list(
       list(role = "system", content = paste0(
         "Decompose text into standalone propositions. Each proposition must be a single ",
@@ -479,23 +481,36 @@ seg_proposition <- function(doc, spec, client, trace) {
       list(role = "user", content = batches$text[i])
     ), schema = schema, schema_name = "propositions", trace = trace,
        label = "segment.proposition", max_output = 2000L)
-    if (!out$ok) return(character(0))
+    if (!out$ok) return(keep(i))
     # as.character() on whatever simplifyVector made of it flattened a matrix
     # column-major (transposing the propositions) and deparsed a data frame
     # (putting the literal R expression c("A.", "B.") into the document text).
-    prop_strings(json_field(out$value, "propositions", scalar = FALSE))
+    p <- prop_strings(json_field(out$value, "propositions", scalar = FALSE))
+    p <- p[has_content(p)]
+    if (!length(p)) keep(i) else list(p = p, kept = FALSE)
   }, parallel = spec$parallel, label = "proposition batch", trace = trace)
-  props <- unlist(res, use.names = FALSE)
-  props <- props[has_content(props)]
-  if (!length(props)) {
+  kept <- vapply(res, function(r) isTRUE(r$kept), logical(1))
+  if (all(kept)) {
     gr_warn("Proposition extraction returned nothing; falling back to 'sentence'.",
             class = "gr_segment_fallback")
     out <- seg_sentence(doc, spec, client, trace); out$method <- "proposition->sentence"
     return(out)
   }
+  if (any(kept)) {
+    gr_warn(sprintf(paste0("%d of %d proposition batch(es) could not be decomposed and are kept ",
+                           "as written, so no text is lost; those chunks are paragraphs, not ",
+                           "propositions."), sum(kept), length(kept)),
+            class = "gr_segment_fallback")
+  }
+  props <- unlist(lapply(res, function(r) r$p), use.names = FALSE)
+  props <- props[has_content(props)]
   packed <- pack_units(props, spec$max_tokens, 0L, spec$min_tokens, joiner = "\n")
   out <- new_chunks(packed$text, "proposition", spec)
-  out$extra <- list(propositions = length(props), batches = length(batches$text))
+  # `propositions` counts propositions: a batch kept as written is a paragraph,
+  # and counting it here reported a partly decomposed document as fully done.
+  n_props <- sum(vapply(res[!kept], function(r) length(r$p), integer(1)))
+  out$extra <- list(propositions = n_props, batches = length(batches$text),
+                    batches_kept_as_written = sum(kept))
   out
 }
 

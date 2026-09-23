@@ -24,8 +24,9 @@ everything.}
 \code{gr_options("model")}.}
 
 \item{ocr_min_chars}{A PDF page with fewer than this many characters of
-extractable text is counted as needing OCR. The same default
-\code{\link[=gr_ingest_spec]{gr_ingest_spec()}} uses, so what this predicts is what ingestion will do.}
+extractable text is counted as needing OCR. Read exactly as
+\code{\link[=gr_ingest_spec]{gr_ingest_spec()}} reads it, default included, so what this predicts is
+what ingestion will do.}
 
 \item{max_pdf_pages}{Pages sampled per PDF for the text-layer probe. The
 whole point is to be fast on a big folder; a scan is obvious from a few

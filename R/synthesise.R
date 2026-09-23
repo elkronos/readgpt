@@ -218,6 +218,11 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
   }
 
   client <- client %||% gr_client(model = model %||% gr_options("model"))
+  # This function's own default, range check and name, not gr_read_spec()'s:
+  # passed through raw, an NA fell back to max_answer_tokens' 1500, and any bad
+  # value warned about a setting the caller never used.
+  max_section_tokens <- clamp_warn(na_default(max_section_tokens, 1200L, "max_section_tokens"),
+                                   16, 1e6, "max_section_tokens")
   spec <- gr_read_spec("stuff", model = model, temperature = temperature,
                        max_answer_tokens = max_section_tokens)
   # The parent, not the counter -- see as_parent_trace(). Running the write-up on

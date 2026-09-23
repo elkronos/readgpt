@@ -1229,16 +1229,62 @@ test_that("a limit that cannot be compared is refused where it is set", {
   # file as text, silently removed the cost cap -- $710 against a $5 ceiling.
   # trace_can_call() did the same for max_calls and DISAGREED with preflight(),
   # which parsed a character cap and enforced it: one option, two answers.
-  old <- gr_options(max_cost_usd = 5, max_calls = 400L)
+  old <- gr_options(max_cost_usd = 5, max_calls = 400L, safety_margin = 0.1,
+                    min_output_tokens = 256L, workers = 4L, temperature = NULL)
   on.exit(gr_options(old), add = TRUE)
   for (bad in list(NA, "5", c(1, 2), -1, list(1))) {
     expect_error(gr_options(max_cost_usd = bad), class = "gr_bad_option")
     expect_error(gr_options(max_calls = bad), class = "gr_bad_option")
   }
-  for (bad in list(NA, "x", -1, Inf)) {
-    expect_error(gr_options(safety_margin = bad), class = "gr_bad_option")
-    expect_error(gr_options(min_output_tokens = bad), class = "gr_bad_option")
+  # A CEILING refuses what it cannot compare, because ignoring it spends money.
+  # A TUNING knob is different: every value it can hold is safe, so an unusable
+  # one warns and leaves the setting as it was, and an out-of-range one is
+  # clamped into range -- the cost of refusing is a crashed script over a retry
+  # count. "As it was", not the package default: from 0.3, a stray NA dropping
+  # the margin to 0.1 pushes every input budget up.
+  gr_options(safety_margin = 0.3, min_output_tokens = 512L, workers = 8L)
+  for (bad in list(NA, "x", c(1, 2))) {
+    expect_warning(gr_options(safety_margin = bad), class = "gr_bad_option")
+    expect_equal(gr_options("safety_margin"), 0.3)
+    expect_warning(gr_options(min_output_tokens = bad), class = "gr_bad_option")
+    expect_equal(gr_options("min_output_tokens"), 512)
+    expect_warning(gr_options(workers = bad), class = "gr_bad_option")
+    expect_equal(gr_options("workers"), 8)
   }
+  # A number written as text is that number, as it is for gr_budget().
+  expect_no_warning(gr_options(safety_margin = "0.2"))
+  expect_equal(gr_options("safety_margin"), 0.2)
+  expect_warning(gr_options(safety_margin = -1), class = "gr_bad_option")
+  expect_equal(gr_options("safety_margin"), 0)
+  expect_warning(gr_options(safety_margin = Inf), class = "gr_bad_option")
+  expect_equal(gr_options("safety_margin"), 0.5)
+  # The range is the one the code that reads the option clamps to, so the
+  # warning's "using N" is the value actually used.
+  expect_warning(gr_options(workers = 2000), "using 32", class = "gr_bad_option")
+  expect_equal(gr_options("workers"), 32)
+  old_r <- gr_options()[c("max_retries", "retry_pause_base", "request_timeout")]
+  on.exit(gr_options(old_r), add = TRUE)
+  expect_warning(gr_options(max_retries = 50), "using 10", class = "gr_bad_option")
+  expect_equal(gr_options("max_retries"), 10)
+  expect_identical(gr_client(api_key = "k")$max_retries, 10L)
+  expect_warning(gr_options(retry_pause_base = 700), "using 60\\.", class = "gr_bad_option")
+  expect_equal(gr_options("retry_pause_base"), 60)
+  expect_equal(gr_client(api_key = "k")$retry_pause_base, 60)
+  expect_warning(gr_options(request_timeout = 1e5), "using 3600", class = "gr_bad_option")
+  expect_equal(gr_client(api_key = "k")$timeout, 3600)
+  expect_warning(gr_options(min_output_tokens = -1), "using 0", class = "gr_bad_option")
+  expect_equal(gr_options("min_output_tokens"), 0)
+  gr_options(old_r)
+  # Inf is "no limit" only for a ceiling. For temperature it went on the wire
+  # as "temperature":"Inf".
+  expect_warning(gr_options(temperature = Inf), class = "gr_bad_option")
+  expect_equal(gr_options("temperature"), 2)
+  gr_options(temperature = NULL)
+  expect_null(gr_options("temperature"))
+  # And an in-range whole number is not reported as out of range because it
+  # arrived as an integer: max(4L, 1) is a double, and identical(4, 4L) is FALSE.
+  expect_no_warning(gr_options(workers = 4L, max_retries = 3L, min_output_tokens = 512L))
+  gr_options(safety_margin = 0.1, min_output_tokens = 256L, workers = 4L)
   # NULL and Inf are the two explicit ways to say "no limit", and both survive.
   gr_options(max_cost_usd = NULL)
   expect_null(gr_options("max_cost_usd"))
@@ -1344,9 +1390,435 @@ test_that("a NULL override does not silently reset a recipe field", {
   # segmentation changed with no warning, and the trace's `settings` lost the
   # entry too, so the run record no longer said which cap was used.
   r <- readgpt:::as_recipe("fast")
-  out <- quiet(readgpt:::apply_overrides(r, list(max_tokens = NULL)))
-  expect_true("max_tokens" %in% names(unclass(out$segment)))
-  # And the constructor is the one that decides what NULL means, loudly.
-  expect_warning(readgpt:::apply_overrides(r, list(max_tokens = NULL)),
-                 class = "gr_bad_setting")
+  for (nm in c("max_tokens", "method", "prefix_section", "reader", "top_k")) {
+    expect_error(readgpt:::apply_overrides(r, stats::setNames(list(NULL), nm)),
+                 class = "gr_bad_override", info = nm)
+  }
+  # NULL IS a setting where the constructor's own default is NULL -- "the
+  # session's model", "no separate skim model" -- and there an override of NULL
+  # replaces the recipe's value with whatever the constructor makes of NULL.
+  for (nm in c("model", "skim_model", "summary_model")) {
+    set <- readgpt:::apply_overrides(r, stats::setNames(list("gpt-4o"), nm))
+    expect_identical(unclass(set$read)[[nm]], "gpt-4o")
+    back <- readgpt:::apply_overrides(set, stats::setNames(list(NULL), nm))
+    expect_identical(unclass(back$read)[[nm]], unclass(gr_read_spec())[[nm]], info = nm)
+  }
+  set <- readgpt:::apply_overrides(r, list(temperature = 0.7))
+  expect_null(unclass(readgpt:::apply_overrides(set, list(temperature = NULL))$read)$temperature)
+  set <- readgpt:::apply_overrides(r, list(parallel = TRUE))
+  back <- readgpt:::apply_overrides(set, list(parallel = NULL))
+  expect_identical(unclass(back$segment)$parallel, unclass(gr_segment_spec())$parallel)
+  expect_identical(unclass(back$read)$parallel, unclass(gr_read_spec())$parallel)
+  # Through the public entry point too: refused before anything is read.
+  f <- withr::local_tempfile(fileext = ".txt")
+  writeLines(paste(rep("A paragraph about revenue.", 50), collapse = " "), f)
+  expect_error(answer_document(f, "q", "fast", client = mock_echo(), max_tokens = NULL),
+               class = "gr_bad_override")
+  expect_error(quiet(answer_document(f, "q", "fast", client = mock_echo(), skim_model = NULL)), NA)
+})
+
+test_that("a text field that arrives as an array is joined, not discarded", {
+  # A scalar-only read of `answer` returned NULL for ["...", "..."], and the
+  # iterative reader then reported NOT_IN_DOCUMENT for a document that answered.
+  doc <- paste(rep(paste("The cohort comprised 482 participants across nine sites.",
+                         "Adherence exceeded 91 percent in the treatment arm."), 20),
+               collapse = "\n\n")
+  ch <- quiet(gr_segment(quiet(gr_ingest(doc)), list(method = "paragraph", max_tokens = 120)))
+  cl <- gr_mock_client(function(messages, params) {
+    if (grepl("reading iteratively", messages[[1]]$content, fixed = TRUE)) {
+      return('{"can_answer": true, "answer": ["The sample size was 482.", "Nine sites."], "next_query": ""}')
+    }
+    "x"
+  })
+  a <- quiet(gr_read(ch, "How many?", cl, gr_read_spec("iterative", max_rounds = 3)))
+  expect_identical(a$answer, "The sample size was 482.\nNine sites.")
+  expect_false(a$partial)
+  # The same for the next search: an array of terms is one query, not the end
+  # of the loop.
+  k <- new.env(); k$n <- 0L
+  cl2 <- gr_mock_client(function(messages, params) {
+    if (grepl("reading iteratively", messages[[1]]$content, fixed = TRUE)) {
+      k$n <- k$n + 1L
+      if (k$n == 1L) return('{"can_answer": false, "answer": "", "next_query": ["nine sites", "cohort"]}')
+      return('{"can_answer": true, "answer": "482.", "next_query": ""}')
+    }
+    "x"
+  })
+  a <- quiet(gr_read(ch, "How many?", cl2, gr_read_spec("iterative", max_rounds = 3)))
+  expect_identical(a$notes$queries, c("How many?", "nine sites\ncohort"))
+
+  # json_text() itself: exact key, NAs dropped, nothing usable is the default.
+  jt <- readgpt:::json_text
+  expect_identical(jt(list(answer = list("a", "b")), "answer"), "a\nb")
+  expect_identical(jt(list(answers = "a"), "answer", "none"), "none")
+  expect_identical(jt(list(answer = c(NA, "z")), "answer"), "z")
+  expect_identical(jt(list(answer = list()), "answer", "none"), "none")
+  expect_identical(jt(list(answer = NA), "answer", "none"), "none")
+  expect_identical(jt(list(answer = 3), "answer"), "3")
+  # Everything in a prose field is kept, numbers included, in the order it was
+  # written: an answer of {"participants": 482} is 482, not "no answer".
+  f <- jsonlite::fromJSON
+  expect_identical(jt(f('{"answer":{"participants":482}}'), "answer"), "482")
+  expect_identical(jt(f('{"answer":{"value":482,"unit":"participants"}}'), "answer"),
+                   "482\nparticipants")
+  expect_identical(jt(f('{"answer":[{"part":"A","n":1},{"part":"B","n":2}]}'), "answer"),
+                   "A\n1\nB\n2")
+  obj <- gr_mock_client(function(messages, params) {
+    if (grepl("reading iteratively", messages[[1]]$content, fixed = TRUE)) {
+      return('{"can_answer": true, "answer": {"participants": 482}, "next_query": ""}')
+    }
+    "x"
+  })
+  expect_identical(quiet(gr_read(ch, "How many?", obj,
+                                 gr_read_spec("iterative", max_rounds = 3)))$answer, "482")
+
+  # And the screener's reason and criterion, which are what the flow diagram
+  # counts exclusions by.
+  d <- withr::local_tempdir()
+  writeLines("A randomised trial of 482 adults found a benefit.", file.path(d, "a.txt"))
+  sc_cl <- gr_mock_client(function(messages, params)
+    paste0('{"decision":"exclude","reason":["Not randomised.","No control group."],',
+           '"criterion":["Randomised comparison","Adults"],',
+           '"quote":["A randomised trial of 482 adults found a benefit."]}'))
+  sc <- quiet(gr_screen(d, question = "Q?", include = "Randomised comparison", client = sc_cl))
+  expect_identical(sc$table$reason, "Not randomised.\nNo control group.")
+  expect_identical(sc$table$criterion, "Randomised comparison\nAdults")
+  expect_true(sc$table$verified)
+})
+
+test_that("a proposition batch that cannot be decomposed is kept as written", {
+  # A batch whose call failed, or whose reply held nothing usable, returned
+  # character(0): one bad batch in ten silently removed a tenth of the document
+  # from everything downstream. Only a run in which EVERY batch failed noticed.
+  k <- new.env(); k$n <- 0L
+  cl <- gr_mock_client(function(messages, params) {
+    k$n <- k$n + 1L
+    if (k$n %% 2L == 1L) '{"propositions":["The trial enrolled 482 adults."]}' else "not json"
+  })
+  two <- paste(c(paste(rep("The trial enrolled 482 adults at nine sites across the region.", 40),
+                       collapse = " "),
+                 paste(rep("Mortality fell by 31 percent in the treatment arm of the trial.", 40),
+                       collapse = " ")), collapse = "\n\n")
+  expect_warning(
+    s <- suppressMessages(gr_segment(quiet(gr_ingest(two)),
+                                     list(method = "proposition", proposition_batch_tokens = 400),
+                                     client = cl)),
+    "2 of 4 proposition batch(es) could not be decomposed", fixed = TRUE)
+  expect_true(any(grepl("Mortality fell by 31 percent in the treatment arm", s$chunks$text,
+                        fixed = TRUE)))
+  expect_identical(s$method, "proposition")
+  expect_identical(s$extra$batches_kept_as_written, 2L)
+  # A kept batch is a paragraph, so it is not counted as a proposition.
+  expect_identical(s$extra$propositions, 2L)
+
+  # Every shape a model has returned for the list, and none of it lost.
+  ps <- readgpt:::prop_strings
+  expect_identical(ps(jsonlite::fromJSON('[{"text":"B1."},{"proposition":"B2."}]')),
+                   c("B1.", "B2."))
+  expect_identical(ps(jsonlite::fromJSON('[{"text":["B1.","B2."]},{"text":"B3."}]')),
+                   c("B1.", "B2.", "B3."))
+  expect_identical(ps(jsonlite::fromJSON('[{"p":{"text":"B1."}},{"p":{"text":"B2."}}]')),
+                   c("B1.", "B2."))
+  expect_identical(ps(matrix(c("a", "b", "c", "d"), nrow = 2, byrow = TRUE)),
+                   c("a", "b", "c", "d"))
+  expect_identical(ps(list("a", NA, list("b"))), c("a", "b"))
+  # An object is read through its text key when it has one: an `id`, a page
+  # label or a confidence beside a proposition is not a proposition -- and ids
+  # of mixed type arrive as strings, so "only strings" alone would not do.
+  f <- jsonlite::fromJSON
+  expect_identical(ps(f('[{"id":1,"text":"B1."},{"id":"2","text":"B2."}]')), c("B1.", "B2."))
+  expect_identical(ps(f('[{"text":"B1.","page":{"n":3,"label":"iii"}}]')), "B1.")
+  expect_identical(ps(f('[{"statement":"S.","confidence":"high"}]')), "S.")
+  # ... and through every string when it has none, per object, so a key nobody
+  # anticipated loses nothing.
+  expect_identical(ps(f('[{"text":"B1."},{"other":"B2."}]')), c("B1.", "B2."))
+  expect_identical(ps(f('[{"claimtext":"C1.","n":3}]')), "C1.")
+  # Row by row, and an array of any depth in the order it was written.
+  expect_identical(ps(f('[{"text":"A1","sentence":"A2"},{"text":"B1","sentence":"B2"}]')),
+                   c("A1", "A2", "B1", "B2"))
+  expect_identical(ps(f('[[["a","b"],["c","d"]],[["e","f"],["g","h"]]]')),
+                   c("a", "b", "c", "d", "e", "f", "g", "h"))
+})
+
+test_that("a rerank score that was never given is not a score", {
+  paras <- paste(c("Alpha", "Beta", "Gamma", "Delta"),
+                 "site enrolled adults into the trial and followed every one of them",
+                 "for two full years before the final visit.")
+  ch <- quiet(gr_segment(quiet(gr_ingest(paste(paras, collapse = "\n\n"))),
+                         list(method = "paragraph", max_tokens = 40)))
+  expect_equal(nrow(ch$chunks), 4L)        # one site per chunk, or the rules below blur
+  scorer <- function(rule) gr_mock_client(function(messages, params) {
+    if (grepl("Rate how useful", messages[[1]]$content, fixed = TRUE)) {
+      ex <- messages[[3]]$content
+      return(rule(ex))
+    }
+    "ANSWER"
+  })
+  spec <- function(...) gr_read_spec("rerank", rerank_candidates = 4L, top_k = 4L, ...)
+
+  # Nothing judged -- two calls unusable, two failed -- degrades and says so.
+  # Testing "all failed" and "all unusable" separately left this mix falling
+  # through both, and the run answered NOT_IN_DOCUMENT without a word.
+  mixed <- scorer(function(ex) if (grepl("Alpha|Gamma", ex)) "not json" else '{"score":"high"}')
+  expect_warning(r <- suppressMessages(gr_read(ch, "How many?", mixed, spec())),
+                 class = "gr_rerank_degraded")
+  expect_identical(r$answer, "ANSWER")
+  expect_true(r$partial)
+  expect_true(r$notes$degraded_to_bm25)
+
+  # A failed call is not a score of 0: at rerank_min_score = 0 it used to pass
+  # the threshold as a model-judged chunk no model had read.
+  half <- scorer(function(ex) if (grepl("Alpha", ex)) "not json" else '{"score":0,"reason":"r"}')
+  r <- quiet(gr_read(ch, "How many?", half, spec(rerank_min_score = 0)))
+  expect_false(any(grepl("Alpha", r$evidence$quote, fixed = TRUE)))
+  expect_true(r$partial)          # one candidate was never judged
+  expect_identical(r$notes$scoring_failures, 1L)
+
+  # Partly judged and nothing passed: the negative rests on part of the list.
+  low <- scorer(function(ex) if (grepl("Alpha", ex)) "not json" else '{"score":1,"reason":"r"}')
+  r <- quiet(gr_read(ch, "What colour?", low, spec()))
+  expect_identical(r$answer, "NOT_IN_DOCUMENT")
+  expect_true(r$partial)
+
+  # Every candidate judged and every score low is a CORRECT negative.
+  none <- scorer(function(ex) '{"score":1,"reason":["no","nothing here"]}')
+  r <- quiet(gr_read(ch, "What colour?", none, spec()))
+  expect_identical(r$answer, "NOT_IN_DOCUMENT")
+  expect_false(r$partial)
+  # Whatever the model's own `reason` says: outcomes are counted from what
+  # happened to the call, not from words a model wrote.
+  odd <- scorer(function(ex) '{"score":1,"reason":"unscorable"}')
+  r <- quiet(gr_read(ch, "What colour?", odd, spec()))
+  expect_false(r$partial)
+  expect_identical(r$notes$unscorable, 0L)
+
+  # A candidate the call cap stopped judged nothing either. gr_read()'s
+  # pre-flight check keeps this from happening through the front door, so the
+  # reader is driven directly: two calls allowed, four candidates.
+  old <- gr_options(max_calls = 2)
+  on.exit(gr_options(old), add = TRUE)
+  zero <- scorer(function(ex) '{"score":0,"reason":"r"}')
+  r <- quiet(readgpt:::read_rerank(ch, "How many?", zero, spec(rerank_min_score = 0), gr_trace()))
+  expect_length(r$chunks_used, 2L)
+  expect_true(r$partial)
+  # And with nothing over the bar, "not in the document" rests on half the list.
+  r <- quiet(readgpt:::read_rerank(ch, "How many?", zero, spec(rerank_min_score = 4), gr_trace()))
+  expect_identical(r$answer, "NOT_IN_DOCUMENT")
+  expect_true(r$partial)
+})
+
+test_that("max_pdf_pages = Inf samples every page, and NA is the default", {
+  skip_if_not_installed("pdftools")
+  d <- withr::local_tempdir()
+  pf <- file.path(d, "paper.pdf")
+  grDevices::pdf(pf, width = 8, height = 11)
+  for (i in 1:6) {
+    graphics::plot.new()
+    # Over 100 characters: compared as TEXT, "1xx" sorts before "40".
+    if (i > 3) graphics::text(0.5, 0.5, cex = 0.5, paste(
+      "Page", i, "has plenty of text for the probe to find, well over a hundred",
+      "characters of it, on one line."))
+  }
+  grDevices::dev.off()
+  st <- function(v) quiet(gr_inventory(d, max_pdf_pages = v))$files$status
+  expect_identical(st(3L), "needs_ocr")      # the first three pages are blank
+  expect_identical(st(Inf), "ready")         # documented: Inf reads every page
+  expect_identical(st(1e10), "ready")
+  expect_warning(gr_inventory(d, max_pdf_pages = NA), class = "gr_bad_setting")
+  expect_identical(st(NA), "needs_ocr")      # the default, 3
+  # ocr_min_chars is a count: as text it was compared as text, and "40" made a
+  # page with a text layer look like a scan; NA failed every PDF.
+  txt <- function(v) quiet(gr_inventory(d, max_pdf_pages = Inf, ocr_min_chars = v))$files$status
+  expect_identical(txt("40"), "ready")
+  expect_warning(gr_inventory(d, max_pdf_pages = Inf, ocr_min_chars = NA), class = "gr_bad_setting")
+  expect_identical(txt(NA), "ready")
+  # And read exactly as ingestion reads it, or the survey predicts nothing:
+  # Inf marks every page for OCR in both, and a negative count is refused by
+  # both.
+  expect_identical(txt(Inf), "needs_ocr")
+  expect_identical(gr_ingest_spec(ocr_min_chars = Inf)$ocr_min_chars, Inf)
+  expect_warning(gr_ingest_spec(ocr_min_chars = -5), class = "gr_bad_setting")
+  expect_identical(quiet(gr_ingest_spec(ocr_min_chars = -5))$ocr_min_chars, 40L)
+  expect_identical(formals(gr_inventory)$ocr_min_chars, formals(gr_ingest_spec)$ocr_min_chars)
+  # Ingestion takes the Inf it was given: as.integer(Inf) is NA, and the OCR
+  # decision `nchar < NA` then stopped the read.
+  expect_error(quiet(gr_ingest(pf, spec = gr_ingest_spec(ocr_min_chars = Inf))), NA)
+})
+
+test_that("an adequacy bar that cannot be met is not met, and the report still renders", {
+  tab <- data.frame(document = paste0("d", 1:8, ".pdf"),
+                    decision = c("include", "include", "unclear", "exclude",
+                                 "exclude", "exclude", "include", "exclude"),
+                    stringsAsFactors = FALSE)
+  ref <- data.frame(document = paste0("d", 1:8, ".pdf"),
+                    human_decision = c("include", "exclude", "include", "exclude",
+                                       "exclude", "include", "include", "exclude"),
+                    stringsAsFactors = FALSE)
+  sc <- structure(list(table = tab), class = "gr_screening")
+  cal <- quiet(gr_calibrate(sc, ref, min_positives = Inf))
+  expect_false(cal$adequate)
+  expect_identical(cal$min_positives, Inf)
+  p <- withr::local_tempfile(fileext = ".html")
+  expect_error(quiet(gr_audit_report(p, screening = sc, calibration = cal)), NA)
+  expect_true(file.exists(p))
+
+  cls <- character(0)
+  cal <- withCallingHandlers(suppressMessages(gr_calibrate(sc, ref, min_positives = NA)),
+                             warning = function(w) {
+                               cls <<- c(cls, class(w))
+                               invokeRestart("muffleWarning")
+                             })
+  expect_true("gr_bad_setting" %in% cls)
+  expect_identical(cal$min_positives, 10)
+  expect_false(cal$adequate)
+
+  # Enough eligible studies to clear the default bar: Inf must still not be
+  # cleared. Read as an integer it became the default, 10, and a sample of
+  # twelve was declared adequate against a bar nobody can reach.
+  n <- 30L
+  hum <- rep(c("include", "exclude"), c(12L, 18L))
+  big_sc <- structure(list(table = data.frame(document = paste0("e", seq_len(n), ".pdf"),
+                                              decision = hum, stringsAsFactors = FALSE)),
+                      class = "gr_screening")
+  big_ref <- data.frame(document = paste0("e", seq_len(n), ".pdf"), human_decision = hum,
+                        stringsAsFactors = FALSE)
+  expect_true(quiet(gr_calibrate(big_sc, big_ref))$adequate)
+  expect_false(quiet(gr_calibrate(big_sc, big_ref, min_positives = Inf))$adequate)
+  expect_false(quiet(gr_calibrate(big_sc, big_ref, min_positives = 3e9))$adequate)
+})
+
+test_that("two values that differ past the seventh digit are two values", {
+  vk <- readgpt:::value_key
+  expect_false(identical(vk(0.123456789), vk(0.123456781)))
+  expect_false(identical(vk(3000000001), vk(3000000002)))
+  expect_identical(vk(3000000001), "3000000001")
+  expect_identical(vk(2L), "2")
+  expect_identical(vk(0.5), "0.5")
+  expect_identical(vk("a"), "a")
+
+  # format() showed both as 3e+09: the conflict went unreported, and once it
+  # was reported the adjudicating model was offered two identical options.
+  fl <- withr::local_tempfile(fileext = ".txt")
+  writeLines(c(paste(rep("We enrolled 3000000001 person-days in site A.", 30), collapse = " "), "",
+               paste(rep("We enrolled 3000000002 person-days in site B.", 30), collapse = " ")), fl)
+  seen <- new.env(); seen$choose <- character(0)
+  cc <- gr_mock_client(function(messages, params) {
+    t <- paste(vapply(messages, function(z) as.character(z$content), character(1)), collapse = " ")
+    if (grepl("Choose the", t, fixed = TRUE)) {
+      seen$choose <- t
+      return('{"choices": 2}')          # not the schema's key
+    }
+    if (grepl("3000000002", t, fixed = TRUE)) {
+      '{"n": 3000000002, "n__quote": "We enrolled 3000000002 person-days in site B."}'
+    } else '{"n": 3000000001, "n__quote": "We enrolled 3000000001 person-days in site A."}'
+  })
+  x <- quiet(gr_extract(fl, gr_fields(n = gr_field("Person-days", type = "integer")), client = cc,
+                        recipe = "fast", method = "paragraph", max_tokens = 200, resolve = "model"))
+  expect_identical(x$table$conflicts, "n")
+  expect_true(grepl("1. 3000000001", seen$choose, fixed = TRUE))
+  expect_true(grepl("2. 3000000002", seen$choose, fixed = TRUE))
+  # `choices` is not `choice`: the first value seen stands, as for no answer.
+  # identical(), not equal(): the two differ by 1 part in 3e9, inside
+  # expect_equal()'s tolerance.
+  expect_identical(x$table$n, 3000000001)
+})
+
+test_that("gr_budget takes the session's margin when it is given none it can use", {
+  old <- gr_options(safety_margin = 0.3)
+  on.exit(gr_options(old), add = TRUE)
+  expect_equal(gr_budget("gpt-4o", overhead = 200)$margin, 0.3)
+  expect_equal(quiet(gr_budget("gpt-4o", overhead = 200, safety_margin = NA))$margin, 0.3)
+  expect_warning(gr_budget("gpt-4o", overhead = 200, safety_margin = NA), class = "gr_bad_setting")
+  expect_equal(gr_budget("gpt-4o", overhead = 200, safety_margin = 0.2)$margin, 0.2)
+  # Overhead: absent is zero, and a number written as text is that number.
+  expect_equal(gr_budget("gpt-4o", overhead = NULL)$input, gr_budget("gpt-4o", overhead = 0)$input)
+  expect_equal(gr_budget("gpt-4o", overhead = "200")$input, gr_budget("gpt-4o", overhead = 200)$input)
+  # But one number: the first of c(100, 9000) left 9000 tokens uncounted, and a
+  # factor's first level is 1 whatever its label says.
+  expect_error(gr_budget("gpt-4o", overhead = c(100, 9000)), class = "gr_budget_error")
+  expect_error(gr_budget("gpt-4o", overhead = factor("300")), class = "gr_budget_error")
+  # An output reserve nobody can read takes the default reserve, not clamp()'s
+  # floor of ONE token.
+  expect_warning(b <- gr_budget("gpt-4o", reserve_output = NA), class = "gr_bad_setting")
+  expect_identical(b$output, gr_budget("gpt-4o")$output)
+  expect_gt(b$output, 1L)
+})
+
+test_that("a study whose weight is unknown counts as an average one, not a weightless one", {
+  claims <- data.frame(claim_id = 1:3, n_support = c(2L, 2L, 1L), n_contradict = 0L)
+  support <- data.frame(claim_id = c(1, 1, 2, 2, 3), study = c(1, 2, 3, 4, 5))
+  # Claim 1's studies are both unknown; claim 2's are known and light. Imputing
+  # within the claim gave the mean of nothing, NaN, which sum(na.rm = TRUE) made
+  # 0 -- so claim 1 ranked below claim 2 on no evidence at all.
+  w <- c(`1` = NA, `2` = NA, `3` = 0.6, `4` = 0.6, `5` = 1.5)
+  expect_identical(readgpt:::claim_order(claims, support, w), c(1L, 2L, 3L))
+  # With no weight known anywhere, every study counts the same.
+  expect_identical(readgpt:::claim_order(claims, support, c(`1` = NA, `2` = NA, `3` = NA,
+                                                          `4` = NA, `5` = NA)), c(1L, 2L, 3L))
+})
+
+test_that("a model's claim or heading is read by its own key and no other", {
+  # `$` let `claim_draft` answer for `claim` and `headings` for `heading`, so a
+  # key the schema never defined produced a real row.
+  expect_null(readgpt:::claim_rows(list(list(claim_draft = "X helps.", supported_by = 1))))
+  expect_null(readgpt:::claim_rows(data.frame(claim_draft = "X helps.", supported_by = 1)))
+  ok <- readgpt:::claim_rows(data.frame(claim = "X helps.", supported_by = 1))
+  expect_identical(ok$claim, "X helps.")
+  expect_equal(nrow(readgpt:::outline_rows(list(list(headings = "H", brief = "b", claims = 1)))), 0L)
+  expect_equal(nrow(readgpt:::outline_rows(data.frame(headings = "H", brief = "b", claims = 1))), 0L)
+})
+
+test_that("every setting's missing-value fallback is its formal default", {
+  # The fallback is written out by hand, apart from the signature, and the two
+  # drifted: gr_segment_spec(max_tokens = NA) cut 800-token chunks while leaving
+  # the argument out cut 1200-token ones.
+  found <- list()
+  walk <- function(e) {
+    if (!is.call(e)) return(invisible())
+    if (identical(e[[1]], as.name("na_default")) && is.name(e[[2]])) {
+      found[[length(found) + 1L]] <<- e
+    }
+    invisible(lapply(as.list(e)[-1], function(x) if (!missing(x)) walk(x)))
+  }
+  checked <- character(0)
+  for (fn in c("gr_ingest_spec", "gr_segment_spec", "gr_read_spec")) {
+    f <- get(fn, envir = asNamespace("readgpt"))
+    found <- list()
+    walk(body(f))
+    for (cl in found) {
+      arg <- as.character(cl[[2]])
+      if (!arg %in% names(formals(f))) next
+      expect_equal(as.numeric(eval(cl[[3]])), as.numeric(eval(formals(f)[[arg]])),
+                   info = paste0(fn, "(", arg, ")"))
+      checked <- c(checked, paste0(fn, "(", arg, ")"))
+    }
+  }
+  expect_gte(length(checked), 20L)
+  expect_true("gr_segment_spec(max_tokens)" %in% checked)
+  # And the functions that hand a token count on to gr_read_spec() settle an
+  # NA against their OWN default, and range-check it, under their own name:
+  # gr_read_spec() would warn about `max_answer_tokens`, which the caller never
+  # passed.
+  for (fn in c("gr_claims", "gr_synthesise")) {
+    f <- get(fn, envir = asNamespace("readgpt"))
+    found <- list()
+    walk(body(f))
+    args <- vapply(found, function(cl) as.character(cl[[2]]), character(1))
+    tok <- grep("_tokens$", names(formals(f)), value = TRUE)
+    expect_true(all(tok %in% args), info = fn)
+    src <- paste(deparse(body(f)), collapse = " ")
+    for (a in tok) expect_true(grepl(sprintf('clamp_warn\\(na_default\\(%s, [^)]*\\), [^)]*"%s"\\)',
+                                             a, a), src), info = paste(fn, a))
+    for (cl in found) {
+      arg <- as.character(cl[[2]])
+      if (arg %in% tok) {
+        expect_equal(as.numeric(eval(cl[[3]])), as.numeric(eval(formals(f)[[arg]])),
+                     info = paste0(fn, "(", arg, ")"))
+      }
+    }
+  }
+  # NULL is not a setting here any more than NA is: it warns and takes the
+  # default, as it does for every other argument with a non-NULL default.
+  expect_warning(s <- gr_read_spec("retrieve", min_score = NULL), class = "gr_bad_setting")
+  expect_identical(s$min_score, -Inf)
 })

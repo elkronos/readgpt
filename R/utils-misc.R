@@ -106,6 +106,24 @@ na_default <- function(x, default, name) {
   default
 }
 
+#' The OCR threshold, read one way everywhere it is read.
+#'
+#' `gr_inventory()` predicts what ingestion will do, so the two must agree on
+#' what a threshold means: a number of characters, zero or more, where `Inf`
+#' marks every page for OCR. Anything else warns and takes the default. An
+#' integer while it fits one, so the default leaves cache keys as they were.
+#' @noRd
+ocr_threshold <- function(x, default = 40L) {
+  n <- suppressWarnings(as.numeric(x))
+  if (length(n) != 1L || is.na(n) || n < 0) {
+    gr_warn(sprintf(paste0("`ocr_min_chars` must be a number of characters, zero or more; ",
+                           "using the default (%s)."), format(default)),
+            class = "gr_bad_setting")
+    return(default)
+  }
+  if (is.finite(n) && n <= .Machine$integer.max) as.integer(n) else n
+}
+
 #' Vectorised, NA-safe isTRUE.
 #' @noRd
 isTRUE_vec <- function(x) !is.na(x) & as.logical(x)

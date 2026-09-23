@@ -53,7 +53,10 @@ gr_segment_spec <- function(method = "paragraph", max_tokens = 1200L,
   # ANNOUNCED. Silently rewriting a user's parameter is how v1 ended up feeding
   # documents to the model backwards: a negative token limit went straight into
   # `split(tokens, ceiling(seq_along(tokens) / limit))` with nothing said.
-  max_tokens <- clamp_warn(na_default(max_tokens, 800L, "max_tokens"), 32, 1e6, "max_tokens")
+  # 1200L, the formal default. This said 800L, so NA and omission gave
+  # different segmentations -- the one mismatch of its kind in the package, and
+  # the reason a test now checks every one of these against formals().
+  max_tokens <- clamp_warn(na_default(max_tokens, 1200L, "max_tokens"), 32, 1e6, "max_tokens")
   # na_default() on every one of these, as max_tokens above already had.
   # clamp_warn() maps NA to `lo`, so a missing semantic_percentile became 50 --
   # splitting at the MEDIAN boundary rather than the 90th percentile, which

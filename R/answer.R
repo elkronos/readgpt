@@ -256,8 +256,32 @@ apply_overrides <- function(rec, overrides) {
   # `settings` lost the entry too, so the run record no longer said which cap
   # was used. Fourteen fields were affected.
   set1 <- function(x, nm, v) { x[nm] <- list(v); x }
+  # NULL is a value only where the constructor itself defaults to NULL -- model,
+  # temperature, skim_model, parallel and the like, where it means "use the
+  # default model / the session option". Anywhere else NULL is not a setting,
+  # and letting it through meant the constructor decided what it meant: a
+  # silent FALSE for prefix_section, a warning and the formal default for
+  # max_tokens, and "Unknown segmenter '<missing>'" for method -- raised after
+  # the document had already been ingested. Refused here, before any work.
+  null_ok <- function(ctor, nm) {
+    f <- formals(ctor)
+    nm %in% names(f) && is.null(f[[nm]])
+  }
   for (nm in names(overrides)) {
     v <- overrides[[nm]]
+    if (is.null(v)) {
+      ctor <- if (nm %in% seg_only || nm == "method") gr_segment_spec else
+        if (nm %in% rd_only) gr_read_spec else if (nm %in% ing_only) gr_ingest_spec else NULL
+      if (!is.null(ctor) && nm != "parallel" && !null_ok(ctor, nm)) {
+        gr_abort(sprintf(paste0("`%s = NULL` is not a setting. Leave `%s` out to keep the ",
+                                "recipe's value (%s)."),
+                         nm, nm, paste(format(unclass(
+                           if (identical(ctor, gr_segment_spec)) rec$segment else
+                             if (identical(ctor, gr_read_spec)) rec$read else rec$ingest)[[nm]]),
+                           collapse = ", ")),
+                 class = "gr_bad_override")
+      }
+    }
     if (nm %in% seg_only)       seg <- set1(seg, nm, v)
     else if (nm %in% rd_only)   rd  <- set1(rd, nm, v)
     else if (nm %in% ing_only)  ing <- set1(ing, nm, v)

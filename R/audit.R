@@ -548,9 +548,11 @@ audit_calibration <- function(calibration) {
                          "sampled from: %s.</p>"),
                   calibration$n, calibration$n_positives, esc(as_chr1(calibration$frame$of, "all")))
   warn <- if (!isTRUE(calibration$adequate)) sprintf(
-    paste0("<p class='flag'>Only %d eligible record(s) in the sample, below the %d this ",
+    paste0("<p class='flag'>Only %d eligible record(s) in the sample, below the %s this ",
            "calibration asks for. The intervals are too wide to conclude much.</p>"),
-    calibration$n_positives, calibration$min_positives)
+    # %s and format(), not %d: min_positives is a double now, and may be Inf --
+    # "never adequate" -- which %d refuses outright, taking the report with it.
+    calibration$n_positives, format(calibration$min_positives))
   kap <- if (!is.na(calibration$kappa))
     sprintf("<p><b>Cohen's kappa:</b> %.2f</p>", calibration$kappa)
   proj <- if (!is.null(calibration$projected)) {

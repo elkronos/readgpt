@@ -51,8 +51,9 @@
 #' @param model Model id used for the cost floor. Defaults to
 #'   `gr_options("model")`.
 #' @param ocr_min_chars A PDF page with fewer than this many characters of
-#'   extractable text is counted as needing OCR. The same default
-#'   [gr_ingest_spec()] uses, so what this predicts is what ingestion will do.
+#'   extractable text is counted as needing OCR. Read exactly as
+#'   [gr_ingest_spec()] reads it, default included, so what this predicts is
+#'   what ingestion will do.
 #' @param max_pdf_pages Pages sampled per PDF for the text-layer probe. The
 #'   whole point is to be fast on a big folder; a scan is obvious from a few
 #'   pages. `Inf` reads every page.
@@ -110,6 +111,21 @@
 #' inv$files[, c("file", "folder", "ext", "status", "tokens")]
 gr_inventory <- function(sources, recursive = TRUE, model = NULL,
                          ocr_min_chars = 40L, max_pdf_pages = 3L) {
+  # Both checked once, up front, rather than per file: NA or a non-number falls
+  # back to the default with one warning, and Inf keeps its documented meaning.
+  # A number written as text is read as a number -- compared as text, an
+  # `ocr_min_chars` of "40" made a page of 120 characters look like a scan.
+  mpp <- suppressWarnings(as.numeric(max_pdf_pages))
+  if (length(mpp) != 1L || is.na(mpp) || mpp < 1) {
+    gr_warn("`max_pdf_pages` must be a positive number or Inf; using the default (3).",
+            class = "gr_bad_setting")
+    mpp <- 3
+  }
+  max_pdf_pages <- mpp
+  # Read exactly as gr_ingest_spec() reads it, so the survey's "needs_ocr" is
+  # what ingestion will then do.
+  ocr_min_chars <- ocr_threshold(ocr_min_chars)
+
   is_dir <- is.character(sources) && length(sources) == 1L && !is.na(sources) &&
     dir.exists(sources)
   root <- if (is_dir) sources else NA_character_
@@ -329,13 +345,14 @@ probe_pdf <- function(path, ocr_min_chars, max_pdf_pages) {
   if (is.na(n)) {
     return(list(status = "unreadable", tokens = NA_real_, note = "could not open the PDF"))
   }
-  # as_int1(), and a default rather than "no cap": is.finite(NA) is FALSE, so a
-  # missing max_pdf_pages read EVERY page of every PDF -- the opposite of what
-  # the parameter is for -- and as.integer(1e10) is NA, so seq_len(NA) threw and
-  # the file was reported unreadable with a $0 cost floor. gr_inventory() is the
-  # before-you-spend estimate; it must not report a corpus as free.
-  cap <- as_int1(max_pdf_pages, 3L)
-  take <- if (is.na(cap)) seq_len(n) else seq_len(min(n, max(1L, cap)))
+  # A double, not an integer: Inf is documented as "sample every page", and
+  # as_int1() turns both Inf and 1e10 into its default, while as.integer(1e10)
+  # is NA and seq_len(NA) throws. gr_inventory() has already replaced NA and
+  # non-numbers with the default of 3, so a missing value never arrives here to
+  # be read as "no cap" -- which would read every page of every PDF, the
+  # opposite of what the setting is for.
+  cap <- as.numeric(max_pdf_pages)
+  take <- if (!is.finite(cap) || cap >= n) seq_len(n) else seq_len(max(1L, floor(cap)))
   pg <- tryCatch(pdftools::pdf_text(path)[take], error = function(e) NULL)
   if (is.null(pg)) {
     return(list(status = "unreadable", tokens = NA_real_, pages = n,

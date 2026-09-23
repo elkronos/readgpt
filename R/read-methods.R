@@ -65,8 +65,11 @@ read_stuff <- function(chunks, question, client, spec, trace) {
 read_map_reduce <- function(chunks, question, client, spec, trace) {
   d <- chunks$chunks
   if (!trace_can_call(trace, nrow(d))) {
-    gr_warn(sprintf("map_reduce needs %d calls but the run cap is %d; reduce the chunk count or raise gr_options(max_calls=).",
-                    nrow(d), gr_options("max_calls")), class = "gr_call_cap")
+    # %s, not %d: max_calls is a whole DOUBLE, and %d refuses one beyond the
+    # integer range.
+    gr_warn(sprintf("map_reduce needs %d calls but the run cap is %s; reduce the chunk count or raise gr_options(max_calls=).",
+                    nrow(d), format(gr_options("max_calls"), scientific = FALSE)),
+            class = "gr_call_cap")
   }
   res <- gr_lapply(seq_len(nrow(d)), function(i, trace) {
     if (!trace_can_call(trace)) return(list(ok = FALSE, text = "", capped = TRUE))
@@ -311,8 +314,13 @@ read_rerank <- function(chunks, question, client, spec, trace) {
                  properties = list(
                    score = list(type = "integer", minimum = 0, maximum = 10),
                    reason = list(type = "string")))
+  # `status` records what happened to each candidate. It is kept apart from
+  # `reason`, which is the model's own words and can say anything -- including
+  # "unscorable" -- so counting outcomes by matching it counted a judged chunk
+  # as an unjudged one.
   scored <- gr_lapply(cand, function(i, trace) {
-    if (!trace_can_call(trace)) return(list(i = i, score = 0, reason = "call cap reached"))
+    # A call that was never made judged nothing: NA, like a failed one.
+    if (!trace_can_call(trace)) return(list(i = i, score = NA_real_, status = "capped"))
     out <- gr_call_json(client, list(
       list(role = "system", content = paste0(
         "Rate how useful an excerpt is for answering a question. 0 = irrelevant, ",
@@ -322,42 +330,54 @@ read_rerank <- function(chunks, question, client, spec, trace) {
     ), schema = schema, schema_name = "relevance",
        model = spec$skim_model %||% spec$model, max_output = 200L,
        temperature = spec$temperature, trace = trace, label = "rerank.score")
-    if (!out$ok) return(list(i = i, score = 0, reason = "scoring failed"))
+    # NA, not 0. A failed call judged nothing, and scoring it 0 put it through
+    # the threshold at rerank_min_score = 0 as a model-judged score for a chunk
+    # no model had read -- and kept it out of the "was anything judged?" test
+    # below, so a run of failed calls mixed with unusable replies neither
+    # degraded nor warned.
+    if (!out$ok) return(list(i = i, score = NA_real_, status = "failed"))
     # A score that is not a number is not a score. as.numeric("high") is NA, and
     # NA then went through `keep_sc >= thresh` as an NA LOGICAL -- which selects
     # rather than drops -- so `[chunk NA]` reached the prompt and the model
     # answered the question with no document in front of it, partial = FALSE.
     sc <- json_num(out$value, "score", NA_real_)
-    list(i = i, score = sc, reason = if (is.na(sc)) "unscorable" else
-           as_chr1(json_field(out$value, "reason")))
+    list(i = i, score = sc, status = if (is.na(sc)) "unscorable" else "scored")
   }, parallel = spec$parallel, label = "rerank candidate", trace = trace)
 
   sc <- vapply(scored, function(s) as.numeric(s$score)[1], numeric(1))
   ii <- vapply(scored, function(s) s$i, numeric(1))
-  n_failed <- sum(vapply(scored, function(s) isTRUE(s$reason == "scoring failed"), logical(1)))
-  n_unscorable <- sum(is.na(sc))
+  status <- vapply(scored, function(s) as_chr1(s$status, "failed"), character(1))
+  n_failed <- sum(status == "failed")
+  n_unscorable <- sum(status == "unscorable")
+  n_capped <- sum(status == "capped")
   degraded <- FALSE
-  # A call that succeeded and returned an unusable score is the same situation
-  # as one that failed: nothing was judged. Treated the same way, and said,
-  # rather than letting NA scores through to be selected by a comparison.
-  if (n_failed < length(scored) && n_unscorable == length(scored)) {
-    gr_warn(paste0("Every rerank score came back unusable -- a value that is not a number ",
-                   "between 0 and 10. Falling back to the BM25 prefilter ranking, which is ",
-                   "lexical, not model-judged."), class = "gr_rerank_degraded")
+  # ONE test: was anything judged at all? Testing "every call failed" and
+  # "every score was unusable" separately left the mixed case -- some of each --
+  # falling through both, so the run returned NOT_IN_DOCUMENT with no warning
+  # for a document no model had scored.
+  if (all(is.na(sc))) {
+    # Every scoring call failed, typically an endpoint without structured output
+    # support, or every reply was unusable. Degrade to the BM25 prefilter order
+    # and SAY SO, rather than reporting "nothing relevant" for a document that
+    # was never actually scored.
+    why <- c(if (n_failed) sprintf("%d call(s) failed", n_failed),
+             if (n_unscorable) sprintf("%d returned a value that is not a number between 0 and 10",
+                                       n_unscorable),
+             if (n_capped) sprintf("%d not made because the call cap was reached", n_capped))
+    gr_warn(if (n_failed == length(scored))
+              paste0("Every rerank scoring call failed (does this endpoint support JSON schema ",
+                     "output?). Falling back to the BM25 prefilter ranking, which is lexical, ",
+                     "not model-judged.")
+            else paste0("No rerank score came back usable (", paste(why, collapse = ", "),
+                        "). Falling back to the BM25 prefilter ranking, which is lexical, ",
+                        "not model-judged."),
+            class = "gr_rerank_degraded")
     sc <- pre[cand]
     degraded <- TRUE
   }
-  if (n_failed == length(scored)) {
-    # Every scoring call failed -- typically an endpoint without structured
-    # output support. Degrade to the BM25 prefilter order and SAY SO, rather
-    # than reporting "nothing relevant" for a document that was never
-    # actually scored.
-    gr_warn(paste0("Every rerank scoring call failed (does this endpoint support JSON schema ",
-                   "output?). Falling back to the BM25 prefilter ranking, which is lexical, ",
-                   "not model-judged."), class = "gr_rerank_degraded")
-    sc <- pre[cand]
-    degraded <- TRUE
-  }
+  # Some candidates were never judged: the ranking is incomplete, and whatever
+  # it concludes -- including "nothing relevant" -- rests on part of the list.
+  unjudged <- !degraded && (n_failed + n_unscorable + n_capped) > 0L
   ord <- order(sc, decreasing = TRUE)
   keep_ord <- ii[ord]
   keep_sc <- sc[ord]
@@ -369,8 +389,12 @@ read_rerank <- function(chunks, question, client, spec, trace) {
   # and the answer came back partial = FALSE.
   keep_ord <- keep_ord[!is.na(keep_sc) & keep_sc >= thresh]
   if (!length(keep_ord)) {
+    # Partial only when something was not judged. Every candidate scored and
+    # every score low is a CORRECT negative, and marking it partial put a right
+    # answer and a broken one in the same bucket -- the distinction the screen
+    # reader draws for "unclear", and the one `partial` exists to make.
     return(new_answer(.NOT_FOUND, "rerank", question, integer(0), trace,
-                      partial = TRUE,
+                      partial = unjudged,
                       notes = list(candidates = m, scoring_failures = n_failed,
                                    unscorable = n_unscorable,
                                    reason = sprintf("no candidate scored >= %g", thresh))))
@@ -395,9 +419,10 @@ read_rerank <- function(chunks, question, client, spec, trace) {
   new_answer(if (res$ok) res$text else .NOT_FOUND, "rerank", question, sub$chunk_id, trace,
              evidence = evidence_table(sub$chunk_id, sub$text, sub$page, sub$section,
                                        sc[match(fit$idx, ii)], kind = "verbatim"),
-             partial = !res$ok || degraded,
+             partial = !res$ok || degraded || unjudged,
              notes = list(chunks = nrow(d), candidates = m, used = nrow(sub),
-                          scoring_failures = n_failed, degraded_to_bm25 = degraded))
+                          scoring_failures = n_failed, unscorable = n_unscorable,
+                          degraded_to_bm25 = degraded))
 }
 
 # ---------------------------------------------------------------------------
@@ -597,7 +622,7 @@ read_iterative <- function(chunks, question, client, spec, trace) {
       # shown to the model, and reporting it as used -- with a row in the
       # evidence table -- claims provenance the answer does not have.
       keep <- step$rows
-      return(new_answer(as_chr1(json_field(out$value, "answer"), .NOT_FOUND), "iterative", question,
+      return(new_answer(as_chr1(json_text(out$value, "answer"), .NOT_FOUND), "iterative", question,
                         d$chunk_id[keep], trace,
                         evidence = evidence_table(d$chunk_id[keep], d$text[keep],
                                                   d$page[keep], d$section[keep],
@@ -608,7 +633,7 @@ read_iterative <- function(chunks, question, client, spec, trace) {
                                      queries = queries, stop_reason = "model satisfied",
                                      embedding_fallback = degraded_embed)))
     }
-    nq <- as_chr1(json_field(out$value, "next_query"))
+    nq <- as_chr1(json_text(out$value, "next_query"))
     if (!nzchar(nq) || nq %in% queries) { done_reason <- "query loop"; break }
     queries <- c(queries, nq)
     gr_msg(sprintf("Iterative round %d -> searching for: %s", rounds, substr(nq, 1, 90)))

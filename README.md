@@ -286,7 +286,9 @@ back to `paragraph`; `semantic`, `proposition` and `contextual(context_source =
 "llm")` need a client and fall back without one. Every fallback warns, and the
 downgrade is recorded: in `$method` for `page`, `semantic` and `proposition`
 (e.g. `"semantic->paragraph"`), and in `$extra$context_source` for `contextual`,
-which keeps its method name because only its blurb source changed.
+which keeps its method name because only its blurb source changed. A
+`proposition` batch that cannot be decomposed is kept as written rather than
+dropped, with a warning, and counted in `$extra$batches_kept_as_written`.
 
 Orthogonal to the method: `max_tokens` (always enforced, on every segmenter),
 plus `overlap_tokens` and `min_tokens` — honoured everywhere except `page`
@@ -556,7 +558,10 @@ gr_options(max_cost_usd = 5,     # refuse a run whose pre-flight estimate exceed
 
 `max_calls` is re-checked before every subsequent call, so a run that hits it
 mid-flight returns a `partial` answer with `notes$call_cap_reached` rather than
-continuing to spend. Both raise a classed error naming the option to change.
+continuing to spend. Both raise a classed error naming the option to change. A
+ceiling is checked when you set it: `NA`, text or a negative number is refused,
+because a limit that cannot be compared is not a limit. `NULL` or `Inf` removes
+it.
 
 `gr_budget()` is the single arithmetic chokepoint for context math and is
 incapable of returning a non-positive input budget — it raises an actionable

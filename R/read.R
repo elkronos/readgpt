@@ -363,10 +363,11 @@ preflight <- function(chunks, spec, trace) {
   already <- if (inherits(trace, "gr_trace")) trace$calls else 0L
   if (is.finite(cap) && (already + est_calls) > cap) {
     gr_abort(sprintf(paste0("Reader '%s' over %d chunks would need about %d more model calls ",
-                            "(%d already made this run), above the %d-call cap. Use a larger ",
+                            "(%d already made this run), above the %s-call cap. Use a larger ",
                             "`max_tokens` when segmenting (fewer chunks), pick a top-k reader, ",
                             "or raise gr_options(max_calls = ...)."),
-                     spec$reader, n, est_calls, already, cap), class = "gr_call_cap")
+                     spec$reader, n, est_calls, already, format(cap, scientific = FALSE)),
+             class = "gr_call_cap")
   }
   est_in <- sum(chunks$chunks$tokens) + est_calls * 200L
   # Size the completion estimate by the LARGER of the two caps: only the

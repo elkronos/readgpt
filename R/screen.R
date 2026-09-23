@@ -79,7 +79,7 @@ read_screen <- function(chunks, question, client, spec, trace) {
   # a read of `decision` and a real "include" was recorded from a key the schema
   # never defined.
   decision <- screen_decision(json_field(v, "decision"))
-  quote <- as_chr1(json_field(v, "quote"), "")
+  quote <- as_chr1(json_text(v, "quote"), "")
   ev <- if (nzchar(trimws(quote))) {
     evidence_table(sub$chunk_id[1], quote, sub$page[1], sub$section[1],
                    source_text = paste(sub$text, collapse = "\n\n"), kind = "extracted")
@@ -94,8 +94,8 @@ read_screen <- function(chunks, question, client, spec, trace) {
              # title-and-abstract screening is a method, not a defect.
              partial = !isTRUE(out$ok),
              notes = list(decision = decision,
-                          reason = as_chr1(json_field(v, "reason"), NA_character_),
-                          criterion = as_chr1(json_field(v, "criterion"), NA_character_),
+                          reason = as_chr1(json_text(v, "reason"), NA_character_),
+                          criterion = as_chr1(json_text(v, "criterion"), NA_character_),
                           seen_tokens = seen_tokens,
                           document_tokens = as.integer(sum(d$tokens)),
                           truncated = truncated,

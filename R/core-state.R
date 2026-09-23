@@ -71,55 +71,89 @@ gr_defaults <- list(
 #' cap and enforced it: one option, two answers. `as.integer(min_output_tokens)`
 #' turned 1e10 into NA and `gr_budget()` then raised a bare simpleError.
 #'
-#' Refusing the value here is the only place that fixes all of them at once, and
-#' it is the honest place: a ceiling nobody can compare is not a ceiling, and
-#' the moment to say so is when it is set, not on the call that would have been
-#' stopped by it.
+#' Two kinds, treated differently on purpose. A CEILING -- `max_cost_usd`,
+#' `max_calls` -- is refused when it cannot be compared: falling back to anything
+#' would be choosing a limit the user did not set, and every fallback here had
+#' meant "no limit". NULL and Inf are the two explicit ways to say "no limit".
+#' A TUNING knob keeps its current value, with a warning, when the new one
+#' cannot be read, and is clamped into range, as `gr_read_spec()` and
+#' `gr_segment_spec()` clamp theirs -- `gr_options(workers =
+#' parallel::detectCores())` is a normal thing to write, and detectCores() can
+#' return NA.
 #' @noRd
 .gr_option_rules <- list(
-  safety_margin        = list(lo = 0,  hi = 0.5,  null_ok = FALSE, whole = FALSE),
-  min_output_tokens    = list(lo = 1,  hi = 1e6,  null_ok = FALSE, whole = TRUE),
-  max_retries          = list(lo = 0,  hi = 100,  null_ok = FALSE, whole = TRUE),
-  retry_pause_base     = list(lo = 0,  hi = 600,  null_ok = FALSE, whole = FALSE),
-  request_timeout      = list(lo = 1,  hi = 86400, null_ok = FALSE, whole = FALSE),
-  workers              = list(lo = 1,  hi = 1024, null_ok = FALSE, whole = TRUE),
-  max_cost_usd         = list(lo = 0,  hi = Inf,  null_ok = TRUE,  whole = FALSE),
+  # The ranges are the ones the code that reads each option clamps to --
+  # gr_client() for the three request settings, gr_lapply() for `workers` -- so
+  # a value accepted here is the value used, and a warning's "using N" is true.
+  safety_margin     = list(kind = "tune", lo = 0, hi = 0.5,  whole = FALSE),
+  min_output_tokens = list(kind = "tune", lo = 0, hi = 1e6,  whole = TRUE),
+  max_retries       = list(kind = "tune", lo = 0, hi = 10,   whole = TRUE),
+  retry_pause_base  = list(kind = "tune", lo = 0, hi = 60,   whole = FALSE),
+  request_timeout   = list(kind = "tune", lo = 1, hi = 3600, whole = FALSE),
+  workers           = list(kind = "tune", lo = 1, hi = 32,   whole = TRUE),
+  # NULL is temperature's default -- "let the model decide" -- so it falls back
+  # to NULL; and Inf is out of range for it rather than meaning "no limit",
+  # which is the ceilings' meaning and went on the wire as "temperature":"Inf".
+  temperature       = list(kind = "tune", lo = 0, hi = 2, whole = FALSE, null_ok = TRUE),
+  max_cost_usd      = list(kind = "ceiling", lo = 0, whole = FALSE),
   # lo = 0: "make no calls at all" is a meaningful instruction, and the tests
   # that assert a reader degrades rather than spending use it.
-  max_calls            = list(lo = 0,  hi = Inf,  null_ok = TRUE,  whole = TRUE),
-  temperature          = list(lo = 0,  hi = 2,    null_ok = TRUE,  whole = FALSE)
+  max_calls         = list(kind = "ceiling", lo = 0, whole = TRUE)
 )
 
 #' @noRd
 check_option <- function(name, value) {
   rule <- .gr_option_rules[[name]]
   if (is.null(rule)) return(value)
-  if (is.null(value)) {
-    if (isTRUE(rule$null_ok)) return(NULL)
-    gr_abort(sprintf("`%s` cannot be NULL.", name), class = "gr_bad_option")
+  what <- function(v) if (is.null(v)) "NULL" else if (length(v) != 1L)
+    sprintf("a length-%d value", length(v)) else if (is.na(v)) "NA" else
+    sprintf("a %s", class(v)[1])
+  usable <- !is.null(value) && length(value) == 1L && is.numeric(value) && !is.na(value)
+
+  if (identical(rule$kind, "ceiling")) {
+    if (is.null(value)) return(NULL)
+    if (!usable) {
+      gr_abort(sprintf(paste0("gr_options(%s = ) must be a single number or NULL, not %s. A limit ",
+                              "that cannot be compared is not a limit, so this is refused here ",
+                              "rather than ignored later."), name, what(value)),
+               class = "gr_bad_option")
+    }
+    if (value < rule$lo) {
+      gr_abort(sprintf("gr_options(%s = ) cannot be negative; got %s.", name, format(value)),
+               class = "gr_bad_option")
+    }
+    if (!is.finite(value)) return(Inf)
+    # A whole number kept as a DOUBLE. as.integer() is what turned 1e10 into NA.
+    return(if (isTRUE(rule$whole)) floor(value) else value)
   }
-  if (length(value) != 1L || !is.numeric(value) || is.na(value)) {
-    gr_abort(sprintf(paste0("gr_options(%s = ) must be a single number%s, not %s. A limit that ",
-                            "cannot be compared is not a limit, so this is refused here rather ",
-                            "than ignored later."),
-                     name, if (isTRUE(rule$null_ok)) " or NULL" else "",
-                     if (length(value) != 1L) sprintf("a length-%d value", length(value))
-                     else if (is.na(value)) "NA" else sprintf("a %s", class(value)[1])),
-             class = "gr_bad_option")
+
+  # A tuning knob. A number written as text is still a number, as it is for the
+  # same settings passed to gr_budget() or a spec constructor.
+  if (is.null(value) && isTRUE(rule$null_ok)) return(NULL)
+  if (!usable && is.character(value) && length(value) == 1L) {
+    parsed <- suppressWarnings(as.numeric(value))
+    if (!is.na(parsed)) { value <- parsed; usable <- TRUE }
   }
-  # Inf is meaningful for the two ceilings -- "no limit", said explicitly -- and
-  # meaningless for the rest.
-  if (!is.finite(value)) {
-    if (isTRUE(rule$null_ok) && value > 0) return(value)
-    gr_abort(sprintf("gr_options(%s = ) must be finite.", name), class = "gr_bad_option")
+  if (!usable) {
+    # Keep the CURRENT value, not the package default: with safety_margin set
+    # to 0.3, a stray NA dropping it to the default 0.1 is the "a missing value
+    # pushes the input budget up" defect, moved into the setter.
+    cur <- gr_options(name)
+    gr_warn(sprintf("gr_options(%s = ) cannot be %s; keeping the current value (%s).",
+                    name, what(value), if (is.null(cur)) "NULL" else format(cur)),
+            class = "gr_bad_option")
+    return(cur)
   }
-  if (value < rule$lo || value > rule$hi) {
-    gr_abort(sprintf("gr_options(%s = ) must be between %s and %s; got %s.",
-                     name, format(rule$lo), format(rule$hi), format(value)),
-             class = "gr_bad_option")
+  out <- min(max(value, rule$lo), rule$hi)
+  # `!=`, not identical(): max(4L, 1) is the double 4, and identical(4, 4L) is
+  # FALSE, so every integer setting -- `workers = 4L` -- was reported as out
+  # of range.
+  if (out != value) {
+    gr_warn(sprintf("gr_options(%s = %s) is outside [%s, %s]; using %s.", name, format(value),
+                    format(rule$lo), format(rule$hi), format(out)),
+            class = "gr_bad_option")
   }
-  # A whole number kept as a DOUBLE. as.integer() is what turned 1e10 into NA.
-  if (isTRUE(rule$whole)) floor(value) else value
+  if (isTRUE(rule$whole)) floor(out) else out
 }
 
 #' Get or set package options
@@ -190,6 +224,24 @@ check_option <- function(name, value) {
 #'   \item{`unknown_model_action` ("warn")}{`"warn"` or `"error"` when a model id
 #'     is not in the registry.}
 #' }
+#'
+#' @section Checked values:
+#' Numeric options are checked when they are set, and the two kinds are treated
+#' differently because a wrong value costs different things.
+#'
+#' The ceilings, `max_cost_usd` and `max_calls`, refuse anything that is not a
+#' single number of zero or more, with an error of class `gr_bad_option`: a
+#' limit that cannot be compared is not a limit, and ignoring it spends money.
+#' `NULL` and `Inf` both mean "no limit".
+#'
+#' The tuning settings -- `safety_margin` \[0, 0.5\], `min_output_tokens`
+#' \[0, 1e6\], `max_retries` \[0, 10\], `retry_pause_base` \[0, 60\],
+#' `request_timeout` \[1, 3600\], `workers` \[1, 32\] and `temperature`
+#' \[0, 2\] -- read a number written as text as that number. A value they cannot
+#' read, such as `NA` or `"x"`, warns (`gr_bad_option`) and leaves the current
+#' setting unchanged; a value outside the range is clamped into it, with the
+#' same warning. Whole-number settings are rounded down. `temperature` also
+#' takes `NULL`, its default.
 #'
 #' @seealso [gr_register_model()] to correct a model's limits,
 #'   [gr_set_tokenizer()], [gr_budget()], [gr_cache()]

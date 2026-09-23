@@ -41,14 +41,12 @@
 
   `coherence = TRUE` runs the revision passes over the assembled draft, so the
   independently-written sections read as one argument (see "Three revision
-  passes" below for what they are). Their output is checked rather than trusted:
-  a revision that added a citation, dropped one, or ran into the model's output
-  limit is discarded with a warning and `$draft` is what you get. It is the one step that could quietly undo the guarantee the rest of
-  the pipeline exists to give. It is budgeted for a whole document rather than a
-  section -- sized by `max_section_tokens` it asked a model rewriting a
-  4800-token review for 300 tokens of output, and the citation check then
-  rejected the truncated reply for "dropping" citations that were never written,
-  reporting a budgeting mistake as a model failure.
+  passes" below for what they are). Their output is checked rather than trusted,
+  because this is the one step that could quietly undo the guarantee the rest of
+  the pipeline exists to give: a revision that added a citation, dropped one, or
+  ran into the model's output limit is discarded with a warning and `$draft` is
+  what you get. The passes are budgeted for the whole document, which is what
+  they rewrite, rather than for a section.
 
   `style` carries a register -- `"formal academic; hedge claims; past tense for
   findings"` -- into both the section and coherence prompts, appended rather
@@ -70,16 +68,16 @@
   One row per file **including** the ones that will not be read, because "180 of
   your files were skipped" is the finding and a table of survivors cannot report
   it. A file whose extractor's package is absent is `needs_package`, not
-  `ready`: without `pdftools` every PDF was reported ready while `gr_ingest()`
-  on any of them aborts, which is this function's own failure mode -- a survey
-  promising a corpus is fine, and a run dying on the first file. Those files are
-  excluded from the token total and the cost floor too, because sizing a run
-  that cannot happen is worse than not sizing it. A file reachable by two paths
-  -- a `latest -> v3` symlink beside the versions it points at -- is surveyed
-  once; walking into directory symlinks had one file appearing forty-two times. No file can stop the survey either: a corrupt PDF, a binary file wearing a
-  `.txt` extension, a broken symlink or anything unforeseen becomes a row saying
-  so, which is the contract [`gr_read_many()`] has always given a corpus run. It chooses nothing for you: no automatic routing of files to recipes,
-  because a router that reads one document with `retrieve` and another with
+  `ready`, and is left out of the token total and the cost floor, because sizing
+  a run that cannot happen is worse than not sizing it. A file reachable by two
+  paths -- a `latest -> v3` symlink beside the versions it points at -- is
+  surveyed once. No file can stop the survey either: a corrupt PDF, a binary
+  file wearing a `.txt` extension, a broken symlink or anything unforeseen
+  becomes a row saying so, which is the contract [`gr_read_many()`] has always
+  given a corpus run.
+
+  It chooses nothing for you: no automatic routing of files to recipes, because
+  a router that reads one document with `retrieve` and another with
   `stuff` returns a plausible answer built on part of a file with nothing saying
   so, and it makes `gr_compare()` meaningless — the corpus no longer had *a*
   configuration.
@@ -105,6 +103,9 @@
   subfolders looks empty. It now counts the readable files sitting below and
   says so.
 
+* **`.csv` and `.tsv` are readable.** An extractor claims them, so a folder of
+  exported tables is read rather than skipped.
+
 * **`preview` — the reader that decides how to read before reading.** Every
   other reader treats all chunks alike: `stuff` sends them all, `map_reduce`
   answers from each in turn, `retrieve` ranks them by similarity. None of them
@@ -126,10 +127,10 @@
   lose a document's contents. When no usable plan comes back at all, the reader
   reads everything, warns `gr_preview_degraded`, and marks the answer partial.
 
-  A plan that marks every section skip reads nothing. It read the *whole
-  document*: `unlist()` on an empty list gives `NULL`, not `integer(0)`, and
-  `fit_chunks()` reads `order %||% seq_len(nrow(df))`, so the reader did the
-  exact opposite of what the plan said and charged for it.
+  A plan that marks every section skip reads nothing. A document with no
+  headings is planned by blocks rather than as one section, and a skimmed
+  section whose excerpt had to be cut reports `tokens_truncated` and marks the
+  answer partial.
 
   It is called `preview` and not `survey` because a recipe already owns
   `survey`, and `as_recipe()` resolves recipes before readers — so a reader of
@@ -158,11 +159,11 @@
   and 24 — so what was searched travels with the run instead of living in a lab
   notebook.
 
-  It also repairs something quieter. `gr_synthesise()` cites by author and year,
-  and until now those came from asking a model to read a title page: the one
-  part of a citation that must be exactly right had the loosest guarantee in the
-  pipeline. From an export they are data, joined onto the extraction table by
-  file path, and the writing model is still never shown them.
+  The records also supply the author and year that `cite_style` renders. From an
+  export they are data, joined onto the extraction table by file path, rather
+  than values a model read off a title page -- the loosest guarantee in the
+  pipeline, for the one part of a citation that must be exactly right. The
+  writing model is still never shown them.
 
   No model is called. Which paper a record is, and whether two records are one
   paper, are questions a DOI answers exactly. Everything is base R — the parsing
@@ -174,8 +175,8 @@
   Two judgements can attribute one paper's findings to another, and both refuse
   rather than guess. Two records that both carry DOIs are never merged on a
   title match. And a document is matched by the path the export gave, the DOI in
-  the filename, the title, or first-author-and-year — but an author and year
-  shared by two records matches nothing, so two Smith 2019 papers and one
+  the filename, the title, or first-author-and-year — but a file that two records
+  could claim by the same route goes to neither, so two Smith 2019 papers and one
   `smith2019.pdf` claim nothing at all.
 
 * **`gr_reference()` and `gr_calibrate()` — how often the screener is wrong,
@@ -207,6 +208,12 @@
   so Cohen's kappa is given instead. Intervals are Wilson rather than normal,
   because screening proportions sit at the ends of the scale where the textbook
   interval returns [1, 1] from five observations.
+
+  A reference that mixes frames -- every kept record `rbind()`-ed onto a sample
+  of the exclusions, which is what `gr_reference()`'s own advice produces -- is
+  refused with the fix named, rather than averaged over strata sampled at
+  different rates. One whose frame cannot be identified warns and says what it
+  assumes, and `of =` lets a hand-built reference declare its frame.
 
 * **`headers` — reaching an endpoint that does not authenticate with a bearer
   token.** `base_url` was enough only for a gateway that speaks the OpenAI shape
@@ -324,7 +331,9 @@
 
   The `claims` protocol from earlier in this release is the schema this wants as
   input, and `gr_audit_report()` gained a claims section so one document reads
-  claim → studies → quotes → pages.
+  claim → studies → quotes → pages. Its new `claims` and `records` arguments come
+  after all of 0.5.0's, so a positional call written against 0.5.0 binds as it
+  did.
 
   Ordering studies for emphasis deliberately does **not** rank designs. That
   would assert a cohort study beats a qualitative one, which is a methodological
@@ -333,28 +342,25 @@
   variable — what distinguishes the sides of a disagreement, and what `gr_gaps()`
   crosstabs. A principled weighting waits on an appraisal instrument.
 
-* **Three revision passes, and a guard the citation check cannot make.**
-  `coherence = TRUE` was one call doing three jobs — reorder, trim, polish — with
-  two guards: the revision must not change the citations, and must not arrive
-  truncated. Both are necessary and neither is sufficient, because the most
-  damaging thing an editing pass does leaves the citations exactly where they
-  were. Editing for impact means deleting hedges, and the hedges are where the
+* **Three revision passes, and a guard the citation check cannot make.** A
+  revision must not change the citations and must not arrive truncated. Both
+  checks are necessary and neither is sufficient, because the most damaging
+  thing an editing pass does leaves the citations exactly where they were.
+  Editing for impact means deleting hedges, and the hedges are where the
   uncertainty lives: "three small trials suggest a modest benefit" comes back as
   "trials show a benefit", same markers, same studies, a claim the evidence does
   not carry.
 
-  So there are now three passes — `"structure"`, `"cut"`, `"register"` — each
+  So revision is three passes — `"structure"`, `"cut"`, `"register"` — each
   forbidden from doing the others' job, each run on what survived the last, and
   each measured for escalation. A revision is discarded if it introduces a
   universal quantifier that was not there, uses a booster stem more often than
   the draft did, or carries fewer hedges than the draft's rate implies.
 
-  All three are matched on whole words. As bare substrings, "improved" counted as
-  an instance of the booster "prove" — so a draft saying "outcomes improved"
-  licensed a revision saying "proves the drug works", and a revision that ADDED
-  the hedge "unproven" was rejected for introducing a booster. Boosters are
-  compared by count, not by which stems are present, so saying "demonstrates"
-  three times where the draft said it once is introducing it.
+  All three are matched on whole words, so "outcomes improved" is not the
+  booster "prove", and the hedge "unproven" is not a booster at all. Boosters
+  are compared by count, not by which stems are present, so saying
+  "demonstrates" three times where the draft said it once is introducing it.
 
   The hedge test scales with how much claim-bearing prose survived, so a shorter
   revision may carry fewer hedges — but never none, if the draft had any. What it
@@ -363,7 +369,8 @@
   Hedges and universals are measured on sentences carrying a citation; boosters
   on all the prose except headings, because uncited framing between the claims is
   where "the evidence demonstrates a clear benefit" actually gets written.
-  `coherence = TRUE` still means all three passes.
+  `coherence = TRUE` runs all three; name them to run fewer. A draft too long to
+  leave room for its own rewrite is skipped rather than sent.
 
 * **`iterative` was cutting the wrong end of what it had gathered, and never
   fitted its final prompt at all.** Two faults in the one reader that accumulates
@@ -388,7 +395,9 @@
   And the final answer call was never budgeted. Every other reader sizes its
   prompt to the context window; this one rendered everything gathered, so several
   rounds of `top_k` chunks went out over the window and the provider rejected the
-  call after the entire loop had been paid for.
+  call after the entire loop had been paid for. When no gathered chunk fits one
+  prompt, the loop stops and the reader returns `NOT_IN_DOCUMENT` marked
+  partial.
 
 * **The question is repeated at both ends of a long prompt.** `answer_messages()`
   already asked last, which is the position that gets followed — but over several
@@ -408,46 +417,21 @@
   measured here.
 
 * **Every prompt is now budgeted against the prompt that is actually sent.** The
-  readers size their excerpts with `gr_budget(overhead = ...)`, and four separate
-  things had been added to the prompts without being added to that arithmetic.
-  The prompt then overran the window by exactly the amount nobody counted, and
-  the provider refused the call after the run had been paid for.
-
-  The tail restatement above is the worst of them, because it is on by default:
-  the body was fitted to the budget and the question was then prepended to it, so
-  with a long question and a model whose window the run nearly fills, `gr_read()`
-  returned `NOT_IN_DOCUMENT` with nothing in it but `notes$error`. The
+  readers size their excerpts with `gr_budget(overhead = ...)`, and parts of the
+  prompts were not in that arithmetic: `cite = TRUE` sends a longer system prompt
+  than `cite = FALSE` and every cited read budgeted for the short one, and the
   `iterative` step prompt adds 88 tokens of instruction to the answer system
-  prompt and budgeted for the short one. `gr_synthesise()`'s section prompt
-  restates the section brief after the studies and did not budget for it — and
-  called `restate_tail()` with two arguments, so the `restate` setting could not
-  reach it at all. And `cite = TRUE` sends a longer system prompt than `cite =
-  FALSE`: that one shipped in 0.5.0, understating the overhead on every cited
-  read.
+  prompt and budgeted for the answer prompt alone. The prompt then overran the
+  window by exactly the amount nobody counted, and the provider refused the call
+  after the run had been paid for.
 
   The system prompt is now built once and used for both the budget and the call
   wherever the two could drift, and `prompt_overhead()` counts the question twice
-  unless restatement is off. Reserving room that goes unused costs a little
-  context; under-reserving cost the answer.
+  unless restatement is off, because the question is restated at the far end of
+  a long prompt (above). Reserving room that goes unused costs a little context;
+  under-reserving cost the answer.
 
-* **`iterative` no longer answers a question with no document in front of it.**
-  When nothing gathered fit one prompt, the step call went out with an empty
-  `<excerpts></excerpts>` — and a model asked a question with no excerpt answers
-  from its own prior, which came back as the document's answer with `can_answer`
-  true and `chunks_used` empty. The loop now stops and reports, and the reader
-  returns `NOT_IN_DOCUMENT` marked partial.
-
-* **`gr_audit_report()` gained two arguments in the middle of its signature.**
-  `claims` was inserted fourth and `records` seventh, which silently rebound the
-  positional arguments of every call written against 0.5.0:
-  `gr_audit_report(p, screening, extraction, review)` filed the synthesis as
-  `claims` and wrote a report with no synthesis section in it. Both are now at
-  the end, where a new argument belongs, and both are type-checked like the
-  others rather than accepted and misused.
-
-* **Six things the package already had, now connected to the pipeline that needs
-  them.** Each was built, tested and documented on its own, and then nothing
-  called it.
+* **Six connections between the stages of a review.**
 
   *The run has its own ceiling.* `gr_options(max_calls =)` is per document by
   design — one enormous document must not starve the rest — and on its own that
@@ -460,34 +444,30 @@
 
   *`gr_synthesise()` stops when the ceiling says so.* One model call per section,
   and neither it nor the batched path checked `trace_can_call()` — so a run that
-  had already spent its ceiling kept writing sections, one call each, while
-  `gr_claims()` beside it stopped at the first. A section the ceiling stops is
-  marked partial and says why, rather than appearing as empty prose.
+  had already spent its ceiling kept writing sections, one call each. A section
+  the ceiling stops is marked partial and says why, rather than appearing as
+  empty prose.
 
   *A folder and its file list behave the same.* `gr_read_many(dir)` skipped the
-  files no extractor claims and warned; `gr_read_many(list.files(dir))` handed
-  each of them to an extractor and recorded a failed row. Every pipeline uses
-  the second form — `gr_extract(screened$included)` is a character vector — so
-  the stage that reads the most documents was getting the worse behaviour. The
-  filter applies only when every element is a file that exists, so raw text, a
-  mixed vector and a `list()` of sources are all untouched, and a `gr_records`
-  still produces a failed row per unreadable file rather than dropping it — a
-  record that was retrieved and could not be read is a fact a PRISMA count needs
-  to keep. When the filter removes *everything*, the abort now says so, rather
-  than telling somebody who just passed file paths to pass file paths.
+  files no extractor claims; `gr_read_many(list.files(dir))` handed each of them
+  to an extractor and recorded a failed row. Every pipeline uses the second form
+  — `gr_extract(screened$included)` is a character vector — so the stage that
+  reads the most documents was getting the worse behaviour. Both forms now skip
+  those files and warn, as described above. The filter applies only when every
+  element is a file that exists, so raw text, a mixed vector and a `list()` of
+  sources are all untouched, and a `gr_records` still produces a failed row per
+  unreadable file rather than dropping it — a record that was retrieved and could
+  not be read is a fact a PRISMA count needs to keep. When the filter removes
+  *everything*, the run aborts and says so.
 
   *The search travels with the corpus it produced.* `gr_screening` and
-  `gr_extraction` now carry the `gr_records()` they were run over, and
-  `gr_audit_report()` picks it up. `gr_extract()` also takes the screening object
-  itself now, which is what carries the search across the hand-off: a character
-  vector of paths cannot, so `gr_extract(screened)` keeps the search and the
-  bibliographic fields while `gr_extract(screened$included)` keeps neither.
-  Hanging them off `$included` as an attribute was tried first and rejected --
-  `print(screened$included)` then dumped the whole record set under a list of
-  file paths. Forgetting to hand the same object over a
-  second time at the end used to produce a report whose search section read "Not
-  recorded" and whose flow diagram began at "sources given" — which the README's
-  own end-to-end example did.
+  `gr_extraction` carry the `gr_records()` they were run over, and
+  `gr_audit_report()` picks it up, so the report's search section and flow
+  diagram do not depend on handing the same object over a second time.
+  `gr_extract()` also takes the screening object itself, which is what carries
+  the search across the hand-off: a character vector of paths cannot, so
+  `gr_extract(screened)` keeps the search and the bibliographic fields while
+  `gr_extract(screened$included)` keeps neither.
 
   *A review can be one trace.* `gr_screen()`, `gr_extract()` and
   `gr_synthesise()` take a `trace =`, so the stages of one review add up to one
@@ -496,17 +476,15 @@
   The argument is a **parent**, not the stage's own counter, and that
   distinction is the whole design: a `gr_trace` is both the ledger of what a run
   did and the counter `max_calls` is measured against, and those want opposite
-  things. Running a stage directly on a shared trace charged screening's calls
-  against the write-up's per-stage ceiling — every section came back blank, with
-  only `sections$partial` to say so — and made each stage's `$trace` report the
-  whole review, so the audit's three cost rows each claimed the full total. Each
-  stage now runs on its own trace and folds into the parent at the end, exactly
-  as each document inside `gr_read_many()` already did.
+  things. Each stage runs on its own trace -- so `max_calls` limits each stage
+  as it always has, and each stage's `$trace` reports that stage alone -- and
+  folds into the parent at the end, exactly as each document inside
+  `gr_read_many()` does.
 
-  *How good the screening is reaches the report.* `gr_calibrate()` computed
+  *How good the screening is reaches the report.*
+  `gr_audit_report(calibration = )` writes what `gr_calibrate()` measured --
   sensitivity, specificity, kappa and the list of eligible studies the screener
-  threw away, and there was nowhere to put them;
-  `gr_audit_report(calibration = )` now writes them as a section.
+  threw away -- as a section.
 
   Not done, and said plainly rather than left to look like an oversight: the
   corpus loop still reads documents one at a time. The reason given for that —
@@ -517,113 +495,110 @@
   serialise on each. Within a document, `gr_options(parallel = TRUE)` already
   applies.
 
-* **Fixes in the claims layer, all found by reading it adversarially against
-  itself.** A reconcile merge that moved a study from the contradicting side to
-  the supporting side did so silently — `n_contradict` went 1 to 0 with nothing
-  in `note` — so a merge could manufacture a consensus no study agreed to; the
-  flip is now recorded. Two proposed sections with the same heading were written
-  twice, each taking the union of both claim sets, because everything downstream
-  keys the outline by heading; they are merged into one. A moderator naming a
-  bibliographic column was accepted even though `render_studies()` withholds
-  those columns from the prompt, so a disagreement could be explained by a column
-  the model never saw; the check now uses the fields that were actually shown. A
-  reply shaped as an array of strings crashed `gr_claims()` with "$ operator is
-  invalid for atomic vectors" instead of warning that no claims came back, and a
-  claim with no text survived to be written up. `study_weight()` read `n` with
-  `as.numeric()`, so an `n` of "900 participants" became `NA`, `NA` scored zero —
-  the bottom of the scale — and a 900-participant study weighed less than one
-  with 25; it is read with the same single-number rule the extractor uses, and an
-  unreported `n` sits at the mean of what is known rather than at the bottom.
-  `gr_gaps()` said "every study reports 'cohort'" when two of four studies
-  reported it, and its crosstab compared untrimmed values while the rest of the
-  function trimmed, so one table could report a value as both the only one
-  present and an unstudied combination.
-
-* **The claim-strength guard was matching substrings.** "improved" contains
-  "prove", so a draft saying "outcomes improved" licensed a revision saying
-  "proves the drug works", and a revision that added the hedge "unproven" was
-  rejected for introducing a booster — a guard wrong in both directions from one
-  missing word boundary. Alongside it: boosters were compared as pattern *sets*,
-  so saying "demonstrates" three times where the draft said it once was not
-  introducing it; `floor()` on the hedge rate made the implied minimum zero
-  whenever the revision had fewer claim sentences, so merging two hedged
-  sentences into one unhedged sentence passed; the sentence split broke at
-  "e.g.", discarding the half that carried the hedge; and a markdown heading with
-  no terminator glued itself to the first sentence of its section. A draft with no
-  room for its own rewrite was also being sent rather than skipped, because
-  `gr_budget()` shrinks the output reserve when the window is tight and the larger
-  input budget that produced was read as permission.
-
 * **The README and the vignette describe what the package now does.** The
-  section on revising a draft still said `coherence = TRUE` runs "one further
-  call" and that the only check is on citations — both true until this release
-  and neither true now. Rewritten around the three passes and the claim-strength
-  guard. The claims layer, `restate`, and a short section on the registries you
-  can query without spending anything (`gr_models()`, `gr_extractors()`,
-  `gr_reader_signature()` and the rest — fourteen exported functions appeared
-  nowhere in either document) are documented for the first time.
-
-* **Selecting columns from a `gr_gaps()` result gives a table again.** `[` on a
-  classed data frame keeps the class and drops every other attribute, so
-  `g[, c("kind", "dimension")]` was still dispatched to the print method — which
-  then reported "NA study/studies" and warned that no schema had been given,
-  about an object built from a schema. Writing the vignette is what surfaced it:
-  the printed warning contradicted the code three lines above it.
+  revision passes and the claim-strength guard, the claims layer, `restate`, and
+  a short section on the registries you can query without spending anything
+  (`gr_models()`, `gr_extractors()`, `gr_reader_signature()` and the rest —
+  fourteen exported functions appeared nowhere in either document) are
+  documented for the first time.
 
 ## Fixed
 
-* **An adversarial sweep of the whole package, from six angles at once.** Every
-  defect below was reproduced against the shipped build before it was fixed, and
-  every one has a test that fails without its fix. Twenty-seven mutations across
-  the new guarantees, all caught.
+* **`rerank` could answer with no document in front of it.** The relevance
+  score was coerced with `as.numeric()`, and `as.numeric("high")` is `NA`. An
+  `NA` comparison used as a subscript selects rather than drops, so the "nothing
+  scored high enough" guard did not fire, `[chunk NA]` reached the prompt, and
+  the model answered from its own prior with `partial = FALSE`. A failed scoring
+  call, or a reply with no score, counted as a score of 0, which passes
+  `rerank_min_score = 0` as if a model had judged the chunk. Now a failed call,
+  or a score that is missing or unusable, judges nothing: if no candidate was
+  judged, the reader falls back to the BM25 ranking and warns
+  `gr_rerank_degraded`, as it already did when every call failed; if only some
+  were, the answer -- `NOT_IN_DOCUMENT` included -- is marked partial.
 
-* **The citation checker and the citation renderer had different grammars.** The
+* **A ceiling that cannot be compared no longer means no ceiling.**
+  `gr_options()` checked names only, and each consumer made up its own mind
+  about a bad value. `is.finite(max_cost_usd)` as a guard meant that `NA`, or
+  `"5"` read from a config file, removed the cost cap entirely, and
+  `max_calls = "400"` was enforced by the pre-flight estimate and ignored by the
+  per-call check. Values are now checked where they are set. `max_cost_usd` and
+  `max_calls` refuse anything that is not a single non-negative number (`NULL`
+  and `Inf` still mean no limit). The tuning settings -- `safety_margin`,
+  `min_output_tokens`, `max_retries`, `retry_pause_base`, `request_timeout`,
+  `workers` and `temperature` -- read a number written as text as that number,
+  warn and keep their current value for one they cannot read, and clamp one
+  outside the range the package can use, with a warning. The Shiny app checks
+  its cost-cap field before setting it.
+
+* **A missing setting falls back to its default, not to the end of its range
+  that does harm.** `clamp()` maps `NA` to the bottom of a range, and for several
+  settings the bottom is what the setting exists to prevent:
+  `gr_budget(safety_margin = NA)` budgeted with no headroom at all, an
+  `overhead` of `NA` counted the system prompt as free and pushed the input
+  budget up, and `semantic_percentile`, `semantic_window` and
+  `proposition_batch_tokens` fell to their minimums -- a missing percentile cut
+  at the median boundary rather than the 90th, multiplying the chunks and the
+  calls, and `gr_budget(reserve_output = NA)` left the answer one token. These
+  now take their default, with a warning; `gr_budget()` takes the session's
+  `safety_margin`, and refuses an overhead it cannot read as a single number,
+  since no default is safe there. `gr_segment_spec(max_tokens = NA)` and
+  `gr_synthesise(max_section_tokens = NA)` fall back to their documented
+  default of 1200, rather than 800 and 1500. `gr_ingest_spec(min_chars = NA)`
+  failed every document with "missing value where TRUE/FALSE needed". And
+  `as_int1()` tested its range after the coercion that creates the `NA`, so
+  `gr_screen(screen_tokens = 3e9)` marked every document failed.
+
+* **A model's reply is read by its exact keys.** The readers read parsed replies
+  with `$`, which partial-matches: a reply carrying `decisions` satisfied a read
+  of `decision` and the screener recorded an "include" from a key the schema
+  never defined, `can_answer_now` ended the `iterative` loop with its answer
+  taken as final, and `choices` answered for the conflict resolver's `choice`.
+  Replies are now read through one accessor that matches exactly and copes with
+  the shapes `jsonlite` gives the same JSON on different days: a two-element
+  score crashed `rerank`, and an array of arrays of propositions was flattened
+  column by column and so written into the document transposed.
+
+* **Proposition segmentation no longer loses text.** A batch whose call failed,
+  or whose reply held nothing usable, was dropped: one bad batch in ten silently
+  removed a tenth of the document from everything downstream, and only a run in
+  which every batch failed noticed. Such a batch is now kept as written, with a
+  `gr_segment_fallback` warning, and counted in
+  `$extra$batches_kept_as_written`. A reply shaped as a list of objects was
+  written into the document as the literal R expression `c("A.", "B.")`. Each
+  object is now read through its text key when it has one and through every
+  string when it has none, so an `id` or a page label beside a proposition does
+  not become one.
+
+* **Two values that differ past the seventh digit are two values.** Conflicts
+  between parts of one document were found by comparing `format()`ed values,
+  which keep seven significant digits, so 3000000001 and 3000000002, or
+  0.123456789 and 0.123456781, were one value and the conflict went unreported.
+  Values are compared, and shown to the model that adjudicates a conflict, in
+  full.
+
+* **An integer above 2^31 is stored, not lost.** An `integer` field holding a
+  value above `.Machine$integer.max` -- a count of person-days, say -- became
+  `NA`, so the table said the document had not reported a figure it stated
+  plainly. Such a value is stored as a double.
+
+* **A `NULL` override is refused rather than silently replaced.**
+  `answer_document(f, q, "fast", max_tokens = NULL)` deleted the recipe's value,
+  so the constructor's default replaced it -- segmenting at 1200 tokens instead
+  of the recipe's 4000 -- with no warning, and the trace's `settings` no longer
+  recorded which value was used. `NULL` is accepted only for a setting whose
+  default is `NULL` (`model`, `temperature`, `skim_model` and the like) and is
+  otherwise refused with `gr_bad_override` before anything is read.
+
+* **The citation check did not recognise the form the prompt asks for.** The
   synthesis prompt asks the model to "cite more than one where more than one
-  supports it". `render_citations()` understood the combined form it invites --
-  `[studies 1 and 2]` -- and the CHECK matched only `[study 1]`. So a section
-  citing three studies that way was rendered into published prose as
-  "(Garcia, 2022; Lee & Petrov, 2021; Smith & Okafor, 2019)" while the check
-  reported it cited nothing: no reference list for the studies it had just
-  named, and an audit report printing that prose above the line "This section
-  cites nothing." Worse, `[studies 1 and 99]` over three studies passed as
-  clean, where `[study 99]` is correctly flagged. A fabricated citation slipping
-  past the fabrication check is the exact failure this pipeline exists to
-  prevent. There is now one grammar, `cite_pattern()`, used by both, and a drift
-  test asserting that anything the renderer rewrites, the check has seen.
-
-* **Two records could be given each other's file.** `match_files()` settled its
-  author-year key across the whole record set, so two Smith 2019 papers matched
-  neither rather than one taking the other's PDF. The other three routes --
-  filename, DOI suffix, title prefix -- had no equivalent, so whichever record
-  the export listed first took the file. Two folders each holding a `report.txt`
-  -- the shape of any `year/report.pdf` archive -- put the 2019 file on the 2020
-  record and the 2020 file on the 2019 record, both marked retrieved. That is
-  one paper's findings published under another paper's authors, year and DOI,
-  and nothing in the run says so. All four routes now settle the same way.
-
-* **`@string` and `@comment` counted as studies, and a broken entry vanished.**
-  Every `@`-block matched the entry opener, so a JabRef or publisher `.bib` file
-  inflated "records identified" -- the first number of a PRISMA flow diagram --
-  by however many non-bibliographic blocks it carried. Separately, an entry with
-  an unbalanced brace was skipped in silence, removing a study from the counts,
-  from screening and from the flow diagram. Non-entries are skipped now, and an
-  unterminated entry warns with the character position to look at.
-
-* **A reference stacking two sampling frames was averaged rather than
-  refused.** `gr_reference()`'s own advice is to judge every record the screener
-  kept AND a sample of what it discarded; `gr_calibrate()` takes one reference,
-  so people `rbind()` them. The combined frame came back "unknown", fell through
-  to the corpus-wide branch, and computed unweighted sensitivity and specificity
-  over strata sampled at 100% and 6%. On a screener that really missed 14% of
-  eligible studies this reported **sensitivity 100%** with a 95% interval that
-  excluded the truth, `adequate = TRUE`, and no warning. A mixed frame is now
-  refused with the fix named; a frame that cannot be identified at all warns and
-  says what it is assuming; and `of =` lets a hand-built reference declare
-  itself. Two smaller faults in the same file: `screened_n` had no CSV column,
-  so the printed denominator changed meaning between the in-memory frame and the
-  file read back; and the projected count of lost studies was computed from the
-  rate *after* rounding it to four decimals, reporting 999 studies where the
-  arithmetic says 1000.
+  supports it", and the check matched only `[study 1]`. So a section citing
+  studies as `[studies 1 and 2]` was reported as citing nothing -- an audit
+  report printed its prose above the line "This section cites nothing." -- and
+  `[studies 1 and 99]` over three studies passed as clean, where `[study 99]` is
+  correctly flagged. A fabricated citation slipping past the fabrication check is
+  the exact failure this pipeline exists to prevent. The check and the new
+  citation renderer share one grammar, `cite_pattern()`, and a drift test asserts
+  that anything the renderer rewrites, the check has seen.
 
 * **A number that appears in no paper could pass the evidence check.**
   Coercing a value to `integer` or `number` stripped every character that was
@@ -650,23 +625,12 @@
   the tokenizer, which is what turns `max_tokens` into an actual chunk boundary.
   All four keys are versioned, so old entries are not mixed with new ones.
 
-* **`preview` could read a sixth of a document and call the answer complete.**
-  `seg_structural()` writes the literal `"[no section]"` where a chunk has no
-  heading, so a heading-less document arrived at the planner with a section
-  column that was placeholder rather than NA. The test for structure was
-  `!all(is.na(section))`, which was therefore TRUE, and the whole document
-  became ONE unit: a plan marking that unit "skim" sent one truncated excerpt
-  and returned `partial = FALSE`. The placeholder is a named constant now, a
-  single unit spanning everything falls through to blocks, and a skim whose
-  excerpt had to be truncated reports `tokens_truncated` and marks the answer
-  partial.
-
-* **A replay could publish a document the live run had rejected.** The trace did
-  not record `finish_reason`, and `gr_replay_client()` hard-coded it to `NA` --
-  so `gr_synthesise(coherence = TRUE)`, which discards a revision that stopped
-  for "length", kept it on replay, produced a different review, and reported 0
-  misses: certifying itself as an exact reproduction of a run it had not
-  reproduced.
+* **A replay reports the `finish_reason` the live call returned.** The trace did
+  not record it, and `gr_replay_client()` hard-coded it to `NA`, so anything that
+  decides on it decided differently on replay: `gr_synthesise(coherence = TRUE)`,
+  which discards a revision that stopped for "length", would keep it on replay,
+  produce a different review, and report 0 misses -- certifying itself as an
+  exact reproduction of a run it had not reproduced.
 
 * **The "running sequentially instead" fallback aborted one line later.**
   `gr_lapply()` called `fn(item)` without the trace on that branch, and lazy
@@ -695,11 +659,6 @@
   `file.exists()` behind a no-newlines test, so a file whose name contains a
   newline was never looked for and the path string itself became the document --
   status "ok", `partial = FALSE`, the model answering about a filename.
-
-* **`.csv` and `.tsv` are readable, as `gr_inventory()` already said they
-  were.** The inventory documented counting their tokens and no extractor
-  claimed them, so a folder of exported tables surveyed as ready and then read
-  as nothing.
 
 * **Six tests were passing without testing anything.** Each is now written so
   that deleting what it names makes it fail: `on_error = "stop"` asserted only

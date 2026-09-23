@@ -29,7 +29,10 @@
 #'   "Number of participants randomised, not the number analysed" earns its
 #'   length.
 #' @param type One of `"string"`, `"integer"`, `"number"`, `"boolean"` or
-#'   `"enum"`.
+#'   `"enum"`. An `"integer"` value above `.Machine$integer.max` is kept as a
+#'   whole double, so that column is a double whenever one such value is
+#'   present. A value that carries more than one number, such as "120 (60 per
+#'   arm)", is recorded as missing rather than run together.
 #' @param values For `type = "enum"`, the permitted values.
 #' @return A `gr_field`.
 #' @seealso [gr_fields()], [gr_extract()]

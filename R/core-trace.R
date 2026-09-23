@@ -207,6 +207,7 @@ print.gr_trace <- function(x, ...) {
     tab <- table(labs)
     cat("  steps:", paste(sprintf("%s x%d", names(tab), as.integer(tab)), collapse = ", "), "\n")
   }
+  cat(sprintf("  cost: %s\n", format_trace_cost(x)))
   if (length(x$errors)) {
     cat("  first error:", substr(as_chr1(x$errors[[1]]$error), 1, 160), "\n")
   }

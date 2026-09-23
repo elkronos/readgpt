@@ -59,10 +59,11 @@ for you. Calling it directly shows you what the model will get.
 
 ## What readgpt can read
 
-Each file type is handled by an *extractor*, chosen by the file's extension:
+Each file type is handled by an *extractor*, chosen by the file's extension.
+`available` says whether the packages it needs are installed:
 
 ```{r}
-gr_extractors()[, c("name", "extensions")]
+gr_extractors()[, c("name", "extensions", "available")]
 ```
 
 | extractor | what it keeps | needs |
@@ -94,7 +95,9 @@ gr_ingest("anual-report.pdf")
 ```
 
 Any other string is read as text, including a path whose extension is mistyped
-or is one no extractor claims:
+or is one no extractor claims. A string that looks like a path (it has a `/` and
+an extension) also raises a warning, since the answer that follows would be
+about a file name:
 
 ```{r}
 typo <- gr_ingest("reports/2024/annual-report.pfd")
@@ -165,9 +168,11 @@ gr_ingest("scan.pdf", gr_ingest_spec(ocr_lang = "deu", ocr_dpi = 400))
 ```
 
 OCR on PDFs needs both `tesseract` and `magick`. Without them a scanned page
-comes back nearly empty and readgpt warns (`gr_ocr_unavailable`); a document with
-too little text left is refused outright, as the next section shows. The
-`"scanned"` recipe is set up for this kind of document.
+comes back nearly empty and readgpt warns (`gr_ocr_unavailable`). The document
+lists those pages in `doc$stats$unread_pages`, and an answer drawn from it is
+marked partial. A document with too little text left is refused outright, as the
+next section shows. The `"scanned"` recipe is set up for this kind of
+document.
 
 ## Cleaning
 

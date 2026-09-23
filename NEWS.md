@@ -495,6 +495,27 @@
   serialise on each. Within a document, `gr_options(parallel = TRUE)` already
   applies.
 
+* **`print()` says why an answer is partial, and what it cost.** Printing an
+  answer showed "(PARTIAL)" with no reason, and the evidence only as chunk
+  numbers. It now names what went wrong (requests that failed, with the first
+  error; chunks that did not fit; pages never read; a fallback), shows the cost
+  beside the token counts, gives each piece of evidence with its page and
+  section, and says "Not found in the document" in words. `print(trace)` shows
+  the cost too. `ans$answer` still holds the `NOT_IN_DOCUMENT` sentinel for code
+  to test.
+
+* **Warnings stay with the result.** A warning printed at the console is gone
+  once a script moves on, and in a run over a folder it cannot be tied to a
+  document. The warnings raised while a document is ingested, cut and read are
+  now kept in `doc$warnings` and `ans$warnings`, named by class. A document
+  served from the ingestion cache still carries them, `as_json()` writes them,
+  and `gr_read_many()`'s summary has a new last column, `warnings`, filled for
+  failed documents too. They still print as before.
+
+* **`gr_extractors()` says what this installation can read**, in two new
+  columns: `needs`, the packages an extractor cannot run without, and
+  `available`, whether they are installed.
+
 * **Guides that start from the beginning.** `vignette("readgpt")` is now a
   getting-started guide that assumes no experience with language models: tokens,
   context windows and chunks explained, installing, connecting to a provider,
@@ -513,6 +534,37 @@
   has moved into the guides.
 
 ## Fixed
+
+* **A missing API key no longer looks like an answer.** Without a key every
+  request failed on its own, and the answer came back as `NOT_IN_DOCUMENT`
+  marked partial, which reads as "the document does not say". The reason was
+  only in the trace. `answer_document()`, `gr_read_many()` and `gr_compare()`
+  now check for a credential before reading the document and stop with a
+  `gr_auth_error` that says how to set `OPENAI_API_KEY`. Anything else stops at
+  its first request, including the embeddings path, which used to fall back to
+  lexical vectors. A client that authenticates through `headers`, mock, backend
+  and replay clients, and a client with a response cache attached are not
+  stopped up front.
+
+* **Text that never reached a model makes the answer partial.** A PDF page that
+  needed OCR and did not get it (the OCR packages missing, or OCR failing on
+  that page) only raised a warning, once, and not at all when the document came
+  from the cache, so the answer was not partial. Those pages are now listed in
+  `doc$stats$unread_pages` and `ans$notes$unread_pages` and make the answer
+  partial, and `stats$pages` counts them. `hierarchical` cutting its summaries
+  to fit, and `refine` cutting an excerpt or its draft, now mark the answer
+  partial too, as `preview` already did for a cut skim. A custom extractor can
+  report its own unread pages in `attr(result, "gr_unread_pages")`.
+
+* **A path with a mistyped extension is flagged.** `"reports/2024/annual-report.pfd"`
+  is read as text, because the extension is not one readgpt reads, and the
+  answer that followed was about a file name with nothing to say so. A one-line
+  string with a directory separator and an unknown extension now raises
+  `gr_path_as_text`.
+
+* **`gr_compare()` answers carry what `answer_document()` answers carry.** They
+  had no `$document` and did not resolve evidence to pages. All three entry
+  points now finish an answer the same way.
 
 * **`rerank` could answer with no document in front of it.** The relevance
   score was coerced with `as.numeric()`, and `as.numeric("high")` is `NA`. An

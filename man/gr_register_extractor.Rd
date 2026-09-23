@@ -12,7 +12,10 @@ gr_register_extractor(name, extensions, fn, description = "")
 \item{extensions}{Character vector of file extensions it claims.}
 
 \item{fn}{Function of \verb{(path, opts)} returning a data frame with columns
-\code{text}, and optionally \code{page}, \code{section}, \code{kind}.}
+\code{text}, and optionally \code{page}, \code{section}, \code{kind}. Pages it could not turn
+into text can be listed in \code{attr(result, "gr_unread_pages")}; an answer
+drawn from the document is then marked partial, as it is for a PDF page
+that needed OCR and did not get it.}
 
 \item{description}{One-line description shown by \code{\link[=gr_extractors]{gr_extractors()}}.}
 }

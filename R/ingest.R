@@ -75,6 +75,11 @@ gr_ingest_spec <- function(clean = "standard", ocr = c("auto", "always", "never"
 #' came from.
 #'
 #' @param source A file path, or a character vector / single string of raw text.
+#'   A one-line string ending in an extension some extractor claims is taken as
+#'   a path, and is an error (`gr_file_not_found`) when no such file exists.
+#'   Any other string is read as text; one that looks like a path (a directory
+#'   separator and an extension no extractor claims) also raises a
+#'   `gr_path_as_text` warning.
 #' @param spec A `gr_ingest_spec`, a bare preset name, or `NULL` for defaults.
 #' @param cache Use the session document cache. The cache key includes the file's
 #'   size and mtime plus every ingestion option.
@@ -131,6 +136,26 @@ gr_ingest <- function(source, spec = NULL, cache = NULL, trace = NULL) {
                             "a path, it must not end in something that looks like a file extension."),
                      source), class = "gr_file_not_found")
   }
+  # Everything below is recorded on the document, so an answer drawn from it
+  # carries the warnings too. That includes a cache hit, when extraction does
+  # not run again and nothing would be raised a second time.
+  rec <- warning_recorder()
+  # The other half of the rule above. A mistyped or unsupported extension is not
+  # one an extractor claims, so the string is read as text. That is correct,
+  # since prose can end in a word with a dot in it, but a one-line string with a
+  # directory separator in it is almost certainly a path, and the answer that
+  # follows would be about the file name.
+  if (!is_path && !looks_like_path && one_line && grepl("[/\\\\]", source) &&
+      grepl("\\.[A-Za-z][A-Za-z0-9]{0,5}$", source) && !grepl("[ \t]{2,}", source)) {
+    withCallingHandlers(
+      gr_warn(sprintf(paste0("'%s' is not an existing file, and '.%s' is not an extension readgpt ",
+                             "reads, so the string itself is being read as the document. If it is ",
+                             "a path, check it; readgpt reads %s."),
+                      source, ext_of(source),
+                      paste0(".", sort(known_ext), collapse = ", ")),
+              class = "gr_path_as_text"),
+      gr_warning = rec$record)
+  }
 
   if (is_path) {
     fi <- file.info(source)
@@ -165,20 +190,26 @@ gr_ingest <- function(source, spec = NULL, cache = NULL, trace = NULL) {
                class = "gr_unsupported_format")
     }
     gr_msg(sprintf("Extracting '%s' with the '%s' extractor.", basename(source), ex$name))
-    blocks <- as_blocks(ex$fn(source, spec))
+    raw <- withCallingHandlers(ex$fn(source, spec), gr_warning = rec$record)
+    unread <- attr(raw, "gr_unread_pages", exact = TRUE)
+    blocks <- as_blocks(raw)
     blocks$text <- to_utf8(blocks$text)
     src <- normalizePath(source, winslash = "/", mustWork = FALSE)
   } else {
     txt <- paste(vapply(source, as_chr1, character(1), USE.NAMES = FALSE), collapse = "\n\n")
     txt <- to_utf8(txt)
     blocks <- as_blocks(data.frame(text = paragraphs_of(txt), stringsAsFactors = FALSE))
+    unread <- NULL
     src <- "<inline text>"
   }
+  unread <- sort(unique(as.integer(unread[!is.na(unread)])))
 
   raw_chars <- sum(nchar(blocks$text))
   steps <- resolve_clean_steps(spec$clean)
-  cleaned <- gr_clean(blocks$text, steps = steps,
-                      opts = utils::modifyList(as.list(spec), spec$cleaner_opts %||% list()))
+  cleaned <- withCallingHandlers(
+    gr_clean(blocks$text, steps = steps,
+             opts = utils::modifyList(as.list(spec), spec$cleaner_opts %||% list())),
+    gr_warning = rec$record)
   clean_log <- attr(cleaned, "gr_clean_log")
   blocks$text <- mark_utf8(as.character(cleaned))
   blocks <- blocks[has_content(blocks$text), , drop = FALSE]
@@ -205,8 +236,13 @@ gr_ingest <- function(source, spec = NULL, cache = NULL, trace = NULL) {
     stats = list(blocks = nrow(blocks), chars = sum(nchar(blocks$text)),
                  chars_removed = raw_chars - sum(nchar(blocks$text)),
                  tokens = sum(gr_count_tokens(blocks$text)),
-                 pages = if (all(is.na(blocks$page))) NA_integer_ else max(blocks$page, na.rm = TRUE),
-                 clean_steps = steps, clean_log = clean_log)
+                 # A trailing page that never became text is still a page of the
+                 # document; counting only pages with blocks under-reported it.
+                 pages = if (all(is.na(blocks$page)) && !length(unread)) NA_integer_
+                         else as.integer(max(c(blocks$page, unread), na.rm = TRUE)),
+                 clean_steps = steps, clean_log = clean_log,
+                 unread_pages = unread),
+    warnings = rec$get()
   ), class = "gr_document")
 
   if (cache) gr_state$doc_cache[[key]] <- doc
@@ -234,6 +270,13 @@ print.gr_document <- function(x, ...) {
               x$stats$blocks, x$stats$tokens, x$stats$chars, x$stats$chars_removed))
   if (!is.na(x$stats$pages)) cat(sprintf("  %d page(s)\n", x$stats$pages))
   cat(sprintf("  cleaners: %s\n", paste(x$stats$clean_steps, collapse = ", ") %|z|% "none"))
+  unread <- x$stats$unread_pages %||% integer(0)
+  if (length(unread)) {
+    cat(sprintf("  pages that never became text: %s\n",
+                paste(utils::head(unread, 20), collapse = ", ")))
+  }
+  w <- x[["warnings", exact = TRUE]] %||% character(0)
+  if (length(w)) cat(sprintf("  %d warning(s), in $warnings\n", length(w)))
   cat(sprintf("  first block: %s\n", substr(x$blocks$text[1], 1, 120)))
   invisible(x)
 }

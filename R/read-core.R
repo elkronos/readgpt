@@ -107,7 +107,8 @@ new_answer <- function(text, reader, question, chunks_used, trace, evidence = NU
     chunks_used = chunks_used,
     partial = isTRUE(partial),
     notes = notes,
-    trace = trace
+    trace = trace,
+    warnings = character(0)
   ), class = "gr_answer")
 }
 
@@ -117,25 +118,117 @@ print.gr_answer <- function(x, ...) {
   cat(sprintf("  Q: %s\n", substr(x$question, 1, 160)))
   if (!is.null(x$trace)) {
     s <- gr_trace_summary(x$trace)
-    cat(sprintf("  %d model call(s)%s, %d in / %d out tokens, %d error(s)\n",
+    cat(sprintf("  %d model call(s)%s, %d in / %d out tokens, %d error(s), %s\n",
                 s$calls, if (s$cached > 0L) sprintf(" (%d cached)", s$cached) else "",
-                s$tokens_in, s$tokens_out, s$errors))
+                s$tokens_in, s$tokens_out, s$errors, format_trace_cost(x$trace)))
   }
   cat("  ---\n")
-  cat(x$answer, "\n")
+  # The sentinel is a value for code to test, not a sentence for a person. And
+  # "not found" says less than it appears to from a run that did not read the
+  # whole document, whether because something failed (partial) or by design (a
+  # top-k reader reads a few chunks), so only a complete read of every chunk
+  # earns the stronger wording.
+  if (is_not_found(x$answer)) {
+    whole <- !x$partial && startsWith(as_chr1(x$signature, ""), "all|")
+    cat(if (whole) "Not found in the document.\n"
+        else "Not found in the part of the document that was read.\n")
+  } else {
+    cat(x$answer, "\n")
+  }
+  cat("  ---\n")
   if (!is.null(x$evidence) && nrow(x$evidence)) {
-    cat(sprintf("  ---\n  %d evidence span(s) from chunk(s): %s\n",
-                nrow(x$evidence), paste(utils::head(unique(x$evidence$chunk_id), 12), collapse = ", ")))
+    cat(sprintf("  Evidence: %s\n", evidence_locations(x$evidence)))
+  }
+  if (x$partial) {
+    why <- partial_reasons(x)
+    cat(sprintf("  Partial because: %s\n",
+                if (length(why)) paste(why, collapse = "; ") else "see $notes"))
+  }
+  w <- x[["warnings", exact = TRUE]] %||% character(0)
+  if (length(w)) {
+    cat(sprintf("  %d warning(s), in $warnings. First: %s\n", length(w),
+                substr(w[[1]], 1, 140)))
   }
   invisible(x)
 }
 
+#' Where the evidence came from, in a line: chunk, then page and section.
+#' @noRd
+evidence_locations <- function(ev, max_rows = 6L) {
+  ids <- unique(ev$chunk_id)
+  one <- function(id) {
+    row <- ev[ev$chunk_id == id, , drop = FALSE][1, , drop = FALSE]
+    where <- c(if (!is.null(row$page) && !is.na(row$page)) sprintf("p. %s", row$page),
+               if (!is.null(row$section) && !is.na(row$section) &&
+                   nzchar(as.character(row$section)))
+                 sprintf("\"%s\"", substr(as.character(row$section), 1, 40)))
+    if (length(where)) sprintf("chunk %s (%s)", id, paste(where, collapse = ", "))
+    else sprintf("chunk %s", id)
+  }
+  shown <- vapply(utils::head(ids, max_rows), one, character(1))
+  more <- length(ids) - length(shown)
+  paste0(paste(shown, collapse = ", "), if (more > 0L) sprintf(", and %d more", more) else "")
+}
+
+#' Why an answer is partial, in words, from the notes its reader left.
+#'
+#' Read with `[[exact = TRUE]]`: `$` would partial-match `degraded` to
+#' `degraded_to_bm25` and report a fallback that never happened.
+#' @noRd
+partial_reasons <- function(x) {
+  # as.list(): new_answer() accepts a named vector for notes, and `[[` on one
+  # is an error for a name it does not have.
+  n <- as.list(x$notes %||% list())
+  get <- function(k) n[[k, exact = TRUE]]
+  num <- function(k) {
+    v <- suppressWarnings(as.numeric(get(k)))
+    if (length(v) == 1L && !is.na(v)) v else 0
+  }
+  flag <- function(k) isTRUE(get(k))
+  cnt <- function(k, what) if (num(k) > 0) sprintf(what, format(num(k), scientific = FALSE))
+  why <- c(
+    cnt("failed_calls", "%s request(s) failed"),
+    cnt("scoring_failures", "%s relevance score(s) failed"),
+    cnt("failed_summaries", "%s summary request(s) failed"),
+    cnt("dropped_chunks", "%s chunk(s) did not fit"),
+    cnt("chunks_dropped", "%s chunk(s) did not fit"),
+    if (!is.null(get("call_cap_reached")))
+      sprintf("stopped at the %s-request limit",
+              format(get("call_cap_reached"), scientific = FALSE)),
+    if (length(get("cited_unknown")))
+      sprintf("cites chunk(s) never sent: %s", paste(get("cited_unknown"), collapse = ", ")),
+    cnt("unverified_evidence", "%s quotation(s) not found in the document"),
+    if (length(get("unread_pages")))
+      sprintf("page(s) never read: %s", paste(utils::head(get("unread_pages"), 10), collapse = ", ")),
+    if (flag("summaries_truncated")) "summaries cut to fit",
+    cnt("truncations", "text cut to fit %s time(s)"),
+    cnt("tokens_truncated", "%s token(s) cut to fit"),
+    cnt("skipped", "%s section(s) skipped by the plan"),
+    if (flag("degraded_to_bm25")) "relevance scoring fell back to word matching",
+    if (flag("embedding_fallback")) "embeddings fell back to word matching",
+    if (flag("degraded")) "fell back to a simpler method",
+    if (identical(get("merge_ok"), FALSE)) "the answers could not be merged"
+  )
+  err <- as_chr1(get("error"), "")
+  if (!nzchar(err) && inherits(x$trace, "gr_trace") && length(x$trace$errors)) {
+    err <- as_chr1(x$trace$errors[[1]]$error, "")
+  }
+  if (nzchar(err)) why <- c(why, sprintf("first error: %s", substr(err, 1, 120)))
+  if (!length(why) && is_nonblank(get("reason"))) why <- get("reason")
+  why
+}
+
 #' @export
 as_json.gr_answer <- function(x, pretty = TRUE, ...) {
+  w <- x[["warnings", exact = TRUE]] %||% character(0)
   as_json.default(list(
     answer = x$answer, reader = x$reader, question = x$question,
     partial = x$partial, chunks_used = x$chunks_used, notes = x$notes,
     evidence = x$evidence,
+    # A list of pairs rather than a named vector: two warnings of one class would
+    # otherwise become one JSON object with a repeated key.
+    warnings = lapply(seq_along(w), function(i)
+      list(class = as_chr1(names(w)[i], "gr_warning"), message = unname(w[[i]]))),
     trace = trace_as_list(x$trace)
   ), pretty = pretty, ...)
 }

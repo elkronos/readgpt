@@ -56,24 +56,37 @@ answer_document <- function(source, question, recipe = "thorough", client = NULL
   if (!is_nonblank(question)) gr_abort("`question` must be a non-empty string.")
   rec <- apply_overrides(as_recipe(recipe), list(...))
   client <- client %||% gr_client(model = rec$read$model)
+  # Before ingestion: a missing key fails every request, and finding that out
+  # after an OCR pass over a long scan wastes the wait.
+  stop_if_no_credentials(client)
   trace <- trace %||% gr_trace(meta = list(recipe = rec$name, question = question,
                                            source = source_label(source)))
 
   doc <- gr_ingest(source, rec$ingest, trace = trace)
   chunks <- gr_segment(doc, rec$segment, client = client, trace = trace)
-  ans <- gr_read(chunks, question, client, rec$read, trace = trace)
-  # A quote is a sentence, and a sentence is on one page. The reader only sees
-  # chunks, which may span several; the document is in scope here, so this is
-  # where a citation stops being "somewhere in chunk 4" and becomes "page 7".
-  ans$evidence <- resolve_evidence_pages(ans$evidence, doc$blocks)
-  ans$recipe <- rec$name
-  ans$document <- list(source = doc$source, stats = doc$stats)
-  ans$segmentation <- as.list(gr_chunk_stats(chunks))
+  ans <- finish_answer(gr_read(chunks, question, client, rec$read, trace = trace),
+                       doc, chunks, rec$name)
 
   switch(return,
     answer = ans,
     text = ans$answer,
     json = as_json(ans))
+}
+
+#' What every answer drawn from a document carries beyond what the reader set.
+#'
+#' One place for it, so the three routes to an answer (one document, a
+#' comparison, a folder) cannot drift apart. A quote is a sentence, and a
+#' sentence is on one page. The reader only sees chunks, which may span several;
+#' the document is in scope here, so this is where a citation stops being
+#' "somewhere in chunk 4" and becomes "page 7".
+#' @noRd
+finish_answer <- function(ans, doc, chunks, recipe) {
+  ans$evidence <- resolve_evidence_pages(ans$evidence, doc$blocks)
+  ans$recipe <- recipe
+  ans$document <- list(source = doc$source, stats = doc$stats)
+  ans$segmentation <- as.list(gr_chunk_stats(chunks))
+  ans
 }
 
 #' Run several recipes over one document and compare them
@@ -163,8 +176,9 @@ gr_compare <- function(source, question, recipes = c("fast", "needle", "thorough
 
   trace <- gr_trace(meta = list(question = question, recipes = names(recs),
                                 source = source_label(source)))
-  doc <- gr_ingest(source, recs[[1]]$ingest, trace = trace)
   client <- client %||% gr_client(model = recs[[1]]$read$model)
+  stop_if_no_credentials(client)
+  doc <- gr_ingest(source, recs[[1]]$ingest, trace = trace)
 
   seg_cache <- new.env(parent = emptyenv())
   answers <- list()
@@ -177,7 +191,10 @@ gr_compare <- function(source, question, recipes = c("fast", "needle", "thorough
       # characters meant any length-preserving cleaner produced a cache hit on
       # different text, and one recipe was handed another recipe's chunks --
       # order-dependent, silent, and wrong.
-      skey <- gr_hash(list(d$text, unclass(r$segment)))
+      # And on what the document could not give: chunks carry the unread pages
+      # and the warnings of the ingestion that produced them, so two ingestions
+      # with the same text but different losses must not share chunks.
+      skey <- gr_hash(list(d$text, unclass(r$segment), d$stats$unread_pages, d$warnings))
       ch <- seg_cache[[skey]]
       if (is.null(ch)) { ch <- gr_segment(d, r$segment, client = client, trace = trace)
                          seg_cache[[skey]] <- ch }
@@ -188,10 +205,11 @@ gr_compare <- function(source, question, recipes = c("fast", "needle", "thorough
       sub <- gr_trace(meta = list(recipe = nm))
       a <- gr_read(ch, question, client, r$read, trace = sub)
       trace_absorb(trace, sub)
-      a$recipe <- nm
-      a$segmentation <- as.list(gr_chunk_stats(ch))
-      a
+      finish_answer(a, d, ch, nm)
     }, error = function(e) {
+      # Every recipe would fail the same way, so a missing key is not one
+      # recipe's failure.
+      if (inherits(e, "gr_auth_error")) stop(e)
       if (identical(on_error, "stop")) stop(e)
       gr_warn(sprintf("Recipe '%s' failed: %s", nm, conditionMessage(e)))
       # A failed recipe is RECORDED, not deleted. `answers[[nm]] <- NULL` in the

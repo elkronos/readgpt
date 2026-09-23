@@ -14,15 +14,22 @@ Returned by \code{\link[=gr_read]{gr_read()}} and, with three extra fields, by \
 contain the answer -- test it with \code{is_not_found()}-style matching rather
 than substring search.}
 \item{\code{partial}}{Logical(1). \code{TRUE} when anything degraded: a call failed,
-chunks were dropped, a cap was hit, a strategy fell back. \strong{Check this
-before trusting an answer.}}
+chunks were dropped, a cap was hit, a strategy fell back, text was cut to
+fit, or pages of the document never became text (a scan read without
+OCR). \strong{Check this before trusting an answer.}}
 \item{\code{notes}}{List. Why it is partial, and per-reader detail:
 \code{dropped_chunks}, \code{failed_calls}, \code{error}, \code{merge_levels},
-\code{degraded_to_bm25}, \code{stop_reason}, \code{call_cap_reached}, and so on. Two are
-set for every reader: \code{cited_unknown}, chunk ids the answer cited that
-were never sent, and \code{unverified_evidence}, the number of quoted spans
-that are not in the chunk they claim to come from. Either makes the answer
-\code{partial}.}
+\code{degraded_to_bm25}, \code{stop_reason}, \code{call_cap_reached},
+\code{summaries_truncated}, and so on. Three can be set for every reader:
+\code{cited_unknown}, chunk ids the answer cited that were never sent;
+\code{unverified_evidence}, the number of quoted spans that are not in the
+chunk they claim to come from; and \code{unread_pages}, the pages that never
+became text. Any of them makes the answer \code{partial}.}
+\item{\code{warnings}}{Character. What readgpt warned about while the document
+was ingested, cut and read, named by the warning's class. The warnings
+still print as they happen; this copy stays with the answer, including
+when the document came from the ingestion cache and nothing was raised
+again.}
 \item{\code{evidence}}{Data frame or \code{NULL}, with columns \code{chunk_id}, \code{text},
 \code{page}, \code{section}, \code{score}, \code{kind}. \strong{What \code{text} holds depends on the reader}:
 verbatim chunk text for \code{stuff}, \code{retrieve}, \code{rerank} and \code{iterative};
@@ -55,9 +62,9 @@ chunk statistics the reader saw.}
 
 \section{Methods}{
 
-\code{print()} shows the answer, the partial flag, the call count and an evidence
-summary; \code{\link[=as_json]{as_json()}} serialises the answer together with every prompt and
-response from the same run.
+\code{print()} shows the answer, the calls, tokens and cost, where the evidence
+came from, and, when the answer is partial, why; \code{\link[=as_json]{as_json()}} serialises the
+answer together with every prompt and response from the same run.
 }
 
 \examples{

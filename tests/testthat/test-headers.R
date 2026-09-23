@@ -233,15 +233,16 @@ test_that("http_call() reaches the network on headers alone, with no key", {
   expect_match(res$error, "no network in tests")
 })
 
-test_that("http_call() still fails locally when there is no auth at all", {
+test_that("http_call() stops locally when there is no auth at all", {
   withr::local_envvar(OPENAI_API_KEY = NA)
   withr::local_options(readgpt.api_key = NULL)
   cl <- gr_client(base_url = "https://gw.invalid", max_retries = 0L)
   seen <- capture_post_headers()
 
-  res <- readgpt:::http_call(cl, "https://gw.invalid/chat/completions", list())
-  expect_false(res$ok)
-  expect_identical(res$error, "No API key available.")
+  # An error, not a failed result: every request would fail the same way, and a
+  # failed result per call turned a missing key into "NOT_IN_DOCUMENT".
+  expect_error(readgpt:::http_call(cl, "https://gw.invalid/chat/completions", list()),
+               class = "gr_auth_error", regexp = "OPENAI_API_KEY")
   expect_null(seen$url)                      # not one request spent
 })
 

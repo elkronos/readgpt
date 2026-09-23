@@ -18,8 +18,13 @@ PDF extractor; \code{kind} is one of \code{"body"}, \code{"heading"}, \code{"cod
 string rather than a file.}
 \item{\code{spec}}{The \code{\link[=gr_ingest_spec]{gr_ingest_spec()}} used.}
 \item{\code{stats}}{\code{blocks}, \code{chars}, \code{chars_removed}, \code{tokens}, \code{pages},
-\code{clean_steps}, and \code{clean_log} (characters removed per cleaning step --
-useful when cleaning ate more than you expected).}
+\code{clean_steps}, \code{clean_log} (characters removed per cleaning step, useful
+when cleaning ate more than you expected) and \code{unread_pages} (pages that
+never became text, such as scanned pages read without OCR; an answer
+drawn from the document is marked partial when there are any).}
+\item{\code{warnings}}{Character. What readgpt warned about while extracting
+and cleaning, named by the warning's class. Kept with the document, so a
+copy served from the ingestion cache still carries them.}
 }
 }
 

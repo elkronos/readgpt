@@ -120,6 +120,9 @@ cannot:
 gr_api_key()
 ```
 
+If the key is missing, a run stops before it reads your document and gives the
+same explanation.
+
 The README's "Other providers" section covers Anthropic, Google, Azure, company
 gateways, and free models running on your own machine through Ollama.
 
@@ -169,27 +172,28 @@ it.
 
 **`partial` says whether anything went wrong.** It is `TRUE` if a request
 failed, if chunks were left out because they did not fit, if the limit on
-requests stopped the run early, or if a reading strategy fell back to a simpler
-method. Some problems only raise a warning, such as a scanned page that could
-not be read, so read any warnings as well:
+requests stopped the run early, if a reading strategy fell back to a simpler
+method, or if pages of the document never became text (a scanned page read
+without OCR, for example):
 
 ```{r}
 ans$partial
 ```
 
-When it is `TRUE`, `ans$notes` says why. Here is a "model" that fails every
-request, as a network outage would:
+When it is `TRUE`, printing the answer says why, and `ans$notes` holds the
+details. Here is a "model" that fails every request, as a network outage would:
 
 ```{r}
 broken <- gr_mock_client(function(messages, params) stop("no connection"))
 bad <- answer_document(readgpt_example(), "What was revenue in 2024?",
                        client = broken)
-bad$partial
-names(bad$notes)
+bad
 ```
 
 The run did not stop with an error. It finished, and the failure is recorded on
-the result, so check `partial` every time.
+the result, so check `partial` every time. Any warnings raised along the way are
+kept in `ans$warnings` as well as printed, so they can still be read after the
+console has scrolled past them.
 
 **`is_not_found()` says whether the document had the answer at all.** Every
 reading strategy tells the model to reply with a fixed marker when the text it
@@ -329,8 +333,9 @@ chunks similar to a question.
 and testing without cost.
 
 **Partial**: `ans$partial` is `TRUE` when a request failed, chunks did not fit
-and were left out, the run stopped early, or a reading strategy fell back to a
-simpler method. Some problems only raise a warning.
+and were left out, the run stopped early, a reading strategy fell back to a
+simpler method, or pages of the document never became text. Printing the answer
+says which.
 
 **Prompt**: the text sent to a model in one request.
 

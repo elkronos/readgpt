@@ -553,9 +553,9 @@ is the form that belongs in a project's `.Rprofile`. Headers are excluded from
 the cache key, like the API key: a rotating token or a per-request correlation
 id would otherwise make every lookup a miss.
 
-Without a key nothing raises. Every call fails, the answer is the
-`"NOT_IN_DOCUMENT"` sentinel and `ans$partial` is `TRUE`, so check `partial`
-every time.
+Without a key, a run stops before it reads the document, with an error
+(`gr_auth_error`) that says how to set one. A client that authenticates through
+`headers` needs no key.
 
 ## Extending it
 

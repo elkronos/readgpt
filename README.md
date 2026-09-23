@@ -167,16 +167,12 @@ and naming any header makes the key optional. `NA` suppresses a header, which is
 how a personal `OPENAI_API_KEY` set for another client is kept off the gateway.
 `gr_options(api_headers = ...)` applies the same set to every client.
 
-**Without a key nothing raises.** Every model call fails, you get
-`"NOT_IN_DOCUMENT"` back, and the failure is reported on the answer object:
-
-```r
-ans$partial        # TRUE
-ans$notes$error    # "No API key available."
-```
-
-Always check `ans$partial` before trusting an answer. Call `gr_api_key()`
-yourself if you would rather fail fast.
+**Without a key the run stops and says how to set one.** `answer_document()`,
+`gr_read_many()` and `gr_compare()` check for a credential before reading the
+document, so a missing key does not first cost an OCR pass over a long scan.
+Anything else stops at its first request. The error has class `gr_auth_error`.
+A client that authenticates through `headers`, a mock, backend or replay
+client, and a client with a response cache attached are not stopped up front.
 
 Keep the key out of the repository. `.Renviron` and `.Rprofile` are both
 gitignored here for that reason. `.Renviron` is the usual home for it:
@@ -334,11 +330,14 @@ on one document, and gives a way to choose.
 
 ## Reading a run
 
-Nothing degrades silently. Everything below is recorded on the answer.
+Nothing degrades silently. Everything below is recorded on the answer, and
+`print(ans)` sums it up: the cost, where the evidence came from and, when the
+answer is partial, why.
 
 ```r
 ans$partial     # TRUE means something degraded; check this first
-ans$notes       # what: dropped_chunks, failed_calls, error, degraded_to_bm25, ...
+ans$notes       # what: dropped_chunks, failed_calls, unread_pages, error, ...
+ans$warnings    # every warning raised while the document was read
 ans$evidence    # what the answer rests on
 print(ans$trace)
 gr_trace_summary(ans$trace)
@@ -406,7 +405,7 @@ cause:
 |---|---|---|
 | `NOT_IN_DOCUMENT`, but you can see the answer in the file | `nrow(ans$evidence)`, then `gr_chunk_stats()` | the chunk holding it never reached the model. Lower `max_tokens`, raise `top_k`, or switch to a reader whose `signature` starts `all\|` |
 | the answer is right but thin | `ans$notes$chunks` vs `length(ans$chunks_used)` | most chunks answered `NOT_IN_DOCUMENT`. That is usually correct; if not, the boundaries are cutting the evidence in half, so add `overlap_tokens` |
-| `ans$partial` is `TRUE` | `ans$notes`, then `print(ans$trace)` | `failed_calls` (transport), `dropped_chunks` (did not fit), `call_cap_reached`, or a merge that degraded to concatenation |
+| `ans$partial` is `TRUE` | `print(ans)`, then `ans$notes` and `print(ans$trace)` | `failed_calls` (transport), `dropped_chunks` (did not fit), `call_cap_reached`, `unread_pages` (no text layer and no OCR), or a merge that degraded to concatenation |
 | `ans$notes$unverified_evidence` is set | `gr_verify_evidence(ans)` | the model wrote a quotation that is not in the chunk it is attributed to. `match` says how far off; near 1 is a typo, near 0 is invention |
 | `ans$notes$cited_unknown` is set | that value against `ans$chunks_used` | the answer cited a chunk that was never sent to it |
 | figures, dates or percentages are missing | `doc$stats$clean_log` | a cleaning step removed them. `remove_numbers` is off by default; the `legacy` preset turns it on deliberately |

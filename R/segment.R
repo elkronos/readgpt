@@ -109,19 +109,22 @@ gr_segment <- function(doc, spec = NULL, client = NULL, trace = NULL) {
   if (!inherits(doc, "gr_document")) doc <- gr_ingest(doc, trace = trace)
   spec <- as_segment_spec(spec)
   seg <- registry_get("segmenters", spec$method, "segmenters")
+  rec <- warning_recorder()
 
   if (isTRUE(seg$needs_client) && is.null(client) && !seg$name %in% names(.gr_self_warning_segmenters)) {
     # The built-ins each emit their own, more specific warning naming what they
     # fall back TO. Emitting a generic one here as well produced two warnings
     # for one event, which trains people to ignore both. A third-party segmenter
     # that declares needs_client and stays silent still gets this one.
-    gr_warn(sprintf("Segmenter '%s' needs a client and none was supplied; it will fall back.",
-                    spec$method), class = "gr_segment_fallback")
+    withCallingHandlers(
+      gr_warn(sprintf("Segmenter '%s' needs a client and none was supplied; it will fall back.",
+                      spec$method), class = "gr_segment_fallback"),
+      gr_warning = rec$record)
   }
   gr_msg(sprintf("Segmenting with '%s' (cap %d tokens, overlap %d).",
                  spec$method, spec$max_tokens, spec$overlap_tokens))
 
-  out <- seg$fn(doc, spec, client, trace)
+  out <- withCallingHandlers(seg$fn(doc, spec, client, trace), gr_warning = rec$record)
   if (!inherits(out, "gr_chunks")) gr_abort(sprintf("Segmenter '%s' did not return a gr_chunks object.", spec$method))
 
   # Final invariant check. A segmenter that violates the cap is a bug in the
@@ -153,6 +156,11 @@ gr_segment <- function(doc, spec = NULL, client = NULL, trace = NULL) {
   trace_note(trace, "segment", c(list(method = spec$method),
                                  as.list(gr_chunk_stats(out))[-1],
                                  list(settings = segment_settings(spec))))
+  # What the document could not give, carried to whatever reads these chunks:
+  # the warnings raised while it was ingested and cut, and the pages that never
+  # became text. gr_read() puts both on the answer.
+  out$warnings <- c(doc$warnings %||% character(0), rec$get())
+  out$unread_pages <- doc$stats$unread_pages %||% integer(0)
   out
 }
 

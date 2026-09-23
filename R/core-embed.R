@@ -130,6 +130,10 @@ gr_embed <- function(client, texts, model = NULL, batch_size = 64L, cache = NULL
   m <- tryCatch(emb$fn(texts, list(client = client, model = model, batch_size = batch_size,
                                    cache = cache, trace = trace, embedder = emb$name)),
                 error = function(e) e)
+  # A missing key is not an embedder failing: falling back to lexical vectors
+  # would hide it behind a quality warning, and every later request would fail
+  # the same way. It stops the run.
+  if (inherits(m, "gr_auth_error")) stop(m)
   bad <- if (inherits(m, "condition")) conditionMessage(m)
          else if (!is.numeric(m)) "it did not return a numeric matrix"
          else if (NROW(m) != length(texts))
@@ -179,7 +183,7 @@ embed_api <- function(texts, params) {
       # `api-key` header for chat needs it for embeddings too, and two copies of
       # the header logic is how one of them ends up a release behind.
       headers <- request_headers(client)
-      if (is.null(headers)) gr_abort("no API key available", class = "gr_embed_error")
+      if (is.null(headers)) no_credentials_error()
       resp <- tryCatch(
         httr::POST(paste0(client$base_url, "/embeddings"),
                    httr::content_type_json(),

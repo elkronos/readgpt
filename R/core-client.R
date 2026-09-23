@@ -34,13 +34,13 @@
 #' @return The key string. Raises a `gr_auth_error` if none is found.
 #'
 #' @section No key set:
-#' A run without a key does **not** raise. Every model call fails, the answer is
-#' the `"NOT_IN_DOCUMENT"` sentinel and `ans$partial` is `TRUE`. Where the error
-#' text appears depends on the reader: the single-call readers (`stuff`,
-#' `retrieve`) put `"No API key available."` in `ans$notes$error`, while the
-#' per-chunk readers report `notes$failed_calls` instead. `print(ans$trace)`
-#' shows the error for every reader. Call this function directly if you would
-#' rather fail fast.
+#' A run that would have to send a request without a key stops with a
+#' `gr_auth_error` that says how to set one. [answer_document()],
+#' [gr_read_many()] and [gr_compare()] check before reading the document, so a
+#' missing key does not first cost an OCR pass; everything else stops at the
+#' first request. A client that sends its credential in `headers`, a mock, a
+#' backend or replay client, and a client with a response cache attached are not
+#' affected.
 #' @seealso [gr_client()]
 #' @export
 #' @examples
@@ -50,7 +50,8 @@
 #' gr_api_key()
 #' gr_api_key("sk-explicit-wins")
 #'
-#' # No key set is not an error until a call is made -- see the section above.
+#' # With no key set it says so. A run stops the same way, before its first
+#' # request; see the section above.
 #' Sys.unsetenv("OPENAI_API_KEY")
 #' tryCatch(gr_api_key(), gr_auth_error = function(e) conditionMessage(e))
 #'
@@ -147,8 +148,8 @@ normalise_headers <- function(headers, arg = "headers") {
 #' The headers one request is actually sent with.
 #'
 #' Returns `NULL` when the client has neither a resolvable key nor any headers of
-#' its own; the caller turns that into "No API key available." without spending a
-#' request.
+#' its own; the caller then stops the run with a `gr_auth_error` without spending
+#' a request.
 #'
 #' Supplying `headers` therefore makes the key optional, and it has to: a gateway
 #' that authenticates with `api-key` or a subscription key needs no bearer, and
@@ -165,6 +166,42 @@ request_headers <- function(client) {
        else c(Authorization = paste("Bearer", key))
   if (length(user)) h <- c(h[!(tolower(names(h)) %in% tolower(names(user)))], user)
   h[!is.na(h)]
+}
+
+#' Stop a run that has no credential to send.
+#'
+#' A missing key is not a failed request: every request would fail the same way.
+#' Recording it as one per call turned a first run without a key into an answer
+#' of "NOT_IN_DOCUMENT" marked partial, which reads as "the document does not
+#' say", with the reason only inside the trace.
+#' @noRd
+no_credentials_error <- function() {
+  gr_abort(paste0(
+    "No API key found, so no request can be sent. readgpt reads the key from the ",
+    "OPENAI_API_KEY environment variable: add the line OPENAI_API_KEY=<your key> to your ",
+    ".Renviron file (file.edit(\"~/.Renviron\") opens it), restart R, and check with ",
+    "gr_api_key(). To practise without a key, pass `client = gr_mock_client(...)`. A ",
+    "gateway that authenticates another way needs `headers` in gr_client()."),
+    class = "gr_auth_error")
+}
+
+#' Stop before any work when a run could not send a single request.
+#'
+#' Only for a client that sends HTTP requests itself: mock, backend and replay
+#' clients authenticate some other way or not at all. A client with a response
+#' cache attached is let through, because the requests it makes may all be
+#' answered from the cache; the first one that is not stops the run there, in
+#' http_call(). Called by the entry points before ingestion, so a missing key
+#' does not first cost an OCR pass over a long scan.
+#' @noRd
+stop_if_no_credentials <- function(client) {
+  if (!inherits(client, "gr_client") ||
+      inherits(client, c("gr_mock_client", "gr_backend_client", "gr_replay_client")) ||
+      inherits(client[[".cache", exact = TRUE]], "gr_cache")) {
+    return(invisible(TRUE))
+  }
+  if (is.null(request_headers(client))) no_credentials_error()
+  invisible(TRUE)
 }
 
 #' Construct a model client
@@ -661,9 +698,7 @@ build_request_body <- function(client, messages, model, max_output, temperature,
 #' @noRd
 http_call <- function(client, url, body) {
   headers <- request_headers(client)
-  if (is.null(headers)) {
-    return(gr_result(FALSE, error = "No API key available.", status = 0L))
-  }
+  if (is.null(headers)) no_credentials_error()
   # `.headers =`, not `...`: add_headers() has its own `.headers` argument, so a
   # header literally named `.headers` -- a legal HTTP field name -- would be
   # swallowed as that argument by do.call() instead of being sent. Placed after

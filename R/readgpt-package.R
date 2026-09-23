@@ -102,15 +102,22 @@
 #'     contain the answer -- test it with `is_not_found()`-style matching rather
 #'     than substring search.}
 #'   \item{`partial`}{Logical(1). `TRUE` when anything degraded: a call failed,
-#'     chunks were dropped, a cap was hit, a strategy fell back. **Check this
-#'     before trusting an answer.**}
+#'     chunks were dropped, a cap was hit, a strategy fell back, text was cut to
+#'     fit, or pages of the document never became text (a scan read without
+#'     OCR). **Check this before trusting an answer.**}
 #'   \item{`notes`}{List. Why it is partial, and per-reader detail:
 #'     `dropped_chunks`, `failed_calls`, `error`, `merge_levels`,
-#'     `degraded_to_bm25`, `stop_reason`, `call_cap_reached`, and so on. Two are
-#'     set for every reader: `cited_unknown`, chunk ids the answer cited that
-#'     were never sent, and `unverified_evidence`, the number of quoted spans
-#'     that are not in the chunk they claim to come from. Either makes the answer
-#'     `partial`.}
+#'     `degraded_to_bm25`, `stop_reason`, `call_cap_reached`,
+#'     `summaries_truncated`, and so on. Three can be set for every reader:
+#'     `cited_unknown`, chunk ids the answer cited that were never sent;
+#'     `unverified_evidence`, the number of quoted spans that are not in the
+#'     chunk they claim to come from; and `unread_pages`, the pages that never
+#'     became text. Any of them makes the answer `partial`.}
+#'   \item{`warnings`}{Character. What readgpt warned about while the document
+#'     was ingested, cut and read, named by the warning's class. The warnings
+#'     still print as they happen; this copy stays with the answer, including
+#'     when the document came from the ingestion cache and nothing was raised
+#'     again.}
 #'   \item{`evidence`}{Data frame or `NULL`, with columns `chunk_id`, `text`,
 #'     `page`, `section`, `score`, `kind`. **What `text` holds depends on the reader**:
 #'     verbatim chunk text for `stuff`, `retrieve`, `rerank` and `iterative`;
@@ -141,9 +148,9 @@
 #' }
 #'
 #' @section Methods:
-#' `print()` shows the answer, the partial flag, the call count and an evidence
-#' summary; [as_json()] serialises the answer together with every prompt and
-#' response from the same run.
+#' `print()` shows the answer, the calls, tokens and cost, where the evidence
+#' came from, and, when the answer is partial, why; [as_json()] serialises the
+#' answer together with every prompt and response from the same run.
 #' @seealso [answer_document()] and [gr_read()] which return one, [gr_compare()]
 #'   to compare several, [is_not_found()] to test the sentinel, [as_json()],
 #'   [new_answer()] to build one in a custom reader
@@ -207,8 +214,13 @@ NULL
 #'     string rather than a file.}
 #'   \item{`spec`}{The [gr_ingest_spec()] used.}
 #'   \item{`stats`}{`blocks`, `chars`, `chars_removed`, `tokens`, `pages`,
-#'     `clean_steps`, and `clean_log` (characters removed per cleaning step --
-#'     useful when cleaning ate more than you expected).}
+#'     `clean_steps`, `clean_log` (characters removed per cleaning step, useful
+#'     when cleaning ate more than you expected) and `unread_pages` (pages that
+#'     never became text, such as scanned pages read without OCR; an answer
+#'     drawn from the document is marked partial when there are any).}
+#'   \item{`warnings`}{Character. What readgpt warned about while extracting
+#'     and cleaning, named by the warning's class. Kept with the document, so a
+#'     copy served from the ingestion cache still carries them.}
 #' }
 #'
 #' @section Methods:

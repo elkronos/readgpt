@@ -309,9 +309,11 @@ gr_read <- function(chunks, question, client, spec = NULL, trace = NULL) {
 
   gr_msg(sprintf("Reading with '%s' (%s) over %d chunk(s).",
                  spec$reader, rd$signature, nrow(chunks$chunks)))
-  preflight(chunks, spec, trace)
-
-  out <- rd$fn(chunks, question, client, spec, trace)
+  rec <- warning_recorder()
+  out <- withCallingHandlers({
+    preflight(chunks, spec, trace)
+    rd$fn(chunks, question, client, spec, trace)
+  }, gr_warning = rec$record)
   if (!inherits(out, "gr_answer")) {
     gr_abort(sprintf("Reader '%s' did not return a gr_answer object.", spec$reader))
   }
@@ -319,6 +321,14 @@ gr_read <- function(chunks, question, client, spec = NULL, trace = NULL) {
     out$partial <- TRUE
     out$notes$call_cap_reached <- gr_options("max_calls")
   }
+  # Pages that never became text are missing from every chunk, so nothing this
+  # reader did could have seen them. The answer rests on part of the document.
+  unread <- chunks[["unread_pages", exact = TRUE]] %||% integer(0)
+  if (length(unread)) {
+    out$partial <- TRUE
+    out$notes["unread_pages"] <- list(unread)
+  }
+  out$warnings <- c(chunks[["warnings", exact = TRUE]] %||% character(0), rec$get())
   out$signature <- rd$signature
   out
 }

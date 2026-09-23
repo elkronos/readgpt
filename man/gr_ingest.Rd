@@ -7,7 +7,12 @@
 gr_ingest(source, spec = NULL, cache = NULL, trace = NULL)
 }
 \arguments{
-\item{source}{A file path, or a character vector / single string of raw text.}
+\item{source}{A file path, or a character vector / single string of raw text.
+A one-line string ending in an extension some extractor claims is taken as
+a path, and is an error (\code{gr_file_not_found}) when no such file exists.
+Any other string is read as text; one that looks like a path (a directory
+separator and an extension no extractor claims) also raises a
+\code{gr_path_as_text} warning.}
 
 \item{spec}{A \code{gr_ingest_spec}, a bare preset name, or \code{NULL} for defaults.}
 

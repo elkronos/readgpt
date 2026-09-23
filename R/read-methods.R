@@ -162,7 +162,9 @@ read_refine <- function(chunks, question, client, spec, trace) {
     if (spec$delay_between_calls > 0) Sys.sleep(spec$delay_between_calls)
   }
   new_answer(draft %||% .NOT_FOUND, "refine", question, used, trace,
-             partial = failures > 0 || length(used) < nrow(d),
+             # A cut excerpt or draft is text no request saw. `preview` applies
+             # the same rule to a truncated skim.
+             partial = failures > 0 || length(used) < nrow(d) || truncated > 0L,
              notes = list(chunks = nrow(d), visited = length(used),
                           revisions = revisions, failed_calls = failures,
                           truncations = truncated))
@@ -482,7 +484,11 @@ read_hierarchical <- function(chunks, question, client, spec, trace) {
   }
 
   body <- paste(current, collapse = "\n\n")
-  if (gr_count_tokens(body) > bud$input) {
+  # Cutting the summaries to fit drops part of the document from the answer, the
+  # same loss `stuff` reports as dropped chunks, so it is partial and not only a
+  # warning.
+  truncated <- gr_count_tokens(body) > bud$input
+  if (truncated) {
     body <- gr_truncate_tokens(body, bud$input)
     gr_warn(sprintf("Hierarchical summaries still exceed the budget after %d level(s); truncating.", level),
             class = "gr_overflow")
@@ -498,9 +504,10 @@ read_hierarchical <- function(chunks, question, client, spec, trace) {
             temperature = spec$temperature, trace = trace, label = "hier.answer")
   } else gr_result(FALSE, error = "call cap reached before the answer step")
   new_answer(if (usable_text(res)) res$text else body, "hierarchical", question, d$chunk_id, trace,
-             partial = !usable_text(res) || summary_failures > 0,
+             partial = !usable_text(res) || summary_failures > 0 || truncated,
              notes = list(chunks = nrow(d), levels = level, final_summaries = length(current),
-                          failed_summaries = summary_failures))
+                          failed_summaries = summary_failures,
+                          summaries_truncated = truncated))
 }
 
 # ---------------------------------------------------------------------------
@@ -716,9 +723,15 @@ read_ensemble <- function(chunks, question, client, spec, trace) {
     sub <- spec; sub$reader <- m; sub$members <- NULL
     r <- registry_get("readers", m, "readers")
     tryCatch(r$fn(chunks, question, client, sub, trace),
-             error = function(e) new_answer(.NOT_FOUND, m, question, integer(0), trace,
-                                            partial = TRUE,
-                                            notes = list(error = conditionMessage(e))))
+             error = function(e) {
+               # A missing key fails every member the same way; recording it as
+               # one member's failure would let the run carry on to the next.
+               # Re-raised from inside this handler: a separate `gr_auth_error =`
+               # handler would re-raise into this one and be recorded after all.
+               if (inherits(e, "gr_auth_error")) stop(e)
+               new_answer(.NOT_FOUND, m, question, integer(0), trace, partial = TRUE,
+                          notes = list(error = conditionMessage(e)))
+             })
   })
   names(results) <- members
   usable <- vapply(results, function(r) !is_not_found(r$answer), logical(1))

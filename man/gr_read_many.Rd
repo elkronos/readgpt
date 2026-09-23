@@ -96,14 +96,19 @@ code against.
 
 \code{document}, \code{document_id}, \code{answer}, \code{not_found}, \code{partial}, \code{reader},
 \code{chunks}, \code{chunks_used}, \code{calls}, \code{cached}, \code{tokens_in}, \code{tokens_out},
-\code{cost_usd}, \code{seconds}, \code{status}, \code{duplicate_of}, \code{error}.
+\code{cost_usd}, \code{seconds}, \code{status}, \code{duplicate_of}, \code{error}, \code{warnings}.
 
-\code{document} is a filename and \code{document_id} is the hash of the cleaned text.
-Cite with the second: a filename changes when the file is renamed, collides
-between folders, and does not exist at all for a document passed as text,
-while the id is the same string for the same document in every run and on
-every machine. Two copies of one paper share an id, which is the same fact as
-the duplicate detection below.
+\code{warnings} holds what readgpt warned about while reading that document,
+joined with \code{" | "}, or \code{NA} when it raised nothing. The warnings still print
+as they happen; this column is what lets you tie them to a document afterwards.
+
+\code{document} is a filename and \code{document_id} is the hash of the cleaned text
+(and of the pages that never became text, when there are any). Cite with the
+second: a filename changes when the file is renamed, collides between
+folders, and does not exist at all for a document passed as text, while the
+id is the same string for the same document in every run and on every machine
+with the same OCR setup. Two copies of one paper share an id, which is the
+same fact as the duplicate detection below.
 
 \code{status} is \code{"ok"}, \code{"failed"}, \code{"skipped"} (the corpus ceiling was reached
 first), \code{"restored"} (read from \code{store}, not re-read now) or \code{"duplicate"}
@@ -116,9 +121,10 @@ from summing the column.
 \section{Documents that are the same document}{
 
 The same paper reaches you from three databases under three filenames. Each
-source is extracted and cleaned, and a document whose cleaned text is
-identical to one already read this run is \strong{not read again}: its row is
-filled in from the first copy, \code{status} is \code{"duplicate"} and \code{duplicate_of}
+source is extracted and cleaned, and a document whose cleaned text (and set
+of unread pages) is identical to one already read this run is \strong{not read
+again}: its row is filled in from the first copy, except for \code{warnings},
+which are its own; \code{status} is \code{"duplicate"} and \code{duplicate_of}
 names the row it repeats. Nothing is dropped -- every source you passed still
 has a row -- so \code{subset(x$summary, is.na(duplicate_of))} is the deduplicated
 set and \code{sum(!is.na(x$summary$duplicate_of))} is the number to report as

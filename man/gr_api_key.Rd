@@ -18,13 +18,13 @@ Never prints or logs the key.
 }
 \section{No key set}{
 
-A run without a key does \strong{not} raise. Every model call fails, the answer is
-the \code{"NOT_IN_DOCUMENT"} sentinel and \code{ans$partial} is \code{TRUE}. Where the error
-text appears depends on the reader: the single-call readers (\code{stuff},
-\code{retrieve}) put \code{"No API key available."} in \code{ans$notes$error}, while the
-per-chunk readers report \code{notes$failed_calls} instead. \code{print(ans$trace)}
-shows the error for every reader. Call this function directly if you would
-rather fail fast.
+A run that would have to send a request without a key stops with a
+\code{gr_auth_error} that says how to set one. \code{\link[=answer_document]{answer_document()}},
+\code{\link[=gr_read_many]{gr_read_many()}} and \code{\link[=gr_compare]{gr_compare()}} check before reading the document, so a
+missing key does not first cost an OCR pass; everything else stops at the
+first request. A client that sends its credential in \code{headers}, a mock, a
+backend or replay client, and a client with a response cache attached are not
+affected.
 }
 
 \examples{
@@ -34,7 +34,8 @@ Sys.setenv(OPENAI_API_KEY = "sk-example")
 gr_api_key()
 gr_api_key("sk-explicit-wins")
 
-# No key set is not an error until a call is made -- see the section above.
+# With no key set it says so. A run stops the same way, before its first
+# request; see the section above.
 Sys.unsetenv("OPENAI_API_KEY")
 tryCatch(gr_api_key(), gr_auth_error = function(e) conditionMessage(e))
 

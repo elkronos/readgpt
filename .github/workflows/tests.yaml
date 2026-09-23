@@ -223,7 +223,7 @@ jobs:
           '
         shell: bash
 
-      - name: Verify the vignette runs with no key and no network
+      - name: Verify every vignette runs with no key and no network
         env:
           OPENAI_API_KEY: ''
         run: |
@@ -240,21 +240,29 @@ jobs:
             # offline, not about pandoc. A vignette that quietly degraded --
             # every call failing for want of a key -- would still knit, so the
             # output is then checked for the sentinels that degradation leaves.
-            knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
-            md <- tempfile(fileext = ".md")
-            ok <- tryCatch({ knitr::knit("vignettes/readgpt.Rmd", output = md, quiet = TRUE); TRUE },
-                           error = function(e) { cat("vignette failed:", conditionMessage(e), "\n"); FALSE })
-            if (!isTRUE(ok)) quit(status = 1)
-            out <- grep("^#>", readLines(md, warn = FALSE), value = TRUE)
-            if (!length(out)) { cat("The vignette produced no output at all.\n"); quit(status = 1) }
-            bad <- grep("NOT_IN_DOCUMENT|No API key available|Transport error|HTTP [0-9]{3}",
-                        out, value = TRUE)
-            if (length(bad)) {
-              cat("The vignette degraded rather than running clean:\n")
-              cat(paste0("  ", utils::head(bad, 5), collapse = "\n"), "\n")
-              quit(status = 1)
+            # Every guide, each in a fresh environment so none can lean on
+            # objects another one left behind.
+            files <- list.files("vignettes", pattern = "[.]Rmd$", full.names = TRUE)
+            if (!length(files)) { cat("No vignettes found.\n"); quit(status = 1) }
+            failed <- FALSE
+            for (f in files) {
+              knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+              md <- tempfile(fileext = ".md")
+              ok <- tryCatch({ knitr::knit(f, output = md, quiet = TRUE, envir = new.env()); TRUE },
+                             error = function(e) { cat(f, "failed:", conditionMessage(e), "\n"); FALSE })
+              if (!isTRUE(ok)) { failed <- TRUE; next }
+              out <- grep("^#>", readLines(md, warn = FALSE), value = TRUE)
+              if (!length(out)) { cat(f, "produced no output at all.\n"); failed <- TRUE; next }
+              bad <- grep("NOT_IN_DOCUMENT|No API key available|Transport error|HTTP [0-9]{3}",
+                          out, value = TRUE)
+              if (length(bad)) {
+                cat(f, "degraded rather than running clean:\n")
+                cat(paste0("  ", utils::head(bad, 5), collapse = "\n"), "\n")
+                failed <- TRUE; next
+              }
+              cat(sprintf("%s ran offline: %d output line(s), no degradation.\n", f, length(out)))
             }
-            cat(sprintf("Vignette ran offline: %d output line(s), no degradation.\n", length(out)))
+            if (failed) quit(status = 1)
           '
         shell: bash
 

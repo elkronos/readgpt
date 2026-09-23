@@ -164,7 +164,7 @@ gr_reader_signature <- function(reader) {
 #' @param fan_in,max_levels For `hierarchical`: summaries combined per call, and
 #'   the recursion depth cap.
 #' @param max_rounds For `iterative`: retrieve-assess cycles.
-#' @param preview_tokens For `survey`: the cap on the outline the planner sees.
+#' @param preview_tokens For `preview`: the cap on the outline the planner sees.
 #'   The outline is built from section labels, sizes and short excerpts -- never
 #'   the full text -- and per-section excerpts shrink until the whole thing fits,
 #'   so every section stays visible to the planner rather than the outline being
@@ -274,7 +274,7 @@ gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL
 #' The third axis. Reading is a separate decision from segmentation because the
 #' call pattern -- which chunks reach the model, in how many requests, and
 #' whether anything flows between them -- is where both cost and answer quality
-#' are actually decided. The same chunk set can be read nine ways;
+#' are actually decided. The same chunk set can be read many ways;
 #' [gr_readers()] lists them with what each costs.
 #'
 #' @param chunks A `gr_chunks` object from `gr_segment()`.

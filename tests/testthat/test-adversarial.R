@@ -1016,7 +1016,11 @@ test_that("a trace or a ceiling that cannot be compared is refused, not ignored"
   expect_error(quiet(gr_read_many(d, "Q?", client = mock_echo(), recipe = "fast",
                                   max_total_calls = 1e10)), NA)
   # Inf is a legitimate way to say "no ceiling", and saying it that way must not
-  # cost the notice that the run is uncapped.
+  # cost the notice that the run is uncapped. The notice is a message, and
+  # messages follow gr_options(verbose): set here, so the test does not pass or
+  # fail on the session's setting -- CI runs the suite with it off.
+  old_v <- gr_options(verbose = TRUE)
+  on.exit(gr_options(old_v), add = TRUE)
   msgs <- character(0)
   withCallingHandlers(
     suppressWarnings(gr_read_many(d, "Q?", client = mock_echo(), recipe = "fast",

@@ -414,7 +414,7 @@ differing in one setting, over documents where you already know the answer:
 
 ```r
 gr_compare(
-  my_papers, "What was the primary outcome?",
+  readgpt_example(), "What was revenue?",
   list(gr_recipe("plain", read = list(reader = "retrieve", context_order = "relevance")),
        gr_recipe("edged", read = list(reader = "retrieve", context_order = "edges"))),
   client = cl
@@ -656,11 +656,13 @@ and on its own it leaves the *run* unbounded: two hundred documents under a
 run-level ceilings.
 
 ```r
-gr_screen(papers, protocol, client = cl,
-          max_total_calls = 2000,   # checked BEFORE each document
-          max_total_usd   = 20)     # checked after each one
+reports <- file.path(tempdir(), "reports")
+out <- gr_read_many(reports, "What was revenue?", "fast", client = cl,
+                    max_total_calls = 2000,   # checked BEFORE each document
+                    max_total_usd   = 20)     # checked after each one
 ```
 
+`gr_screen()` and `gr_extract()` take the same two arguments.
 `max_total_calls` is checked before a document, so the overshoot is bounded by
 one document's own ceiling. `max_total_usd` can only be checked after one, since
 what a document costs is not knowable until it has been read — and it needs a
@@ -1307,6 +1309,7 @@ gr_model_limits("gpt-4o")
 gr_tokenizer()           # which counter is in use
 gr_set_tokenizer("tiktoken")   # exact counts, with reticulate; "heuristic" is the default
 
+cache <- gr_cache(file.path(tempdir(), "readgpt-cache"))
 gr_cache_stats(cache)    # entries, bytes, hits, misses, writes
 gr_cache_clear(cache)
 gr_reader_signature("skim")    # select|calls|state -- how a reader traverses a document

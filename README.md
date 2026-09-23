@@ -29,9 +29,16 @@ for OpenAI-compatible endpoints, and `gr_ellmer_client()` hands the transport to
 [ellmer](https://ellmer.tidyverse.org/) — so Anthropic, Google, Bedrock, Azure,
 Ollama and Hugging Face all work with every strategy below.
 
-`vignette("readgpt")` is the guided tour: the three axes, what each decision
-changes, and how to make a run cheap and reproducible. It builds and runs
-offline, so you can follow it without a key.
+**The guides** explain the package from the beginning, and all of them run
+offline, so you can follow them without a key:
+
+- `vignette("readgpt")` — get started: the ideas you need, installing, and a
+  first question checked from start to finish.
+- `vignette("ingest")` — getting text out of PDFs, Word files, web pages and
+  scans, and cleaning it.
+- `vignette("readers")` — the twelve reading strategies, what each costs, and
+  how to choose.
+- `vignette("tour")` — everything else, briefly.
 
 Every console block below is real output from the bundled example document,
 produced with `gr_mock_client()` standing in for the API, so you can reproduce
@@ -49,7 +56,7 @@ review](#from-a-folder-to-a-review) walks that path end to end.
 **Contents**
 
 - Start here — [Install](#install) · [Quick start](#quick-start) · [API key](#api-key) · [Other providers](#other-providers-and-other-peoples-clients)
-- The three axes — [ingest](#axis-1--ingest) · [segment](#axis-2--segment) · [read](#axis-3--read) · [choosing chunks](#choosing-chunks-and-where-to-put-them) · [recipes](#recipes)
+- The three axes — [ingest](#axis-1--ingest) · [segment](#axis-2--segment) · [read](#axis-3--read) · [recipes](#recipes)
 - Reading one document — [reading a run](#reading-a-run) · [when the answer is not what you expected](#when-the-answer-is-not-what-you-expected) · [cost and safety rails](#cost-and-safety-rails)
 - Reading a corpus — [many documents](#many-documents) · [from a folder to a review](#from-a-folder-to-a-review) · [the audit report](#from-a-folder-to-a-review)
 - Paying once, twice never — [caching](#paying-once) · [replaying a run](#replaying-a-run)
@@ -63,9 +70,14 @@ Requires **R ≥ 4.1**. The only non-base hard dependencies are `digest`, `httr`
 and `jsonlite`.
 
 ```r
-# install.packages("remotes")
-remotes::install_github("elkronos/readgpt")
+install.packages(c("remotes", "knitr", "rmarkdown"))
+remotes::install_github("elkronos/readgpt", build_vignettes = TRUE)
 ```
+
+`build_vignettes = TRUE` installs the guides, so `vignette("readgpt")` works.
+Building them needs `knitr`, `rmarkdown` and Pandoc. Pandoc comes with RStudio;
+without RStudio, install it from <https://pandoc.org/installing.html> first, or
+leave out `build_vignettes = TRUE`.
 
 Or from a local checkout:
 
@@ -84,8 +96,10 @@ ans$partial
 ```
 
 `answer_document()` treats its first argument as a path when the file exists.
-A string that *looks* like a path but does not exist is an error, not a
-document — so a typo cannot silently become the text you ask questions about.
+A missing file whose name ends in an extension readgpt reads (`.pdf`, `.docx`,
+`.md`, …) is an error. Any other string is read as the document's text —
+including a path with a mistyped extension — and `ans$document$source` then
+shows `<inline text>`.
 
 Not sure which pipeline suits your document? Compare, then commit. One
 extraction is shared across all of them:
@@ -221,41 +235,16 @@ after that, with a traversal signature each and a bill you can see.
 
 ## Axis 1 — ingest
 
-`gr_ingest()` turns bytes into cleaned text blocks that keep page and section
-provenance.
+`gr_ingest()` turns a file into cleaned text blocks that keep their page and
+section. Six extractors cover plain text and delimited files, Markdown, HTML,
+Word, PDF (with OCR for scanned pages) and images; cleaning is fourteen named
+steps, each of which can be switched on or off, and five run by default. Note
+what is **off**: `remove_numbers`, which would make every figure, date and
+percentage unanswerable. `gr_inventory()` surveys a folder before you spend
+anything on it.
 
-Cleaning is a pipeline of named steps, each individually toggleable. Steps are
-always applied `early` stage first, whatever order you list them in — that is
-what stops digit removal from running before the page-number and figure filters
-that need digits to match.
-
-```r
-gr_cleaners()[, c("name", "stage", "default_on")]
-#>                   name stage default_on
-#> 1             captions early      FALSE
-#> 2               emails early      FALSE
-#> 3      headers_footers early      FALSE
-#> 4          hyphenation early       TRUE
-#> 5         page_numbers early       TRUE
-#> 6           references early      FALSE
-#> 7                 urls early      FALSE
-#> 8           ascii_only  late      FALSE
-#> 9  collapse_whitespace  late       TRUE
-#> 10       control_chars  late       TRUE
-#> 11           ligatures  late       TRUE
-#> 12           lowercase  late      FALSE
-#> 13      remove_numbers  late      FALSE
-#> 14  remove_punctuation  late      FALSE
-```
-
-The five `default_on` steps are exactly the `"standard"` preset. Note what is
-**off**: `remove_numbers` (which makes every figure, date and percentage
-unanswerable), `captions` (which destroys table-heavy documents), and `urls`
-(URLs are often the answer). Presets: `none`, `minimal`, `standard` (default),
-`academic`, `scan`, `legacy`.
-
-`doc$stats$clean_log` reports characters removed per step, so you can see when
-cleaning ate more than you expected.
+`vignette("ingest")` covers the formats, OCR, every cleaner and preset, and the
+folder survey.
 
 ## Axis 2 — segment
 
@@ -327,99 +316,21 @@ do.call(rbind, lapply(c(0, 30, 60), function(ov)
 
 ## Axis 3 — read
 
-`gr_read()` answers the question. Twelve strategies, each with a **traversal
-signature** — `select|calls|state` — which is how the package tells two
+`gr_read()` answers the question. Twelve strategies — `stuff`, `map_reduce`,
+`refine`, `skim`, `retrieve`, `rerank`, `hierarchical`, `iterative`, `preview`,
+`ensemble`, and `extract` and `screen` for reviews — each with a **traversal
+signature**, `select|calls|state`, which is how the package tells two
 methodologies apart from two names for the same thing:
 
-| reader | signature | calls | what makes it different |
-|---|---|---|---|
-| `stuff` | `all\|1\|none` | 1 | one prompt; **truncates with a warning** if the document does not fit (`on_overflow = "error"` to make that fatal) |
-| `map_reduce` | `all\|N+logN\|tree` | N + merges | independent per-chunk answers, tree-reduced; parallel, order-free |
-| `refine` | `all\|N\|forward` | N | sequential draft-and-revise; order matters, late evidence can overturn early |
-| `skim` | `all\|N+1\|none` | N + 1 | per-chunk **evidence** extraction, then one synthesis from the verbatim text |
-| `retrieve` | `topk\|1\|none` | 1 + embeddings | embed, rank, answer from top-k; one answer call regardless of length, though the embedding pass still scales |
-| `rerank` | `topk\|m+1\|none` | m + 1 | BM25 prefilter, model scores candidates, answer from the winners |
-| `hierarchical` | `all\|N+tree+1\|tree` | N + levels + 1 | recursively summarise until the summaries fit, then answer |
-| `iterative` | `topk\|rounds*2\|forward` | ≤ 2 × rounds | agentic: the model names what it still needs, driving the next retrieval |
-| `extract` | `all\|N+conflicts\|none` | N + one per disagreeing field | fills a typed schema from every chunk, then reconciles; a call only where the document contradicts itself |
-| `screen` | `head\|1\|none` | 1 | one decision about the whole document, from its opening; include / exclude / unclear with a reason |
-| `preview` | `planned\|1+s+1\|none` | 1 + skimmed sections + 1 | surveys an outline and plans first, then reads only what the plan says to; the sections it skipped are named in `ans$notes$plan` |
-| `ensemble` | `ensemble\|sum+1\|none` | Σ members + 1 | several distinct readers, adjudicated; members must have different signatures |
-
-`rerank` and `iterative` need JSON-schema structured output. Against an endpoint
-without it they degrade — to BM25 ranking and to single-shot retrieve
-respectively — with a warning and a note on the answer.
-
-`gr_compare()` refuses to bill you twice for two configurations that resolve to
-the same segmentation and the same signature.
-
-## Choosing chunks, and where to put them
-
-Two settings on the read spec, both off by default because changing what reaches
-the model changes answers and that should be a decision rather than a surprise.
-
-**`mmr` — stop paying for the same chunk three times.** Top-k by similarity
-answers "which chunks are most like the question", which is not quite the
-question you wanted. If three paragraphs say the same thing, all three score
-highly and all three go in the prompt. Maximal marginal relevance picks greedily,
-trading relevance against redundancy against what is already selected:
-
 ```r
-cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
-old <- gr_options(embedder = "lexical")
-doc <- paste(c("Revenue was 45.2 million dollars in fiscal 2024.",
-               "Total revenue reached 45.2 million dollars in the 2024 fiscal year.",
-               "In fiscal 2024 the company recorded revenue of 45.2 million dollars.",
-               "Headcount grew to 1,204 employees across nine clinical sites.",
-               "The board approved a dividend of 0.42 dollars per share in March."),
-             collapse = "\n\n")
-ch <- gr_segment(gr_ingest(doc), list(method = "paragraph", max_tokens = 40))
-picked <- function(m) gr_read(ch, "What was revenue?", cl,
-                              list(reader = "retrieve", top_k = 3, mmr = m))$chunks_used
-result <- rbind("mmr = 1 (top-k)" = picked(1), "mmr = 0.3" = picked(0.3))
-gr_options(old)
-result
-#>                 [,1] [,2] [,3]
-#> mmr = 1 (top-k)    1    3    2
-#> mmr = 0.3          1    4    5
+gr_readers()[, c("name", "signature", "cost_calls")]
 ```
 
-Top-k spends all three slots on the same fact. `mmr = 0.3` keeps the best chunk
-and spends the other two on different ones. It costs nothing — the vectors are
-already computed — and it applies to `retrieve` and `iterative`.
-
-**`context_order` — where the chosen chunks sit.** Transformers attend
-measurably better to the beginning and end of a long context than to its middle.
-`"edges"` puts the strongest chunk first and the second-strongest last, burying
-the weakest in the middle; `"document"` restores the order they appear in the
-document, which reads better when chunks are consecutive. Selection is
-unaffected — this decides placement only, for `retrieve` and `rerank`, the two
-readers that put several ranked chunks in one prompt.
-
-Note this is *not* the primacy-and-recency effect it resembles. Those come from
-rehearsal and interference in human memory, mechanisms a transformer does not
-have; the reason here is positional attention, and it argues about placement
-rather than about what to select.
-
-**`restate` — the question at both ends.** The question is always asked *after*
-the excerpts, which is the position that gets followed. Over a few thousand
-tokens of context, an instruction appearing once at the bottom is a long way from
-the top, so `"auto"` repeats it before the body as well once the body is long
-enough to bury it. `"always"` and `"never"` override.
-
-Both of these are settings rather than rules, and for the same reason: whether
-either helps is a question about your corpus and your model, not something a
-package can assert. `gr_compare()` is the machinery to answer it — two recipes
-differing in one setting, over documents where you already know the answer:
-
-```r
-gr_compare(
-  readgpt_example(), "What was revenue?",
-  list(gr_recipe("plain", read = list(reader = "retrieve", context_order = "relevance")),
-       gr_recipe("edged", read = list(reader = "retrieve", context_order = "edges"))),
-  client = cl
-)$summary
-```
+`cost_calls` counts requests: some strategies make one however long the
+document, others one per chunk. Cost follows tokens rather than requests —
+`stuff` makes one request, but it carries the whole document.
+`vignette("readers")` explains every strategy and its settings, compares them
+on one document, and gives a way to choose.
 
 ## Reading a run
 

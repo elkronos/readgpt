@@ -1,8 +1,8 @@
 ---
-title: "Reading a document with a language model"
+title: "Get started with readgpt"
 output: rmarkdown::html_vignette
 vignette: >
-  %\VignetteIndexEntry{Reading a document with a language model}
+  %\VignetteIndexEntry{Get started with readgpt}
   %\VignetteEngine{knitr::rmarkdown}
   %\VignetteEncoding{UTF-8}
 ---
@@ -11,566 +11,339 @@ vignette: >
 knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
 ```
 
-Asking a language model a question about a document involves three decisions,
-and they are usually made for you, invisibly, all at once. This package makes
-them separate:
+readgpt asks a large language model questions about your documents — a report,
+a contract, a folder of research papers — and hands back the answer together
+with a record of how it was reached: which parts of the document the model saw,
+what it was asked, what it said, and what that cost. This guide assumes no
+previous experience with language models. It explains the few ideas you need,
+installs the package, and walks through a first question from start to finish.
 
-- **ingest** — get text out of the file, and decide what to throw away
-- **segment** — cut that text into pieces small enough to send
-- **read** — decide how the model works through those pieces to an answer
+Everything below runs without an account or an internet connection, so you can
+follow along for free.
 
-Each is a registry you can list, swap and extend. Any ingest × any segmenter ×
-any reader composes.
+## A few ideas first
+
+**The model runs somewhere else.** A large language model (an *LLM*) such as
+GPT is a program run by a *provider* — OpenAI, Anthropic, Google, or a model on
+your own computer. readgpt sends it text over the internet and reads the reply.
+Commercial providers charge for each request.
+
+**Text is measured in tokens.** Models do not read characters or words; they
+read *tokens*, pieces of words. In English a token is roughly four characters,
+so a page of text is several hundred tokens. Providers charge per token — for the
+text you send and, at a higher rate, for the text the model writes back.
 
 ```{r message = FALSE}
 library(readgpt)
 ```
 
-## Running this vignette without an API key
+```{r}
+gr_count_tokens("Revenue rose to 45.2 million dollars in fiscal 2024.")
+```
 
-Everything below runs offline. Two settings make that work, and they are worth
-understanding because they are also how you develop against this package without
-spending anything.
+readgpt estimates token counts itself, without asking the provider, so it can
+work out what a request will cost before sending it.
+
+**A model can only take in so much at once.** The most text a model accepts in a
+single request is its *context window*. A long report may not fit, and even when
+it does, models tend to overlook details buried in the middle of a very long
+prompt. So documents are cut into smaller pieces, called *chunks*, and the
+question is put to the chunks in some order.
+
+**That makes three decisions**, and readgpt keeps them separate so you can see and
+change each one:
+
+1. **Ingest** — get the text out of the file, and tidy it.
+2. **Segment** — cut the text into chunks.
+3. **Read** — decide how the model works through the chunks: all of them in one
+   request, each one separately, only the most relevant few, and so on.
+
+A fourth choice, which model answers, is independent of all three.
+
+**Models can make things up.** A model may state something the document never
+says, and it can do so fluently. readgpt cannot prevent that, but it records
+which text each answer rests on, checks quotations against the document, and
+tells you when anything went wrong. Checking those records is a habit this guide
+builds from the first example.
+
+## Installing
+
+readgpt needs R 4.1 or later. Install it from GitHub:
+
+```{r eval = FALSE}
+install.packages(c("remotes", "knitr", "rmarkdown"))
+remotes::install_github("elkronos/readgpt", build_vignettes = TRUE)
+```
+
+`build_vignettes = TRUE` also installs these guides, so `vignette()` can open
+them. Building them needs `knitr`, `rmarkdown` and Pandoc. Pandoc comes with
+RStudio; without RStudio, install it from <https://pandoc.org/installing.html>
+first, or leave out `build_vignettes = TRUE`.
+
+The package itself depends only on `digest`, `httr` and `jsonlite`. Some file
+types and features need an extra package, and each is optional — install only
+what you use:
+
+| to do this | install |
+|---|---|
+| read PDFs | `pdftools` |
+| read Word documents and web pages | `xml2` |
+| read scanned pages and images (OCR) | `tesseract` and `magick` |
+| use a provider other than OpenAI | `ellmer` |
+| run many requests at once | `future` and `future.apply` |
+| count tokens exactly as OpenAI does | `reticulate`, with Python's `tiktoken` |
+| use the point-and-click app | `shiny` |
+
+If you ask for something that needs a package you do not have, readgpt says
+which one. It stops, unless it can carry on without it — running requests one at
+a time when the parallel packages are missing, for example.
+
+## Connecting to a model
+
+To use a real model you need an account with a provider and an *API key*, a
+password that identifies your account to the provider's servers. For OpenAI,
+create one at <https://platform.openai.com>.
+
+Keep the key out of your scripts. The usual place is your `.Renviron` file, which
+R reads when it starts:
+
+```{r eval = FALSE}
+file.edit("~/.Renviron")
+# add this line, save the file, then restart R:
+# OPENAI_API_KEY=sk-...
+```
+
+`gr_api_key()` checks that R can see it, and stops with an explanation if it
+cannot:
+
+```{r eval = FALSE}
+gr_api_key()
+```
+
+Other providers — Anthropic, Google, Azure, a company gateway, or a free model
+running on your own machine through Ollama — are covered in the README's
+"Other providers" section.
+
+## Practising without a key
+
+For learning, a real model is unnecessary. `gr_mock_client()` builds a stand-in
+that replies with whatever an R function returns, and it goes everywhere a real
+model goes. This one always gives the same answer, which is enough to see how
+everything else works:
 
 ```{r}
 cl <- gr_mock_client(function(messages, params) "Revenue was 45.2 million dollars.")
-old <- gr_options(verbose = FALSE, embedder = "lexical")
+old <- gr_options(verbose = FALSE)
 ```
 
-`gr_mock_client()` is a client whose handler is an ordinary R function. It goes
-everywhere a real client goes and records every prompt it was sent, which is
-what lets you check that a reading strategy is doing what you think before you
-pay for it.
+`verbose = FALSE` stops readgpt printing a line for each stage; leave it on in
+your own work while you are learning. `gr_options()` returns the settings it
+replaced, so they can be restored later with `gr_options(old)`.
 
-`embedder = "lexical"` selects hashed bag-of-words vectors instead of an
-embeddings endpoint. They measure word overlap rather than meaning, so they are
-a poor substitute in production — but they are free, offline, and *deterministic*,
-which is what makes this document reproducible. `gr_embedders()` lists what is
-registered.
+## Your first question
 
-## A first run
-
-`answer_document()` binds one ingest, one segmenter and one reader into a
-pipeline and runs it. The bundled example is a short annual report.
+`answer_document()` does all three steps in one call. readgpt includes a short
+example document, an annual report:
 
 ```{r}
-ans <- answer_document(readgpt_example(), "What was revenue?", "thorough",
-                       client = cl)
+ans <- answer_document(readgpt_example(), "What was revenue in 2024?", client = cl)
 ans$answer
 ```
 
-`"thorough"` names a recipe. `gr_recipes()` returns the built-ins, and each is
-just a binding of the three axes:
+With a real model you would leave out `client =` and point it at your own file:
 
-```{r}
-do.call(rbind, lapply(names(gr_recipes()), function(n) {
-  r <- gr_recipes(n)
-  data.frame(recipe = n, segment = r$segment$method, reader = r$read$reader)
-}))
+```{r eval = FALSE}
+ans <- answer_document("annual-report.pdf", "What was revenue in 2024?")
 ```
 
-`gr_recipes("thorough")` prints one in full, showing every setting on all three
-axes. A recipe is only a starting point: any of its settings can be overridden
-in the call, and `gr_recipe()` builds one from scratch.
+The first argument can be a path to a file or the text itself. A missing file
+whose name ends in an extension readgpt reads (`.pdf`, `.docx`, `.md` and so on)
+is an error. Any other string is read as the text of the document, including a
+path with a mistyped extension: `"reports/2024/annual-report.pfd"` becomes a
+one-line document about a file name. `ans$document$source` shows which happened:
+the path for a file, `<inline text>` for a string.
 
-## Reading the answer
+## Is the answer trustworthy?
 
-The answer is not a string. It is an object that says how it was arrived at, and
-the first thing to look at is never `$answer`:
+`ans` holds much more than the answer. Look at three things before believing
+it.
+
+**`partial` says whether anything went wrong.** It is `TRUE` if a request
+failed, if chunks were left out because they did not fit, if the limit on
+requests stopped the run early, or if a reading strategy fell back to a simpler
+method. Some problems raise only a warning instead — a scanned page that could
+not be read, for example — so read any warnings as well:
 
 ```{r}
 ans$partial
 ```
 
-`partial` is `TRUE` whenever anything degraded — a call failed, chunks were
-dropped for space, a budget stopped the run early, an embedding fell back to
-lexical vectors. **Check it before trusting the answer.** When it is `TRUE`,
-`$notes` says what happened.
+When it is `TRUE`, `ans$notes` says why. To see what that looks like, here is a
+"model" that fails every request, the way a missing key or a network outage
+would:
 
 ```{r}
-names(ans$notes)
+broken <- gr_mock_client(function(messages, params) stop("no connection"))
+bad <- answer_document(readgpt_example(), "What was revenue in 2024?",
+                       client = broken)
+bad$partial
+names(bad$notes)
 ```
 
-`$evidence` is what the answer rests on. What `text` holds depends on the
-reader: verbatim chunk text for `stuff`, `retrieve`, `rerank` and `iterative`;
-model-extracted passages for `skim`; per-chunk model answers for `map_reduce`.
+Nothing stopped with an error. The run finished, and the failure is recorded on
+the result — which is why checking `partial` has to become a habit.
+
+**`is_not_found()` says whether the document had the answer at all.** Every
+reading strategy tells the model to reply with a fixed marker when the text it
+was shown does not answer the question, so "the document does not say" can be
+told apart from an answer:
+
+```{r}
+is_not_found(ans$answer)
+is_not_found(bad$answer)
+```
+
+For `bad`, the marker means "no answer came back", and `partial` says that was a
+failure rather than a finding.
+
+**`evidence` shows what the answer rests on.** Each row is a chunk the answer
+drew on, with where it came from: the page, for a PDF, and the heading it sits
+under. This short report fitted in a single chunk spanning several headings, so
+there is one row and both are empty:
 
 ```{r}
 ans$evidence[, c("chunk_id", "page", "section")]
 ```
 
-And `$trace` records every prompt, response and token count from that one run —
-not from a second run made to explain the first.
+On a long document there is a row for every chunk used, and `page` and `section`
+tell you where to go and read the passage yourself. What each row's `text` holds
+depends on the reading strategy, and when the model is asked to quote the
+document, readgpt checks every quotation against the text and marks the answer
+`partial` if one is not there. `vignette("readers")` shows both.
+
+## What did it cost?
+
+Every result carries a *trace*: each request sent, each reply, and the tokens
+both used.
 
 ```{r}
-gr_trace_summary(ans$trace)[, c("calls", "cached", "tokens_in", "tokens_out")]
+gr_trace_summary(ans$trace)[, c("calls", "tokens_in", "tokens_out")]
+gr_trace_cost(ans$trace)[, c("model", "calls", "usd")]
 ```
 
-## Did the model quote the document, or invent the quote?
-
-For most readers `$evidence` is verbatim chunk text and is true by construction:
-the package put it there. For `skim` it is not. `skim` asks the model to extract
-the passages that bear on the question, and what comes back is whatever the model
-chose to write — presented as a quotation, with nothing checking that it was one.
-
-That is the worst gap to leave. A fabricated citation is more convincing than a
-fabricated answer, because it looks like the thing that would let you check.
+`usd` is priced from readgpt's list of known models (`gr_models()`); a model it
+does not know is priced as unknown rather than free. You can also estimate before
+sending anything — here, a 120,000-token document and a 4,000-token answer:
 
 ```{r}
-doc <- "Revenue rose to 45.2 million dollars.\n\nHeadcount grew to 1,204."
-ch  <- gr_segment(gr_ingest(doc), list(method = "paragraph", max_tokens = 40))
-
-extracting <- function(quote) gr_mock_client(function(messages, params) {
-  if (grepl("You extract evidence", messages[[1]]$content, fixed = TRUE)) return(quote)
-  "Revenue was 45.2 million dollars."
-})
-
-faithful <- gr_read(ch, "What was revenue?",
-                    extracting("Revenue rose to 45.2 million dollars."), "skim")
-gr_verify_evidence(faithful)[, c("kind", "verified", "match")]
+gr_estimate_cost(gr_options("model"), input_tokens = 120000, output_tokens = 4000)
 ```
 
-Now a model that invents one. The span is fluent, on topic, attributed to a real
-chunk, and not in the document — the case you cannot catch by eye:
-
-```{r}
-invented <- gr_read(ch, "What was revenue?",
-                    extracting("Revenue rose to 88.9 billion dollars on record demand."),
-                    "skim")
-gr_verify_evidence(invented)[, c("kind", "verified", "match")]
-invented$partial
-invented$notes$unverified_evidence
-```
-
-The comparison is forgiving about typography and unforgiving about content.
-Whitespace, curly quotes, dashes, case and the punctuation a model wraps a quote
-in are all folded away, because none of that is fabrication and flagging it would
-make `partial` stop meaning anything. A changed number is not folded away. Below
-an exact match, `match` is the fraction of the span carried by its longest
-consecutive run in the source — a run rather than word overlap, because overlap
-cannot tell a quotation from a paraphrase built from the same words.
-
-Citations get the same treatment, for every reader. An answer citing a chunk that
-was never sent to it sets `notes$cited_unknown` and is `partial`.
-
-## Axis 2: segmentation is free to experiment with
-
-Chunking decides what the model can possibly see together. It involves no model
-calls at all, so you can compare strategies for nothing before spending anything
-on reading:
-
-```{r}
-doc <- gr_ingest(readgpt_example())
-do.call(rbind, lapply(c("fixed", "paragraph", "sentence", "structural"), function(m)
-  gr_chunk_stats(gr_segment(doc, list(method = m, max_tokens = 120)))))
-```
-
-`over_cap` is the column to watch: a chunk over the cap is one the reader will
-have to truncate or drop. `gr_segmenters()` lists all nine, with which of them
-need a client (the `semantic` one embeds).
-
-Overlap matters too. Without it, an answer straddling a boundary is lost by both
-chunks:
-
-```{r}
-do.call(rbind, lapply(c(0, 40), function(ov)
-  gr_chunk_stats(gr_segment(doc, list(method = "sentence", max_tokens = 120,
-                                      overlap_tokens = ov)))))
-```
-
-## Axis 3: the readers are genuinely different
-
-Twelve strategies, each declaring a *traversal signature* — how it selects chunks,
-how many calls it makes, and what state it carries between them:
-
-```{r}
-gr_readers()[, c("name", "signature", "cost_calls")]
-```
-
-The signature is not documentation, it is a checkable property. Two recipes that
-resolve to the same segmentation and the same signature are the same work, and
-`gr_compare()` refuses to bill you twice for them.
-
-```{r}
-cmp <- gr_compare(readgpt_example(), "What was revenue?",
-                  c("fast", "precise", "thorough"), client = cl)
-cmp$summary[, c("recipe", "segmenter", "chunks", "reader", "chunks_used", "not_found")]
-```
-
-Extraction is shared across recipes and segmentation is shared between recipes
-whose segment specs match, so comparing three readers over one chunking costs one
-chunking. One trace covers the whole comparison:
-
-```{r}
-gr_trace_summary(cmp$trace)[, c("calls", "cached", "tokens_in")]
-```
-
-`not_found` distinguishes "the document does not say" from a failure. So does
-`is_not_found()` on any answer. A model that invents an answer is a worse outcome
-than one that admits the document is silent, and the two must not look alike.
-
-## Choosing which chunks, and where to put them
-
-Top-k by similarity answers "which chunks are most like the question", which is
-not quite the question you wanted answered. If three paragraphs say the same
-thing, all three score highly and all three go in the prompt.
-
-```{r}
-redundant <- paste(c(
-  "Revenue was 45.2 million dollars in fiscal 2024.",
-  "Total revenue reached 45.2 million dollars in the 2024 fiscal year.",
-  "In fiscal 2024 the company recorded revenue of 45.2 million dollars.",
-  "Headcount grew to 1,204 employees across nine clinical sites.",
-  "The board approved a dividend of 0.42 dollars per share in March."),
-  collapse = "\n\n")
-
-ch <- gr_segment(gr_ingest(redundant), list(method = "paragraph", max_tokens = 40))
-picked <- function(m) {
-  gr_read(ch, "What was revenue?", cl,
-          list(reader = "retrieve", top_k = 3, mmr = m))$chunks_used
-}
-rbind("mmr = 1 (top-k)" = picked(1), "mmr = 0.3" = picked(0.3))
-```
-
-`mmr` below 1 trades relevance against redundancy, so the second and third slots
-go to chunks that add something. It costs nothing — the vectors are already
-computed.
-
-`context_order` is a separate decision about *placement*: transformers attend
-better to the beginning and end of a long context than to its middle, so
-`"edges"` puts the strongest chunk first and the second-strongest last. It never
-changes which chunks were selected, only where they sit.
-
-## Rails, before you spend anything
-
-Two caps are on by default and checked *before* the first request:
+Two safety limits are on from the start. Before the reading step begins, readgpt
+prices the worst case — every reply at its maximum length — and refuses a run
+whose worst case is above $5; that figure is usually far above what the run
+really costs. And it never makes more than 400 requests for one document:
 
 ```{r}
 unlist(gr_options()[c("max_cost_usd", "max_calls")])
 ```
 
-You can also ask what a run would cost before making it:
+Change them with `gr_options()`, for example `gr_options(max_cost_usd = 20)`.
+
+## Choosing a recipe
+
+`answer_document()` made the three decisions using a *recipe*, a named
+combination of choices. The default is `"thorough"`. The built-in recipes:
 
 ```{r}
-gr_estimate_cost("gpt-4o", input_tokens = 120000, output_tokens = 4000)
+do.call(rbind, lapply(names(gr_recipes()), function(n) {
+  r <- gr_recipes(n)
+  data.frame(recipe = n, chunks = r$segment$method, reading = r$read$reader)
+}))
 ```
 
-And what one did cost afterwards — counting only the calls actually issued,
-which is not the same as the tokens it moved:
+A starting point for each kind of job:
+
+| your document and question | try |
+|---|---|
+| short enough to send whole | `"fast"` |
+| one fact somewhere in a long document | `"needle"` |
+| every mention has to be found | `"thorough"` |
+| long, with headings, and you want a summary | `"survey"` |
+| scanned pages, forms or invoices | `"scanned"` |
+| an argument that builds through the text | `"narrative"` |
+| a question that needs several facts combined | `"research"` |
+| high stakes, and you want a second opinion | `"consensus"` |
+
+Pass the name as the third argument:
 
 ```{r}
-gr_trace_cost(ans$trace)[, c("model", "calls", "paid_calls", "usd")]
+fast <- answer_document(readgpt_example(), "What was revenue in 2024?", "fast",
+                        client = cl)
+fast$reader
 ```
 
-## Making a re-run free, and a result checkable
+Recipes differ a great deal in cost. `"thorough"` sends every chunk to the model
+separately, so a long document means many requests; `"fast"` and `"needle"` make
+one. `vignette("readers")` explains each reading strategy and when to use it.
 
-Every stage of this package except the model call is a pure function of its
-input. The model call is the only step that costs money, the only one that can
-die halfway through a long run, and above a temperature of zero the only one that
-does not return the same thing twice. Two features follow from that.
+## More than one document
 
-A **cache** stores each successful response against the exact request, so a
-repeat is free and identical:
-
-```{r}
-cache <- gr_cache(dir = file.path(tempdir(), "readgpt-vignette-cache"))
-cached_cl <- gr_cache_client(cl, cache)
-
-first  <- answer_document(readgpt_example(), "What was revenue?", "fast",
-                          client = cached_cl)
-second <- answer_document(readgpt_example(), "What was revenue?", "fast",
-                          client = cached_cl)
-
-gr_trace_summary(second$trace)[, c("calls", "cached")]
-```
-
-`calls - cached` is what a run actually paid for. Failures are never cached: a
-rate limit is a property of the moment, and storing one would make a blip
-permanent.
-
-A **replay** goes further. A trace already holds every prompt and every response,
-so with the document it is enough to reproduce the run exactly — no key, no
-network, no spend:
-
-```{r}
-f <- file.path(tempdir(), "run.json")
-gr_trace_save(first$trace, f)
-
-replayed <- answer_document(readgpt_example(), "What was revenue?", "fast",
-                            client = gr_replay_client(f))
-identical(replayed$answer, first$answer)
-```
-
-That is the difference between a result someone has to trust and one they can
-check. A prompt with no recorded response raises `gr_replay_miss` rather than
-inventing an answer, because a result that looks like the original and is not is
-worse than no replay at all.
-
-Embeddings are not model calls and are not in the trace, so a replay reproduces
-chunk *ranking* only when the recording used a deterministic embedder and the
-replay uses the same one — which is why this vignette set `embedder = "lexical"`
-at the top.
-
-## Many documents
-
-`gr_compare()` runs several recipes over one document. `gr_read_many()` runs one
-recipe over many, and gives you a row per document:
-
-```{r}
-folder <- file.path(tempdir(), "reports")
-dir.create(folder, showWarnings = FALSE)
-writeLines("Revenue was 45.2 million dollars in fiscal 2024.",
-           file.path(folder, "north.txt"))
-writeLines("Revenue was 51.8 million dollars in fiscal 2025.",
-           file.path(folder, "south.txt"))
-
-out <- gr_read_many(folder, "What was revenue?", "fast", client = cl)
-out$summary[, c("document", "not_found", "chunks_used", "calls", "status")]
-```
-
-One unreadable file is one `"failed"` row, not a dead run. Each document gets its
-own budget, so one enormous file cannot starve the rest — which means the run
-itself needs its own ceiling, and there are two: `max_total_calls`, checked
-before each document, and `max_total_usd`, checked after one. `store =` makes the
-run resumable.
-
-Passing the same `trace =` to `gr_screen()`, `gr_extract()` and
-`gr_synthesise()` accumulates the whole review in one place. It is a *parent*:
-each stage still keeps its own trace, which is what `$trace` returns and what
-`gr_options(max_calls =)` is measured against, so the screening cannot spend the
-write-up's ceiling and the audit's per-stage costs still add up to the total.
-
-## From a folder to a review
-
-The three axes answer a question. A corpus job usually wants a *table*, and a
-review wants a table plus the account of it. Four functions cover that, and they
-compose in one direction:
-
-`gr_protocol()` → `gr_screen()` → `gr_extract()` → `gr_synthesise()`
-
-A protocol is what you fix before reading anything: which documents count, what
-to collect from the ones that do, and what the write-up has to cover. Fixing it
-first is the point — a criterion invented while reading is a criterion fitted to
-what was found.
-
-```{r}
-protocol <- gr_protocol(
-  "revenue-review",
-  question = "How did revenue change across the regional reports?",
-  include  = "Reports a revenue figure",
-  exclude  = "Is a forecast rather than a result",
-  fields   = gr_fields(
-    region  = "The region the report covers",
-    revenue = gr_field("Revenue in millions of dollars", type = "number"),
-    year    = gr_field("Fiscal year reported", type = "integer")
-  ),
-  outline  = c("Findings" = "How revenue compares across regions")
-)
-protocol
-```
-
-`gr_protocols()` lists four templates to start from, and
-`gr_protocol_save()`/`gr_protocol_read()` round-trip one through a JSON file so
-it can be shared and cited alongside the results.
-
-Screening is one call per document. Every document gets a decision and a reason,
-and nothing is dropped on the way — a file that could not be read has no
-decision rather than a silent exclusion, and `"unclear"` is an answer rather
-than a forced guess.
-
-```{r}
-screener <- gr_mock_client(function(messages, params) {
-  seen <- paste(vapply(messages, function(m) as.character(m$content), character(1)),
-                collapse = " ")
-  line <- regmatches(seen, regexpr("Revenue was [0-9.]+ million dollars in fiscal [0-9]+\\.", seen))
-  sprintf('{"decision":"include","reason":"Reports a revenue figure.",
-            "criterion":"Reports a revenue figure","quote":"%s"}', line)
-})
-
-screened <- gr_screen(folder, protocol, client = screener)
-screened$table[, c("document", "decision", "criterion", "verified")]
-```
-
-Extraction fills the schema from every chunk of each included document, then
-reconciles. The result is one typed row per document, and every filled cell
-carries the sentence it came from, checked against the chunk it was attributed
-to.
-
-```{r}
-extractor <- gr_mock_client(function(messages, params) {
-  seen <- paste(vapply(messages, function(m) as.character(m$content), character(1)),
-                collapse = " ")
-  n <- if (grepl("45.2", seen, fixed = TRUE)) "45.2" else "51.8"
-  yr <- if (grepl("2024", seen, fixed = TRUE)) 2024 else 2025
-  rg <- if (grepl("45.2", seen, fixed = TRUE)) "north" else "south"
-  line <- sprintf("Revenue was %s million dollars in fiscal %d.", n, yr)
-  sprintf('{"region":"%s","revenue":%s,"year":%d,
-            "region__quote":"%s","revenue__quote":"%s","year__quote":"%s"}',
-          rg, n, yr, line, line, line)
-})
-
-table <- gr_extract(screened, protocol, client = extractor, recipe = "fast")
-table$table[, c("document", "region", "revenue", "year", "n_unverified")]
-```
-
-`n_unverified` is the column to look at before believing a row: zero means every
-value in it can be pointed at in the document. `table$evidence` is the long form
-— one row per supported cell, with the quote, the page it is on, and whether the
-quote really appears there.
-
-```{r}
-table$evidence[, c("document_id", "field", "quote", "verified")]
-```
-
-Finally the write-up, one call per section of the outline, citing the rows it
-rests on:
-
-```{r}
-writer <- gr_mock_client(function(messages, params) {
-  "Revenue was higher in the southern region [study 2] than the northern [study 1]."
-})
-
-review <- gr_synthesise(table, protocol, client = writer)
-review$citations
-cat(review$text)
-```
-
-### Writing from claims instead of from rows
-
-That write-up was drafted from the table, one section at a time, and the prose
-shows it — the model walks the rows. The structure shows it too: the outline was
-fixed before anything was read, so the shape of the review is a hypothesis rather
-than a finding.
-
-`gr_claims()` computes the relations between studies first. Each claim names what
-supports it, what contradicts it, and which field distinguishes the two:
-
-```{r}
-claim_writer <- gr_mock_client(function(messages, params) {
-  sys <- messages[[1]]$content
-  if (grepl("turn a table of studies", sys, fixed = TRUE)) {
-    return(paste0('{"claims":[{"claim":"Revenue is higher in the south than the north.",',
-                  '"kind":"finding","supported_by":[2],"contradicted_by":[1],',
-                  '"moderator":"region","scope":"one report per region"},',
-                  '{"claim":"The northern region reported for fiscal 2024.",',
-                  '"kind":"finding","supported_by":[1],"contradicted_by":[],',
-                  '"moderator":null,"scope":"one report"}]}'))
-  }
-  if (grepl("sections of a review", sys, fixed = TRUE)) {
-    return(paste0('{"sections":[{"heading":"Where revenue is higher","brief":"the ',
-                  'regional comparison","claims":[1,2],"rationale":"one comparison"}]}'))
-  }
-  "Revenue was higher in the south [study 2] than in the north [study 1]."
-})
-
-cm <- gr_claims(table, question = protocol$question, client = claim_writer)
-cm$claims[, c("claim", "moderator", "n_support", "n_contradict")]
-```
-
-Every study number in that table was checked against the extraction before it got
-there. A number that is not in the table is dropped, a claim left with no
-supporting study is dropped entirely, and a `moderator` naming a column that does
-not exist is cleared — `cm$dropped` says what went and why, so a thin claims table
-can be told apart from a thin literature.
-
-`gr_outline()` then derives the sections from the claims, and `gr_gaps()` computes
-what the corpus does not contain — with no model call, so the gap list is
-something you can check by counting:
-
-```{r}
-outline <- gr_outline(cm, client = claim_writer)
-names(outline)
-gr_gaps(cm, extraction = table)[, c("kind", "dimension", "detail")]
-```
-
-```{r}
-from_claims <- gr_synthesise(table, outline = outline, question = protocol$question,
-                             client = claim_writer, claims = cm,
-                             gaps = gr_gaps(cm, extraction = table))
-from_claims$sections[, c("section", "n_claims", "claims_missed", "partial")]
-```
-
-Each section now argues its own claims and is shown only the studies those claims
-rest on. `claims_missed` is the citation check run backwards: a section handed a
-claim and not writing it up did not do what the outline promised, and says so.
-
-`gr_audit_report()` writes the whole chain out as one self-contained HTML file
-for somebody who did not run it:
-
-```{r eval = FALSE}
-gr_audit_report("audit.html", screening = screened, extraction = table,
-                synthesis = review, protocol = protocol)
-```
-
-Every `[study n]` is parsed back out and checked against the rows that exist;
-one pointing at a row that is not there is reported and marks the section
-partial. That completes the chain — a sentence cites a study, the study's row
-cites a quote, the quote was checked against the page it is attributed to. None
-of it proves the sentence is true. It makes every step of the way back to the
-document short enough to walk.
-
-## Using a real model
-
-Everything above used a mock. In production you need a client:
-
-```{r eval = FALSE}
-# An OpenAI-compatible endpoint:
-cl <- gr_client(model = "gpt-4o")          # key from OPENAI_API_KEY
-
-# Or any provider ellmer speaks to -- Anthropic, Google, Bedrock, Ollama:
-cl <- gr_ellmer_client(ellmer::chat_anthropic())
-
-# Or anything at all:
-cl <- gr_backend_client(function(messages, params) my_provider(messages))
-```
-
-Behind a company gateway, `base_url` is usually not enough on its own. It is
-when the gateway speaks the OpenAI shape and takes `Authorization: Bearer`; most
-do not. Azure OpenAI authenticates with `api-key`, API Management adds a
-subscription key, and many require a cost-centre or correlation id. `headers`
-covers those, and naming any header makes the API key optional -- so a gateway
-with its own scheme needs no `OPENAI_API_KEY` set at all:
-
-```{r eval = FALSE}
-cl <- gr_client(
-  base_url = "https://gateway.example.com/openai/v1", api = "chat",
-  headers  = c("api-key" = Sys.getenv("GATEWAY_KEY"),
-               "X-Cost-Centre" = "1234",
-               # NA suppresses a header rather than sending it. Without this,
-               # an OPENAI_API_KEY left set for another client in the same
-               # session would be sent to the gateway as well.
-               Authorization = NA))
-```
-
-`gr_options(api_headers = ...)` sets the same thing once for every client, which
-is the form that belongs in a project's `.Rprofile`. Headers are excluded from
-the cache key, like the API key: a rotating token or a per-request correlation
-id would otherwise make every lookup a miss.
-
-Without a key nothing raises. Every call fails, the answer is the
-`"NOT_IN_DOCUMENT"` sentinel and `ans$partial` is `TRUE` — which is why checking
-`partial` is the habit worth forming.
-
-## Extending it
-
-Every axis is a registry, and an addition behaves exactly like a built-in — same
-token caps, same provenance, same reporting, and it can be named in a recipe or
-put in an `ensemble`.
-
-```{r}
-gr_register_segmenter("by_bullet", description = "one chunk per bullet",
-  fn = function(doc, spec, client, trace) {
-    units <- unlist(strsplit(doc$text, "\n(?=[-*])", perl = TRUE))
-    new_chunks(units, "by_bullet", spec)
-  })
-
-"by_bullet" %in% gr_segmenters()$name
-```
-
-`gr_register_extractor()`, `gr_register_cleaner()`, `gr_register_reader()`,
-`gr_register_embedder()` and `gr_register_model()` work the same way. Each has a
-worked example in its help page.
+For a folder of documents, `gr_read_many()` asks the same question of each file
+and returns one row per document. For a literature review, `gr_screen()` decides
+which documents meet your criteria, `gr_extract()` builds a table of the details
+you ask for, and `gr_synthesise()` writes the findings up with each statement
+citing the study it came from. `vignette("tour")` shows each of these briefly.
 
 ```{r include = FALSE}
 gr_options(old)
 ```
+
+## Where to go next
+
+- `vignette("ingest")` — getting text out of PDFs, Word files, web pages and
+  scans, and cleaning it.
+- `vignette("readers")` — the reading strategies, what each costs, and how to
+  choose.
+- `vignette("tour")` — everything else, briefly: chunking, caching and replaying
+  runs, many documents, reviews, and extending the package.
+- `?gr_options` — every setting, with its default.
+
+`browseVignettes("readgpt")` lists all the guides.
+
+## Glossary
+
+**API key** — a password identifying your account to a provider.
+
+**Chunk** — a piece of a document small enough to send to the model.
+
+**Context window** — the most text a model accepts in one request.
+
+**Embedding** — a list of numbers standing for a piece of text, used to find
+chunks similar to a question.
+
+**Evidence** — the text an answer rests on, in `ans$evidence`.
+
+**LLM** — large language model, the program that reads and writes text.
+
+**Mock client** — a stand-in for a model that runs an R function, for practising
+and testing without cost.
+
+**Partial** — `ans$partial`: `TRUE` when a request failed, chunks did not fit
+and were left out, the run stopped early, or a reading strategy fell back to a
+simpler method. Some problems raise only a warning.
+
+**Prompt** — the text sent to a model in one request.
+
+**Provider** — the company or program that runs the model.
+
+**Reader** — a strategy for working through the chunks.
+
+**Recipe** — a named combination of an ingest, a segmentation and a reader.
+
+**Segmenter** — a method of cutting text into chunks.
+
+**Token** — the unit models read and providers charge by, roughly four characters
+of English.
+
+**Trace** — the record of every request and reply in a run.

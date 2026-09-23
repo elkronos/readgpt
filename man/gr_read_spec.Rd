@@ -82,7 +82,7 @@ the recursion depth cap.}
 
 \item{max_rounds}{For \code{iterative}: retrieve-assess cycles.}
 
-\item{preview_tokens}{For \code{survey}: the cap on the outline the planner sees.
+\item{preview_tokens}{For \code{preview}: the cap on the outline the planner sees.
 The outline is built from section labels, sizes and short excerpts -- never
 the full text -- and per-section excerpts shrink until the whole thing fits,
 so every section stays visible to the planner rather than the outline being

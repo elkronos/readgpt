@@ -495,12 +495,22 @@
   serialise on each. Within a document, `gr_options(parallel = TRUE)` already
   applies.
 
-* **The README and the vignette describe what the package now does.** The
-  revision passes and the claim-strength guard, the claims layer, `restate`, and
-  a short section on the registries you can query without spending anything
-  (`gr_models()`, `gr_extractors()`, `gr_reader_signature()` and the rest —
-  fourteen exported functions appeared nowhere in either document) are
-  documented for the first time.
+* **Guides that start from the beginning.** `vignette("readgpt")` is now a
+  getting-started guide that assumes no experience with language models: tokens,
+  context windows and chunks explained, installing, connecting to a provider,
+  and a first question checked from start to finish. `vignette("ingest")` covers
+  every file format, OCR, each cleaner and preset, and surveying a folder with
+  `gr_inventory()`; `vignette("readers")` explains every reading strategy,
+  compares them on one document, and gives a way to choose. The previous
+  vignette continues as `vignette("tour")`, and all of them run offline.
+
+* **The README describes what the package now does.** The revision passes and
+  the claim-strength guard, the claims layer, `restate`, and a short section on
+  the registries you can query without spending anything (`gr_models()`,
+  `gr_extractors()`, `gr_reader_signature()` and the rest — fourteen exported
+  functions appeared in neither the README nor the vignette) are documented
+  there for the first time, and the detail on ingestion and reading strategies
+  has moved into the guides.
 
 ## Fixed
 

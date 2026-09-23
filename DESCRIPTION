@@ -13,7 +13,7 @@ Description: A composable framework for document question answering with large
     a structured run trace, and every stage is registry-based so users can add
     their own extractors, cleaners, segmenters, and readers without editing the
     package.
-URL: https://github.com/elkronos/readgpt
+URL: https://github.com/elkronos/readgpt, https://elkronos.github.io/readgpt/
 BugReports: https://github.com/elkronos/readgpt/issues
 License: MIT + file LICENSE
 Encoding: UTF-8
@@ -43,5 +43,6 @@ Suggests:
     xml2
 VignetteBuilder: knitr
 Config/testthat/edition: 3
+Config/Needs/website: pkgdown
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.2

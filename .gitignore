@@ -30,6 +30,10 @@ src/*.o
 src/*.so
 src/*.dll
 
+# The website. It is built by the pkgdown workflow and published to the
+# gh-pages branch; a local build lands here and is not committed.
+docs/
+
 # ---------------------------------------------------------------------------
 # macOS and editor noise
 # ---------------------------------------------------------------------------

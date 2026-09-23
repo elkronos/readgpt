@@ -516,6 +516,12 @@
   columns: `needs`, the packages an extractor cannot run without, and
   `available`, whether they are installed.
 
+* **A website.** The README, the guides, the reference for every function
+  (grouped by task, with the first version's entry points under "Superseded")
+  and this changelog are built into <https://elkronos.github.io/readgpt/> by a
+  new workflow on every push to main. Pull requests build the site without
+  publishing it, so a guide that fails to knit is caught before it is merged.
+
 * **Guides that start from the beginning.** `vignette("readgpt")` is now a
   getting-started guide that assumes no experience with language models: tokens,
   context windows and chunks explained, installing, connecting to a provider,

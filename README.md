@@ -30,7 +30,8 @@ for OpenAI-compatible endpoints, and `gr_ellmer_client()` hands the transport to
 Ollama and Hugging Face all work with every strategy below.
 
 **The guides** explain the package from the beginning, and all of them run
-offline, so you can follow them without a key:
+offline, so you can follow them without a key. They are also on the website,
+<https://elkronos.github.io/readgpt/>, with the reference for every function:
 
 - `vignette("readgpt")`: get started. The ideas you need, installing, and a
   first question checked from start to finish.

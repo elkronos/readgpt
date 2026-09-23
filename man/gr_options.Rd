@@ -28,7 +28,9 @@ option mid-session affects subsequent runs.
 \section{Options}{
 
 \describe{
-\item{\code{verbose} (TRUE)}{Print progress for each ingest/segment/read stage.}
+\item{\code{verbose} (TRUE)}{Print a line for each ingest, segment and read
+stage. In an interactive session, also keep one line up to date with how
+many chunks a long read has done and what the run has spent.}
 \item{\code{model} ("gpt-5.6-terra")}{Default chat model. Note the default is a
 reasoning model, which does not accept \code{temperature}.}
 \item{\code{embedding_model} ("text-embedding-3-small")}{Default embedding model.}

@@ -2,14 +2,23 @@
 % Please edit documentation in R/core-trace.R
 \name{gr_trace}
 \alias{gr_trace}
+\alias{as.data.frame.gr_trace}
 \title{Create a run trace}
 \usage{
 gr_trace(run_id = NULL, meta = list())
+
+\method{as.data.frame}{gr_trace}(x, row.names = NULL, optional = FALSE, ...)
 }
 \arguments{
 \item{run_id}{Optional identifier; generated when omitted.}
 
 \item{meta}{Named list of run-level metadata.}
+
+\item{x}{A \code{gr_trace}.}
+
+\item{row.names}{Optional row names for the result.}
+
+\item{optional, ...}{Ignored; part of the \code{\link[=as.data.frame]{as.data.frame()}} generic.}
 }
 \value{
 A \code{gr_trace}. It is an environment, so it accumulates by reference:
@@ -25,16 +34,47 @@ says which: \code{"calls"} for \code{max_calls}, \code{"cost"} for \code{max_cos
 \code{\link[=gr_options]{gr_options()}}). \code{spent_usd} is what the calls so far cost, the figure
 \code{max_cost_usd} is checked against. A call to a model with no registered
 price adds nothing to it, so \code{\link[=gr_trace_cost]{gr_trace_cost()}} is the full account.
+
+\code{as.data.frame()} on a trace returns one row per request; see below.
 }
 \description{
 Create a run trace
 }
+\section{One row per request}{
+
+\code{as.data.frame(trace)} has one row for each request the run made, in the
+order they were made, and none for local steps such as segmentation:
+\describe{
+\item{\code{step}}{The step's number in \code{trace$steps}, where the full record is.}
+\item{\code{document}}{The document the request was about, when the run
+recorded one: the file name, web address or \code{"<inline text>"}.}
+\item{\code{recipe}}{The recipe the request belonged to, when recorded.}
+\item{\code{stage}}{What the request was for, such as \code{"map.answer"} or
+\code{"reduce"}.}
+\item{\code{model}, \code{ok}, \code{cached}}{The model, whether a usable reply came
+back, and whether it came from a \code{\link[=gr_cache]{gr_cache()}} or a \code{\link[=gr_replay_client]{gr_replay_client()}}.}
+\item{\code{tokens_in}, \code{tokens_out}}{The size of the prompt and the reply.}
+\item{\code{usd}}{What the request cost, 0 when it came from a cache. \code{NA}
+when the model has no registered price, as in \code{\link[=gr_trace_cost]{gr_trace_cost()}}, whose
+total the column adds up to.}
+\item{\code{seconds}}{How long the request took, retries included. \code{NA} for a
+trace written by a version of readgpt that did not time requests.}
+\item{\code{error}}{The error, or \code{NA}.}
+\item{\code{prompt}, \code{reply}}{The messages sent, each as \code{"[role] text"}, and
+the text that came back.}
+}
+}
+
 \examples{
 tr <- gr_trace(meta = list(purpose = "demo"))
 cl <- gr_mock_client(function(m, p) "an answer")
 ch <- gr_segment(readgpt_example(), list(method = "sentence", max_tokens = 150))
 invisible(gr_read(ch, "What was revenue?", cl, "map_reduce", trace = tr))
 print(tr)
+
+# One row per request, with what each cost and how long it took.
+reqs <- as.data.frame(tr)
+reqs[, c("step", "stage", "tokens_in", "tokens_out", "usd", "seconds")]
 }
 \seealso{
 \code{\link[=gr_trace_summary]{gr_trace_summary()}}, \code{\link[=as_json]{as_json()}}, \link{gr_answer}, \code{\link[=gr_cache]{gr_cache()}}

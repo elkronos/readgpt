@@ -139,7 +139,8 @@ old <- gr_options(verbose = FALSE)
 ```
 
 `verbose = FALSE` stops readgpt printing a line for each stage; leave it on in
-your own work while you are learning. `gr_options()` returns the settings it
+your own work while you are learning. In an interactive session it also keeps a
+line up to date with how far a long read has got and what it has spent. `gr_options()` returns the settings it
 replaced, so they can be restored later with `gr_options(old)`.
 
 ## Your first question
@@ -224,6 +225,15 @@ reading strategy. When the model is asked to quote the document, readgpt checks
 every quotation against the text and marks the answer `partial` if one is not
 there. `vignette("readers")` shows both.
 
+To see the passages in place, write the answer out as a page.
+`gr_audit_report()` shows the answer, whether it is partial, the cost, and each
+passage with its page and section, with the quotation or the answer's numbers
+highlighted. In an interactive session it opens the page for you:
+
+```{r, eval = FALSE}
+gr_audit_report("answer.html", answer = ans)
+```
+
 ## What it cost
 
 Every result carries a *trace*: each request sent, each reply, and the tokens
@@ -232,6 +242,13 @@ both used.
 ```{r}
 gr_trace_summary(ans$trace)[, c("calls", "tokens_in", "tokens_out")]
 gr_trace_cost(ans$trace)[, c("model", "calls", "usd")]
+```
+
+`as.data.frame()` gives one row per request, with its cost and how long it took.
+The `prompt` and `reply` columns hold exactly what was sent and what came back:
+
+```{r}
+as.data.frame(ans$trace)[, c("stage", "tokens_in", "tokens_out", "usd", "seconds")]
 ```
 
 `usd` is priced from readgpt's list of known models (`gr_models()`). A model it

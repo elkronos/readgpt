@@ -2,6 +2,7 @@
 
 S3method("[",gr_gaps)
 S3method("[",gr_reference_frame)
+S3method(as.data.frame,gr_trace)
 S3method(as_json,default)
 S3method(as_json,gr_answer)
 S3method(as_json,gr_chunks)

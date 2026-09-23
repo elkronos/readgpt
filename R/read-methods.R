@@ -136,7 +136,9 @@ read_refine <- function(chunks, question, client, spec, trace) {
   overhead <- max(prompt_overhead(question, .gr_prompts$refine_system, spec$restate),
                   prompt_overhead(question, answer_system(spec$cite), spec$restate))
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
-  for (i in seq_len(nrow(d))) {
+  p <- progress_start(nrow(d), "chunk", trace)
+  with_progress(p, for (i in seq_len(nrow(d))) {
+    if (i > 1L) progress_tick(p, i - 1L)
     if (!trace_can_call(trace)) break
     excerpt <- render_chunks(d[i, , drop = FALSE])
     # Halve the budget between the running draft and the incoming excerpt.
@@ -170,7 +172,7 @@ read_refine <- function(chunks, question, client, spec, trace) {
       draft <- res$text
     }
     if (spec$delay_between_calls > 0) Sys.sleep(spec$delay_between_calls)
-  }
+  })
   new_answer(draft %||% .NOT_FOUND, "refine", question, used, trace,
              # A cut excerpt or draft is text no request saw. `preview` applies
              # the same rule to a truncated skim.

@@ -483,7 +483,7 @@ gr_call <- function(client, messages, model = NULL, max_output = NULL,
              "reply. Segment more aggressively (lower `max_tokens` on the segmenter) or use a ",
              "larger-context model."),
       prompt_tokens, model, info$context_window), status = 0L, model = model)
-    trace_record(trace, label, messages, res, params = list(model = model))
+    trace_record(trace, label, messages, res, params = list(model = model), seconds = 0)
     return(res)
   }
 
@@ -494,9 +494,11 @@ gr_call <- function(client, messages, model = NULL, max_output = NULL,
   # to `return()` after recording their own trace entry, so every feature that
   # had to sit between the request and the response -- caching, replay -- would
   # have had to be written twice and kept in step by hand.
+  started <- Sys.time()
   res <- client_dispatch(client, messages, model, max_output, temperature,
                          schema, schema_name, info, params, label, list(...))
-  trace_record(trace, label, messages, res, params)
+  trace_record(trace, label, messages, res, params,
+               seconds = as.numeric(difftime(Sys.time(), started, units = "secs")))
   res
 }
 

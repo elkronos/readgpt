@@ -28,6 +28,34 @@
 #'   [gr_options()]). `spent_usd` is what the calls so far cost, the figure
 #'   `max_cost_usd` is checked against. A call to a model with no registered
 #'   price adds nothing to it, so [gr_trace_cost()] is the full account.
+#'
+#'   `as.data.frame()` on a trace returns one row per request; see below.
+#'
+#' @section One row per request:
+#' `as.data.frame(trace)` has one row for each request the run made, in the
+#' order they were made, and none for local steps such as segmentation:
+#' \describe{
+#'   \item{`step`}{The step's number in `trace$steps`, where the full record is.}
+#'   \item{`document`}{The document the request was about, when the run
+#'     recorded one: the file name, web address or `"<inline text>"`.}
+#'   \item{`recipe`}{The recipe the request belonged to, when recorded.}
+#'   \item{`stage`}{What the request was for, such as `"map.answer"` or
+#'     `"reduce"`.}
+#'   \item{`model`, `ok`, `cached`}{The model, whether a usable reply came
+#'     back, and whether it came from a [gr_cache()] or a [gr_replay_client()].}
+#'   \item{`tokens_in`, `tokens_out`}{The size of the prompt and the reply.}
+#'   \item{`usd`}{What the request cost, 0 when it came from a cache. `NA`
+#'     when the model has no registered price, as in [gr_trace_cost()], whose
+#'     total the column adds up to.}
+#'   \item{`seconds`}{How long the request took, retries included. `NA` for a
+#'     trace written by a version of readgpt that did not time requests.}
+#'   \item{`error`}{The error, or `NA`.}
+#'   \item{`prompt`, `reply`}{The messages sent, each as `"[role] text"`, and
+#'     the text that came back.}
+#' }
+#' @param x A `gr_trace`.
+#' @param row.names Optional row names for the result.
+#' @param optional,... Ignored; part of the [as.data.frame()] generic.
 #' @seealso [gr_trace_summary()], [as_json()], [gr_answer], [gr_cache()]
 #' @export
 #' @examples
@@ -36,6 +64,10 @@
 #' ch <- gr_segment(readgpt_example(), list(method = "sentence", max_tokens = 150))
 #' invisible(gr_read(ch, "What was revenue?", cl, "map_reduce", trace = tr))
 #' print(tr)
+#'
+#' # One row per request, with what each cost and how long it took.
+#' reqs <- as.data.frame(tr)
+#' reqs[, c("step", "stage", "tokens_in", "tokens_out", "usd", "seconds")]
 gr_trace <- function(run_id = NULL, meta = list()) {
   e <- new.env(parent = emptyenv())
   e$run_id <- as_chr1(run_id %||% gr_new_id("run"))
@@ -65,7 +97,7 @@ gr_trace <- function(run_id = NULL, meta = list()) {
 }
 
 #' @noRd
-trace_record <- function(trace, label, messages, result, params = list()) {
+trace_record <- function(trace, label, messages, result, params = list(), seconds = NA_real_) {
   if (is.null(trace) || !inherits(trace, "gr_trace")) return(invisible(NULL))
   trace$calls <- trace$calls + 1L
   if (isTRUE(result$cached)) trace$cached <- trace$cached + 1L
@@ -103,6 +135,8 @@ trace_record <- function(trace, label, messages, result, params = list()) {
     response = mark_utf8(as_chr1(result$text)),
     error = if (isTRUE(result$ok)) NULL else mark_utf8(as_chr1(result$error)),
     tokens = list(input = result$usage$input %||% 0L, output = result$usage$output %||% 0L),
+    # Wall-clock time of the request, retries and their pauses included.
+    seconds = round(as_num1(seconds, NA_real_), 3),
     # Recorded because a replay has to be able to reach the same decisions the
     # live run reached, and this is one a caller acts on:
     # gr_synthesise(coherence = TRUE) discards a revision whose finish_reason is
@@ -136,9 +170,14 @@ trace_note <- function(trace, label, detail = list()) {
 trace_absorb <- function(parent, child) {
   if (!inherits(parent, "gr_trace") || !inherits(child, "gr_trace")) return(invisible(NULL))
   off <- length(parent$steps)
+  # Exact names: `$recipe` would match the `recipes` a comparison's trace keeps.
+  src <- child$meta[["source", exact = TRUE]]
   parent$steps <- c(parent$steps, lapply(child$steps, function(st) {
     st$step <- st$step + off
-    st$recipe <- as_chr1(child$meta$recipe, NA_character_)
+    st$recipe <- as_chr1(child$meta[["recipe", exact = TRUE]], NA_character_)
+    # Which document a folded-in step was about, so a corpus trace can still be
+    # read request by request. A step folded in twice keeps its first document.
+    if (is.null(st$source) && !is.null(src)) st$source <- as_chr1(src, NA_character_)
     st
   }))
   parent$calls <- parent$calls + child$calls
@@ -151,6 +190,23 @@ trace_absorb <- function(parent, child) {
     parent$budget_stop <- TRUE
     parent$stop_reason <- child$stop_reason %||% NA_character_
   }
+  invisible(NULL)
+}
+
+#' Label the steps from `from` on with the document and recipe they were for,
+#' where a step does not say already. For a trace the caller passed in, which
+#' may hold other runs, the trace's own meta cannot say which run a step was.
+#' @noRd
+trace_stamp <- function(trace, from, source = NULL, recipe = NULL) {
+  if (!inherits(trace, "gr_trace")) return(invisible(NULL))
+  n <- length(trace$steps)
+  if (from > n) return(invisible(NULL))
+  idx <- seq.int(from, n)
+  trace$steps[idx] <- lapply(trace$steps[idx], function(st) {
+    if (is.null(st$source) && !is.null(source)) st$source <- as_chr1(source, NA_character_)
+    if (is.null(st$recipe) && !is.null(recipe)) st$recipe <- as_chr1(recipe, NA_character_)
+    st
+  })
   invisible(NULL)
 }
 
@@ -285,6 +341,49 @@ gr_trace_summary <- function(trace) {
     elapsed_s = round(as.numeric(difftime(Sys.time(), trace$started, units = "secs")), 2),
     stringsAsFactors = FALSE
   )
+}
+
+#' @rdname gr_trace
+#' @export
+as.data.frame.gr_trace <- function(x, row.names = NULL, optional = FALSE, ...) {
+  # The requests gr_trace_cost() prices, so the two agree on what a run cost.
+  steps <- Filter(function(s) !identical(s$kind, "local") && !is.null(s$tokens), x$steps)
+  chr <- function(f) vapply(steps, function(s) as_chr1(f(s), NA_character_), character(1))
+  tin <- vapply(steps, function(s) as_int1(s$tokens$input, NA_integer_), integer(1))
+  tout <- vapply(steps, function(s) as_int1(s$tokens$output, NA_integer_), integer(1))
+  cached <- vapply(steps, function(s) isTRUE(s$cached), logical(1))
+  model <- chr(function(s) s$model)
+  # A cached request is priced at no tokens, as gr_trace_cost() prices it: 0
+  # for a model with a price, NA for one without.
+  usd <- vapply(seq_along(steps), function(i) {
+    tryCatch(suppressWarnings(as.numeric(gr_estimate_cost(
+      as_chr1(model[i], "unknown"), if (cached[i]) 0L else tin[i],
+      if (cached[i]) 0L else tout[i]))), error = function(e) NA_real_)
+  }, numeric(1))
+  prompt <- vapply(steps, function(s) {
+    parts <- vapply(s$prompt %||% list(), function(m) sprintf("[%s] %s", as_chr1(m$role, "?"),
+                                                              as_chr1(m$content, "")),
+                    character(1))
+    paste(parts, collapse = "\n\n")
+  }, character(1))
+  out <- data.frame(
+    step = vapply(steps, function(s) as_int1(s$step, NA_integer_), integer(1)),
+    document = chr(function(s) s$source %||% x$meta[["source", exact = TRUE]]),
+    recipe = chr(function(s) s$recipe %||% x$meta[["recipe", exact = TRUE]]),
+    stage = chr(function(s) s$label),
+    model = model,
+    ok = vapply(steps, function(s) isTRUE(s$ok), logical(1)),
+    cached = cached,
+    tokens_in = tin,
+    tokens_out = tout,
+    usd = usd,
+    seconds = vapply(steps, function(s) as_num1(s$seconds, NA_real_), numeric(1)),
+    error = chr(function(s) s$error),
+    prompt = prompt,
+    reply = chr(function(s) s$response),
+    stringsAsFactors = FALSE)
+  if (!is.null(row.names)) rownames(out) <- row.names
+  out
 }
 
 #' @export

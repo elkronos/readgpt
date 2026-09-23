@@ -168,8 +168,42 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims 
 #'   which sources, with what query, on what date -- and starts the flow counts
 #'   at identification. Without one the report says so, because a missing search
 #'   is a defect in the review rather than in the report.
+#' @param answer A [gr_answer] from [answer_document()], or a `gr_corpus` from
+#'   [gr_read_many()]. Adds the question, the answer, whether it is complete,
+#'   what it cost, and the passages it came from in document order; see "An
+#'   answer" below.
+#' @param open Open the report once it is written: in the RStudio viewer when
+#'   the file is under [tempdir()], and otherwise in the web browser. By
+#'   default only in an interactive session.
+#'
+#' @section An answer:
+#' With `answer`, the report shows the answer or says that it was not found,
+#' whether it is partial and why, the recipe, reader, number of requests and
+#' cost, and any warnings. Then the passages behind it, grouped by chunk and in
+#' document order, each with its page, section and chunk number:
+#' \itemize{
+#'   \item A quotation a reader copied out (`skim`, `extract`) is highlighted in
+#'     the chunk it came from. One that is not in that chunk is listed under it
+#'     and flagged.
+#'   \item A chunk a reader sent whole (`stuff`, `retrieve`, `rerank`) is shown
+#'     with the numbers from the answer highlighted where they occur. That shows
+#'     where to look, not that the chunk supports the answer. A chunk the answer
+#'     cites as `[chunk n]` is marked as cited.
+#'   \item `map_reduce` answers each chunk and then combines the answers. Its
+#'     answer from each chunk is shown as such: the model's words, not the
+#'     document's. `refine` and `hierarchical` keep no passages, and the report
+#'     says so.
+#' }
+#' A passage over 6,000 characters, such as a whole document sent in one
+#' request, is cut to the text around what is highlighted, with each cut shown
+#' as "\[...\]".
+#' Last comes one row per request, from `as.data.frame()` on the answer's
+#' trace (see [gr_trace()]), without the prompts and replies.
+#'
+#' A `gr_corpus` gives one row per document, then each document's answer and
+#' passages. Answers are there only if the run kept them (`keep_answers`).
 #' @seealso [gr_flow()], [gr_screen()], [gr_extract()], [gr_synthesise()],
-#'   [gr_verify_evidence()]
+#'   [gr_verify_evidence()], [answer_document()], [gr_read_many()]
 #' @export
 #' @examples
 #' fields <- gr_fields(design = "The study design")
@@ -179,11 +213,17 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims 
 #' f <- tempfile(fileext = ".txt"); writeLines("We ran a randomised trial.", f)
 #' x <- gr_extract(f, fields, client = cl)
 #'
-#' out <- gr_audit_report(tempfile(fileext = ".html"), extraction = x)
+#' out <- gr_audit_report(tempfile(fileext = ".html"), extraction = x, open = FALSE)
 #' file.exists(out)
+#'
+#' # One answer and the passages behind it.
+#' cl2 <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
+#' ans <- answer_document(readgpt_example(), "What was revenue?", "fast", client = cl2)
+#' page <- gr_audit_report(tempfile(fileext = ".html"), answer = ans, open = FALSE)
 gr_audit_report <- function(path, screening = NULL, extraction = NULL,
                             synthesis = NULL, protocol = NULL, title = NULL,
-                            claims = NULL, records = NULL, calibration = NULL) {
+                            claims = NULL, records = NULL, calibration = NULL,
+                            answer = NULL, open = interactive()) {
   # `claims` and `records` are APPENDED, not slotted in where they belong
   # thematically. Inserting `claims` fourth silently rebound the fourth
   # positional argument of every existing call -- gr_audit_report(p, s, x, syn)
@@ -202,20 +242,27 @@ gr_audit_report <- function(path, screening = NULL, extraction = NULL,
                class = "gr_bad_audit_input")
     }
   }
-  if (is.null(screening) && is.null(extraction) && is.null(synthesis)) {
-    gr_abort(paste0("Nothing to report. Pass at least one of `screening`, `extraction` or ",
-                    "`synthesis` -- a report of nothing is not evidence that nothing happened."),
+  if (!is.null(answer) && !inherits(answer, c("gr_answer", "gr_corpus"))) {
+    gr_abort("`answer` must be a gr_answer from answer_document() or a gr_corpus from gr_read_many().",
+             class = "gr_bad_audit_input")
+  }
+  if (is.null(screening) && is.null(extraction) && is.null(synthesis) && is.null(answer)) {
+    gr_abort(paste0("Nothing to report. Pass at least one of `screening`, `extraction`, ",
+                    "`synthesis` or `answer`: a report of nothing is not evidence that nothing ",
+                    "happened."),
              class = "gr_bad_audit_input")
   }
 
-  question <- as_chr1(protocol$question %||% synthesis$question %||%
+  question <- as_chr1(protocol$question %||% synthesis$question %||% report_question(answer) %||%
                         screening$summary$document[0] %||% "", "")
   # The screening and extraction objects now carry the record set they were run
   # over, so the search reaches the report whether or not the caller remembered
   # to hand it over a second time at the end. Passing `records` still wins.
   records <- records %||% screening$records %||% extraction$records
+  review <- !is.null(screening) || !is.null(extraction) || !is.null(synthesis)
   body <- c(
-    audit_header(title, question, protocol, screening, extraction, synthesis),
+    audit_header(title, question, protocol, screening, extraction, synthesis, answer),
+    audit_answer(answer),
     audit_protocol(protocol, extraction),
     audit_flow(screening, extraction, records, claims %||% synthesis$claims),
     audit_screening(screening),
@@ -224,12 +271,16 @@ gr_audit_report <- function(path, screening = NULL, extraction = NULL,
     audit_evidence(extraction),
     audit_claims(synthesis, claims),
     audit_synthesis(synthesis),
-    audit_search(records),
-    audit_cost(screening, extraction, synthesis),
-    audit_caveats()
+    # The search belongs to a review. A report on one answer has none to show.
+    if (review || !is.null(records)) audit_search(records),
+    audit_cost(screening = screening, extraction = extraction, synthesis = synthesis,
+               reading = answer),
+    audit_caveats(screening = !is.null(screening), answer = !is.null(answer),
+                  quotes = review || answer_has_quotes(answer))
   )
   write_utf8_lines(c(audit_head(title), body, "</body>", "</html>"), path)
   gr_msg(sprintf("Audit report written to %s", path))
+  if (isTRUE(open)) audit_open(path)
   invisible(path)
 }
 
@@ -289,13 +340,21 @@ audit_head <- function(title) {
     'blockquote{margin:.4rem 0;padding:.3rem .8rem;border-left:3px solid #ccc;color:#333}',
     'code{background:#f4f4f4;padding:.05rem .3rem;border-radius:3px}',
     '.note{background:#fbfbf6;border:1px solid #e6e3cf;padding:.7rem 1rem;margin:1rem 0}',
+    '.card{border:1px solid #ddd;border-radius:4px;padding:.5rem .9rem;margin:.9rem 0}',
+    '.where{font-size:13px;color:#555;margin:.2rem 0 .4rem}',
+    '.passage{white-space:pre-wrap;margin:.3rem 0;font-size:14px}',
+    'mark{background:#fde68a;padding:0 .1rem}',
     '</style>', '</head>', '<body>')
 }
 
 #' @noRd
-audit_header <- function(title, question, protocol, screening, extraction, synthesis) {
+audit_header <- function(title, question, protocol, screening, extraction, synthesis,
+                         answer = NULL) {
   ran <- c(if (!is.null(screening)) "screened", if (!is.null(extraction)) "extracted",
-           if (!is.null(synthesis)) "synthesised")
+           if (!is.null(synthesis)) "synthesised",
+           if (inherits(answer, "gr_answer")) "answered",
+           if (inherits(answer, "gr_corpus"))
+             sprintf("answered across %d document(s)", NROW(answer$summary)))
   c(sprintf("<h1>%s</h1>", esc(title %||% "readgpt audit report")),
     if (nzchar(question)) sprintf("<p><strong>Question.</strong> %s</p>", esc(question)),
     sprintf("<p class='sub'>Stages run: %s. Generated %s by readgpt %s.</p>",
@@ -460,11 +519,11 @@ audit_synthesis <- function(synthesis) {
 }
 
 #' @noRd
-audit_cost <- function(...) {
-  stages <- list(...)
+audit_cost <- function(screening = NULL, extraction = NULL, synthesis = NULL, reading = NULL) {
   # Named for the reader, not after the class. "gr_screening" is what the object
   # is called in the code and means nothing to the person the report is for.
-  names(stages) <- c("screening", "extraction", "synthesis")[seq_along(stages)]
+  stages <- list(screening = screening, extraction = extraction, synthesis = synthesis,
+                 answer = reading)
   traces <- Filter(function(x) inherits(x$trace, "gr_trace"), stages)
   if (!length(traces)) return(NULL)
   rows <- lapply(names(traces), function(nm) {
@@ -479,26 +538,36 @@ audit_cost <- function(...) {
   })
   tab <- do.call(rbind, rows)
   c("<h2>What the run cost</h2>",
-    "<p class='sub'>Counting only the calls that were really issued -- a reply served from a",
-    "cache spent nothing, however large its prompt.</p>",
+    "<p class='sub'>Only requests that were sent are counted. A reply served from a cache",
+    "cost nothing, however large its prompt.</p>",
     html_table(tab, numeric_cols = c("calls", "cached", "tokens_in", "tokens_out", "usd")))
 }
 
 #' @noRd
-audit_caveats <- function() {
+audit_caveats <- function(screening = TRUE, answer = FALSE, quotes = TRUE) {
   c("<h2>What this report does not establish</h2>",
     "<div class='note'>",
-    "<p><strong>A verified quote is a quote that is really there.</strong> The check confirms",
-    "that the sentence credited with a value occurs in the chunk it was attributed to. It does",
-    "not confirm that the sentence supports the value, and it does not confirm the value is",
-    "right. A correct quote read wrongly looks exactly like a correct quote read rightly. What",
-    "the check rules out is the quote having been invented, which is the failure that is",
-    "otherwise invisible.</p>",
+    if (quotes) c(
+      "<p><strong>A verified quote is one that is in the document.</strong> The check confirms",
+      "that the sentence credited with a value occurs in the chunk it was attributed to. It does",
+      "not confirm that the sentence supports the value, and it does not confirm the value is",
+      "right. A correct quote read wrongly looks exactly like a correct quote read rightly. What",
+      "the check rules out is the quote having been invented, which is the failure that is",
+      "otherwise invisible.</p>"),
     "<p><strong>A page number is where the sentence is, not where the reasoning is.</strong>",
     "Spans found on several pages, or not found at all, are left without one rather than",
     "given the likeliest.</p>",
-    "<p><strong>Screening saw what the excerpt showed.</strong> Where a document was",
-    "truncated the decision was made on its opening; the screening table says which.</p>",
+    if (screening) c(
+      "<p><strong>Screening saw what the excerpt showed.</strong> Where a document was",
+      "truncated the decision was made on its opening; the screening table says which.</p>"),
+    if (answer) c(
+      "<p><strong>A passage shows where an answer came from, not that it is right.</strong>",
+      "The passages are the ones the reader used. A highlighted number is a number from the",
+      "answer found in the passage: it shows where to look, not that the passage supports the",
+      "answer. An answer a reader wrote for one chunk is the model's account of that chunk,",
+      "which is why it is labelled and not highlighted.</p>",
+      "<p><strong>Not found means not found in what was read.</strong> A reader that picks a",
+      "few chunks reports on those chunks, not on the whole document.</p>"),
     "</div>")
 }
 
@@ -601,3 +670,396 @@ audit_search <- function(records) {
     "starts here.</p>",
     html_table(tab), extra)
 }
+
+# --- an answer, and the passages behind it --------------------------------
+
+#' The question a gr_answer or gr_corpus was asked, or NULL.
+#' @noRd
+report_question <- function(x) {
+  if (inherits(x, "gr_answer")) return(x$question)
+  if (inherits(x, "gr_corpus")) return(x$trace$meta[["question", exact = TRUE]])
+  NULL
+}
+
+#' Does an answer, or any answer in a corpus, rest on quotations a reader
+#' copied out? Only then does the report explain what verifying one means.
+#' @noRd
+answer_has_quotes <- function(x) {
+  has <- function(a) inherits(a, "gr_answer") && is.data.frame(a$evidence) &&
+    any(as.character(a$evidence$kind) %in% "extracted")
+  if (inherits(x, "gr_corpus")) return(any(vapply(x$answers %||% list(), has, logical(1))))
+  has(x)
+}
+
+#' The answer sections: one answer, or every document of a corpus.
+#' @noRd
+audit_answer <- function(x) {
+  if (inherits(x, "gr_corpus")) return(audit_corpus(x))
+  if (!inherits(x, "gr_answer")) return(NULL)
+  c("<h2>The answer</h2>", answer_summary(x),
+    "<h2>Where it came from</h2>", answer_passages(x),
+    "<h2>Every request</h2>", request_table(x$trace))
+}
+
+#' A document's name for the report: the file name, not the folders above it,
+#' which say nothing about the answer and may say something about the machine.
+#' @noRd
+report_doc_name <- function(src) {
+  src <- as_chr1(src, NA_character_)
+  if (is.na(src) || is_url(src) || identical(src, "<inline text>")) return(src)
+  basename(src)
+}
+
+#' Rows of label and value, leaving out values nobody recorded.
+#' @noRd
+fact_table <- function(labels, values) {
+  keep <- !is.na(values) & nzchar(values)
+  if (!any(keep)) return(NULL)
+  c("<table>", sprintf("<tr><th>%s</th><td>%s</td></tr>", esc(labels[keep]), esc(values[keep])),
+    "</table>")
+}
+
+#' The answer, whether it is complete, and what it took.
+#' @noRd
+answer_summary <- function(x) {
+  said <- if (is_not_found(x$answer)) sprintf("<p><strong>%s</strong></p>", esc(not_found_wording(x)))
+          else sprintf("<blockquote class='passage'>%s</blockquote>", esc(x$answer))
+  status <- if (isTRUE(x$partial)) {
+    why <- partial_reasons(x)
+    sprintf("<p class='flag'>Partial: %s.</p>",
+            esc(if (length(why)) paste(why, collapse = "; ") else "see the answer's notes"))
+  } else {
+    "<p class='ok'>Not partial: every request succeeded and nothing the reader chose to read was left out.</p>"
+  }
+  tr <- x$trace
+  recipe <- as_chr1(x$recipe, NA_character_)
+  auto <- as.list(x$notes %||% list())[["auto_recipe", exact = TRUE]]
+  if (!is.na(recipe) && !is.null(auto)) recipe <- sprintf("%s (chosen by \"auto\")", recipe)
+  used <- unique(x$chunks_used %||% integer(0))
+  facts <- fact_table(
+    c("Document", "Recipe", "Reader", "Chunks", "Chunks used", "Requests", "Cost"),
+    c(report_doc_name(x$document$source), recipe, as_chr1(x$reader, NA_character_),
+      as_chr1(x$segmentation$n, NA_character_),
+      as.character(length(used)),
+      if (inherits(tr, "gr_trace"))
+        sprintf("%d%s", as.integer(tr$calls),
+                if (isTRUE(tr$cached > 0L)) sprintf(" (%d from a cache)", as.integer(tr$cached))
+                else "")
+      else NA_character_,
+      if (inherits(tr, "gr_trace")) format_trace_cost(tr) else NA_character_))
+  w <- x[["warnings", exact = TRUE]] %||% character(0)
+  c(said, status, facts,
+    if (length(w)) c(sprintf("<p class='flag'>%d warning(s) while reading:</p>", length(w)),
+                     "<ul>", sprintf("<li>%s</li>", esc(unname(w))), "</ul>"))
+}
+
+#' The passages behind an answer, grouped by chunk, in document order.
+#' @noRd
+answer_passages <- function(x) {
+  ev <- x$evidence
+  if (!is.data.frame(ev) || !nrow(ev)) {
+    return("<p class='sub'>The reader recorded no passages for this answer.</p>")
+  }
+  col <- function(nm) if (is.null(ev[[nm]])) rep(NA, nrow(ev)) else ev[[nm]]
+  page <- suppressWarnings(as.numeric(col("page")))
+  chunk <- suppressWarnings(as.numeric(col("chunk_id")))
+  # By chunk, which segmenters number in reading order, then by page. Not page
+  # first: a chunk that runs across a page break has no single page, and would
+  # be put after every chunk that has one. A row with neither keeps the place
+  # the reader gave it, after the rest.
+  o <- order(is.na(chunk), chunk, is.na(page), page, seq_len(nrow(ev)))
+  key <- ifelse(is.na(chunk), paste0("row", seq_len(nrow(ev))), paste0("chunk", chunk))
+  groups <- unique(key[o])
+  cited <- cited_chunks(x$answer)
+  nums <- answer_numbers(x$answer)
+  kind <- as.character(col("kind"))
+  quoted <- !is.na(kind) & kind == "extracted"
+  bad <- sum(quoted & !is.na(col("verified")) & !isTRUE_vec(col("verified")))
+  c(sprintf("<p class='sub'>%d passage(s) from %d chunk(s), in the order they appear in the document.%s</p>",
+            nrow(ev), length(groups),
+            if (bad) sprintf(" <span class='flag'>%d quotation(s) could not be found in the chunk they cite.</span>", bad)
+            else ""),
+    unlist(lapply(groups, function(g) {
+      rows <- ev[o[key[o] == g], , drop = FALSE]
+      evidence_card(rows, cited, nums)
+    }), use.names = FALSE))
+}
+
+#' One chunk's passages: where it is, the text with what supports the answer
+#' marked, and anything that could not be placed.
+#' @noRd
+evidence_card <- function(rows, cited, nums) {
+  get <- function(nm) if (is.null(rows[[nm]])) rep(NA, nrow(rows)) else rows[[nm]]
+  kind <- as.character(get("kind"))
+  kind[is.na(kind)] <- "verbatim"
+  text <- vapply(get("text"), function(t) as_chr1(t, ""), character(1), USE.NAMES = FALSE)
+  id <- suppressWarnings(as.integer(get("chunk_id")[1]))
+  pages <- sort(unique(stats::na.omit(suppressWarnings(as.numeric(get("page"))))))
+  secs <- unique(stats::na.omit(as.character(get("section"))))
+  secs <- secs[nzchar(trimws(secs))]
+  score <- suppressWarnings(as.numeric(get("score")))
+  score <- if (any(!is.na(score))) max(score, na.rm = TRUE) else NA_real_
+  where <- c(if (length(pages)) sprintf("%s %s", if (length(pages) == 1L) "page" else "pages",
+                                        paste(format(pages, trim = TRUE), collapse = ", ")),
+             if (length(secs)) sprintf("section \"%s\"", paste(secs, collapse = "\", \"")),
+             if (!is.na(id)) sprintf("chunk %d", id),
+             if (!is.na(score)) sprintf("relevance %.2f", score),
+             if (!is.na(id) && id %in% cited) "cited in the answer")
+  where <- paste(where, collapse = ", ")
+  if (nzchar(where)) where <- paste0(toupper(substr(where, 1, 1)), substring(where, 2))
+
+  quoted <- kind == "extracted"
+  src <- vapply(get("source_text"), function(t) as_chr1(t, NA_character_), character(1),
+                USE.NAMES = FALSE)
+  passage <- if (any(quoted & !is.na(src))) src[quoted & !is.na(src)][1]
+             else if (any(kind == "verbatim")) text[kind == "verbatim"][1]
+             else NA_character_
+  # One encoding for the searches and the cuts made at the positions they find.
+  if (!is.na(passage)) passage <- to_utf8(passage)
+  spans <- list()
+  unplaced <- character(0)
+  if (any(quoted)) {
+    verified <- as.logical(get("verified"))
+    match <- suppressWarnings(as.numeric(get("match")))
+    folded <- if (!is.na(passage)) normalised_with_map(passage)
+    for (i in which(quoted)) {
+      # Only a quotation the check found is marked, so the page and
+      # gr_verify_evidence() cannot disagree about which ones are there.
+      sp <- if (isTRUE(verified[i])) quote_span(text[i], folded)
+      if (!is.null(sp)) { spans[[length(spans) + 1L]] <- sp; next }
+      unplaced <- c(unplaced, if (isTRUE(verified[i]))
+        sprintf("<p class='sub'>Quoted, and found in this chunk, but not placed in the text shown: &ldquo;%s&rdquo;</p>",
+                esc(text[i]))
+      else if (identical(verified[i], FALSE))
+        sprintf("<p class='flag'>Quoted, but not found in this chunk%s: &ldquo;%s&rdquo;</p>",
+                if (!is.na(match[i])) sprintf(" (the longest run of its words that is: %d%%)",
+                                              as.integer(round(100 * match[i]))) else "",
+                esc(text[i]))
+      else sprintf("<p class='sub'>Quoted, not checked against the document: &ldquo;%s&rdquo;</p>",
+                   esc(text[i])))
+    }
+  }
+  # Numbers only where nothing was quoted: a quotation already says which part
+  # of the chunk the answer rests on.
+  if (!length(spans) && !any(quoted)) spans <- number_spans(passage, nums)
+  said <- text[kind == "answer" & nzchar(text)]
+  c("<div class='card'>",
+    if (nzchar(where)) sprintf("<p class='where'>%s</p>", esc(where)),
+    if (!is.na(passage)) sprintf("<div class='passage'>%s</div>", excerpt_html(passage, spans)),
+    unplaced,
+    if (length(said)) c(
+      "<p class='sub'>The reader's answer from this chunk. These are the model's words, not the document's.</p>",
+      sprintf("<blockquote class='passage'>%s</blockquote>", esc(said))),
+    "</div>")
+}
+
+#' `passage` folded the way normalise_for_match() folds text, with a map from
+#' each folded character back to the character it came from.
+#'
+#' Folding keeps each character one character, and a run of space becomes one
+#' space whose place is the run's first character. So a quotation found in the
+#' folded text by an exact search is found exactly where gr_verify_evidence()
+#' found it, and the map gives its place in the original.
+#' @noRd
+normalised_with_map <- function(passage) {
+  ch <- strsplit(to_utf8(passage), "", fixed = TRUE)[[1]]
+  if (!length(ch)) return(list(text = "", map = integer(0)))
+  ch <- fold_for_match(ch)
+  sp <- grepl("[[:space:]]", ch, perl = TRUE)
+  keep <- !(sp & c(FALSE, sp[-length(sp)]))
+  out <- ch[keep]
+  out[sp[keep]] <- " "
+  list(text = paste(out, collapse = ""), map = which(keep))
+}
+
+#' Where a quotation sits in the passage `folded` came from, as c(start, end)
+#' in characters, or NULL when it is not there.
+#' @noRd
+quote_span <- function(quote, folded) {
+  if (is.null(folded) || !nzchar(folded$text)) return(NULL)
+  q <- trim_quote_edges(normalise_for_match(as_chr1(quote, "")))
+  if (!nzchar(q)) return(NULL)
+  at <- regexpr(q, folded$text, fixed = TRUE)
+  if (at < 1L) return(NULL)
+  c(folded$map[at], folded$map[at + nchar(q) - 1L])
+}
+
+#' The numbers an answer states, longest first, leaving out single digits and
+#' the chunk numbers in its citations.
+#' @noRd
+answer_numbers <- function(text) {
+  text <- as_chr1(text, "")
+  if (is_not_found(text)) return(character(0))
+  text <- gsub(cite_pattern("chunk"), " ", text, perl = TRUE, ignore.case = TRUE)
+  m <- regmatches(text, gregexpr("[0-9]+(?:[.,][0-9]+)*", text, perl = TRUE))[[1]]
+  m <- unique(m[nchar(m) >= 2L])
+  m[order(-nchar(m), m)]
+}
+
+#' Where those numbers occur in `passage`, whole: 45.2 is not marked inside
+#' 145.2 or 45.25.
+#' @noRd
+number_spans <- function(passage, nums) {
+  passage <- as_chr1(passage, NA_character_)
+  if (!length(nums) || is.na(passage) || !nzchar(passage)) return(list())
+  alt <- paste(gsub(".", "\\.", nums, fixed = TRUE), collapse = "|")
+  pat <- sprintf("(?<![0-9])(?<![0-9][.,])(?:%s)(?![0-9]|[.,][0-9])", alt)
+  m <- tryCatch(gregexpr(pat, passage, perl = TRUE)[[1]], error = function(e) -1L)
+  if (m[1] < 1L) return(list())
+  len <- attr(m, "match.length")
+  lapply(seq_along(m), function(i) c(as.integer(m[i]), as.integer(m[i] + len[i] - 1L)))
+}
+
+#' `text` as HTML with the character ranges in `spans` wrapped in <mark>.
+#' Overlapping ranges are merged; everything is escaped.
+#' @noRd
+mark_html <- function(text, spans) {
+  if (!length(spans)) return(esc(text))
+  s <- vapply(spans, `[[`, integer(1), 1L)
+  e <- vapply(spans, `[[`, integer(1), 2L)
+  o <- order(s)
+  s <- s[o]; e <- e[o]
+  out <- character(0)
+  pos <- 1L
+  i <- 1L
+  while (i <= length(s)) {
+    start <- s[i]; end <- e[i]
+    while (i < length(s) && s[i + 1L] <= end + 1L) { i <- i + 1L; end <- max(end, e[i]) }
+    out <- c(out, esc(substr(text, pos, start - 1L)), "<mark>", esc(substr(text, start, end)),
+             "</mark>")
+    pos <- end + 1L
+    i <- i + 1L
+  }
+  paste0(c(out, esc(substr(text, pos, nchar(text)))), collapse = "")
+}
+
+#' A passage as HTML, cut to the parts around what is marked when it is long.
+#'
+#' A recipe that sends the whole document in one request has the whole document
+#' as its one passage. Shown in full, the report would repeat the document; so a
+#' long passage keeps `context` characters either side of each mark, and one
+#' with nothing marked keeps its opening. Cuts are shown as "[...]".
+#' @noRd
+excerpt_html <- function(text, spans, limit = 6000L, context = 400L) {
+  n <- nchar(text)
+  if (n <= limit) return(mark_html(text, spans))
+  gap <- "<span class='sub'> [...] </span>"
+  if (!length(spans)) {
+    return(paste0(esc(substr(text, 1L, limit)),
+                  sprintf("<span class='sub'> [... %d more characters]</span>", n - limit)))
+  }
+  s <- vapply(spans, `[[`, integer(1), 1L)
+  e <- vapply(spans, `[[`, integer(1), 2L)
+  o <- order(s)
+  s <- s[o]; e <- e[o]
+  ws <- pmax(1L, s - as.integer(context))
+  we <- pmin(n, e + as.integer(context))
+  wins <- list()
+  cs <- ws[1]; ce <- we[1]
+  for (i in seq_along(ws)[-1]) {
+    if (ws[i] <= ce + 1L) ce <- max(ce, we[i])
+    else { wins[[length(wins) + 1L]] <- c(cs, ce); cs <- ws[i]; ce <- we[i] }
+  }
+  wins[[length(wins) + 1L]] <- c(cs, ce)
+  parts <- vapply(wins, function(w) {
+    inside <- which(s >= w[1] & e <= w[2])
+    mark_html(substr(text, w[1], w[2]),
+              lapply(inside, function(k) c(s[k] - w[1] + 1L, e[k] - w[1] + 1L)))
+  }, character(1))
+  paste0(if (wins[[1]][1] > 1L) gap, paste(parts, collapse = gap),
+         if (wins[[length(wins)]][2] < n) gap)
+}
+
+#' One row per request, from as.data.frame() on the trace, without the prompts
+#' and replies, which would put the document in the report again.
+#' @noRd
+request_table <- function(trace) {
+  if (!inherits(trace, "gr_trace")) return("<p class='sub'>No trace was kept.</p>")
+  df <- as.data.frame(trace)
+  if (!nrow(df)) return("<p class='sub'>No requests were made.</p>")
+  # A trace written before requests were timed has no times: say so rather
+  # than add them up to nothing.
+  timed <- !is.na(df$seconds)
+  took <- if (!any(timed)) "their times were not recorded"
+          else sprintf("%s seconds in all%s", format(round(sum(df$seconds[timed]), 1), nsmall = 1),
+                       if (all(timed)) "" else sprintf(" for the %d that were timed", sum(timed)))
+  df$usd <- ifelse(is.na(df$usd), NA_character_, formatC(df$usd, format = "f", digits = 6))
+  df$seconds <- round(df$seconds, 2)
+  keep <- c("step", "stage", "model", "ok", "cached", "tokens_in", "tokens_out", "usd",
+            "seconds", "error")
+  c(sprintf(paste0("<p class='sub'>%d request(s), %s. The prompts and replies ",
+                   "are in <code>as.data.frame(answer$trace)</code>.</p>"),
+            nrow(df), took),
+    html_table(df[, keep, drop = FALSE],
+               numeric_cols = c("step", "tokens_in", "tokens_out", "usd", "seconds"),
+               flag = list(ok = function(v) !v, error = function(v) !is.na(v))))
+}
+
+#' Every document of a corpus: one row each, then each answer and its passages.
+#' @noRd
+audit_corpus <- function(x) {
+  s <- x$summary
+  if (!is.data.frame(s) || !nrow(s)) return(NULL)
+  # A copy found on a resumed run is "restored", not "duplicate"; `duplicate_of`
+  # is what says it is a copy either way.
+  dup_of <- if (is.null(s$duplicate_of)) rep(NA_character_, nrow(s)) else as.character(s$duplicate_of)
+  keep <- intersect(c("document", "status", if (any(!is.na(dup_of))) "duplicate_of", "answer",
+                      "partial", "reader", "calls", "cost_usd", "seconds", "error", "warnings"),
+                    names(s))
+  tab <- s[, keep, drop = FALSE]
+  if (!is.null(tab$answer)) {
+    nf <- if (is.null(s$not_found)) rep(FALSE, nrow(s)) else isTRUE_vec(s$not_found)
+    a <- as.character(tab$answer)
+    a <- ifelse(!is.na(a) & nchar(a) > 200L, paste0(substr(a, 1, 200), " [...]"), a)
+    tab$answer <- ifelse(nf, "not found", a)
+  }
+  if (!is.null(tab$cost_usd)) {
+    tab$cost_usd <- ifelse(is.na(tab$cost_usd), NA_character_,
+                           formatC(as.numeric(tab$cost_usd), format = "f", digits = 4))
+  }
+  answers <- x$answers %||% list()
+  per <- function(i) {
+    lab <- as.character(s$document[i])
+    head <- sprintf("<h3>%s</h3>", esc(lab))
+    status <- as.character(s$status[i])
+    if (identical(status, "duplicate") || !is.na(dup_of[i])) {
+      return(c(head, sprintf("<p class='sub'>Same text as %s, which is shown there.</p>",
+                             esc(as_chr1(dup_of[i], "an earlier document")))))
+    }
+    a <- answers[[lab]]
+    if (!inherits(a, "gr_answer")) {
+      return(c(head, sprintf("<p class='sub'>No answer: %s.</p>", esc(switch(status,
+        skipped = "the run's ceiling was reached before this document",
+        failed = as_chr1(s$error[i], "it could not be read"),
+        "none was kept")))))
+    }
+    c(head, answer_summary(a), "<h4>Where it came from</h4>", answer_passages(a))
+  }
+  c("<h2>Every document</h2>",
+    sprintf("<p class='sub'>%d document(s). Costs are what each document cost when it was read; a restored row keeps the figure from the run that read it.</p>",
+            nrow(s)),
+    html_table(tab, numeric_cols = intersect(c("calls", "cost_usd", "seconds"), names(tab)),
+               flag = list(status = function(v) v %in% c("failed", "skipped"),
+                           partial = function(v) isTRUE_vec(v))),
+    # Said only when there were answers to keep: a run in which every document
+    # failed has none either way, and each row says why.
+    if (!length(answers) && any(s$status %in% c("ok", "restored", "duplicate")))
+      "<p class='sub'>The answers were not kept (<code>keep_answers = FALSE</code>), so their passages cannot be shown.</p>"
+    else c("<h2>Each answer and where it came from</h2>",
+           unlist(lapply(seq_len(nrow(s)), per), use.names = FALSE)))
+}
+
+#' Show the report: the RStudio viewer can display files under tempdir(), and a
+#' browser the rest.
+#' @noRd
+audit_open <- function(path) {
+  full <- normalizePath(path, winslash = "/", mustWork = FALSE)
+  tmp <- normalizePath(tempdir(), winslash = "/", mustWork = FALSE)
+  viewer <- getOption("viewer")
+  if (is.function(viewer) && startsWith(full, paste0(tmp, "/"))) viewer(full)
+  else open_in_browser(full)
+  invisible(NULL)
+}
+
+#' @noRd
+open_in_browser <- function(path) utils::browseURL(path)

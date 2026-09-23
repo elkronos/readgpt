@@ -346,6 +346,7 @@ ans$notes       # what: dropped_chunks, failed_calls, unread_pages, error, ...
 ans$warnings    # every warning raised while the document was read
 ans$evidence    # what the answer rests on
 print(ans$trace)
+as.data.frame(ans$trace)   # one row per request: stage, tokens, usd, seconds, prompt, reply
 gr_trace_summary(ans$trace)
 #>                          run_id calls cached steps tokens_in tokens_out errors
 #> 1 run_20260904035101.469_68d50e     1      0     8       669         13      0
@@ -365,6 +366,21 @@ return `NULL`. `page` is populated only for PDF sources. `score` is set only by
 
 With `cite = TRUE` the model cites bracketed chunk ids (`[chunk 3]`); map those
 back to pages through `ans$evidence`.
+
+**The answer and its passages on one page.** `gr_audit_report()` writes the
+question, the answer, whether it is partial and why, the cost, and the passages
+in document order with page, section and chunk. A quotation is highlighted where
+it stands in its chunk and flagged when it is not there; in a chunk sent whole,
+the numbers from the answer are highlighted. It takes a `gr_corpus` from
+`gr_read_many()` too, and opens the page when the session is interactive:
+
+```r
+gr_audit_report("answer.html", answer = ans)
+```
+
+In an interactive session a long read keeps one line up to date with how many
+chunks it has read and what it has spent, and `gr_read_many()` gives the spend
+so far before each document.
 
 **Quoted evidence is checked.** For most readers the evidence is verbatim chunk
 text and is true by construction. For `skim` it is what the model wrote when

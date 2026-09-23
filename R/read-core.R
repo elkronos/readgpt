@@ -123,18 +123,7 @@ print.gr_answer <- function(x, ...) {
                 s$tokens_in, s$tokens_out, s$errors, format_trace_cost(x$trace)))
   }
   cat("  ---\n")
-  # The sentinel is a value for code to test, not a sentence for a person. And
-  # "not found" says less than it appears to from a run that did not read the
-  # whole document, whether because something failed (partial) or by design (a
-  # top-k reader reads a few chunks), so only a complete read of every chunk
-  # earns the stronger wording.
-  if (is_not_found(x$answer)) {
-    whole <- !x$partial && startsWith(as_chr1(x$signature, ""), "all|")
-    cat(if (whole) "Not found in the document.\n"
-        else "Not found in the part of the document that was read.\n")
-  } else {
-    cat(x$answer, "\n")
-  }
+  if (is_not_found(x$answer)) cat(not_found_wording(x), "\n", sep = "") else cat(x$answer, "\n")
   cat("  ---\n")
   if (!is.null(x$evidence) && nrow(x$evidence)) {
     cat(sprintf("  Evidence: %s\n", evidence_locations(x$evidence)))
@@ -150,6 +139,20 @@ print.gr_answer <- function(x, ...) {
                 substr(w[[1]], 1, 140)))
   }
   invisible(x)
+}
+
+#' What "not found" means for this answer, in a sentence.
+#'
+#' The sentinel is a value for code to test, not a sentence for a person. And
+#' "not found" says less than it appears to from a run that did not read the
+#' whole document, whether because something failed (partial) or by design (a
+#' top-k reader reads a few chunks), so only a complete read of every chunk
+#' earns the stronger wording.
+#' @noRd
+not_found_wording <- function(x) {
+  whole <- !isTRUE(x$partial) && startsWith(as_chr1(x$signature, ""), "all|")
+  if (whole) "Not found in the document."
+  else "Not found in the part of the document that was read."
 }
 
 #' Where the evidence came from, in a line: chunk, then page and section.

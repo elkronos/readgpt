@@ -175,7 +175,9 @@ check_option <- function(name, value) {
 #'
 #' @section Options:
 #' \describe{
-#'   \item{`verbose` (TRUE)}{Print progress for each ingest/segment/read stage.}
+#'   \item{`verbose` (TRUE)}{Print a line for each ingest, segment and read
+#'     stage. In an interactive session, also keep one line up to date with how
+#'     many chunks a long read has done and what the run has spent.}
 #'   \item{`model` ("gpt-5.6-terra")}{Default chat model. Note the default is a
 #'     reasoning model, which does not accept `temperature`.}
 #'   \item{`embedding_model` ("text-embedding-3-small")}{Default embedding model.}

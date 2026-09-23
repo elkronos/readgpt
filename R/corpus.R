@@ -390,7 +390,7 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
     key <- if (is.null(store)) NULL else corpus_key(src, question, rec, client)
     restored <- if (is.null(key)) NULL else corpus_restore(store, key)
     if (!is.null(restored)) {
-      gr_msg(sprintf("[%d/%d] %s -- restored from store", i, length(sources), lab))
+      gr_msg(sprintf("[%d/%d] %s, restored from store", i, length(sources), lab))
       restored$row$document <- lab
       restored$row$status <- "restored"
       if (is.null(restored$row$document_id)) {
@@ -425,13 +425,21 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
       stop_if_no_credentials(client)
       credentials_checked <- TRUE
     }
-    gr_msg(sprintf("[%d/%d] %s", i, length(sources), lab))
+    # With what the run has spent so far, so a long run shows its cost as it
+    # goes. Left off when nothing has been spent, and when a model with no
+    # registered price makes the figure unknown.
+    gr_msg(sprintf("[%d/%d] %s%s", i, length(sources), lab,
+                   if (!is.na(spent) && spent > 0) sprintf(" ($%.4f spent so far)", spent)
+                   else ""))
     started <- Sys.time()
     # One trace per document, folded into the parent afterwards. Sharing the
     # parent outright would make `max_calls` count earlier documents against
     # later ones, so the same document would answer differently depending on
     # its position in the corpus -- the bug gr_compare() had between recipes.
     sub <- gr_trace(meta = list(recipe = rec$name, question = question, source = lab))
+    # What the run spent before this document, so the progress line gives the
+    # run's total and not this document's. NA when that is unknown.
+    sub$spent_before <- spent
 
     # What a document raised before it failed has no answer to travel on, so it
     # is recorded here for its row.
@@ -493,7 +501,7 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
                               warnings = c(doc_w, raised))
     } else if (inherits(out, "gr_corpus_duplicate")) {
       first <- labels[[out$of]]
-      gr_msg(sprintf("[%d/%d] %s -- same text as '%s', not read again",
+      gr_msg(sprintf("[%d/%d] %s has the same text as '%s' and is not read again",
                      i, length(sources), lab, first))
       # The first copy's row, relabelled. Its answer, reader and chunk counts
       # describe this content too; its call counts and cost do not, because this

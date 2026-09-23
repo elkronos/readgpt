@@ -101,6 +101,9 @@ answer_document <- function(source, question, recipe = "auto", client = NULL,
   trace <- trace %||% gr_trace(meta = list(recipe = if (auto) "auto" else first$name,
                                            question = question,
                                            source = source_label(source)))
+  # Where this run's steps start, so they can be labelled with the document and
+  # the recipe once "auto" has chosen: a trace passed in may hold other runs.
+  from <- length(trace$steps) + 1L
 
   # The two candidates ingest alike, so the document is read once either way.
   doc <- gr_ingest(source, first$ingest, trace = trace)
@@ -119,6 +122,7 @@ answer_document <- function(source, question, recipe = "auto", client = NULL,
   ans <- finish_answer(gr_read(chunks, question, client, rec$read, trace = trace),
                        doc, chunks, rec$name)
   if (auto) ans$notes$auto_recipe <- rec$name
+  trace_stamp(trace, from, source = source_label(source), recipe = rec$name)
 
   switch(return,
     answer = ans,
@@ -331,7 +335,9 @@ gr_compare <- function(source, question, recipes = c("fast", "needle", "thorough
       # into the shared trace. Sharing the trace outright meant `max_calls`
       # counted earlier recipes against later ones, so the same recipe returned
       # a different answer depending on its position in the comparison.
-      sub <- gr_trace(meta = list(recipe = nm))
+      sub <- gr_trace(meta = list(recipe = nm, source = source_label(source)))
+      # What the comparison has spent so far, for the progress line.
+      sub$spent_before <- sum(gr_trace_cost(trace)$usd)
       a <- gr_read(ch, question, client, r$read, trace = sub)
       trace_absorb(trace, sub)
       finish_answer(a, d, ch, nm)

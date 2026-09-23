@@ -28,7 +28,16 @@
 #' and "revenue fell 12%" must not compare equal.
 #' @noRd
 normalise_for_match <- function(x) {
-  x <- to_utf8(as.character(x))
+  x <- fold_for_match(to_utf8(as.character(x)))
+  trimws(gsub("[[:space:]]+", " ", x, perl = TRUE))
+}
+
+#' The character-for-character part of normalise_for_match(): quote marks,
+#' dashes and spaces to their plain forms, and lower case. Each character stays
+#' one character, which is what lets the evidence page find a normalised
+#' quotation in the original text (see normalised_with_map()).
+#' @noRd
+fold_for_match <- function(x) {
   # \u escapes, not literals: R CMD check flags non-ASCII bytes in R sources,
   # and a source file whose meaning depends on its own encoding is the bug this
   # package has already been bitten by twice.
@@ -36,8 +45,7 @@ normalise_for_match <- function(x) {
   x <- gsub("[\u201c\u201d\u201e\u201f\u2033]", '"', x, perl = TRUE)
   x <- gsub("[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]", "-", x, perl = TRUE)
   x <- gsub("[\u00a0\u2007\u2009\u202f]", " ", x, perl = TRUE)
-  x <- tolower(x)
-  trimws(gsub("[[:space:]]+", " ", x, perl = TRUE))
+  tolower(x)
 }
 
 #' Strip the punctuation a model puts around a quotation, and nothing else.

@@ -608,6 +608,33 @@
   labelled with it. An address ending in `.pdf` used to be reported as a missing
   file, and any other address was read as a one-line document about itself.
 
+* **Long reads show how far they have got.** In an interactive session with
+  `verbose` on, a reader that sends a request per chunk keeps one line up to
+  date with how many chunks it has read and what the run has spent, and removes
+  the line when it finishes. `refine` does the same. A model with no registered
+  price makes the line say the cost is unknown rather than show a figure that is
+  too low. `gr_read_many()` gives what the run has spent before each document.
+  Scripts and knitted documents print nothing new.
+
+* **One row per request.** `as.data.frame()` on a trace returns a row for each
+  request: the document and recipe it belonged to, its stage, model, whether it
+  succeeded and whether it came from a cache, tokens in and out, what it cost,
+  how long it took, any error, and the prompt and reply. The trace now records
+  each request's time as `seconds`, and the `usd` column adds up to the total in
+  `gr_trace_cost()`.
+
+* **The passages behind an answer, on one page.** `gr_audit_report()` takes a
+  `gr_answer` from `answer_document()`, or a `gr_corpus` from `gr_read_many()`,
+  as `answer`. The page gives the question, the answer or that it was not
+  found, whether it is partial and why, the cost, and the passages in document
+  order with page, section and chunk. A quotation is highlighted where it stands
+  in its chunk and flagged when it is not there; in a chunk sent whole, the
+  answer's numbers are highlighted; an answer written for one chunk is labelled
+  as the model's words. A long passage is cut to the text around what is
+  highlighted. A corpus gets one row per document, then each answer. A new
+  argument, `open`, shows any report once it is written, in the RStudio viewer
+  or a browser; it is on by default in an interactive session.
+
 * **A website.** The README, the guides, the reference for every function
   (grouped by task, with the first version's entry points under "Superseded")
   and this changelog are built into <https://elkronos.github.io/readgpt/> by a

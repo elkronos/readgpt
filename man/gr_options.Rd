@@ -70,8 +70,18 @@ sessions and make a long run resumable.}
 future and future.apply packages; without them it warns and runs
 sequentially.}
 \item{\code{workers} (4)}{Worker processes when \code{parallel} is TRUE.}
-\item{\code{max_cost_usd} (5)}{Refuse a run whose pre-flight estimate exceeds
-this, in USD. \code{NULL} disables the check.}
+\item{\code{max_cost_usd} (5)}{Spending limit per run, in USD. A run whose
+reader sends every chunk is refused before it starts when sending them
+would cost more than this. Every run is checked again before each
+request, and stops with a \code{partial} answer once what it has spent reaches
+the limit. The cost of a request is known only once it is made, so a run
+can pass the limit by one request. With \code{parallel = TRUE} requests go out
+in batches that cannot be stopped part way, so a reader that sends
+batches is also refused before it starts when its worst case, every reply
+at its token cap and the price of the dearest model it uses, would pass
+the limit. Needs a model with a registered price (see \code{\link[=gr_models]{gr_models()}}).
+Under a limit of 0 a model registered at no cost runs and one with a
+price is refused. \code{NULL} removes the limit.}
 \item{\code{max_calls} (400)}{Hard cap on model calls per run, checked before
 the first call and again before every subsequent one. \code{NULL} removes the
 cap.}

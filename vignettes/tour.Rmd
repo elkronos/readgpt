@@ -248,8 +248,11 @@ changes which chunks were selected, only where they sit.
 
 ## Rails, before you spend anything
 
-Two caps are on by default and checked before the reading step makes its first
-request. The cost cap prices the worst case, every reply at its maximum length:
+Two caps are on by default. Both are checked before the reading step makes its
+first request and again before every request after it, and the cost cap is
+checked against what the run has spent so far. A parallel read that sends
+batches, which cannot be stopped part way, is held to its worst case before it
+starts:
 
 ```{r}
 unlist(gr_options()[c("max_cost_usd", "max_calls")])

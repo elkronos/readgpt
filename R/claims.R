@@ -178,14 +178,30 @@ gr_claims <- function(extraction, question = NULL, protocol = NULL, client = NUL
   groups <- synth_batches(rendered, bud$input)
 
   raw <- list()
+  not_sent <- 0L
   for (g in seq_along(groups)) {
     if (length(groups) > 1L) gr_msg(sprintf("Claims from batch %d of %d.", g, length(groups)))
+    # A batch a limit stopped is not a batch the model found nothing in.
+    if (!trace_can_call(trace)) {
+      not_sent <- not_sent + 1L
+      next
+    }
     raw[[g]] <- claims_batch(groups[[g]], question, client, spec, trace)
+  }
+  if (not_sent > 0L) {
+    gr_warn(sprintf(paste0("%d of %d batch(es) of studies were not sent: the run reached its %s. ",
+                           "The studies in them contribute no claims. Raise the limit and run ",
+                           "gr_claims() again."),
+                    not_sent, length(groups), cap_name(trace)),
+            class = "gr_claims_capped")
   }
   got <- do.call(rbind, raw[!vapply(raw, is.null, logical(1))])
   if (is.null(got) || !nrow(got)) {
-    gr_warn(paste0("No claims came back. Every call failed, or the model returned none. There is ",
-                   "nothing for gr_outline() or gr_synthesise(claims = ) to work from."),
+    gr_warn(paste0("No claims came back. ",
+                   if (not_sent == length(groups)) sprintf("No batch was sent: the run had reached its %s. ",
+                                                           cap_name(trace))
+                   else "Every call failed, or the model returned none. ",
+                   "There is nothing for gr_outline() or gr_synthesise(claims = ) to work from."),
             class = "gr_no_claims")
     return(new_claims(empty_claim_rows(), used, question, empty_dropped(), trace))
   }
@@ -203,7 +219,8 @@ gr_claims <- function(extraction, question = NULL, protocol = NULL, client = NUL
             class = "gr_no_claims")
     return(new_claims(empty_claim_rows(), used, question, checked$dropped, trace))
   }
-  final <- if (length(groups) > 1L) {
+  # Claims can repeat only across batches that returned some.
+  final <- if (sum(vapply(raw, function(r) NROW(r) > 0L, logical(1))) > 1L) {
     claims_reconcile(checked$claims, question, client, spec, trace)
   } else checked$claims
   new_claims(final, used, question, checked$dropped, trace)
@@ -386,7 +403,14 @@ claims_verify <- function(got, used, cols = study_fields(used)) {
 #' @noRd
 claims_reconcile <- function(claims, question, client, spec, trace) {
   n <- nrow(claims)
-  if (n < 2L || !trace_can_call(trace)) return(reindex_claims(claims))
+  if (n < 2L) return(reindex_claims(claims))
+  if (!trace_can_call(trace)) {
+    gr_warn(sprintf(paste0("Claims from different batches were not merged: the run reached its %s, ",
+                           "so one finding can appear as more than one claim."),
+                    cap_name(trace)),
+            class = "gr_claims_capped")
+    return(reindex_claims(claims))
+  }
   listed <- paste(sprintf("%d. %s", seq_len(n), claims$claim), collapse = "\n")
   res <- gr_call_json(client, list(
     list(role = "system", content = .gr_prompts$reconcile_system),
@@ -704,7 +728,8 @@ gr_outline <- function(claims, question = NULL, client = NULL, model = NULL,
                           ifelse(is.na(cw$moderator), "",
                                  sprintf(" (contested; distinguished by %s)", cw$moderator))),
                   collapse = "\n")
-  res <- if (trace_can_call(trace)) {
+  capped <- !trace_can_call(trace)
+  res <- if (!capped) {
     gr_call_json(client, list(
       list(role = "system", content = .gr_prompts$outline_system),
       list(role = "user", content = paste0("Review question: ", question)),
@@ -718,8 +743,12 @@ gr_outline <- function(claims, question = NULL, client = NULL, model = NULL,
 
   secs <- if (isTRUE(res$ok)) outline_rows(json_field(res$value, "sections", scalar = FALSE)) else NULL
   if (is.null(secs) || !nrow(secs)) {
-    gr_warn(paste0("The outline call did not return usable sections, so every claim was put in ",
-                   "one section. Pass an `outline` to gr_synthesise() yourself, or try again."),
+    gr_warn(if (capped) sprintf(paste0("The outline was not requested: the run had reached its %s. ",
+                                       "Every claim was put in one section. Raise the limit, or ",
+                                       "pass an `outline` to gr_synthesise() yourself."),
+                                cap_name(trace))
+            else paste0("The outline call did not return usable sections, so every claim was put ",
+                        "in one section. Pass an `outline` to gr_synthesise() yourself, or try again."),
             class = "gr_outline_failed")
     secs <- data.frame(heading = "Findings", brief = "What the evidence supports",
                        rationale = NA_character_, stringsAsFactors = FALSE)

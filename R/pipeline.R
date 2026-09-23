@@ -73,6 +73,14 @@ print.gr_recipe <- function(x, ...) {
 #'   list of them.
 #' @return A `gr_recipe` when `name` is a single string, otherwise a named list
 #'   of `gr_recipe`s.
+#'
+#' @section `"auto"`:
+#' [answer_document()] defaults to `recipe = "auto"`. It is not a recipe but a
+#' choice between two of these, made once the document is ingested: `"fast"`
+#' for a document of at most 50,000 tokens (less on a model with a small
+#' context window), `"thorough"` for anything longer. "Choosing the recipe" in
+#' [answer_document()] gives the whole rule. Functions that read several
+#' documents or compare recipes take one fixed recipe, and refuse `"auto"`.
 #' @seealso [gr_recipe()] to build your own, [answer_document()], [gr_compare()],
 #'   [gr_segmenters()] and [gr_readers()] for the pieces they are made of
 #' @export
@@ -134,9 +142,12 @@ gr_recipes <- function(name = NULL) {
   # recipes to gr_compare().
   unknown <- setdiff(name, names(r))
   if (length(unknown)) {
-    gr_abort(sprintf("Unknown recipe(s): %s. Available: %s.",
+    gr_abort(sprintf("Unknown recipe(s): %s. Available: %s.%s",
                      paste(sprintf("'%s'", unknown), collapse = ", "),
-                     paste(names(r), collapse = ", ")))
+                     paste(names(r), collapse = ", "),
+                     if ("auto" %in% unknown) paste0(
+                       " 'auto' is not a recipe: it is answer_document()'s choice between ",
+                       "'fast' and 'thorough', made from the document's length.") else ""))
   }
   if (length(name) == 1L) r[[name]] else r[name]
 }
@@ -144,6 +155,15 @@ gr_recipes <- function(name = NULL) {
 #' @noRd
 as_recipe <- function(x, fallback_name = NULL) {
   if (inherits(x, "gr_recipe")) return(x)
+  # Only answer_document() decides per document. A corpus, a comparison or a
+  # review read with one recipe here and another there has no configuration to
+  # report, which is the rule gr_inventory() keeps for the same reason.
+  if (is_auto_recipe(x)) {
+    gr_abort(paste0("'auto' chooses a recipe for each document from its length, so only ",
+                    "answer_document() accepts it. Reading several documents, or comparing ",
+                    "recipes, needs one fixed recipe: 'fast', 'thorough', or another name ",
+                    "from gr_recipes()."), class = "gr_bad_recipe")
+  }
   if (is.character(x) && length(x) == 1L) {
     known <- names(gr_recipes())
     if (x %in% known) {

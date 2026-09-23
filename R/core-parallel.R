@@ -35,6 +35,14 @@ gr_lapply <- function(x, fn, parallel = NULL, workers = NULL, key = NULL, label 
                       trace = NULL) {
   parallel <- isTRUE(parallel %||% gr_options("parallel"))
   if (!parallel || length(x) <= 1L) return(lapply(x, function(item) fn(item, trace)))
+  # A run that has reached a limit sends no batch. Run in this process, each
+  # item checks the run's own trace and returns without a request; handed to
+  # workers, each of which starts a count of its own, every item would be sent.
+  # Inside a batch the workers cannot see what the run spends, which is why
+  # preflight() holds a parallel read to its worst case.
+  if (inherits(trace, "gr_trace") && !trace_can_call(trace)) {
+    return(lapply(x, function(item) fn(item, trace)))
+  }
 
   if (!requireNamespace("future", quietly = TRUE) ||
       !requireNamespace("future.apply", quietly = TRUE)) {

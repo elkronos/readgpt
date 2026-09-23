@@ -56,6 +56,17 @@ with \code{gr_options(embedder = "lexical")}, or with your own embedder register
 as \code{deterministic = TRUE}.
 }
 
+\section{The recipe "auto" chose}{
+
+A recording of \code{\link[=answer_document]{answer_document()}} with \code{recipe = "auto"} holds the recipe
+the choice picked for each document and question, and a replay of the same
+document and question repeats that choice rather than making it again. What
+the choice rests on (the token count, the registered models, the client's
+model) can differ between the session that recorded a run and the one
+replaying it, and a different choice would send prompts the recording does
+not have.
+}
+
 \section{What does not replay}{
 
 Traces do not record the JSON schema a call requested, so two calls that

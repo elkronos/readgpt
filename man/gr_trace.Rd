@@ -15,9 +15,16 @@ gr_trace(run_id = NULL, meta = list())
 A \code{gr_trace}. It is an environment, so it accumulates by reference:
 pass the same trace to several calls and they all record into it. Fields:
 \code{run_id}, \code{started}, \code{meta}, \code{steps}, \code{calls}, \code{cached}, \code{tokens_in},
-\code{tokens_out}, \code{errors}, \code{budget_stop}. \code{cached} counts the calls answered
-from a \code{\link[=gr_cache]{gr_cache()}} or a \code{\link[=gr_replay_client]{gr_replay_client()}} rather than the network, so
-\code{calls - cached} is what the run actually paid for.
+\code{tokens_out}, \code{errors}, \code{budget_stop}, \code{stop_reason}, \code{spent_usd}.
+\code{cached} counts the calls answered from a \code{\link[=gr_cache]{gr_cache()}} or a
+\code{\link[=gr_replay_client]{gr_replay_client()}} rather than the network, so \code{calls - cached} is what
+the run paid for.
+
+\code{budget_stop} is \code{TRUE} once a limit stopped the run, and \code{stop_reason}
+says which: \code{"calls"} for \code{max_calls}, \code{"cost"} for \code{max_cost_usd} (see
+\code{\link[=gr_options]{gr_options()}}). \code{spent_usd} is what the calls so far cost, the figure
+\code{max_cost_usd} is checked against. A call to a model with no registered
+price adds nothing to it, so \code{\link[=gr_trace_cost]{gr_trace_cost()}} is the full account.
 }
 \description{
 Create a run trace

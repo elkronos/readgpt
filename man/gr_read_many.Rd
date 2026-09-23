@@ -48,7 +48,7 @@ other hundred and ninety-nine.}
 
 \item{max_total_usd}{Stop once the run has spent this much, marking the
 remaining documents \code{"skipped"}. This is a \emph{corpus} ceiling and is separate
-from \code{gr_options(max_cost_usd =)}, which is a per-document pre-flight check.
+from \code{gr_options(max_cost_usd =)}, which is a limit per document.
 It needs a model with a registered price: against one without, cost is
 \emph{unknown} rather than zero, the ceiling cannot be enforced, and you get a
 \code{gr_corpus_cost_unknown} warning instead of a silent free pass.}
@@ -112,7 +112,10 @@ same fact as the duplicate detection below.
 
 \code{status} is \code{"ok"}, \code{"failed"}, \code{"skipped"} (the corpus ceiling was reached
 first), \code{"restored"} (read from \code{store}, not re-read now) or \code{"duplicate"}
-(see below). A restored row keeps the numbers from when that document was
+(see below). A document that \code{max_calls} or \code{max_cost_usd} stopped before it
+was read in full is \code{"failed"} too, with the limit in \code{error} and its partial
+answer in \code{answers}; it is not written to \code{store}, so a resumed run with a
+higher limit reads it again. A restored row keeps the numbers from when that document was
 first read, so its \code{cost_usd} is what it cost then, not what this run spent --
 which is why the run's own spend comes from \code{gr_trace_cost(x$trace)} and not
 from summing the column.

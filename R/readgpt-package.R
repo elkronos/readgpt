@@ -59,11 +59,14 @@
 #' `gr_compare()` two or three on your own document and read `cmp$summary`.
 #'
 #' @section Cost control:
-#' Two rails are on by default and are checked **before** the first request:
-#' `max_cost_usd` (5) and `max_calls` (400). Both are [gr_options()]. A run that
-#' trips one raises a classed error naming the option to change. `max_calls` is
-#' re-checked before every subsequent call, so a run that hits it mid-flight
-#' returns a `partial` answer rather than continuing to spend.
+#' Two limits are on by default, both [gr_options()]: `max_cost_usd` (5) and
+#' `max_calls` (400). Before the first request, a run is refused with a classed
+#' error naming the option to change when it would need more calls than
+#' `max_calls`, or when its reader sends every chunk and sending them would cost
+#' more than `max_cost_usd`. Both are checked again before every request, so a
+#' run that reaches either one stops and returns a `partial` answer rather than
+#' continuing to spend. A parallel read that sends batches, which cannot be
+#' stopped part way, is held to its worst case instead; see [gr_options()].
 #'
 #' Preview segmentation for free before committing to a reader:
 #' ```r
@@ -107,7 +110,7 @@
 #'     OCR). **Check this before trusting an answer.**}
 #'   \item{`notes`}{List. Why it is partial, and per-reader detail:
 #'     `dropped_chunks`, `failed_calls`, `error`, `merge_levels`,
-#'     `degraded_to_bm25`, `stop_reason`, `call_cap_reached`,
+#'     `degraded_to_bm25`, `stop_reason`, `call_cap_reached`, `cost_cap_reached`,
 #'     `summaries_truncated`, and so on. Three can be set for every reader:
 #'     `cited_unknown`, chunk ids the answer cited that were never sent;
 #'     `unverified_evidence`, the number of quoted spans that are not in the

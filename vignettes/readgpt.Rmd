@@ -171,10 +171,10 @@ the path for a file, `<inline text>` for a string.
 it.
 
 **`partial` says whether anything went wrong.** It is `TRUE` if a request
-failed, if chunks were left out because they did not fit, if the limit on
-requests stopped the run early, if a reading strategy fell back to a simpler
-method, or if pages of the document never became text (a scanned page read
-without OCR, for example):
+failed, if chunks were left out because they did not fit, if a limit on
+requests or spending stopped the run early, if a reading strategy fell back to
+a simpler method, or if pages of the document never became text (a scanned
+page read without OCR, for example):
 
 ```{r}
 ans$partial
@@ -242,10 +242,12 @@ answer:
 gr_estimate_cost(gr_options("model"), input_tokens = 120000, output_tokens = 4000)
 ```
 
-Two safety limits are on from the start. Before the reading step begins, readgpt
-prices the worst case, with every reply at its maximum length, and refuses a run
-whose worst case is above $5. That figure is usually far above what the run
-costs. readgpt also never makes more than 400 requests for one document:
+Two safety limits are on from the start. readgpt stops reading a document once
+it has spent $5 or made 400 requests. Each request is priced as it is made, so a
+run can pass $5 by the cost of one request. The answer is then marked partial,
+and printing it says which limit stopped the run. A run that could not finish
+inside the limits is refused before the first request: one that would need more
+than 400 requests, or one whose chunks would cost more than $5 to send once:
 
 ```{r}
 unlist(gr_options()[c("max_cost_usd", "max_calls")])
@@ -256,7 +258,17 @@ Change them with `gr_options()`, for example `gr_options(max_cost_usd = 20)`.
 ## Choosing a recipe
 
 `answer_document()` made the three decisions using a *recipe*, a named
-combination of choices. The default is `"thorough"`. The built-in recipes:
+combination of choices. The default, `"auto"`, picks one of two by the
+document's length: `"fast"`, which sends the whole document in one request, for
+up to 50,000 tokens (less on a model with a small context window), and
+`"thorough"`, one request per chunk, for anything longer. `ans$recipe` says
+which it picked:
+
+```{r}
+ans$recipe
+```
+
+The built-in recipes:
 
 ```{r}
 do.call(rbind, lapply(names(gr_recipes()), function(n) {

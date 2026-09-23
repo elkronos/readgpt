@@ -54,7 +54,8 @@ gr_defaults <- list(
   embedder            = NULL,
   parallel            = FALSE,
   workers             = 4L,
-  # Refuse to start a run whose *estimated* cost exceeds this (USD). NULL = off.
+  # Spending limit per run (USD), checked before the run and before every
+  # request. NULL = off.
   max_cost_usd        = 5,
   # Refuse to issue more than this many model calls in one run.
   max_calls           = 400L,
@@ -216,8 +217,18 @@ check_option <- function(name, value) {
 #'     future and future.apply packages; without them it warns and runs
 #'     sequentially.}
 #'   \item{`workers` (4)}{Worker processes when `parallel` is TRUE.}
-#'   \item{`max_cost_usd` (5)}{Refuse a run whose pre-flight estimate exceeds
-#'     this, in USD. `NULL` disables the check.}
+#'   \item{`max_cost_usd` (5)}{Spending limit per run, in USD. A run whose
+#'     reader sends every chunk is refused before it starts when sending them
+#'     would cost more than this. Every run is checked again before each
+#'     request, and stops with a `partial` answer once what it has spent reaches
+#'     the limit. The cost of a request is known only once it is made, so a run
+#'     can pass the limit by one request. With `parallel = TRUE` requests go out
+#'     in batches that cannot be stopped part way, so a reader that sends
+#'     batches is also refused before it starts when its worst case, every reply
+#'     at its token cap and the price of the dearest model it uses, would pass
+#'     the limit. Needs a model with a registered price (see [gr_models()]).
+#'     Under a limit of 0 a model registered at no cost runs and one with a
+#'     price is refused. `NULL` removes the limit.}
 #'   \item{`max_calls` (400)}{Hard cap on model calls per run, checked before
 #'     the first call and again before every subsequent one. `NULL` removes the
 #'     cap.}

@@ -113,11 +113,13 @@ relevance scoring; \code{summary_model} by \code{hierarchical}'s summarisation.}
 The trace is complete either way: workers keep their own and the parent
 absorbs them, in input order, so a parallel run reports the same calls,
 tokens and cost as the same run made sequentially. Two things do not cross
-the process boundary. \code{gr_options(max_calls =)} is checked per worker while
-the fan-out is in flight, so the pre-flight estimate -- which runs in the
-parent and knows the total -- is what bounds a parallel run. And a client
-that keeps its own log in a closure, such as \code{\link[=gr_mock_client]{gr_mock_client()}}, only sees
-the calls made in this process; ask the trace instead.}
+the process boundary. The limits in \code{\link[=gr_options]{gr_options()}} are checked before a
+batch is sent and not inside it, since a worker cannot see what the others
+spend, so the pre-flight check, which runs in the parent, is what bounds a
+parallel run: its estimated calls against \code{max_calls}, and its worst case,
+every reply at its cap, against \code{max_cost_usd}. And a client that keeps its
+own log in a closure, such as \code{\link[=gr_mock_client]{gr_mock_client()}}, only sees the calls made
+in this process; ask the trace instead.}
 
 \item{delay_between_calls}{Seconds to sleep between sequential calls, for
 rate-limit shaping. Honoured by \code{map_reduce}, \code{refine} and \code{skim}; the

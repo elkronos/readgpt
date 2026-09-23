@@ -528,6 +528,57 @@
   setting is stored only when it is not the default, so the cache and store
   keys of existing specs do not change.
 
+* **`answer_document()` picks a recipe from the document's length.** The
+  default recipe is now `"auto"`. A document of at most 50,000 tokens that fills
+  no more than half of the room one request leaves for it is read with `"fast"`,
+  which sends the whole document at once; the limit is lower on a model with a
+  small context window. A longer document is read with `"thorough"`, as every
+  document was before. `"thorough"` sends each chunk in a request of its own, so
+  a 60-page report took some 30 requests where one would do. Both send every
+  chunk, so the choice changes the number of requests and the cost, not how much
+  of the document is read. The room is measured for the recipe's model and for
+  the client's, and a model whose limits are a guess always gets `"thorough"`.
+  `ans$recipe` names the recipe used, `ans$notes$auto_recipe` records that
+  `"auto"` chose it, the trace records the token count and the limit, and a
+  replay repeats the recorded choice. Pass `"thorough"` to keep the old
+  behaviour. `gr_read_many()`, `gr_compare()` and the review functions refuse
+  `"auto"` (class `gr_bad_recipe`): a corpus read with a different recipe per
+  document has no one configuration to report. `"auto"` is reserved as a reader
+  name for the same reason.
+
+* **The spending limit is checked against what a run spends.** `max_cost_usd`
+  was checked once, before the first request, against an estimate that priced
+  every reply at its maximum length: a run was refused at an estimate of $5.54
+  that cost $0.11, and a run that did start was never checked again. Now each
+  request is priced as it is recorded, and a run stops once what it has spent
+  reaches the limit, returning a partial answer with `notes$cost_cap_reached`,
+  which prints as "stopped at the $5 spending limit". The cost of a request is
+  known only once it is made, so a run can pass the limit by one request. This
+  applies wherever the call cap is checked: every reader, and the review stages
+  that call a model, which now warn when a limit stopped them
+  (`gr_claims_capped`).
+
+  A run is refused before it starts only when it cannot finish under the limit:
+  when its reader sends every chunk and sending them once already costs more,
+  priced at the model that receives them, `skim_model` and `summary_model`
+  included. Under a limit of 0, a run whose model has a price is refused and a
+  model registered at no cost runs. A parallel read that sends batches is the
+  exception: a batch cannot be stopped part way, so the read is still held to
+  its worst case before it starts, priced at the dearest model it uses, and no
+  batch is sent once the run has reached a limit.
+
+  In `gr_read_many()`, and so in `gr_screen()` and `gr_extract()`, a document a
+  limit stopped before it was read in full is `"failed"`, with the limit in
+  `error` and the partial answer in `$answers`. It is not written to `store`, so
+  a resumed run with a higher limit reads it again, and an extraction table does
+  not report the fields in its unread part as absent.
+
+  `trace$stop_reason` says which limit stopped a run, `"calls"` or `"cost"`, and
+  `trace$spent_usd` holds what it has spent. A stop belongs to the read it
+  happened in, so a later read on the same trace is not marked partial for it.
+  Requests a limit stopped are no longer counted in `notes$failed_calls`: a run
+  that spent its budget is not reported as having had its requests fail.
+
 * **A website.** The README, the guides, the reference for every function
   (grouped by task, with the first version's entry points under "Superseded")
   and this changelog are built into <https://elkronos.github.io/readgpt/> by a
@@ -583,6 +634,16 @@
 * **`gr_compare()` answers carry what `answer_document()` answers carry.** They
   had no `$document` and did not resolve evidence to pages. All three entry
   points now finish an answer the same way.
+
+* **A reader reports no evidence for an answer it did not get.** `stuff`,
+  `retrieve`, `skim`, `rerank`, `iterative` and `preview` listed the chunks they
+  had gathered as the evidence even when the answer request failed, so a failed
+  run printed "Evidence: chunk 1" under "Not found".
+
+* **`hierarchical` keeps the summaries it has paid for.** When a level of
+  summarising produced nothing, because every request in it failed, the reader
+  answered from nothing. It now answers from the previous level's summaries, cut
+  to fit if they must be.
 
 * **`rerank` could answer with no document in front of it.** The relevance
   score was coerced with `as.numeric()`, and `as.numeric("high")` is `NA`. An

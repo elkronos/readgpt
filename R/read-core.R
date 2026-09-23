@@ -195,6 +195,9 @@ partial_reasons <- function(x) {
     if (!is.null(get("call_cap_reached")))
       sprintf("stopped at the %s-request limit",
               format(get("call_cap_reached"), scientific = FALSE)),
+    if (!is.null(get("cost_cap_reached")))
+      sprintf("stopped at the $%s spending limit",
+              format(get("cost_cap_reached"), scientific = FALSE)),
     if (length(get("cited_unknown")))
       sprintf("cites chunk(s) never sent: %s", paste(get("cited_unknown"), collapse = ", ")),
     cnt("unverified_evidence", "%s quotation(s) not found in the document"),
@@ -631,12 +634,12 @@ tree_merge <- function(client, question, pieces, spec, trace, label = "merge",
       body <- paste(sprintf("<%s %d>\n%s\n</%s %d>", kind, seq_along(pieces), pieces,
                             kind, seq_along(pieces)), collapse = "\n\n")
       if (!trace_can_call(trace)) {
-        # The call cap stopped us before the final merge. This path used to
+        # A limit stopped us before the final merge. This path used to
         # return unbounded concatenation -- an "answer" the size of every
         # finding put together -- while the failure path two lines down was
         # carefully capped. Same degradation, same bound.
         return(list(text = merge_giveup(pieces, spec), ok = FALSE, levels = level,
-                    truncated = truncated, error = "call cap reached before merging"))
+                    truncated = truncated, error = paste(cap_name(trace), "reached before merging")))
       }
       res <- gr_call(client, list(
         list(role = "system", content = system_prompt),

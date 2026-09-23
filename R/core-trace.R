@@ -18,9 +18,16 @@
 #' @return A `gr_trace`. It is an environment, so it accumulates by reference:
 #'   pass the same trace to several calls and they all record into it. Fields:
 #'   `run_id`, `started`, `meta`, `steps`, `calls`, `cached`, `tokens_in`,
-#'   `tokens_out`, `errors`, `budget_stop`. `cached` counts the calls answered
-#'   from a [gr_cache()] or a [gr_replay_client()] rather than the network, so
-#'   `calls - cached` is what the run actually paid for.
+#'   `tokens_out`, `errors`, `budget_stop`, `stop_reason`, `spent_usd`.
+#'   `cached` counts the calls answered from a [gr_cache()] or a
+#'   [gr_replay_client()] rather than the network, so `calls - cached` is what
+#'   the run paid for.
+#'
+#'   `budget_stop` is `TRUE` once a limit stopped the run, and `stop_reason`
+#'   says which: `"calls"` for `max_calls`, `"cost"` for `max_cost_usd` (see
+#'   [gr_options()]). `spent_usd` is what the calls so far cost, the figure
+#'   `max_cost_usd` is checked against. A call to a model with no registered
+#'   price adds nothing to it, so [gr_trace_cost()] is the full account.
 #' @seealso [gr_trace_summary()], [as_json()], [gr_answer], [gr_cache()]
 #' @export
 #' @examples
@@ -45,6 +52,15 @@ gr_trace <- function(run_id = NULL, meta = list()) {
   e$tokens_out <- 0L
   e$errors <- list()
   e$budget_stop <- FALSE
+  # What the calls made so far cost, priced as they are recorded, so the
+  # spending limit is enforced while a run is going and not only estimated
+  # before it starts. A call to a model with no registered price adds nothing,
+  # which makes this a floor on the spend: a floor that reaches the limit means
+  # the spend has too. gr_trace_cost() is the full account, and says "unknown"
+  # where this cannot.
+  e$spent_usd <- 0
+  # "calls" or "cost": which limit set `budget_stop`.
+  e$stop_reason <- NA_character_
   structure(e, class = "gr_trace")
 }
 
@@ -55,6 +71,15 @@ trace_record <- function(trace, label, messages, result, params = list()) {
   if (isTRUE(result$cached)) trace$cached <- trace$cached + 1L
   trace$tokens_in <- trace$tokens_in + as.integer(result$usage$input %||% 0L)
   trace$tokens_out <- trace$tokens_out + as.integer(result$usage$output %||% 0L)
+  # Priced by the model the step records, as gr_trace_cost() prices it. A call
+  # answered from a cache or a replay spent nothing.
+  if (!isTRUE(result$cached)) {
+    usd <- tryCatch(suppressWarnings(as.numeric(gr_estimate_cost(
+      as_chr1(result$model %||% params$model, "unknown"),
+      result$usage$input %||% 0L, result$usage$output %||% 0L))),
+      error = function(e) NA_real_)
+    if (length(usd) == 1L && !is.na(usd)) trace$spent_usd <- (trace$spent_usd %||% 0) + usd
+  }
   if (!isTRUE(result$ok)) {
     trace$errors <- c(trace$errors, list(list(step = length(trace$steps) + 1L, label = label,
                                               error = mark_utf8(as_chr1(result$error)))))
@@ -121,7 +146,11 @@ trace_absorb <- function(parent, child) {
   parent$tokens_in <- parent$tokens_in + child$tokens_in
   parent$tokens_out <- parent$tokens_out + child$tokens_out
   parent$errors <- c(parent$errors, child$errors)
-  if (isTRUE(child$budget_stop)) parent$budget_stop <- TRUE
+  parent$spent_usd <- (parent$spent_usd %||% 0) + (child$spent_usd %||% 0)
+  if (isTRUE(child$budget_stop)) {
+    parent$budget_stop <- TRUE
+    parent$stop_reason <- child$stop_reason %||% NA_character_
+  }
   invisible(NULL)
 }
 
@@ -146,19 +175,82 @@ as_parent_trace <- function(trace, arg = "trace") {
   trace
 }
 
-#' Would one more call exceed the run's call cap?
+#' May the run make another call?
 #'
-#' Strategies consult this before fanning out. The old code had no equivalent,
+#' Strategies consult this before every call. It says no when the call cap would
+#' be passed, or when what the run has spent has reached the spending limit, and
+#' it records which of the two stopped the run. The old code had no equivalent,
 #' which is why a negative token budget could turn into one API call per word
-#' with nothing to stop it.
+#' with nothing to stop it. The spending limit used to be checked only once,
+#' against an estimate that priced every reply at its cap, so a run was refused
+#' at an estimate fifty times what it would have cost, and nothing checked what
+#' a run that did start went on to spend.
+#'
+#' The cost of a request is known only once it is made, so a run can pass the
+#' limit by what one request costs. A parallel batch is checked before it is
+#' sent and not inside it; see gr_lapply() and preflight().
 #' @noRd
 trace_can_call <- function(trace, n = 1L) {
   if (is.null(trace) || !inherits(trace, "gr_trace")) return(TRUE)
   cap <- gr_options("max_calls")
-  if (is.null(cap) || !is.finite(cap)) return(TRUE)
-  ok <- (trace$calls + n) <= cap
-  if (!ok) trace$budget_stop <- TRUE
-  ok
+  if (!is.null(cap) && is.finite(cap) && (trace$calls + n) > cap) {
+    trace$budget_stop <- TRUE
+    trace$stop_reason <- "calls"
+    return(FALSE)
+  }
+  if (limit_reached(trace$spent_usd %||% 0, gr_options("max_cost_usd"))) {
+    trace$budget_stop <- TRUE
+    trace$stop_reason <- "cost"
+    return(FALSE)
+  }
+  TRUE
+}
+
+#' Has a run that spent `spent` reached the spending limit `limit`?
+#'
+#' At or past it, except that spending nothing never reaches a limit: under
+#' `max_cost_usd = 0` a model registered at no cost still runs, as it did when
+#' the limit was only an estimate, and a priced one is stopped.
+#' @noRd
+limit_reached <- function(spent, limit) {
+  if (is.null(limit) || !is.finite(limit)) return(FALSE)
+  spent > limit || (spent == limit && spent > 0)
+}
+
+#' A dollar amount for a message: cents when it is at least a cent, and two
+#' significant figures below that, so a limit of $0.003 is not reported as
+#' being passed by "$0.00".
+#' @noRd
+fmt_usd <- function(x) {
+  x <- as_num1(x, NA_real_)
+  if (is.na(x) || !is.finite(x)) return(format(x))
+  if (abs(x) >= 0.01) sprintf("%.2f", x) else format(signif(x, 2), scientific = FALSE)
+}
+
+#' The limit that stopped a run, by name, for the messages readers leave.
+#' @noRd
+cap_name <- function(trace) {
+  if (inherits(trace, "gr_trace") && identical(trace$stop_reason, "cost")) "spending limit"
+  else "call cap"
+}
+
+#' Warn that a batch of `n` requests cannot all be made, naming the limit and
+#' the setting that raises it.
+#' @noRd
+warn_capped_batch <- function(trace, who, n, advice) {
+  if (identical(cap_name(trace), "spending limit")) {
+    gr_warn(sprintf(paste0("%s needs %d calls but the run has spent $%s, which reaches the $%s ",
+                           "spending limit; raise gr_options(max_cost_usd =)."),
+                    who, n, fmt_usd(trace$spent_usd),
+                    format(gr_options("max_cost_usd"), scientific = FALSE)),
+            class = "gr_cost_cap")
+  } else {
+    # %s, not %d: max_calls is a whole DOUBLE, and %d refuses one beyond the
+    # integer range.
+    gr_warn(sprintf("%s needs %d calls but the run cap is %s; %s or raise gr_options(max_calls =).",
+                    who, n, format(gr_options("max_calls"), scientific = FALSE), advice),
+            class = "gr_call_cap")
+  }
 }
 
 #' Summarise a trace

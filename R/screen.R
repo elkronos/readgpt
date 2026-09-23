@@ -61,7 +61,10 @@ read_screen <- function(chunks, question, client, spec, trace) {
   # saying 26 of 19 is worse than one saying nothing.
   seen_tokens <- as.integer(sum(sub$tokens))
 
-  out <- gr_call_json(client, list(
+  # Checked, as every request is. A request a limit stopped was not sent, so it
+  # is not a failed call; gr_read() names the limit.
+  capped <- !trace_can_call(trace)
+  out <- if (capped) list(ok = FALSE, value = NULL) else gr_call_json(client, list(
     list(role = "system", content = .gr_prompts$screen_system),
     list(role = "user", content = paste0("Review question: ", question)),
     list(role = "user", content = listing),
@@ -86,7 +89,7 @@ read_screen <- function(chunks, question, client, spec, trace) {
   } else NULL
 
   new_answer(decision, "screen", question, if (is.null(ev)) integer(0) else ev$chunk_id,
-             trace, chunks_sent = sub$chunk_id, evidence = ev,
+             trace, chunks_sent = if (capped) integer(0) else sub$chunk_id, evidence = ev,
              # A failed call is partial. "unclear" is NOT: it is a correct answer
              # meaning a person has to look, and marking it partial would put a
              # right answer and a broken one in the same bucket. Nor is
@@ -99,7 +102,7 @@ read_screen <- function(chunks, question, client, spec, trace) {
                           seen_tokens = seen_tokens,
                           document_tokens = as.integer(sum(d$tokens)),
                           truncated = truncated,
-                          failed_call = !isTRUE(out$ok)))
+                          failed_call = !isTRUE(out$ok) && !capped))
 }
 
 #' Decide which documents a review should read

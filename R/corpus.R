@@ -84,6 +84,23 @@ gr_trace_cost <- function(trace) {
   }))
 }
 
+#' Which limit stopped the read behind an answer, in words, or NULL.
+#' @noRd
+limit_note <- function(ans) {
+  n <- as.list(ans$notes %||% list())
+  cost <- n[["cost_cap_reached", exact = TRUE]]
+  calls <- n[["call_cap_reached", exact = TRUE]]
+  if (!is.null(cost)) {
+    return(list(limit = sprintf("$%s spending limit", format(cost, scientific = FALSE)),
+                option = "gr_options(max_cost_usd =)"))
+  }
+  if (!is.null(calls)) {
+    return(list(limit = sprintf("%s-request limit", format(calls, scientific = FALSE)),
+                option = "gr_options(max_calls =)"))
+  }
+  NULL
+}
+
 #' A trace's cost in words, for the print methods.
 #'
 #' One wording everywhere a cost is shown: a model with no registered price
@@ -129,7 +146,7 @@ format_trace_cost <- function(trace) {
 #'   other hundred and ninety-nine.
 #' @param max_total_usd Stop once the run has spent this much, marking the
 #'   remaining documents `"skipped"`. This is a *corpus* ceiling and is separate
-#'   from `gr_options(max_cost_usd =)`, which is a per-document pre-flight check.
+#'   from `gr_options(max_cost_usd =)`, which is a limit per document.
 #'   It needs a model with a registered price: against one without, cost is
 #'   *unknown* rather than zero, the ceiling cannot be enforced, and you get a
 #'   `gr_corpus_cost_unknown` warning instead of a silent free pass.
@@ -179,7 +196,10 @@ format_trace_cost <- function(trace) {
 #'
 #' `status` is `"ok"`, `"failed"`, `"skipped"` (the corpus ceiling was reached
 #' first), `"restored"` (read from `store`, not re-read now) or `"duplicate"`
-#' (see below). A restored row keeps the numbers from when that document was
+#' (see below). A document that `max_calls` or `max_cost_usd` stopped before it
+#' was read in full is `"failed"` too, with the limit in `error` and its partial
+#' answer in `answers`; it is not written to `store`, so a resumed run with a
+#' higher limit reads it again. A restored row keeps the numbers from when that document was
 #' first read, so its `cost_usd` is what it cost then, not what this run spent --
 #' which is why the run's own spend comes from `gr_trace_cost(x$trace)` and not
 #' from summing the column.
@@ -493,6 +513,17 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
       # Saved under its OWN key, so a resumed run restores it instead of paying
       # to rediscover that it is a duplicate.
       if (!is.null(key)) corpus_save(store, key, rows[[i]], dup_answer, out$hash)
+    } else if (!is.null(stopped_by <- limit_note(out))) {
+      # Not read in full, so not a result: reported and handled as a failure,
+      # kept out of the store so a resumed run with a higher limit reads it
+      # again, and left out of the duplicate check for the same reason. The
+      # partial answer stays in `answers`.
+      why <- sprintf("stopped at the %s before the document was read in full; raise %s",
+                     stopped_by$limit, stopped_by$option)
+      gr_warn(sprintf("Document '%s' failed: %s.", lab, why), class = "gr_document_failed")
+      rows[[i]] <- corpus_row(lab, status = "failed", error = why, trace = sub,
+                              seconds = secs, cost = cost, warnings = out$warnings)
+      if (keep_answers) answers[[lab]] <- out
     } else {
       rows[[i]] <- corpus_row(lab, status = "ok", answer = out, trace = sub,
                               seconds = secs, cost = cost,

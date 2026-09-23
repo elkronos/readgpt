@@ -19,7 +19,7 @@ fit, or pages of the document never became text (a scan read without
 OCR). \strong{Check this before trusting an answer.}}
 \item{\code{notes}}{List. Why it is partial, and per-reader detail:
 \code{dropped_chunks}, \code{failed_calls}, \code{error}, \code{merge_levels},
-\code{degraded_to_bm25}, \code{stop_reason}, \code{call_cap_reached},
+\code{degraded_to_bm25}, \code{stop_reason}, \code{call_cap_reached}, \code{cost_cap_reached},
 \code{summaries_truncated}, and so on. Three can be set for every reader:
 \code{cited_unknown}, chunk ids the answer cited that were never sent;
 \code{unverified_evidence}, the number of quoted spans that are not in the

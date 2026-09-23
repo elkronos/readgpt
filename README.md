@@ -408,7 +408,7 @@ cause:
 |---|---|---|
 | `NOT_IN_DOCUMENT`, but you can see the answer in the file | `nrow(ans$evidence)`, then `gr_chunk_stats()` | the chunk holding it never reached the model. Lower `max_tokens`, raise `top_k`, or switch to a reader whose `signature` starts `all\|` |
 | the answer is right but thin | `ans$notes$chunks` vs `length(ans$chunks_used)` | most chunks answered `NOT_IN_DOCUMENT`. That is usually correct; if not, the boundaries are cutting the evidence in half, so add `overlap_tokens` |
-| `ans$partial` is `TRUE` | `print(ans)`, then `ans$notes` and `print(ans$trace)` | `failed_calls` (transport), `dropped_chunks` (did not fit), `call_cap_reached`, `unread_pages` (no text layer and no OCR), or a merge that degraded to concatenation |
+| `ans$partial` is `TRUE` | `print(ans)`, then `ans$notes` and `print(ans$trace)` | `failed_calls` (transport), `dropped_chunks` (did not fit), `call_cap_reached` or `cost_cap_reached`, `unread_pages` (no text layer and no OCR), or a merge that degraded to concatenation |
 | `ans$notes$unverified_evidence` is set | `gr_verify_evidence(ans)` | the model wrote a quotation that is not in the chunk it is attributed to. `match` says how far off; near 1 is a typo, near 0 is invention |
 | `ans$notes$cited_unknown` is set | that value against `ans$chunks_used` | the answer cited a chunk that was never sent to it |
 | figures, dates or percentages are missing | `doc$stats$clean_log` | a cleaning step removed them. `remove_numbers` is off by default; the `legacy` preset turns it on deliberately |
@@ -453,8 +453,11 @@ do.call(rbind, lapply(names(gr_recipes()), function(n) {
 | high stakes, want cross-checking | `consensus` |
 | short, and you want every sentence weighed | `precise` |
 
-`answer_document()` defaults to `"thorough"`, which is `map_reduce`, so its cost
-scales with chunk count. Use `"fast"` or `"needle"` when that matters.
+`answer_document()` defaults to `"auto"`, which reads a document of up to 50,000
+tokens (less on a model with a small context window) with `"fast"`, in one
+request, and a longer one with `"thorough"`, one request per chunk. Both send
+every chunk. `ans$recipe` says which was used. `gr_read_many()`, `gr_compare()`
+and the review functions take one fixed recipe and refuse `"auto"`.
 
 `legacy` deliberately reproduces the previous release's behaviour (digit
 stripping, 3000-token paragraph chunks, no overlap) so you can measure the
@@ -462,19 +465,26 @@ difference rather than assume it.
 
 ## Cost and safety rails
 
-Two rails are **on by default** and checked before the first request:
+Two limits are **on by default**:
 
 ```r
-gr_options(max_cost_usd = 5,     # refuse a run whose pre-flight estimate exceeds this
-           max_calls    = 400)   # hard cap on model calls per run
+gr_options(max_cost_usd = 5,     # spending limit per run, in USD
+           max_calls    = 400)   # most model calls per run
 ```
 
-`max_calls` is re-checked before every subsequent call, so a run that hits it
-mid-flight returns a `partial` answer with `notes$call_cap_reached` rather than
-continuing to spend. Both raise a classed error naming the option to change. A
-ceiling is checked when you set it: `NA`, text or a negative number is refused,
-because a limit that cannot be compared is not a limit. `NULL` or `Inf` removes
-it.
+Before the first request, a run is refused with a classed error naming the
+option to change when it would need more calls than `max_calls`, or when its
+reader sends every chunk and sending them would already cost more than
+`max_cost_usd`. Both are checked again before every request. Each request is
+priced as it is recorded, and a run that reaches either limit stops and returns
+a `partial` answer with `notes$call_cap_reached` or `notes$cost_cap_reached`
+rather than continuing to spend. The cost of a request is known only once it is
+made, so a run can pass the spending limit by one request. With
+`parallel = TRUE` requests go out in batches that cannot be stopped part way, so
+a reader that sends batches is refused up front when its worst case, every reply
+at its token cap, would pass the limit. A ceiling is checked when you set it: `NA`,
+text or a negative number is refused, because a limit that cannot be compared is
+not a limit. `NULL` or `Inf` removes it.
 
 `gr_budget()` is the single arithmetic chokepoint for context math and is
 cannot return a non-positive input budget; it raises an error that says what to
@@ -562,8 +572,9 @@ and its error in the `error` column; the other hundred and ninety-nine answers
 survive. `on_error = "stop"` if you would rather it aborted.
 
 **Budgets are per document, and the run has its own.** Every document gets its
-own trace, so `gr_options(max_calls =)` applies to each one exactly as if you had
-read it alone, so one enormous document cannot starve the rest. That is deliberate,
+own trace, so `gr_options(max_calls =)` and `gr_options(max_cost_usd =)` apply to
+each one exactly as if you had read it alone, so one enormous document cannot
+starve the rest. That is deliberate,
 and on its own it leaves the *run* unbounded: two hundred documents under a
 400-call ceiling is a corpus ceiling of eighty thousand calls. So there are two
 run-level ceilings.

@@ -143,7 +143,8 @@ places. The limit is the context window: if the document does not fit,
 attention; details in the middle of a long prompt are more easily missed.
 
 **Use it for** documents comfortably inside the model's context window.
-**Recipe:** `"fast"`.
+**Recipe:** `"fast"`, which `answer_document()` uses by default for a document
+of up to 50,000 tokens, or less on a model with a small context window.
 
 ### `map_reduce`: every chunk separately, then combined
 
@@ -155,7 +156,7 @@ request sees both.
 
 **Use it for** questions where every mention matters: "list every risk named in
 this report". **Recipe:** `"thorough"`, which `answer_document()` uses by
-default.
+default for a longer document.
 
 ### `refine`: a draft revised chunk by chunk
 

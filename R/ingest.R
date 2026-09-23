@@ -86,15 +86,21 @@ gr_ingest_spec <- function(clean = "standard", ocr = c("auto", "always", "never"
 #' cleaning, which is what lets `ans$evidence` point back at where an answer
 #' came from.
 #'
-#' @param source A file path, or a character vector / single string of raw text.
-#'   A one-line string ending in an extension some extractor claims is taken as
-#'   a path, and is an error (`gr_file_not_found`) when no such file exists.
-#'   Any other string is read as text; one that looks like a path (a directory
-#'   separator and an extension no extractor claims) also raises a
-#'   `gr_path_as_text` warning.
+#' @param source A file path, a web address, or a character vector / single
+#'   string of raw text. An address starting `http://` or `https://` is
+#'   downloaded and read with the extractor for what came back: a specific type
+#'   the server declares, else the extension in the address, else the file's
+#'   first bytes. A download that fails is an error (`gr_url_error`), one no
+#'   extractor reads is refused (`gr_unsupported_format`), and the document's
+#'   `source` is the address. A one-line string ending in an
+#'   extension some extractor claims is taken as a path, and is an error
+#'   (`gr_file_not_found`) when no such file exists. Any other string is read as
+#'   text; one that looks like a path (a directory separator and an extension no
+#'   extractor claims) also raises a `gr_path_as_text` warning.
 #' @param spec A `gr_ingest_spec`, a bare preset name, or `NULL` for defaults.
 #' @param cache Use the session document cache. The cache key includes the file's
-#'   size and mtime plus every ingestion option.
+#'   size and mtime plus every ingestion option; for a web address, the address,
+#'   so it is downloaded once a session.
 #' @param trace Optional `gr_trace`.
 #' @return A `gr_document`: a list with `blocks` (data frame), `text`, `source`,
 #'   `spec` and `stats`.
@@ -133,13 +139,17 @@ gr_ingest <- function(source, spec = NULL, cache = NULL, trace = NULL) {
   scalar <- is.character(source) && length(source) == 1L && !is.na(source) &&
     nchar(source, type = "bytes") < 4096
   one_line <- scalar && !grepl("\n", source)
+  # A web address is fetched, not read as text; see ingest-url.R. Space around
+  # it is dropped, a trailing newline included.
+  url <- scalar && is_url(source)
+  if (url) source <- trimws(source)
   # Only treat a string as a path when its extension is one an extractor
   # actually claims. Matching any 1-6 character suffix rejected ordinary prose
   # ending in a decimal ("...revenue of 45.2") while still swallowing missing
   # paths whose extension was absent or longer, which then became the document.
   known_ext <- unique(tolower(unlist(lapply(gr_state$extractors, `[[`, "extensions"))))
   ext_of <- function(s) tolower(sub(".*\\.([A-Za-z0-9]+)$", "\\1", s))
-  looks_like_path <- one_line && grepl("\\.[A-Za-z0-9]+$", source) &&
+  looks_like_path <- one_line && !url && grepl("\\.[A-Za-z0-9]+$", source) &&
     ext_of(source) %in% known_ext &&
     !grepl("[ \t]{2,}", source) && !grepl("\\.[0-9]+$", source)
   is_path <- scalar && file.exists(source)
@@ -157,7 +167,7 @@ gr_ingest <- function(source, spec = NULL, cache = NULL, trace = NULL) {
   # since prose can end in a word with a dot in it, but a one-line string with a
   # directory separator in it is almost certainly a path, and the answer that
   # follows would be about the file name.
-  if (!is_path && !looks_like_path && one_line && grepl("[/\\\\]", source) &&
+  if (!is_path && !looks_like_path && !url && one_line && grepl("[/\\\\]", source) &&
       grepl("\\.[A-Za-z][A-Za-z0-9]{0,5}$", source) && !grepl("[ \t]{2,}", source)) {
     withCallingHandlers(
       gr_warn(sprintf(paste0("'%s' is not an existing file, and '.%s' is not an extension readgpt ",
@@ -173,6 +183,10 @@ gr_ingest <- function(source, spec = NULL, cache = NULL, trace = NULL) {
     fi <- file.info(source)
     key <- gr_hash(list(normalizePath(source, winslash = "/", mustWork = FALSE),
                         fi$size, as.numeric(fi$mtime), unclass(spec)))
+  } else if (url) {
+    # The address, not what it serves today: a page that changes during a
+    # session is read as it was the first time, as a file is until it is saved.
+    key <- gr_hash(list("url", source, unclass(spec)))
   } else {
     # Hash the SAME string the pipeline goes on to ingest. Joining with "\n"
     # here while ingestion joined with "\n\n" made a two-element vector hash
@@ -191,8 +205,14 @@ gr_ingest <- function(source, spec = NULL, cache = NULL, trace = NULL) {
     return(doc)
   }
 
-  if (is_path) {
-    ext <- tolower(tools::file_ext(source))
+  if (is_path || url) {
+    path <- source
+    if (url) {
+      gr_msg(sprintf("Fetching '%s'.", source))
+      path <- fetch_url(source)
+      on.exit(unlink(path), add = TRUE)
+    }
+    ext <- tolower(tools::file_ext(path))
     ex <- if (!is.null(spec$extractor)) registry_get("extractors", spec$extractor)
           else extractor_for(ext)
     if (is.null(ex)) {
@@ -201,12 +221,13 @@ gr_ingest <- function(source, spec = NULL, cache = NULL, trace = NULL) {
                                   collapse = ", ")),
                class = "gr_unsupported_format")
     }
-    gr_msg(sprintf("Extracting '%s' with the '%s' extractor.", basename(source), ex$name))
-    raw <- withCallingHandlers(ex$fn(source, spec), gr_warning = rec$record)
+    gr_msg(sprintf("Extracting '%s' with the '%s' extractor.",
+                   if (url) source else basename(source), ex$name))
+    raw <- withCallingHandlers(ex$fn(path, spec), gr_warning = rec$record)
     unread <- attr(raw, "gr_unread_pages", exact = TRUE)
     blocks <- as_blocks(raw)
     blocks$text <- to_utf8(blocks$text)
-    src <- normalizePath(source, winslash = "/", mustWork = FALSE)
+    src <- if (url) source else normalizePath(source, winslash = "/", mustWork = FALSE)
   } else {
     txt <- paste(vapply(source, as_chr1, character(1), USE.NAMES = FALSE), collapse = "\n\n")
     txt <- to_utf8(txt)

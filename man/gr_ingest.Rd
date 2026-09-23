@@ -7,17 +7,23 @@
 gr_ingest(source, spec = NULL, cache = NULL, trace = NULL)
 }
 \arguments{
-\item{source}{A file path, or a character vector / single string of raw text.
-A one-line string ending in an extension some extractor claims is taken as
-a path, and is an error (\code{gr_file_not_found}) when no such file exists.
-Any other string is read as text; one that looks like a path (a directory
-separator and an extension no extractor claims) also raises a
-\code{gr_path_as_text} warning.}
+\item{source}{A file path, a web address, or a character vector / single
+string of raw text. An address starting \verb{http://} or \verb{https://} is
+downloaded and read with the extractor for what came back: a specific type
+the server declares, else the extension in the address, else the file's
+first bytes. A download that fails is an error (\code{gr_url_error}), one no
+extractor reads is refused (\code{gr_unsupported_format}), and the document's
+\code{source} is the address. A one-line string ending in an
+extension some extractor claims is taken as a path, and is an error
+(\code{gr_file_not_found}) when no such file exists. Any other string is read as
+text; one that looks like a path (a directory separator and an extension no
+extractor claims) also raises a \code{gr_path_as_text} warning.}
 
 \item{spec}{A \code{gr_ingest_spec}, a bare preset name, or \code{NULL} for defaults.}
 
 \item{cache}{Use the session document cache. The cache key includes the file's
-size and mtime plus every ingestion option.}
+size and mtime plus every ingestion option; for a web address, the address,
+so it is downloaded once a session.}
 
 \item{trace}{Optional \code{gr_trace}.}
 }

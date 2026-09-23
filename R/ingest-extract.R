@@ -276,25 +276,9 @@ extract_docx <- function(path, opts) {
   blocks <- data.frame(text = character(0), section = character(0), kind = character(0),
                        stringsAsFactors = FALSE)
   if (file.exists(doc_xml)) {
-    x <- xml2::read_xml(doc_xml)
-    ns <- xml2::xml_ns(x)
-    paras <- xml2::xml_find_all(x, ".//w:p", ns)
-    txt <- vapply(paras, function(p) {
-      paste(xml2::xml_text(xml2::xml_find_all(p, ".//w:t", ns)), collapse = "")
-    }, character(1))
-    style <- vapply(paras, function(p) {
-      s <- xml2::xml_find_first(p, ".//w:pStyle", ns)
-      if (inherits(s, "xml_missing")) "" else as_chr1(xml2::xml_attr(s, "val", ns))
-    }, character(1))
-    keep <- nzchar(trimws(txt))
-    txt <- txt[keep]; style <- style[keep]
-    if (length(txt)) {
-      is_head <- grepl("^Heading|^Title", style, ignore.case = TRUE)
-      section <- NA_character_; secs <- character(length(txt))
-      for (i in seq_along(txt)) { if (is_head[i]) section <- txt[i]; secs[i] <- section }
-      blocks <- data.frame(text = txt, section = secs,
-                           kind = ifelse(is_head, "heading", "body"), stringsAsFactors = FALSE)
-    }
+    # Tables row by row, notes beside what cites them, headings by style name;
+    # see ingest-docx.R.
+    blocks <- docx_blocks(dir)
   } else if (requireNamespace("readtext", quietly = TRUE)) {
     blocks <- data.frame(text = paragraphs_of(as_chr1(readtext::readtext(path)$text)),
                          section = NA_character_, kind = "body", stringsAsFactors = FALSE)
@@ -346,7 +330,7 @@ register_builtin_extractors <- function() {
   gr_register_extractor("pdf",   "pdf", extract_pdf,
                         "PDF with per-page OCR fallback and page provenance")
   gr_register_extractor("docx",  c("docx", "dotx"), extract_docx,
-                        "Word, keeping heading styles; OCRs embedded images")
+                        "Word: headings, tables by row, footnotes and endnotes; OCRs embedded images")
   gr_register_extractor("image", c("png", "jpg", "jpeg", "tif", "tiff", "bmp", "gif"),
                         extract_image, "Image OCR")
   invisible(NULL)

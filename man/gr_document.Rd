@@ -12,10 +12,10 @@ Returned by \code{\link[=gr_ingest]{gr_ingest()}}.
 \item{\code{blocks}}{Data frame of cleaned text blocks with provenance:
 \code{text}, \code{page}, \code{section}, \code{kind}, \code{block_id}. \code{page} is set only by the
 PDF extractor; \code{kind} is one of \code{"body"}, \code{"heading"}, \code{"code"},
-\code{"table"}, \code{"ocr"}.}
+\code{"table"}, \code{"footnote"}, \code{"ocr"}.}
 \item{\code{text}}{All blocks joined with blank lines.}
-\item{\code{source}}{Absolute path, or \code{"<inline text>"} when the input was a
-string rather than a file.}
+\item{\code{source}}{Absolute path, the web address a document was fetched
+from, or \code{"<inline text>"} when the input was a string of text.}
 \item{\code{spec}}{The \code{\link[=gr_ingest_spec]{gr_ingest_spec()}} used.}
 \item{\code{stats}}{\code{blocks}, \code{chars}, \code{chars_removed}, \code{tokens}, \code{pages},
 \code{clean_steps}, \code{clean_log} (characters removed per cleaning step, useful

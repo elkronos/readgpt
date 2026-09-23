@@ -158,12 +158,13 @@ With a real model you would leave out `client =` and point it at your own file:
 ans <- answer_document("annual-report.pdf", "What was revenue in 2024?")
 ```
 
-The first argument can be a path to a file or the text itself. A missing file
-whose name ends in an extension readgpt reads (`.pdf`, `.docx`, `.md` and so on)
-is an error. Any other string is read as the text of the document, including a
-path with a mistyped extension: `"reports/2024/annual-report.pfd"` becomes a
-one-line document about a file name. `ans$document$source` shows which happened:
-the path for a file, `<inline text>` for a string.
+The first argument can be a path to a file, a web address, or the text itself.
+A missing file whose name ends in an extension readgpt reads (`.pdf`, `.docx`,
+`.md` and so on) is an error. Any other string is read as the text of the
+document, including a path with a mistyped extension:
+`"reports/2024/annual-report.pfd"` becomes a one-line document about a file name.
+`ans$document$source` shows which happened: the path for a file, the address for
+a download, `<inline text>` for a string.
 
 ## Checking the answer
 

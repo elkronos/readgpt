@@ -236,7 +236,10 @@ after that, with a traversal signature each and a bill you can see.
 section. Six extractors cover plain text and delimited files, Markdown, HTML,
 Word, PDF (with OCR for scanned pages) and images. A PDF is put back in reading
 order: two columns are read in turn, running heads and feet are dropped, and
-headings become sections. Cleaning is fourteen named steps, each of which can be
+headings become sections. A Word file keeps each table row together, reads its
+footnotes and endnotes beside the text that cites them, and finds headings in
+any interface language. A web address is downloaded and read as whatever it
+serves. Cleaning is fourteen named steps, each of which can be
 switched on or off, and five run by default. Note
 what is **off**: `remove_numbers`, which would make every figure, date and
 percentage unanswerable. `gr_inventory()` surveys a folder before you spend

@@ -28,7 +28,7 @@
 #' One recipe, one pipeline: ingest, segment, read. The answer and its full
 #' trace come from a single run, so the trace always explains the answer you got.
 #'
-#' @param source File path, or raw text.
+#' @param source File path, web address, or raw text; see [gr_ingest()].
 #' @param question The question.
 #' @param recipe A `gr_recipe`, a recipe name from `gr_recipes()`, a reader name,
 #'   or a named list of `ingest`/`segment`/`read`. The default, `"auto"`, picks
@@ -231,7 +231,7 @@ finish_answer <- function(ans, doc, chunks, recipe) {
 #' shared reader signature alone is not enough: two `retrieve` recipes with
 #' different `top_k` share a signature and are genuinely different runs.
 #'
-#' @param source File path or raw text.
+#' @param source File path, web address, or raw text; see [gr_ingest()].
 #' @param question The question.
 #' @param recipes A character vector of recipe names, or a list of `gr_recipe`s.
 #' @param client A `gr_client`.

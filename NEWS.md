@@ -579,6 +579,35 @@
   Requests a limit stopped are no longer counted in `notes$failed_calls`: a run
   that spent its budget is not reported as having had its requests fail.
 
+* **Word files keep their tables, notes and headings.** The Word extractor read
+  every paragraph element in the document, so each table cell became a
+  paragraph of its own and footnotes and endnotes were never read. It never
+  found a heading either: the style was read without its namespace, which
+  always gave nothing, so no Word file had sections, and the style ID it meant
+  to match is one Word translates ("berschrift1" in a German document). A table
+  row is now one block of kind `"table"`, its cells joined by " | ", including
+  rows a content control wraps; a table inside a cell is read as rows of its
+  own. A footnote or endnote is a block of kind `"footnote"` placed after the
+  paragraph that cites it and numbered as the text cites them. Headings are
+  found by style name, which Word does not translate, or by outline level, so a
+  custom heading style based on a built-in one counts too; `structural` chunking
+  and `preview` now have sections to work with. Text in a text box is read once,
+  where it could appear four times, twice glued to the paragraph beside it; text
+  a tracked change moved is read once rather than twice; and a non-breaking
+  hyphen or a symbol inserted from the Symbol font is kept, so "10-15%" and
+  "p ≤ 0.05" no longer lose their hyphen and sign.
+
+* **A web address is a document.** `gr_ingest()`, and so `answer_document()`
+  and `gr_read_many()`, now download an address starting `http://` or
+  `https://` and read it with the extractor for what came back: a specific type
+  the server declares, else the extension in the address, else the file's first
+  bytes, which settle a PDF, a Word file or an HTML page however they were
+  labelled. A download no extractor reads is refused (`gr_unsupported_format`)
+  rather than read as text, and a failed download is an error of class
+  `gr_url_error`. The document's `source` is the address and a corpus row is
+  labelled with it. An address ending in `.pdf` used to be reported as a missing
+  file, and any other address was read as a one-line document about itself.
+
 * **A website.** The README, the guides, the reference for every function
   (grouped by task, with the first version's entry points under "Superseded")
   and this changelog are built into <https://elkronos.github.io/readgpt/> by a

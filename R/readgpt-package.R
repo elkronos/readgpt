@@ -211,10 +211,10 @@ NULL
 #'   \item{`blocks`}{Data frame of cleaned text blocks with provenance:
 #'     `text`, `page`, `section`, `kind`, `block_id`. `page` is set only by the
 #'     PDF extractor; `kind` is one of `"body"`, `"heading"`, `"code"`,
-#'     `"table"`, `"ocr"`.}
+#'     `"table"`, `"footnote"`, `"ocr"`.}
 #'   \item{`text`}{All blocks joined with blank lines.}
-#'   \item{`source`}{Absolute path, or `"<inline text>"` when the input was a
-#'     string rather than a file.}
+#'   \item{`source`}{Absolute path, the web address a document was fetched
+#'     from, or `"<inline text>"` when the input was a string of text.}
 #'   \item{`spec`}{The [gr_ingest_spec()] used.}
 #'   \item{`stats`}{`blocks`, `chars`, `chars_removed`, `tokens`, `pages`,
 #'     `clean_steps`, `clean_log` (characters removed per cleaning step, useful

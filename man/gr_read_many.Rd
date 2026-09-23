@@ -26,7 +26,8 @@ also carries the search forward to the audit. A directory, and a vector of
 paths that all exist, are both filtered to the extensions some registered
 extractor claims -- so which files are picked up follows \code{\link[=gr_extractors]{gr_extractors()}},
 including any you registered yourself. Raw text, a mixed vector and a
-\code{list()} of sources are passed through untouched.}
+\code{list()} of sources are passed through untouched, and a web address is
+downloaded as \code{\link[=gr_ingest]{gr_ingest()}} downloads one.}
 
 \item{question}{The question, asked of every document.}
 

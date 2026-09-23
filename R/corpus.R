@@ -130,7 +130,8 @@ format_trace_cost <- function(trace) {
 #'   paths that all exist, are both filtered to the extensions some registered
 #'   extractor claims -- so which files are picked up follows [gr_extractors()],
 #'   including any you registered yourself. Raw text, a mixed vector and a
-#'   `list()` of sources are passed through untouched.
+#'   `list()` of sources are passed through untouched, and a web address is
+#'   downloaded as [gr_ingest()] downloads one.
 #' @param question The question, asked of every document.
 #' @param recipe One recipe, applied to every document.
 #' @param client A `gr_client`. Wrap it in [gr_cache_client()] for a long run:
@@ -615,6 +616,9 @@ print.gr_corpus <- function(x, ...) {
 #' @noRd
 corpus_label <- function(source, inline = "<inline text>", root = NULL) {
   if (!is.character(source) || length(source) != 1L || is.na(source)) return(inline)
+  # The address without its scheme: a file name alone would make two sites'
+  # report.pdf one label.
+  if (is_url(source)) return(sub("^https?://", "", trimws(source), ignore.case = TRUE))
   if (grepl("\n", source, fixed = TRUE)) return(inline)
   if (nchar(source, type = "bytes") >= 1000L) return(inline)
   if (file.exists(source)) {

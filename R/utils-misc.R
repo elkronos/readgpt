@@ -75,6 +75,7 @@ as_int1 <- function(x, default = NA_integer_) {
 #' @noRd
 source_label <- function(source, inline = "<inline text>") {
   if (!is.character(source) || length(source) != 1L || is.na(source)) return(inline)
+  if (is_url(source)) return(trimws(source))
   if (grepl("\n", source, fixed = TRUE)) return(inline)
   if (nchar(source, type = "bytes") >= 1000L) return(inline)
   if (!file.exists(source)) return(inline)

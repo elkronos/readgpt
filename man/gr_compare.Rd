@@ -15,7 +15,7 @@ gr_compare(
 )
 }
 \arguments{
-\item{source}{File path or raw text.}
+\item{source}{File path, web address, or raw text; see \code{\link[=gr_ingest]{gr_ingest()}}.}
 
 \item{question}{The question.}
 

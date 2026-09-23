@@ -312,8 +312,8 @@ warn_capped_batch <- function(trace, who, n, advice) {
 #' Summarise a trace
 #' @param trace A `gr_trace`.
 #' @return A one-row data frame: `run_id`, `calls`, `cached`, `steps`,
-#'   `tokens_in`, `tokens_out`, `errors`, `elapsed_s`. There is no cost column
-#'   -- combine `tokens_in`/`tokens_out` with [gr_estimate_cost()] for that.
+#'   `tokens_in`, `tokens_out`, `errors`, `elapsed_s`. There is no cost column;
+#'   combine `tokens_in`/`tokens_out` with [gr_estimate_cost()] for that.
 #'
 #'   `cached` is how many of those calls were answered from a [gr_cache()] or a
 #'   [gr_replay_client()]. Their tokens are still counted in `tokens_in` and
@@ -409,9 +409,9 @@ print.gr_trace <- function(x, ...) {
 #'
 #' A generic so traces, answers, chunk sets and documents all serialise
 #' consistently and safely (`auto_unbox` plus `null = "null"`, so a missing
-#' field appears as `null` rather than vanishing -- assigning `NULL` into an R
+#' field appears as `null` rather than vanishing). Assigning `NULL` into an R
 #' list *deletes the key*, which is why the old code's `final_answer` field
-#' silently disappeared from the JSON whenever a call failed).
+#' silently disappeared from the JSON whenever a call failed.
 #'
 #' @param x Object to serialise. Methods exist for [gr_answer], `gr_trace`,
 #'   [gr_chunks] and [gr_document]; anything else falls back to a plain

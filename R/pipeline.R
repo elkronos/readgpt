@@ -17,7 +17,7 @@
 #'
 #' A recipe is the unit [gr_compare()] treats as one experiment. Fixing two axes
 #' and varying the third is what makes a difference in the answer attributable
-#' to the change you made -- which is exactly what the previous release could not
+#' to the change you made. That is exactly what the previous release could not
 #' do, because its modes shared one chunk object.
 #'
 #' @param name Label used in results and traces.
@@ -34,7 +34,7 @@
 #' gr_recipe("semantic_topk", segment = list(method = "semantic", max_tokens = 800),
 #'           read = list(reader = "retrieve", top_k = 6))
 #'
-#' # Start from a built-in and change one axis -- the other two stay fixed, so
+#' # Start from a built-in and change one axis. The other two stay fixed, so
 #' # any difference in the answer is attributable to the change.
 #' r <- gr_recipes("thorough")
 #' r$segment <- gr_segment_spec(method = "structural", max_tokens = 1200)

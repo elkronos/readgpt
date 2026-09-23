@@ -42,7 +42,7 @@
 #'   `gr_segment_spec` or `gr_ingest_spec` field (for example `model`,
 #'   `max_tokens`, `top_k`, `clean`). Unknown names raise an error instead of
 #'   being silently discarded.
-#' @return Depends on `return`. The `gr_answer` carries `$partial` -- check it
+#' @return Depends on `return`. The `gr_answer` carries `$partial`; check it
 #'   before trusting `$answer`.
 #'
 #' @section Choosing the recipe:
@@ -227,7 +227,7 @@ finish_answer <- function(ans, doc, chunks, recipe) {
 #' Each recipe is an independent pipeline, so a recipe's answer is identical
 #' whether it is run alone or alongside others. Extraction is shared through the
 #' ingest cache, and segmentation is shared between recipes whose segment specs
-#' are identical -- so comparing five readers over one chunking costs one
+#' are identical, so comparing five readers over one chunking costs one
 #' chunking, not five.
 #'
 #' Recipes that resolve to identical ingestion, identical segmentation *and* an
@@ -272,7 +272,7 @@ gr_compare <- function(source, question, recipes = c("fast", "needle", "thorough
   if (inherits(recipes, "gr_recipe")) recipes <- list(recipes)
   if (!length(recipes)) {
     gr_abort(paste0("`recipes` is empty. Pass at least one recipe name, reader name, ",
-                    "gr_recipe or spec list -- see gr_recipes() for the built-ins."),
+                    "gr_recipe or spec list; see gr_recipes() for the built-ins."),
              class = "gr_no_recipes")
   }
   recs <- lapply(seq_along(recipes), function(i) {

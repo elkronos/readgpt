@@ -42,7 +42,7 @@ frame with columns \code{recipe}, \code{segmenter}, \code{chunks}, \code{reader}
 Each recipe is an independent pipeline, so a recipe's answer is identical
 whether it is run alone or alongside others. Extraction is shared through the
 ingest cache, and segmentation is shared between recipes whose segment specs
-are identical -- so comparing five readers over one chunking costs one
+are identical, so comparing five readers over one chunking costs one
 chunking, not five.
 }
 \details{

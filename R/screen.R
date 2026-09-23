@@ -134,8 +134,8 @@ read_screen <- function(chunks, question, client, spec, trace) {
 #'     \item{`table`}{One row per document: `document`, `document_id`,
 #'       `decision`, `reason`, `criterion`, `quote`, `verified`, `seen_tokens`,
 #'       `document_tokens`, `truncated`, `status`, `duplicate_of`, `error`.}
-#'     \item{`included`}{The distinct sources whose decision was `"include"` --
-#'       the paths, not the display labels. Duplicates are left out; they are
+#'     \item{`included`}{The distinct sources whose decision was `"include"`
+#'       (the paths, not the display labels). Duplicates are left out; they are
 #'       the same study, and `table` still has their rows. `gr_extract()` takes
 #'       this, but prefer handing it the whole screening object: a character
 #'       vector of paths cannot carry the search, so `gr_extract(screened)`
@@ -146,7 +146,7 @@ read_screen <- function(chunks, question, client, spec, trace) {
 #'
 #' @section Three decisions, not two:
 #' `decision` is `"include"`, `"exclude"` or `"unclear"`. The third is not a
-#' failure mode -- it is the answer when the excerpt does not settle the
+#' failure mode; it is the answer when the excerpt does not settle the
 #' question, and it is what stops an uncertain call from being recorded as a
 #' confident one. Those documents are for a person to look at. Every published
 #' evaluation of automated screening reaches the same conclusion: reliable on the
@@ -161,7 +161,7 @@ read_screen <- function(chunks, question, client, spec, trace) {
 #' `table(x$table$criterion)` is the breakdown by exclusion criterion, which is
 #' what a flow diagram asks for. Duplicates were removed before screening, so
 #' `sum(!is.na(x$table$duplicate_of))` is the "duplicates removed" count and
-#' every one of them still has a row -- see [gr_read_many()].
+#' every one of them still has a row; see [gr_read_many()].
 #'
 #' @seealso [gr_protocol()], [gr_extract()], [gr_read_many()]
 #' @export
@@ -198,7 +198,7 @@ gr_screen <- function(sources, protocol = NULL, question = NULL, include = NULL,
   exclude <- criteria_vector(exclude, "exclude")
   if (!length(include) && !length(exclude)) {
     gr_abort(paste0("Screening needs criteria. Pass a gr_protocol(), or `include` and/or ",
-                    "`exclude` as character vectors -- one statement per element, each one a ",
+                    "`exclude` as character vectors: one statement per element, each one a ",
                     "document either meets or does not."),
              class = "gr_no_criteria")
   }
@@ -256,7 +256,7 @@ print.gr_screening <- function(x, ...) {
   cat(sprintf("  %s\n", paste(sprintf("%d %s", as.integer(dec), names(dec)), collapse = ", ")))
   undecided <- sum(is.na(tab$decision))
   if (undecided) {
-    cat(sprintf("  %d could not be read and have NO decision -- these are outstanding\n",
+    cat(sprintf("  %d could not be read and have NO decision; these are outstanding\n",
                 undecided))
   }
   if (sum(tab$decision == "unclear", na.rm = TRUE)) {

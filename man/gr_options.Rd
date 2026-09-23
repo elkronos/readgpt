@@ -47,11 +47,11 @@ own; see that function's \code{headers} argument for the rules.}
 \item{\code{temperature} (NULL)}{Default sampling temperature. \code{NULL} omits the
 field. Dropped automatically for models that reject it.}
 \item{\code{max_retries} (4)}{Retries for transient failures. HTTP 400 is never
-retried -- a malformed request stays malformed.}
+retried: a malformed request stays malformed.}
 \item{\code{retry_pause_base} (2)}{Seconds; exponential backoff base.}
 \item{\code{request_timeout} (120)}{Per-request timeout, seconds.}
 \item{\code{safety_margin} (0.10)}{Fraction of the context window left unused to
-absorb tokenizer error. Not a spending cap -- see \code{max_cost_usd}.}
+absorb tokenizer error. Not a spending cap (see \code{max_cost_usd}).}
 \item{\code{min_output_tokens} (256)}{Floor on the completion room \code{\link[=gr_budget]{gr_budget()}}
 reserves \emph{when \code{reserve_output} is not given explicitly}. An explicit
 \code{reserve_output} is honoured down to 1.}
@@ -102,10 +102,10 @@ single number of zero or more, with an error of class \code{gr_bad_option}: a
 limit that cannot be compared is not a limit, and ignoring it spends money.
 \code{NULL} and \code{Inf} both mean "no limit".
 
-The tuning settings -- \code{safety_margin} [0, 0.5], \code{min_output_tokens}
+The tuning settings (\code{safety_margin} [0, 0.5], \code{min_output_tokens}
 [0, 1e6], \code{max_retries} [0, 10], \code{retry_pause_base} [0, 60],
 \code{request_timeout} [1, 3600], \code{workers} [1, 32] and \code{temperature}
-[0, 2] -- read a number written as text as that number. A value they cannot
+[0, 2]) read a number written as text as that number. A value they cannot
 read, such as \code{NA} or \code{"x"}, warns (\code{gr_bad_option}) and leaves the current
 setting unchanged; a value outside the range is clamped into it, with the
 same warning. Whole-number settings are rounded down. \code{temperature} also

@@ -207,7 +207,7 @@ stop_if_no_credentials <- function(client) {
 #' Construct a model client
 #'
 #' The client is an object, not a global. Passing it explicitly is what lets a
-#' Shiny app serve two users with two different keys in one R process -- the old
+#' Shiny app serve two users with two different keys in one R process. The old
 #' code called `Sys.setenv(OPENAI_API_KEY = ...)`, which is process-wide, so the
 #' second user's key silently billed the first user's requests.
 #'
@@ -243,12 +243,12 @@ stop_if_no_credentials <- function(client) {
 #' ```
 #'
 #' Headers are credentials and routing metadata, not part of what answers, so
-#' they are excluded from the [gr_cache()] key for the same reason `api_key` is
-#' -- a rotating bearer or a per-request correlation id would otherwise make
+#' they are excluded from the [gr_cache()] key for the same reason `api_key` is.
+#' A rotating bearer or a per-request correlation id would otherwise make
 #' every cache lookup miss. If a header changes *which* model answers, give that
 #' client its own `base_url` or `model` so the cache can tell them apart.
 #' @return An object of class `gr_client`: a list of the settings above.
-#'   Constructing one makes no request and does not require a key -- the key is
+#'   Constructing one makes no request and does not require a key; the key is
 #'   resolved at call time by [gr_api_key()].
 #' @seealso [gr_call()] to use it, [gr_mock_client()] to work offline,
 #'   [gr_cache_client()] to make repeat calls free, [gr_replay_client()] to
@@ -256,8 +256,8 @@ stop_if_no_credentials <- function(client) {
 #'   for the defaults, [gr_result] for what a call returns
 #' @export
 #' @examples
-#' # A client is a value, not a global. Two of them, two keys, one R process --
-#' # which is what makes a Shiny app serving two users safe.
+#' # A client is a value, not a global. Two of them, two keys, one R process.
+#' # That is what makes a Shiny app serving two users safe.
 #' a <- gr_client(model = "gpt-4o",  api_key = "sk-user-a")
 #' b <- gr_client(model = "gpt-4.1", api_key = "sk-user-b", timeout = 30)
 #' vapply(list(a = a, b = b), function(cl) cl$model, character(1))
@@ -324,7 +324,7 @@ print.gr_client <- function(x, ...) {
 #'
 #' `handler` receives `(messages, params)` and returns either a string or a
 #' `gr_result`. Every call is recorded in `$calls()`, so tests can assert on the
-#' exact prompts a strategy produced -- which is how you prove two reading
+#' exact prompts a strategy produced, which is how you prove two reading
 #' strategies are actually different.
 #'
 #' Three things to know about the mock. It registers two model ids
@@ -334,7 +334,7 @@ print.gr_client <- function(x, ...) {
 #' (`rerank`, `iterative`) take their documented degraded path unless your
 #' handler returns valid JSON for those prompts. And its `embed_handler` is used
 #' by [gr_embed()] in preference to any registered embedder, reporting
-#' `embedding_source = "api"` -- so an offline run gets semantic-shaped vectors
+#' `embedding_source = "api"`, so an offline run gets semantic-shaped vectors
 #' rather than the lexical fallback. A mock embed handler that fails or returns
 #' the wrong number of rows is still caught and still degrades, like any other.
 #'

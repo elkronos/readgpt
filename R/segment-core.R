@@ -33,9 +33,9 @@
 #' Exported because it is part of the extension API: [gr_segment()] rejects
 #' anything that does not inherit `"gr_chunks"`, so a custom segmenter
 #' registered with [gr_register_segmenter()] cannot be written without this.
-#' Using it also gets you the shared invariants for free -- blank units dropped,
+#' Using it also gets you the shared invariants for free (blank units dropped,
 #' `chunk_id` assigned in order, tokens and characters measured, provenance
-#' recycled to match -- so your segmenter behaves like the built-ins wherever
+#' recycled to match), so your segmenter behaves like the built-ins wherever
 #' the rest of the package touches it.
 #'
 #' The token cap is NOT enforced here. [gr_segment()] checks it after your
@@ -364,7 +364,7 @@ print.gr_chunks <- function(x, ...) {
 #' @param chunks A [gr_chunks] object.
 #' @return A one-row data frame: `method`, `n`, `total_tokens`, `min`, `median`,
 #'   `mean`, `max`, `over_cap`. `method` reports any fallback that occurred.
-#'   `total_tokens` exceeds the document's own token count when overlap is on --
+#'   `total_tokens` exceeds the document's own token count when overlap is on;
 #'   that difference is the duplication overlap buys you.
 #' @seealso [gr_segment()], [gr_segmenters()]
 #' @family segmentation functions

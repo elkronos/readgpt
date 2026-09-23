@@ -29,7 +29,7 @@
 #' # One question, one pipeline.
 #' ans <- answer_document("report.pdf", "What was Q3 revenue?", recipe = "needle")
 #' ans$answer
-#' ans$partial          # TRUE means something degraded -- check this first
+#' ans$partial          # TRUE means something degraded; check this first
 #'
 #' # Which pipeline suits this document? Compare, then commit.
 #' cmp <- gr_compare("report.pdf", "What was Q3 revenue?",
@@ -102,7 +102,7 @@
 #' \describe{
 #'   \item{`answer`}{Character(1). Always a single string. The sentinel
 #'     `"NOT_IN_DOCUMENT"` means the model reported the document does not
-#'     contain the answer -- test it with `is_not_found()`-style matching rather
+#'     contain the answer. Test it with `is_not_found()`-style matching rather
 #'     than substring search.}
 #'   \item{`partial`}{Logical(1). `TRUE` when anything degraded: a call failed,
 #'     chunks were dropped, a cap was hit, a strategy fell back, text was cut to
@@ -127,17 +127,17 @@
 #'     model-extracted passages for `skim`; per-chunk model answers for
 #'     `map_reduce`. `refine` and `hierarchical` return `NULL`. `page` is
 #'     populated only for PDF sources; `score` only for `retrieve` (cosine) and
-#'     `rerank` (0-10, model-judged). Where the evidence is *model-written* --
-#'     `skim` -- three more columns appear: `source_text`, the chunk the span
+#'     `rerank` (0-10, model-judged). Where the evidence is *model-written*
+#'     (`skim`), three more columns appear: `source_text`, the chunk the span
 #'     claims to quote, plus `verified` and `match` from checking one against
 #'     the other; see [gr_verify_evidence()]. Readers whose evidence is verbatim
 #'     chunk text do not carry them, because the span and its source are the
-#'     same string. `kind` says what that row holds -- `"verbatim"`,
-#'     `"extracted"` or `"answer"` -- per row, because an `ensemble` mixes them.
+#'     same string. `kind` says what that row holds (`"verbatim"`,
+#'     `"extracted"` or `"answer"`) per row, because an `ensemble` mixes them.
 #'     A blank roxygen line inside a `\describe{}` item ends the item, which is
 #'     why this is one paragraph.}
 #'   \item{`chunks_used`}{Integer vector of `chunk_id`s that CONTRIBUTED to the answer. For the
-#'     per-chunk readers this is a subset of the chunks actually sent -- a chunk
+#'     per-chunk readers this is a subset of the chunks sent: a chunk
 #'     that answered `NOT_IN_DOCUMENT` was read and paid for but is not listed.
 #'     `notes$chunks` reports how many were sent.}
 #'   \item{`reader`, `signature`}{Which strategy ran, and its traversal

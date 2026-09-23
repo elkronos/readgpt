@@ -54,13 +54,13 @@ automatically for any model whose registry entry has
 \item{min_score}{For \code{retrieve}: chunks scoring below this are dropped, but
 if that would leave nothing the single best chunk is used anyway. \code{-Inf}
 disables the filter. Not a cosine similarity when embeddings fall back to
-lexical vectors -- the score is then a blend of cosine and BM25.}
+lexical vectors: the score is then a blend of cosine and BM25.}
 
 \item{mmr}{Diversity of selection, for \code{retrieve} and \code{iterative}. \code{1} (the
 default) is plain top-k. Below 1, chunks are picked greedily by
 \verb{mmr * relevance - (1 - mmr) * similarity to what is already picked}, so
 three chunks saying the same thing do not all get in and pay for each other.
-Costs nothing -- the vectors are already computed. \code{0.7} is a reasonable
+Costs nothing: the vectors are already computed. \code{0.7} is a reasonable
 place to start; \code{0} selects for novelty alone and will happily pick
 irrelevant chunks because they are different.}
 
@@ -70,7 +70,7 @@ order they appear in the document, which reads better when chunks are
 consecutive; \code{"edges"} puts the strongest first and second-strongest last,
 burying the weakest in the middle, because transformers attend measurably
 better to the beginning and end of a long context than to its middle.
-Selection is unaffected -- this decides only placement, and it applies to
+Selection is unaffected. This decides only placement, and it applies to
 \code{retrieve} and \code{rerank}, the two readers that put several ranked chunks in
 one prompt.}
 
@@ -83,8 +83,8 @@ the recursion depth cap.}
 \item{max_rounds}{For \code{iterative}: retrieve-assess cycles.}
 
 \item{preview_tokens}{For \code{preview}: the cap on the outline the planner sees.
-The outline is built from section labels, sizes and short excerpts -- never
-the full text -- and per-section excerpts shrink until the whole thing fits,
+The outline is built from section labels, sizes and short excerpts (never
+the full text), and per-section excerpts shrink until the whole thing fits,
 so every section stays visible to the planner rather than the outline being
 truncated and some sections never being offered to it at all. The planner is
 an LLM call about a long document and so prone to exactly the degradation
@@ -93,7 +93,7 @@ this package manages; keeping its input small is the mitigation.}
 \item{restate}{Whether to repeat the question before the excerpts as well as
 after them: \code{"auto"} when the body is long enough to bury the first ask,
 \code{"always"}, or \code{"never"}. A setting rather than a rule, because whether it
-helps is a question about your corpus and your model -- point \code{\link[=gr_compare]{gr_compare()}}
+helps is a question about your corpus and your model. Point \code{\link[=gr_compare]{gr_compare()}}
 at two recipes differing only in this and find out.}
 
 \item{members}{For \code{ensemble}: the reader names to combine.}

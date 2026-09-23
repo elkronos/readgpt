@@ -23,7 +23,7 @@ A single string when \code{return_json} is \code{FALSE}; otherwise a
 }
 \description{
 Superseded by \code{\link[=gr_read]{gr_read()}} with \code{reader = "skim"}, which extracts verbatim
-evidence from every chunk and then consolidates it -- so \code{ans$evidence} holds
+evidence from every chunk and then consolidates it, so \code{ans$evidence} holds
 passages from the document rather than the model's paraphrase of them.
 }
 \examples{

@@ -16,7 +16,7 @@ A plain data frame.
 }
 \description{
 \code{[} on an object whose class extends \code{data.frame} keeps the CLASS and drops
-every other attribute -- so \code{ref[, cols]} came back still claiming to be a
+every other attribute, so \code{ref[, cols]} came back still claiming to be a
 \code{gr_reference_frame} while \code{of}, \code{frame_n}, \code{screened_n} and \code{seed} were gone,
 and gr_calibrate() then computed the corpus-wide metric set from a stratified
 sample. The same trap, and the same fix, as \verb{[.gr_gaps}.

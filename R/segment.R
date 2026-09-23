@@ -3,7 +3,7 @@
 #' Describe a segmentation configuration
 #'
 #' @param method Segmenter name; see `gr_segmenters()`.
-#' @param max_tokens Hard cap on chunk size, in tokens. Always enforced -- a
+#' @param max_tokens Hard cap on chunk size, in tokens. Always enforced: a
 #'   segmenter cannot emit an oversized chunk, which the old `chunk_text_semantic()`
 #'   routinely did.
 #' @param overlap_tokens Tokens of trailing context copied into the start of the

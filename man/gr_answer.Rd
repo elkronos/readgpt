@@ -11,7 +11,7 @@ Returned by \code{\link[=gr_read]{gr_read()}} and, with three extra fields, by \
 \describe{
 \item{\code{answer}}{Character(1). Always a single string. The sentinel
 \code{"NOT_IN_DOCUMENT"} means the model reported the document does not
-contain the answer -- test it with \code{is_not_found()}-style matching rather
+contain the answer. Test it with \code{is_not_found()}-style matching rather
 than substring search.}
 \item{\code{partial}}{Logical(1). \code{TRUE} when anything degraded: a call failed,
 chunks were dropped, a cap was hit, a strategy fell back, text was cut to
@@ -36,17 +36,17 @@ verbatim chunk text for \code{stuff}, \code{retrieve}, \code{rerank} and \code{i
 model-extracted passages for \code{skim}; per-chunk model answers for
 \code{map_reduce}. \code{refine} and \code{hierarchical} return \code{NULL}. \code{page} is
 populated only for PDF sources; \code{score} only for \code{retrieve} (cosine) and
-\code{rerank} (0-10, model-judged). Where the evidence is \emph{model-written} --
-\code{skim} -- three more columns appear: \code{source_text}, the chunk the span
+\code{rerank} (0-10, model-judged). Where the evidence is \emph{model-written}
+(\code{skim}), three more columns appear: \code{source_text}, the chunk the span
 claims to quote, plus \code{verified} and \code{match} from checking one against
 the other; see \code{\link[=gr_verify_evidence]{gr_verify_evidence()}}. Readers whose evidence is verbatim
 chunk text do not carry them, because the span and its source are the
-same string. \code{kind} says what that row holds -- \code{"verbatim"},
-\code{"extracted"} or \code{"answer"} -- per row, because an \code{ensemble} mixes them.
+same string. \code{kind} says what that row holds (\code{"verbatim"},
+\code{"extracted"} or \code{"answer"}) per row, because an \code{ensemble} mixes them.
 A blank roxygen line inside a \verb{\\describe\{\}} item ends the item, which is
 why this is one paragraph.}
 \item{\code{chunks_used}}{Integer vector of \code{chunk_id}s that CONTRIBUTED to the answer. For the
-per-chunk readers this is a subset of the chunks actually sent -- a chunk
+per-chunk readers this is a subset of the chunks sent: a chunk
 that answered \code{NOT_IN_DOCUMENT} was read and paid for but is not listed.
 \code{notes$chunks} reports how many were sent.}
 \item{\code{reader}, \code{signature}}{Which strategy ran, and its traversal

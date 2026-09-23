@@ -646,7 +646,7 @@ read_iterative <- function(chunks, question, client, spec, trace) {
       if (rounds == 1L) {
         gr_warn(paste0("The first iterative step returned no parsable structured output, so the ",
                        "retrieve-assess loop cannot run (does this endpoint support JSON schema ",
-                       "output?). Answering from the first retrieval only -- this is effectively ",
+                       "output?). Answering from the first retrieval only, which is in effect ",
                        "'retrieve', not 'iterative'."), class = "gr_iterative_degraded")
       }
       break
@@ -730,7 +730,7 @@ read_ensemble <- function(chunks, question, client, spec, trace) {
     dup <- members[duplicated(sigs) | duplicated(sigs, fromLast = TRUE)]
     gr_abort(sprintf(paste0("Ensemble members %s share the traversal signature '%s', so they would ",
                             "issue the same calls and produce the same answer at temperature 0. ",
-                            "Pick members with different signatures -- see gr_readers()."),
+                            "Pick members with different signatures; see gr_readers()."),
                      paste(sprintf("'%s'", dup), collapse = " and "), sigs[duplicated(sigs)][1]),
              class = "gr_bad_ensemble")
   }

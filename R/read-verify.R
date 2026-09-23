@@ -188,7 +188,7 @@ cited_chunks <- function(text) cited_ids(text, "chunk")
 #'
 #' `ans$evidence` says what an answer rests on. For most readers those spans are
 #' verbatim chunk text and are true by construction. For `skim` they are what
-#' the model chose to write when asked to extract the relevant passages -- they
+#' the model chose to write when asked to extract the relevant passages. They
 #' are *presented* as quotations, and this is what checks that they are.
 #'
 #' A fabricated citation is more convincing than a fabricated answer, because it
@@ -200,7 +200,7 @@ cited_chunks <- function(text) cited_ids(text, "chunk")
 #' @param chunks The [gr_chunks] the answer was read from. Needed for readers
 #'   whose evidence is verbatim, where the comparison is against the chunk the
 #'   span claims to come from. `skim` answers already carry their sources, so
-#'   they can be checked without it -- and an `ensemble` needs it for the rows
+#'   they can be checked without it; an `ensemble` needs it for the rows
 #'   its verbatim members contributed, even though its `skim` rows do not.
 #'
 #'   Pass the chunks the answer was actually read from. Chunk ids are positional,
@@ -209,17 +209,17 @@ cited_chunks <- function(text) cited_ids(text, "chunk")
 #'   that is perfectly sound. An id the chunk set does not contain reports `NA`,
 #'   because there was nothing to compare against.
 #' @return A data frame with one row per evidence span: `chunk_id`, `kind`
-#'   (`"verbatim"`, `"extracted"` or `"answer"`, **per row** -- an `ensemble`
+#'   (`"verbatim"`, `"extracted"` or `"answer"`, **per row**; an `ensemble`
 #'   mixes them in one table, and the same value appears as the `kind` column on
 #'   `ans$evidence` itself), `verified`,
 #'   `match` and `span` (the first 60 characters). `verified` is `NA` where the
-#'   question does not apply -- a `map_reduce` evidence row is a per-chunk
+#'   question does not apply: a `map_reduce` evidence row is a per-chunk
 #'   *answer*, not a quotation, and asking whether it appears in the chunk is a
 #'   category error.
 #'
 #' @section What the numbers mean:
 #' `match` is 1 for an exact quotation once whitespace, quote marks, dashes and
-#' case are folded away -- the differences a faithful quotation introduces.
+#' case are folded away. These are the differences a faithful quotation introduces.
 #' Below 1 it is the fraction of the span's words carried by its longest
 #' consecutive **run** in the source.
 #'
@@ -227,7 +227,7 @@ cited_chunks <- function(text) cited_ids(text, "chunk")
 #' the change falls matters as much as how much changed: altering the last word
 #' of a ten-word span leaves a run of nine and scores 0.9, while altering a word
 #' in the middle splits the span and scores about 0.5. So a mid-sentence change
-#' -- a swapped figure, the case this exists to catch -- lands near 0.5, not
+#' (a swapped figure, the case this exists to catch) lands near 0.5, not
 #' near 0.9. Below roughly 0.3 there is no quotation left at all, only shared
 #' vocabulary. A run measure is still the right one: word overlap cannot tell a
 #' quotation from a paraphrase assembled out of the same words.
@@ -256,7 +256,7 @@ cited_chunks <- function(text) cited_ids(text, "chunk")
 #' gr_verify_evidence(ans)
 #'
 #' # A model that invents one. The span is fluent, plausible, and not in the
-#' # document -- which is exactly the case a reader cannot catch by eye.
+#' # document. That is exactly the case a reader cannot catch by eye.
 #' liar <- gr_mock_client(function(messages, params) {
 #'   if (grepl("You extract evidence", messages[[1]]$content, fixed = TRUE)) {
 #'     return("Revenue rose to 88.9 billion dollars on record demand.")

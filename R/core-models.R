@@ -118,7 +118,7 @@
 #' gr_register_model("my-local-llama", context_window = 32768, max_output = 4096)
 #' gr_model_info("my-local-llama")[c("context_window", "source", "certain")]
 #'
-#' # Without prices, the cost cap cannot be checked -- readgpt says so rather
+#' # Without prices, the cost cap cannot be checked; readgpt says so rather
 #' # than assuming the run is free.
 #' is.na(gr_estimate_cost("my-local-llama", 1000, 500))
 gr_register_model <- function(id, context_window, max_output,
@@ -157,8 +157,8 @@ gr_register_model <- function(id, context_window, max_output,
 #'
 #' Resolution order: user-registered exact id, built-in exact id, alias, family
 #' regex, then a conservative default. The returned list always carries
-#' `certain`, which is `FALSE` when the answer came from a regex or the default
-#' -- treat that as "verify before trusting for cost control".
+#' `certain`, which is `FALSE` when the answer came from a regex or the default.
+#' Treat that as "verify before trusting for cost control".
 #'
 #' @param model Model id.
 #' @return A named list: `id`, `context_window`, `max_output`, `input_usd` and
@@ -166,7 +166,7 @@ gr_register_model <- function(id, context_window, max_output,
 #'   `supports_temperature`, `kind`, `dimensions`, `as_of`, `certain`, and
 #'   `source` (`"registered"`, `"builtin"`, `"alias"`, `"pattern:..."` or
 #'   `"default"`). `certain` is `FALSE` when the answer came from a family regex
-#'   or the fallback -- verify before relying on it for cost control.
+#'   or the fallback; verify before relying on it for cost control.
 #' @seealso [gr_register_model()], [gr_models()], [gr_budget()]
 #' @family cost and token functions
 #' @export
@@ -243,7 +243,7 @@ gr_model_limits <- function(model = NULL) {
 #' List every known model
 #' @return A data frame with `id`, `kind`, `context_window`, `max_output`,
 #'   `reasoning`, `input_usd_per_1m`, `output_usd_per_1m` and `as_of` (the month
-#'   the entry was recorded -- a stale date is a prompt to verify).
+#'   the entry was recorded; a stale date is a prompt to verify).
 #' @seealso [gr_model_info()], [gr_register_model()]
 #' @family cost and token functions
 #' @export
@@ -290,7 +290,7 @@ gr_models <- function() {
 #'   \[0, 0.5\].
 #' @return A list with `input`, `output`, `context_window`, `overhead`, `margin`
 #'   and `certain` (`FALSE` when the model's limits were guessed rather than
-#'   known -- see [gr_model_info()]).
+#'   known; see [gr_model_info()]).
 #' @seealso [gr_model_info()], [gr_estimate_cost()], [gr_count_tokens()]
 #' @export
 #' @family cost and token functions
@@ -380,7 +380,7 @@ gr_budget <- function(model = NULL, reserve_output = NULL, overhead = 0,
 #'   are summed).
 #' @return A single numeric USD figure, or `NA_real_` when the model has no
 #'   pricing in the registry. Pricing is seeded from the registry's `as_of`
-#'   snapshot -- treat it as an estimate, and use [gr_register_model()] to
+#'   snapshot. Treat it as an estimate, and use [gr_register_model()] to
 #'   correct it.
 #' @seealso [gr_model_info()], [gr_register_model()], [gr_trace_summary()]
 #' @family cost and token functions

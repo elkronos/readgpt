@@ -14,13 +14,13 @@ gr_truncate_tokens(text, n, marker = " ...[truncated]")
 \item{marker}{Appended when truncation occurred; set \code{""} to suppress.}
 }
 \value{
-A single string. \code{""} when \code{n <= 0} or the input is blank -- this is
+A single string. \code{""} when \code{n <= 0} or the input is blank. This is
 not treated as an error.
 }
 \description{
 Truncation happens at a word boundary where the text has whitespace, and at a
 character boundary where it does not (base64, a data URI, a CJK run, a minified
-line) -- otherwise the cap would be unenforceable for exactly the inputs that
+line); otherwise the cap would be unenforceable for exactly the inputs that
 most need it. Returns \code{""} for
 empty input and never returns \code{NA}.
 }

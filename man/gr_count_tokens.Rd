@@ -13,7 +13,7 @@ gr_count_tokens(text, model = NULL)
 encoding-specific (e.g. \code{"tiktoken"}).}
 }
 \value{
-Integer vector of token counts -- a conservative upper bound under the
+Integer vector of token counts: a conservative upper bound under the
 default tokenizer.
 }
 \description{

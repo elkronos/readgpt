@@ -159,7 +159,7 @@ warn_near_miss <- function(dots, formals, what) {
   })
   bad <- which(lengths(hits) > 0L)
   for (i in bad) {
-    gr_warn(sprintf(paste0("`%s` is not a %s setting, but `%s` is -- if that is a typo the ",
+    gr_warn(sprintf(paste0("`%s` is not a %s setting, but `%s` is. If that is a typo the ",
                            "real setting keeps its default and the run will look fine. Passed ",
                            "through as given."),
                     nms[i], what, paste(hits[[i]], collapse = "` or `")),

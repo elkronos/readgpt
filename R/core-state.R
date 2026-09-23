@@ -194,11 +194,11 @@ check_option <- function(name, value) {
 #'   \item{`temperature` (NULL)}{Default sampling temperature. `NULL` omits the
 #'     field. Dropped automatically for models that reject it.}
 #'   \item{`max_retries` (4)}{Retries for transient failures. HTTP 400 is never
-#'     retried -- a malformed request stays malformed.}
+#'     retried: a malformed request stays malformed.}
 #'   \item{`retry_pause_base` (2)}{Seconds; exponential backoff base.}
 #'   \item{`request_timeout` (120)}{Per-request timeout, seconds.}
 #'   \item{`safety_margin` (0.10)}{Fraction of the context window left unused to
-#'     absorb tokenizer error. Not a spending cap -- see `max_cost_usd`.}
+#'     absorb tokenizer error. Not a spending cap (see `max_cost_usd`).}
 #'   \item{`min_output_tokens` (256)}{Floor on the completion room [gr_budget()]
 #'     reserves *when `reserve_output` is not given explicitly*. An explicit
 #'     `reserve_output` is honoured down to 1.}
@@ -247,10 +247,10 @@ check_option <- function(name, value) {
 #' limit that cannot be compared is not a limit, and ignoring it spends money.
 #' `NULL` and `Inf` both mean "no limit".
 #'
-#' The tuning settings -- `safety_margin` \[0, 0.5\], `min_output_tokens`
+#' The tuning settings (`safety_margin` \[0, 0.5\], `min_output_tokens`
 #' \[0, 1e6\], `max_retries` \[0, 10\], `retry_pause_base` \[0, 60\],
 #' `request_timeout` \[1, 3600\], `workers` \[1, 32\] and `temperature`
-#' \[0, 2\] -- read a number written as text as that number. A value they cannot
+#' \[0, 2\]) read a number written as text as that number. A value they cannot
 #' read, such as `NA` or `"x"`, warns (`gr_bad_option`) and leaves the current
 #' setting unchanged; a value outside the range is clamped into it, with the
 #' same warning. Whole-number settings are rounded down. `temperature` also

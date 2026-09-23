@@ -658,6 +658,10 @@
   there for the first time, and the detail on ingestion and reading strategies
   has moved into the guides.
 
+* **Plain punctuation in the help pages and messages.** The help pages, and the
+  errors, warnings and printed summaries, no longer use a double hyphen as a
+  dash. The prompts sent to models are unchanged, so recorded runs still replay.
+
 ## Fixed
 
 * **A missing API key no longer looks like an answer.** Without a key every

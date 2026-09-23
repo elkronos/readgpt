@@ -37,7 +37,7 @@ several over one document and reports how they differ.
 # One question, one pipeline.
 ans <- answer_document("report.pdf", "What was Q3 revenue?", recipe = "needle")
 ans$answer
-ans$partial          # TRUE means something degraded -- check this first
+ans$partial          # TRUE means something degraded; check this first
 
 # Which pipeline suits this document? Compare, then commit.
 cmp <- gr_compare("report.pdf", "What was Q3 revenue?",

@@ -79,7 +79,7 @@
 #' `[study N]` marker in finished prose already is. A number that is not there is
 #' dropped and counted rather than trusted, a claim left with no supporting study
 #' is dropped entirely, and a `moderator` naming a column the table does not have
-#' is cleared -- an invented explanation for a real disagreement. `$dropped`
+#' is cleared: it is an invented explanation for a real disagreement. `$dropped`
 #' records all of it, so a claims table that looks thin can be told apart from a
 #' literature that is.
 #'
@@ -214,7 +214,7 @@ gr_claims <- function(extraction, question = NULL, protocol = NULL, client = NUL
   # real disagreement is the most convincing error this layer can make.
   checked <- claims_verify(got, used, cols = study_fields(used, hide = hidden))
   if (!nrow(checked$claims)) {
-    gr_warn(paste0("Every claim was dropped in verification -- see `$dropped`. The usual cause is ",
+    gr_warn(paste0("Every claim was dropped in verification; see `$dropped`. The usual cause is ",
                    "a model citing study numbers that are not in the table."),
             class = "gr_no_claims")
     return(new_claims(empty_claim_rows(), used, question, checked$dropped, trace))
@@ -662,7 +662,7 @@ claim_order <- function(claims, support, weights) {
 #'
 #' [gr_synthesise()] takes an `outline` fixed before the reading, which makes the
 #' review's structure the author's hypothesis rather than a finding. It is often
-#' the strongest thing a review has to say -- that a literature splits into three
+#' the strongest thing a review has to say: that a literature splits into three
 #' incompatible operationalisations, say, and that the argument about effect size
 #' is really an argument about measurement. This derives the structure from the
 #' claims instead, and hands it back for you to accept or replace.
@@ -671,7 +671,7 @@ claim_order <- function(claims, support, weights) {
 #' Every claim is assigned to exactly one section. A claim number that does not
 #' exist is dropped; a claim assigned twice keeps its first section; a claim the
 #' reply never placed is put in the closing section rather than lost, with a
-#' message saying so. A section left with no claims is removed -- except the
+#' message saying so. A section left with no claims is removed, except the
 #' closing one, which is allowed to be empty because it is where [gr_gaps()]
 #' writes and gaps are not claims.
 #'
@@ -684,7 +684,7 @@ claim_order <- function(claims, support, weights) {
 #'   and anything unplaced. `NULL` for no closing section.
 #' @param trace A [gr_trace()] to record into.
 #' @return A named character vector shaped exactly like the `outline` argument of
-#'   [gr_synthesise()] -- headings as names, briefs as values -- carrying
+#'   [gr_synthesise()] (headings as names, briefs as values), carrying
 #'   `attr(, "claims")` (a `section`/`claim_id` frame), `attr(, "rationale")` and
 #'   `attr(, "closing")`.
 #' @seealso [gr_claims()], [gr_synthesise()], [gr_gaps()]
@@ -890,7 +890,7 @@ finish_outline <- function(secs, cw, closing, max_sections) {
 #'
 #' @param claims A [gr_claims()] result.
 #' @param extraction The [gr_extract()] result the claims came from. Only its
-#'   `$fields` is used, and only to learn which categories were *declared* --
+#'   `$fields` is used, and only to learn which categories were *declared*;
 #'   without it a category nobody studied is indistinguishable from one nobody
 #'   thought of.
 #' @param max_cells Cap on reported empty combinations, which grow as the product
@@ -1044,7 +1044,7 @@ print.gr_gaps <- function(x, ...) {
               format(attr(x, "studies") %||% NA)))
   if (!isTRUE(attr(x, "had_schema"))) {
     cat("  no schema given, so a category nobody studied cannot be told from one\n")
-    cat("  nobody asked about -- pass `extraction =` for those\n")
+    cat("  nobody asked about; pass `extraction =` for those\n")
   }
   if (nrow(x)) {
     k <- table(x$kind)

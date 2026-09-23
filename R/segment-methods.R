@@ -42,17 +42,17 @@
 #' @param name Segmenter name, used in specs and recipes. Re-registering an
 #'   existing name replaces it.
 #' @param fn Function of `(doc, spec, client, trace)` returning a `gr_chunks`.
-#'   Build the return value with [new_chunks()] -- [gr_segment()] rejects
+#'   Build the return value with [new_chunks()]; [gr_segment()] rejects
 #'   anything else. `doc` is a [gr_document]; `spec` carries `max_tokens`,
 #'   `overlap_tokens` and `min_tokens`, which [pack_units-style][new_chunks]
 #'   helpers respect for you.
 #' @param description One-line description, shown by [gr_segmenters()].
-#' @param cost `"free"`, `"embedding"` or `"llm"` -- what one run spends, so a
+#' @param cost `"free"`, `"embedding"` or `"llm"`: what one run spends, so a
 #'   UI can warn before it is spent.
 #' @param needs_client Whether the segmenter requires a client. [gr_segmenters()]
 #'   reports it, so a UI can check before offering the strategy. When `TRUE` and
 #'   no client is supplied, [gr_segment()] warns with class
-#'   `"gr_segment_fallback"` before calling `fn` -- unless your `fn` emits its own
+#'   `"gr_segment_fallback"` before calling `fn`, unless your `fn` emits its own
 #'   fallback warning, which is better, because it can name what it fell back
 #'   *to*. Record the downgrade in the returned `method` (`"mine->paragraph"`)
 #'   so it survives into `gr_chunk_stats()`.
@@ -82,8 +82,8 @@ gr_register_segmenter <- function(name, fn, description = "",
 #' List registered segmentation strategies
 #'
 #' The catalogue for axis 2. Use it to see which strategies are free, which
-#' spend an embedding pass or a model call, and which need a client at all --
-#' the last is checkable here rather than only in prose, because a segmenter
+#' spend an embedding pass or a model call, and which need a client at all.
+#' The last is checkable here rather than only in prose, because a segmenter
 #' that needs a client and does not get one falls back to a different strategy.
 #'
 #' @return A data frame with one row per registered segmenter: `name`, `cost`
@@ -351,7 +351,7 @@ seg_semantic <- function(doc, spec, client, trace) {
   emb <- gr_embed(client, ctx, trace = trace)
   src <- attr(emb, "embedding_source") %||% "api"
   if (identical(src, "lexical")) {
-    gr_msg("Semantic segmentation is running on lexical fallback vectors -- boundaries reflect word overlap, not meaning.")
+    gr_msg("Semantic segmentation is running on lexical fallback vectors, so boundaries reflect word overlap, not meaning.")
   }
   d <- vapply(seq_len(nrow(emb) - 1L), function(i)
     1 - cosine_similarity(emb[i, ], emb[i + 1L, ]), numeric(1))

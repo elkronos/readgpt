@@ -52,7 +52,7 @@
 #'   rendering happens afterwards from the table. That is deliberate: a marker
 #'   can be checked exactly against the rows that exist, whereas verifying an
 #'   author-year string would mean matching a name the model wrote against a
-#'   name in the table, and near-misses -- Smith for Smyth, 2019 for 2018 -- are
+#'   name in the table, and near-misses (Smith for Smyth, 2019 for 2018) are
 #'   both the errors that matter and the ones fuzzy matching forgives. A
 #'   rendered citation is therefore a fact about the extraction rather than
 #'   something the model asserted. `$sections$text_marked` and `$text_marked`
@@ -65,7 +65,7 @@
 #'   an arbitrary author list is a heuristic, and where it cannot be done
 #'   confidently the run falls back to markers rather than printing a name that
 #'   may be wrong.
-#' @param style A register instruction, appended to the writing prompts --
+#' @param style A register instruction appended to the writing prompts, such as
 #'   `"formal academic; hedge claims; past tense for findings"`. It governs how
 #'   sections are written, never what they may say: the rules about citing every
 #'   claim and inventing nothing hold whatever voice is asked for.
@@ -73,7 +73,7 @@
 #'   three, `FALSE` for none, or any of `"structure"` (reorder and merge),
 #'   `"cut"` (remove repetition) and `"register"` (polish sentences) by name.
 #'   Each pass is forbidden from doing the others' job, and each is discarded
-#'   -- with `$draft` kept -- if it changed the citations, arrived truncated,
+#'   (with `$draft` kept) if it changed the citations, arrived truncated,
 #'   or strengthened a claim. Off by default: each is a call, and each is a
 #'   chance for a model to touch finished prose.
 #' @param claims A [gr_claims()] result. With it each section argues that
@@ -89,14 +89,14 @@
 #'   rather than being spent by the screening that came before it.
 #' @param references Append a `## References` section built from the studies the
 #'   finished text actually cites. Alphabetical under `"author-year"`, numbered
-#'   by study otherwise -- the list is labelled by whatever the prose uses to
+#'   by study otherwise: the list is labelled by whatever the prose uses to
 #'   point into it.
 #'
 #' @return An object of class `gr_synthesis`:
 #'   \describe{
 #'     \item{`text`}{The whole write-up, as markdown, citations rendered and the
 #'       reference list appended.}
-#'     \item{`text_marked`}{The same document with `[study N]` markers intact --
+#'     \item{`text_marked`}{The same document with `[study N]` markers intact:
 #'       what the citation check ran on.}
 #'     \item{`draft`}{The write-up before the coherence pass, for comparison.}
 #'     \item{`references`}{The reference list, or `NULL`.}
@@ -108,8 +108,8 @@
 #'       `reason` for anything discarded.}
 #'     \item{`sections`}{One row per section: `section`, `brief`, `text`,
 #'       `n_cited`, `n_unknown`, `partial`.}
-#'     \item{`citations`}{Long form: `section`, `study`, `document`,
-#'       `document_id` -- every citation, resolved to the row it points at.}
+#'     \item{`citations`}{Every citation, resolved to the row it points at, in
+#'       long form: `section`, `study`, `document`, `document_id`.}
 #'     \item{`studies`}{The rows that were written from, with the `study` number
 #'       each was cited by.}
 #'     \item{`trace`}{As [gr_extract()].}
@@ -117,7 +117,7 @@
 #'
 #' @section Which rows are used:
 #' Rows that were never read (`status` `"failed"` or `"skipped"`) are left out,
-#' and so are duplicates -- a study counted twice is the error this whole
+#' and so are duplicates: a study counted twice is the error this whole
 #' pipeline exists to avoid, and `gr_read_many()` has already marked them. The
 #' number left out is reported by `print()` and is in `$skipped`.
 #'
@@ -126,7 +126,7 @@
 #' a hundred rows of a ten-field schema is a few thousand tokens. A table too
 #' large for one prompt is written in batches and merged, so a section costs
 #' batches + merges instead. Either way the cost is per *section*, not per
-#' document -- the expensive reading has already happened.
+#' document: the expensive reading has already happened.
 #'
 #' @seealso [gr_extract()], [gr_protocol()], [gr_screen()]
 #' @export

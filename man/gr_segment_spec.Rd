@@ -22,7 +22,7 @@ gr_segment_spec(
 \arguments{
 \item{method}{Segmenter name; see \code{gr_segmenters()}.}
 
-\item{max_tokens}{Hard cap on chunk size, in tokens. Always enforced -- a
+\item{max_tokens}{Hard cap on chunk size, in tokens. Always enforced: a
 segmenter cannot emit an oversized chunk, which the old \code{chunk_text_semantic()}
 routinely did.}
 

@@ -13,7 +13,7 @@ gr_clean(text, steps = NULL, opts = list())
 \code{NULL} for the \code{default_on} set. Unlike \code{\link[=gr_ingest_spec]{gr_ingest_spec()}}'s \code{clean}
 argument this does \strong{not} accept preset names. Steps are reordered so every
 \code{"early"} cleaner runs before every \code{"late"} one, regardless of the order
-given -- this is what stops digit removal from running before the page and
+given. This is what stops digit removal from running before the page and
 figure filters that need digits to match.}
 
 \item{opts}{Named list passed to every step.}
@@ -29,7 +29,7 @@ is destructive and irreversible from the model's point of view: whatever is
 removed here, no reading strategy can recover.
 }
 \examples{
-# Listed late-then-early, but page_numbers still runs FIRST -- otherwise
+# Listed late-then-early, but page_numbers still runs FIRST; otherwise
 # remove_numbers eats the "1" and "Page" survives as body text.
 out <- gr_clean(c("Page 1", "Revenue rose to 45.2 million in 2024."),
                 steps = c("remove_numbers", "page_numbers"))

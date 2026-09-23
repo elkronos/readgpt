@@ -34,8 +34,8 @@ a reader checks the decisions against.}
 carries. It adds the link the rest of the report cannot make: the claim a
 sentence is making, back to the studies meant to support it.}
 
-\item{records}{A \code{\link[=gr_records]{gr_records()}}. Adds the search itself to the report --
-which sources, with what query, on what date -- and starts the flow counts
+\item{records}{A \code{\link[=gr_records]{gr_records()}}. Adds the search itself to the report
+(which sources, with what query, on what date) and starts the flow counts
 at identification. Without one the report says so, because a missing search
 is a defect in the review rather than in the report.}
 

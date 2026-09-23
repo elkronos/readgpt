@@ -81,7 +81,7 @@ gr_ingest_spec <- function(clean = "standard", ocr = c("auto", "always", "never"
 #' Ingest a document into cleaned, provenance-bearing text blocks
 #'
 #' The first axis. Extraction happens once and is cached, so one file read can
-#' feed any number of segmentations -- comparing chunking strategies costs one
+#' feed any number of segmentations: comparing chunking strategies costs one
 #' extraction, not one per strategy. Page and section provenance survives
 #' cleaning, which is what lets `ans$evidence` point back at where an answer
 #' came from.
@@ -118,7 +118,7 @@ gr_ingest_spec <- function(clean = "standard", ocr = c("auto", "always", "never"
 #' # What each cleaning step actually removed, in characters.
 #' vapply(doc$stats$clean_log, function(s) s$chars_removed, integer(1))
 #'
-#' # Cleaning is a choice, not a default -- compare before committing to it.
+#' # Cleaning is a choice, not a default. Compare before committing to it.
 #' raw <- gr_ingest(readgpt_example(), gr_ingest_spec(clean = "none"))
 #' c(standard = doc$stats$chars, none = raw$stats$chars)
 gr_ingest <- function(source, spec = NULL, cache = NULL, trace = NULL) {
@@ -251,7 +251,7 @@ gr_ingest <- function(source, spec = NULL, cache = NULL, trace = NULL) {
   if (!nrow(blocks) || sum(nchar(blocks$text)) < spec$min_chars) {
     gr_abort(sprintf(paste0("Only %d characters survived ingestion of '%s' (minimum %d). ",
                             "The file may be empty, image-only with OCR disabled, or your ",
-                            "cleaning steps may be too aggressive -- %d characters were removed ",
+                            "cleaning steps may be too aggressive: %d characters were removed ",
                             "by cleaners: %s."),
                      sum(nchar(blocks$text)), basename(src), spec$min_chars,
                      raw_chars - sum(nchar(blocks$text)),

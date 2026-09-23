@@ -52,7 +52,7 @@ gr_trace_save <- function(trace, path) {
 #'
 #' Replays the responses in a trace instead of calling a model. Give it the
 #' trace from a run and the same document and question, and you get that run
-#' back -- same answers, same evidence, same merge decisions -- with no API key,
+#' back (same answers, same evidence, same merge decisions) with no API key,
 #' no network and no spend.
 #'
 #' This is what makes a published result checkable. Ship the trace next to the
@@ -72,14 +72,14 @@ gr_trace_save <- function(trace, path) {
 #'
 #' @section Matching:
 #' A response is matched on the exact prompt messages plus the model id. When a
-#' run issued the same prompt more than once -- which happens at a temperature
-#' above zero, and in readers that revisit a chunk -- the recorded responses are
+#' run issued the same prompt more than once (which happens at a temperature
+#' above zero, and in readers that revisit a chunk), the recorded responses are
 #' returned in the order they were produced. Once they are exhausted the last
 #' one repeats.
 #'
 #' @section Embeddings:
 #' Embeddings are not model calls and are not recorded in a trace, so whether a
-#' replay reproduces a run's chunk *ranking* depends on how the run embedded --
+#' replay reproduces a run's chunk *ranking* depends on how the run embedded,
 #' and that is checked rather than assumed. The ranking reproduces exactly when
 #' the recording used a **deterministic** embedder and the replay uses the
 #' **same** one; both conditions, because replaying an API-embedded run with a
@@ -339,7 +339,7 @@ replay_lookup <- function(client, messages, model, params) {
   if (is.null(recorded)) {
     other <- idx$prompt[[replay_key(messages, NULL)]]
     detail <- if (!is.null(other)) {
-      sprintf(" The same prompt IS recorded under model %s -- replay the run with that model.",
+      sprintf(" The same prompt IS recorded under model %s; replay the run with that model.",
               paste(sprintf("'%s'", other), collapse = " or "))
     } else {
       sprintf(" The recording holds %d distinct prompt(s); this is not one of them, so the replay has diverged from the run that produced it (a different document, question, recipe or segmenter).",

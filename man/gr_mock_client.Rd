@@ -20,7 +20,7 @@ An object of class \code{gr_client}, with \verb{$calls()}, \verb{$embeds()} and
 \description{
 \code{handler} receives \verb{(messages, params)} and returns either a string or a
 \code{gr_result}. Every call is recorded in \verb{$calls()}, so tests can assert on the
-exact prompts a strategy produced -- which is how you prove two reading
+exact prompts a strategy produced, which is how you prove two reading
 strategies are actually different.
 }
 \details{
@@ -31,7 +31,7 @@ handler returns plain text, so readers that need JSON-schema output
 (\code{rerank}, \code{iterative}) take their documented degraded path unless your
 handler returns valid JSON for those prompts. And its \code{embed_handler} is used
 by \code{\link[=gr_embed]{gr_embed()}} in preference to any registered embedder, reporting
-\code{embedding_source = "api"} -- so an offline run gets semantic-shaped vectors
+\code{embedding_source = "api"}, so an offline run gets semantic-shaped vectors
 rather than the lexical fallback. A mock embed handler that fails or returns
 the wrong number of rows is still caught and still degrades, like any other.
 }

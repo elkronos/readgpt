@@ -80,7 +80,7 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims 
     add("screened", nrow(t) - dup)
     for (d in c("include", "exclude", "unclear")) {
       add(sprintf("  %s", d), sum(!is.na(t$decision) & t$decision == d & is.na(t$duplicate_of)),
-          if (d == "unclear") "the excerpt did not settle it -- for a person to decide" else "")
+          if (d == "unclear") "the excerpt did not settle it; for a person to decide" else "")
     }
     add("  could not be read", sum(is.na(t$decision) & is.na(t$duplicate_of)),
         "no decision was recorded; these are outstanding")
@@ -164,8 +164,8 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims 
 #' @param claims A [gr_claims()] result, or `NULL` to take the one the synthesis
 #'   carries. It adds the link the rest of the report cannot make: the claim a
 #'   sentence is making, back to the studies meant to support it.
-#' @param records A [gr_records()]. Adds the search itself to the report --
-#'   which sources, with what query, on what date -- and starts the flow counts
+#' @param records A [gr_records()]. Adds the search itself to the report
+#'   (which sources, with what query, on what date) and starts the flow counts
 #'   at identification. Without one the report says so, because a missing search
 #'   is a defect in the review rather than in the report.
 #' @param answer A [gr_answer] from [answer_document()], or a `gr_corpus` from

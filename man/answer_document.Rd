@@ -37,7 +37,7 @@ recipe" below.}
 being silently discarded.}
 }
 \value{
-Depends on \code{return}. The \code{gr_answer} carries \verb{$partial} -- check it
+Depends on \code{return}. The \code{gr_answer} carries \verb{$partial}; check it
 before trusting \verb{$answer}.
 }
 \description{

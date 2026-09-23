@@ -26,7 +26,7 @@ answer_question(
 \item{use_parallel}{Run per-chunk calls in parallel.}
 
 \item{refine}{Request chunk-level citations in the answer. v1's \code{refine}
-verification pass is not reproduced -- it could never run, because it
+verification pass is not reproduced: it could never run, because it
 called a \code{search_text()} function that was never defined.}
 
 \item{return_json}{Return the answers, the comparison summary and the trace

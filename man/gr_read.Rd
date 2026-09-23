@@ -22,8 +22,8 @@ A \link{gr_answer}. Check \verb{$partial} before trusting \verb{$answer}.
 }
 \description{
 The third axis. Reading is a separate decision from segmentation because the
-call pattern -- which chunks reach the model, in how many requests, and
-whether anything flows between them -- is where both cost and answer quality
+call pattern (which chunks reach the model, in how many requests, and
+whether anything flows between them) is where both cost and answer quality
 are actually decided. The same chunk set can be read many ways;
 \code{\link[=gr_readers]{gr_readers()}} lists them with what each costs.
 }

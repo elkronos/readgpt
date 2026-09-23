@@ -410,7 +410,7 @@ read_export <- function(path) {
   if (grepl("(^|\n)TY[[:space:]]{0,2}-", head_txt)) {
     return(records_from_ris(lines, basename(path)))
   }
-  gr_warn(sprintf(paste0("'%s' does not look like RIS or BibTeX -- no 'TY  -' and no '@article{'. ",
+  gr_warn(sprintf(paste0("'%s' does not look like RIS or BibTeX: no 'TY  -' and no '@article{'. ",
                          "It contributed no records."), basename(path)),
           class = "gr_unknown_export")
   empty_records()
@@ -670,7 +670,7 @@ print.gr_search <- function(x, ...) {
   if (!is.na(x$limits[1])) cat(sprintf("  limits : %s\n", paste(x$limits, collapse = "; ")))
   for (o in x$other) cat(sprintf("  also   : %s\n", o))
   cat(sprintf("  registration: %s\n",
-              if (is.na(x$registration)) "NOT REGISTERED -- say so in the report"
+              if (is.na(x$registration)) "NOT REGISTERED; say so in the report"
               else x$registration))
   invisible(x)
 }

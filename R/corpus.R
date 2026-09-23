@@ -25,7 +25,7 @@
 #' What a run actually cost
 #'
 #' Costs a trace using each step's own model and counting only the calls that
-#' were really issued -- a call served from a [gr_cache()] or a
+#' were issued: a call served from a [gr_cache()] or a
 #' [gr_replay_client()] spent nothing, however many tokens its prompt contained.
 #'
 #' This is why the token totals on [gr_trace_summary()] are not a bill. They
@@ -46,7 +46,7 @@
 #' ans <- answer_document(readgpt_example(), "What was revenue?", "fast", client = cl)
 #' gr_trace_cost(ans$trace)
 #'
-#' # Priced by the model on the STEP -- the recipe's model -- not by the mock
+#' # Priced by the model on the STEP (the recipe's model), not by the mock
 #' # that answered. A cached re-run costs nothing for a different reason:
 #' # paid_calls falls to zero while calls does not.
 #' cache <- gr_cache(file.path(tempdir(), "readgpt-cost-example"))
@@ -125,10 +125,10 @@ format_trace_cost <- function(trace) {
 #' code against.
 #'
 #' @param sources A character vector of file paths, or a single directory, or
-#'   raw text -- or a [gr_records()] or a [gr_screen()] result, either of which
+#'   raw text, or a [gr_records()] or a [gr_screen()] result, either of which
 #'   also carries the search forward to the audit. A directory, and a vector of
 #'   paths that all exist, are both filtered to the extensions some registered
-#'   extractor claims -- so which files are picked up follows [gr_extractors()],
+#'   extractor claims, so which files are picked up follows [gr_extractors()],
 #'   including any you registered yourself. Raw text, a mixed vector and a
 #'   `list()` of sources are passed through untouched, and a web address is
 #'   downloaded as [gr_ingest()] downloads one.
@@ -136,8 +136,8 @@ format_trace_cost <- function(trace) {
 #' @param recipe One recipe, applied to every document.
 #' @param client A `gr_client`. Wrap it in [gr_cache_client()] for a long run:
 #'   with a durable cache directory, a restart pays for nothing it has already
-#'   answered. A closure-backed client -- [gr_backend_client()] or
-#'   [gr_mock_client()] -- reuses a cache or a `store` across sessions only if it
+#'   answered. A closure-backed client ([gr_backend_client()] or
+#'   [gr_mock_client()]) reuses a cache or a `store` across sessions only if it
 #'   was given a stable `id`; see [gr_backend_client()] for why.
 #' @param store Optional directory. Each document's result is written there as
 #'   it completes and restored on a later run instead of being read again. This
@@ -157,7 +157,7 @@ format_trace_cost <- function(trace) {
 #'   ceiling that bounds the run rather than each document:
 #'   `gr_options(max_calls =)` is per document, so a corpus can make
 #'   `length(sources)` times that many. Checked before each document, because a
-#'   call ceiling noticed after the calls is not a ceiling -- which means the run
+#'   call ceiling noticed after the calls is not a ceiling. This means the run
 #'   can overshoot by at most one document's worth, exactly as `max_total_usd`
 #'   does.
 #' @param keep_answers Keep every [gr_answer] in the result. Set `FALSE` for a
@@ -173,7 +173,7 @@ format_trace_cost <- function(trace) {
 #' @param ... Overrides applied to the recipe, as in [answer_document()].
 #' @return An object of class `gr_corpus`: `summary` (one row per document),
 #'   `answers` (named list, empty when `keep_answers = FALSE`), `sources` (the
-#'   sources as read, aligned row for row with `summary` -- `summary$document` is
+#'   sources as read, aligned row for row with `summary`; `summary$document` is
 #'   a display label and cannot be turned back into a path), `records` (the
 #'   [gr_records()] the corpus came from, or `NULL`), `trace` (every call
 #'   made *this run*) and `store`.
@@ -200,10 +200,10 @@ format_trace_cost <- function(trace) {
 #' (see below). A document that `max_calls` or `max_cost_usd` stopped before it
 #' was read in full is `"failed"` too, with the limit in `error` and its partial
 #' answer in `answers`; it is not written to `store`, so a resumed run with a
-#' higher limit reads it again. A restored row keeps the numbers from when that document was
-#' first read, so its `cost_usd` is what it cost then, not what this run spent --
-#' which is why the run's own spend comes from `gr_trace_cost(x$trace)` and not
-#' from summing the column.
+#' higher limit reads it again. A restored row keeps the numbers from when that
+#' document was first read, so its `cost_usd` is what it cost then, not what this
+#' run spent. That is why the run's own spend comes from `gr_trace_cost(x$trace)`
+#' and not from summing the column.
 #'
 #' @section Documents that are the same document:
 #' The same paper reaches you from three databases under three filenames. Each
@@ -211,8 +211,8 @@ format_trace_cost <- function(trace) {
 #' of unread pages) is identical to one already read this run is **not read
 #' again**: its row is filled in from the first copy, except for `warnings`,
 #' which are its own; `status` is `"duplicate"` and `duplicate_of`
-#' names the row it repeats. Nothing is dropped -- every source you passed still
-#' has a row -- so `subset(x$summary, is.na(duplicate_of))` is the deduplicated
+#' names the row it repeats. Nothing is dropped (every source you passed still
+#' has a row), so `subset(x$summary, is.na(duplicate_of))` is the deduplicated
 #' set and `sum(!is.na(x$summary$duplicate_of))` is the number to report as
 #' removed.
 #'

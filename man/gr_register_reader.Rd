@@ -31,7 +31,7 @@ Invisibly, \code{name}.
 }
 \description{
 Axis 3 is a registry, so how the model is made to \emph{read} a chunk set is
-yours to define -- and a registered reader is a first-class one: it appears in
+yours to define. A registered reader is a first-class one: it appears in
 \code{\link[=gr_readers]{gr_readers()}}, can be named in a \code{\link[=gr_recipe]{gr_recipe()}} or an \code{ensemble}, and is
 subject to the same call and spending limits as the built-ins.
 }

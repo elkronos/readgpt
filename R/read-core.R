@@ -40,13 +40,13 @@
 #'   failure.
 #' @param reader Your reader's name, as registered.
 #' @param question The question, carried through for the record.
-#' @param chunks_used Integer `chunk_id`s that CONTRIBUTED to the answer -- not
+#' @param chunks_used Integer `chunk_id`s that CONTRIBUTED to the answer, not
 #'   every chunk you sent.
 #' @param trace The `gr_trace` passed to your reader. Pass it through; do not
 #'   create a new one, or your calls will not appear in the run's totals.
 #' @param evidence Optional data frame of supporting spans; build it with the
 #'   columns `chunk_id`, `text`, `page`, `section`, `score`.
-#' @param partial `TRUE` if anything degraded -- a failed call, a dropped chunk,
+#' @param partial `TRUE` if anything degraded: a failed call, a dropped chunk,
 #'   a truncated prompt. Callers are told to check this before trusting
 #'   `$answer`, so setting it honestly matters more than it looks.
 #' @param chunks_sent Chunk ids the reader actually put in front of the model,
@@ -373,7 +373,7 @@ as_json.gr_answer <- function(x, pretty = TRUE, ...) {
 #' excerpts do not answer the question. Use this rather than
 #' `grepl("NOT_IN_DOCUMENT", ans$answer)`: a real answer can quote the sentinel
 #' ("the log said NOT_IN_DOCUMENT, but revenue was 45.2 million"), and models do
-#' not reproduce the token byte-exactly -- they wrap it in quotes, bold it, or
+#' not reproduce the token byte-exactly. They wrap it in quotes, bold it, or
 #' add a full stop. This matches the sentinel *alone*, modulo that decoration,
 #' and treats a blank answer as not-found too.
 #'

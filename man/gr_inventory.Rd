@@ -50,7 +50,7 @@ relative to \code{sources}, so the folder it came from survives), \code{folder},
 \code{"needs_ocr"} (a PDF whose pages have no text layer), \code{"needs_package"} (an
 extractor claims it, but that extractor's package is not installed, so
 reading it would abort), \code{"no_extractor"},
-\code{"empty"} (zero bytes, or nothing that reads as text -- \code{note} says which),
+\code{"empty"} (zero bytes, or nothing that reads as text; \code{note} says which),
 or \code{"unreadable"} (it exists but could not be opened, or probing it raised
 an error; \code{note} carries the reason).
 
@@ -81,24 +81,24 @@ to recipes here, and that is deliberate: a router that quietly reads one
 document with \code{retrieve} and another with \code{stuff} gives you a plausible
 answer built on part of a file with nothing saying so, and it makes
 \code{gr_compare()} meaningless because the corpus no longer had \emph{a}
-configuration. Group the rows yourself -- \code{split(inv$files, inv$files$folder)}
-is usually all it takes -- and pass each group to the recipe you chose.
+configuration. Group the rows yourself (\code{split(inv$files, inv$files$folder)}
+is usually all it takes) and pass each group to the recipe you chose.
 }
 
 \section{Tokens, and what is left unknown}{
 
-\code{tokens} is counted exactly where counting is cheap -- plain text, markdown,
+\code{tokens} is counted exactly where counting is cheap: plain text, markdown,
 HTML, CSV, and PDFs from the pages actually probed, scaled by page count. For
 formats needing an optional package that is not installed, and for scans
-whose text does not exist until OCR runs, it is \code{NA} -- not a guess. Those
+whose text does not exist until OCR runs, it is \code{NA}, not a guess. Those
 files are counted in \code{totals$tokens_unknown} rather than folded into the sum
 as zeroes, so the total is always a floor and always says how far from
 complete it is.
 
 \code{cost_floor_usd} is a floor: what a single call per document over that much
 input would cost. Every per-chunk reader costs more, most of them by a factor
-of the chunk count. It is there to catch the order of magnitude -- to tell
-four dollars from four hundred -- not to be a quote.
+of the chunk count. It is there to catch the order of magnitude (to tell
+four dollars from four hundred), not to be a quote.
 }
 
 \examples{

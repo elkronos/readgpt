@@ -13,7 +13,7 @@ the \code{"embedding_source"} recorded on the result.}
 \item{fn}{Function of \verb{(texts, params)} returning a numeric matrix with one
 row per input. \code{params} carries \code{client}, \code{model}, \code{batch_size}, \code{cache}
 and \code{trace}. Rows should be L2-normalised: everything downstream treats the
-cross-product as cosine similarity. Signal failure by raising -- the caller
+cross-product as cosine similarity. Signal failure by raising; the caller
 applies its own \code{fallback} policy, which is not the embedder's business.}
 
 \item{description}{One line, shown by \code{\link[=gr_embedders]{gr_embedders()}}.}
@@ -30,7 +30,7 @@ The name, invisibly.
 \description{
 Embedding is the sixth registry, alongside extractors, cleaners, segmenters,
 readers and models. Register a function and every part of the package that
-embeds -- the \code{semantic} segmenter, the \code{retrieve} and \code{iterative} readers --
+embeds (the \code{semantic} segmenter, the \code{retrieve} and \code{iterative} readers)
 uses it, with no change to any of them.
 }
 \examples{

@@ -778,7 +778,7 @@ gr_calibrate(screened, check)
   -> across all 340 excluded record(s) that rate implies about 17
      eligible studies lost (6 to 47 on the interval above).
   (sampled from exclusions only: this frame estimates what was lost, not
-   sensitivity or specificity -- it contains no kept records to compute them from)
+   sensitivity or specificity: it contains no kept records to compute them from)
   ! 3 eligible studies were excluded by the screener:
       rec329.pdf
       rec330.pdf

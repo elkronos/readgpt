@@ -30,7 +30,7 @@ tokenizer error. Defaults to the \code{safety_margin} option; clamped to
 \value{
 A list with \code{input}, \code{output}, \code{context_window}, \code{overhead}, \code{margin}
 and \code{certain} (\code{FALSE} when the model's limits were guessed rather than
-known -- see \code{\link[=gr_model_info]{gr_model_info()}}).
+known; see \code{\link[=gr_model_info]{gr_model_info()}}).
 }
 \description{
 This is the single arithmetic chokepoint that every prompt-building path in

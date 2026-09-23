@@ -27,7 +27,7 @@
 #' cover. Pass one to [gr_extract()] in place of a schema.
 #'
 #' @param name A short name. Becomes the registry key if you register it.
-#' @param question The review question, in one sentence. Required -- it has a
+#' @param question The review question, in one sentence. Required. It has a
 #'   default only so that omitting it produces the explanation below rather than
 #'   R's "argument is missing".
 #' @param include,exclude Criteria, one per element, each a statement a document
@@ -44,7 +44,7 @@
 #'
 #' @section Criteria are not free text:
 #' `include` and `exclude` are separate, and both are kept, because a document
-#' can meet an inclusion criterion and still be excluded -- and a review has to
+#' can meet an inclusion criterion and still be excluded, and a review has to
 #' be able to say which. Collapsing them into one list of "criteria" loses the
 #' reason, which is the part anyone auditing the review will ask for.
 #'
@@ -143,7 +143,7 @@ gr_register_protocol <- function(name, protocol) {
 #'
 #' \describe{
 #'   \item{`bibliography`}{Who wrote it, what it is called, where it appeared.
-#'     No screening -- everything is included -- so it is the cheapest way to
+#'     No screening (everything is included), so it is the cheapest way to
 #'     turn a folder into a reference list you can check.}
 #'   \item{`evidence_table`}{One row per study: design, population, comparison,
 #'     outcome, effect. No synthesis outline; the table is the output.}
@@ -325,7 +325,7 @@ check_protocol_edited <- function(protocol, what = "run it") {
     any(grepl(.gr_protocol_placeholder, v)), logical(1))]
   if (!length(hit)) return(invisible(protocol))
   gr_abort(sprintf(paste0("Protocol '%s' is still a template: its %s %s with 'REPLACE'. Edit ",
-                          "it before you %s -- a review framed by an instruction to supply the ",
+                          "it before you %s. A review framed by an instruction to supply the ",
                           "framing costs exactly as much as a real one."),
                    as_chr1(protocol$name, "?"), paste(hit, collapse = " and "),
                    if (length(hit) > 1L) "start" else "starts", what),

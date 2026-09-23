@@ -14,8 +14,8 @@ segmenter falls back) and \code{description}.
 }
 \description{
 The catalogue for axis 2. Use it to see which strategies are free, which
-spend an embedding pass or a model call, and which need a client at all --
-the last is checkable here rather than only in prose, because a segmenter
+spend an embedding pass or a model call, and which need a client at all.
+The last is checkable here rather than only in prose, because a segmenter
 that needs a client and does not get one falls back to a different strategy.
 }
 \examples{

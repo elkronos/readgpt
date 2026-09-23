@@ -54,7 +54,7 @@ The model always writes \verb{[study N]}, whatever this is set to, and the
 rendering happens afterwards from the table. That is deliberate: a marker
 can be checked exactly against the rows that exist, whereas verifying an
 author-year string would mean matching a name the model wrote against a
-name in the table, and near-misses -- Smith for Smyth, 2019 for 2018 -- are
+name in the table, and near-misses (Smith for Smyth, 2019 for 2018) are
 both the errors that matter and the ones fuzzy matching forgives. A
 rendered citation is therefore a fact about the extraction rather than
 something the model asserted. \verb{$sections$text_marked} and \verb{$text_marked}
@@ -69,7 +69,7 @@ an arbitrary author list is a heuristic, and where it cannot be done
 confidently the run falls back to markers rather than printing a name that
 may be wrong.}
 
-\item{style}{A register instruction, appended to the writing prompts --
+\item{style}{A register instruction appended to the writing prompts, such as
 \code{"formal academic; hedge claims; past tense for findings"}. It governs how
 sections are written, never what they may say: the rules about citing every
 claim and inventing nothing hold whatever voice is asked for.}
@@ -78,13 +78,13 @@ claim and inventing nothing hold whatever voice is asked for.}
 three, \code{FALSE} for none, or any of \code{"structure"} (reorder and merge),
 \code{"cut"} (remove repetition) and \code{"register"} (polish sentences) by name.
 Each pass is forbidden from doing the others' job, and each is discarded
--- with \verb{$draft} kept -- if it changed the citations, arrived truncated,
+(with \verb{$draft} kept) if it changed the citations, arrived truncated,
 or strengthened a claim. Off by default: each is a call, and each is a
 chance for a model to touch finished prose.}
 
 \item{references}{Append a \verb{## References} section built from the studies the
 finished text actually cites. Alphabetical under \code{"author-year"}, numbered
-by study otherwise -- the list is labelled by whatever the prose uses to
+by study otherwise: the list is labelled by whatever the prose uses to
 point into it.}
 
 \item{claims}{A \code{\link[=gr_claims]{gr_claims()}} result. With it each section argues that
@@ -106,7 +106,7 @@ An object of class \code{gr_synthesis}:
 \describe{
 \item{\code{text}}{The whole write-up, as markdown, citations rendered and the
 reference list appended.}
-\item{\code{text_marked}}{The same document with \verb{[study N]} markers intact --
+\item{\code{text_marked}}{The same document with \verb{[study N]} markers intact:
 what the citation check ran on.}
 \item{\code{draft}}{The write-up before the coherence pass, for comparison.}
 \item{\code{references}}{The reference list, or \code{NULL}.}
@@ -118,8 +118,8 @@ asked for.}
 \code{reason} for anything discarded.}
 \item{\code{sections}}{One row per section: \code{section}, \code{brief}, \code{text},
 \code{n_cited}, \code{n_unknown}, \code{partial}.}
-\item{\code{citations}}{Long form: \code{section}, \code{study}, \code{document},
-\code{document_id} -- every citation, resolved to the row it points at.}
+\item{\code{citations}}{Every citation, resolved to the row it points at, in
+long form: \code{section}, \code{study}, \code{document}, \code{document_id}.}
 \item{\code{studies}}{The rows that were written from, with the \code{study} number
 each was cited by.}
 \item{\code{trace}}{As \code{\link[=gr_extract]{gr_extract()}}.}
@@ -133,7 +133,7 @@ rows it rests on.
 \section{Which rows are used}{
 
 Rows that were never read (\code{status} \code{"failed"} or \code{"skipped"}) are left out,
-and so are duplicates -- a study counted twice is the error this whole
+and so are duplicates: a study counted twice is the error this whole
 pipeline exists to avoid, and \code{gr_read_many()} has already marked them. The
 number left out is reported by \code{print()} and is in \verb{$skipped}.
 }
@@ -144,7 +144,7 @@ One call per section when the table fits one prompt, which is the usual case:
 a hundred rows of a ten-field schema is a few thousand tokens. A table too
 large for one prompt is written in batches and merged, so a section costs
 batches + merges instead. Either way the cost is per \emph{section}, not per
-document -- the expensive reading has already happened.
+document: the expensive reading has already happened.
 }
 
 \examples{

@@ -11,21 +11,21 @@ gr_ellmer_client(chat, embed = NULL, model = NULL)
 \code{ellmer::chat_ollama()}.}
 
 \item{embed}{Optional function of \verb{(texts, params)} returning one row per
-input -- for example a thin wrapper around \code{ragnar::embed_ollama()}. Without
+input, for example a thin wrapper around \code{ragnar::embed_ollama()}. Without
 it, \code{retrieve} and the \code{semantic} segmenter fall back to lexical vectors and
 warn.}
 
 \item{model}{Model id reported to this package. Defaults to the chat's own
-model. Register it with \code{\link[=gr_register_model]{gr_register_model()}} if it is not already known --
-the context window is what sizes your chunks, so a wrong one is not cosmetic.}
+model. Register it with \code{\link[=gr_register_model]{gr_register_model()}} if it is not already known.
+The context window is what sizes your chunks, so a wrong one is not cosmetic.}
 }
 \value{
 A \code{\link[=gr_backend_client]{gr_backend_client()}}.
 }
 \description{
 Uses an \code{ellmer} \code{Chat} object as the transport, so every provider ellmer
-supports -- Anthropic, Google, Bedrock, Azure, Ollama, Hugging Face, and the
-rest -- becomes available to every reading strategy here, with this package's
+supports (Anthropic, Google, Bedrock, Azure, Ollama, Hugging Face, and the
+rest) becomes available to every reading strategy here, with this package's
 context budgeting, cost rails, traces, caching and replay unchanged around it.
 }
 \details{
@@ -37,8 +37,9 @@ package that needs it.
 The adapter calls \verb{$chat()}, \verb{$chat_structured()}, \verb{$clone()}, \verb{$set_turns()}
 and \verb{$set_system_prompt()}, and refuses a chat missing any of them
 (\code{gr_bad_backend}). \verb{$chat_structured()} is used by every schema-bearing call
--- each \code{rerank} score and each \code{iterative} round -- so a chat without it
-would have failed mid-run rather than at construction. The last two are not conveniences: this package puts its
+(each \code{rerank} score and each \code{iterative} round), so a chat without it
+would have failed mid-run rather than at construction.
+The last two are not conveniences: this package puts its
 instructions in the system prompt, and it clears turns so that one chunk's
 call cannot leak into the next. A chat that silently dropped either would
 produce unconstrained answers with nothing to show for it.

@@ -3,7 +3,7 @@
 #' Register a reading strategy
 #'
 #' Axis 3 is a registry, so how the model is made to *read* a chunk set is
-#' yours to define -- and a registered reader is a first-class one: it appears in
+#' yours to define. A registered reader is a first-class one: it appears in
 #' [gr_readers()], can be named in a [gr_recipe()] or an `ensemble`, and is
 #' subject to the same call and spending limits as the built-ins.
 #'
@@ -80,8 +80,8 @@ gr_register_reader <- function(name, fn, signature, description = "", cost_calls
 #' what that costs, both before you spend anything.
 #'
 #' @return A data frame with one row per registered reader: `name`, `signature`
-#'   (see [gr_reader_signature()]), `cost_calls` -- a formula in N, the number
-#'   of chunks, not a number -- and `description`.
+#'   (see [gr_reader_signature()]), `cost_calls` (a formula in N, the number
+#'   of chunks, not a number) and `description`.
 #' @seealso [gr_read()], [gr_reader_signature()], [gr_register_reader()],
 #'   [gr_read_spec()], [gr_compare()] to run several and compare
 #' @family reading functions
@@ -145,18 +145,18 @@ gr_reader_signature <- function(reader) {
 #' @param min_score For `retrieve`: chunks scoring below this are dropped, but
 #'   if that would leave nothing the single best chunk is used anyway. `-Inf`
 #'   disables the filter. Not a cosine similarity when embeddings fall back to
-#'   lexical vectors -- the score is then a blend of cosine and BM25.
+#'   lexical vectors: the score is then a blend of cosine and BM25.
 #' @param mmr Diversity of selection, for `retrieve` and `iterative`. `1` (the
 #'   default) is plain top-k. Below 1, chunks are picked greedily by
 #'   `mmr * relevance - (1 - mmr) * similarity to what is already picked`, so
 #'   three chunks saying the same thing do not all get in and pay for each other.
-#'   Costs nothing -- the vectors are already computed. `0.7` is a reasonable
+#'   Costs nothing: the vectors are already computed. `0.7` is a reasonable
 #'   place to start; `0` selects for novelty alone and will happily pick
 #'   irrelevant chunks because they are different.
 #' @param restate Whether to repeat the question before the excerpts as well as
 #'   after them: `"auto"` when the body is long enough to bury the first ask,
 #'   `"always"`, or `"never"`. A setting rather than a rule, because whether it
-#'   helps is a question about your corpus and your model -- point [gr_compare()]
+#'   helps is a question about your corpus and your model. Point [gr_compare()]
 #'   at two recipes differing only in this and find out.
 #' @param context_order Where the selected chunks sit in the prompt.
 #'   `"relevance"` (default) is most relevant first; `"document"` restores the
@@ -164,7 +164,7 @@ gr_reader_signature <- function(reader) {
 #'   consecutive; `"edges"` puts the strongest first and second-strongest last,
 #'   burying the weakest in the middle, because transformers attend measurably
 #'   better to the beginning and end of a long context than to its middle.
-#'   Selection is unaffected -- this decides only placement, and it applies to
+#'   Selection is unaffected. This decides only placement, and it applies to
 #'   `retrieve` and `rerank`, the two readers that put several ranked chunks in
 #'   one prompt.
 #' @param rerank_candidates,rerank_min_score For `rerank`: how many chunks to
@@ -173,8 +173,8 @@ gr_reader_signature <- function(reader) {
 #'   the recursion depth cap.
 #' @param max_rounds For `iterative`: retrieve-assess cycles.
 #' @param preview_tokens For `preview`: the cap on the outline the planner sees.
-#'   The outline is built from section labels, sizes and short excerpts -- never
-#'   the full text -- and per-section excerpts shrink until the whole thing fits,
+#'   The outline is built from section labels, sizes and short excerpts (never
+#'   the full text), and per-section excerpts shrink until the whole thing fits,
 #'   so every section stays visible to the planner rather than the outline being
 #'   truncated and some sections never being offered to it at all. The planner is
 #'   an LLM call about a long document and so prone to exactly the degradation
@@ -282,8 +282,8 @@ gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL
 #' Read chunks and answer a question
 #'
 #' The third axis. Reading is a separate decision from segmentation because the
-#' call pattern -- which chunks reach the model, in how many requests, and
-#' whether anything flows between them -- is where both cost and answer quality
+#' call pattern (which chunks reach the model, in how many requests, and
+#' whether anything flows between them) is where both cost and answer quality
 #' are actually decided. The same chunk set can be read many ways;
 #' [gr_readers()] lists them with what each costs.
 #'

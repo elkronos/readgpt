@@ -55,8 +55,8 @@ An object of class \code{gr_screening}:
 \item{\code{table}}{One row per document: \code{document}, \code{document_id},
 \code{decision}, \code{reason}, \code{criterion}, \code{quote}, \code{verified}, \code{seen_tokens},
 \code{document_tokens}, \code{truncated}, \code{status}, \code{duplicate_of}, \code{error}.}
-\item{\code{included}}{The distinct sources whose decision was \code{"include"} --
-the paths, not the display labels. Duplicates are left out; they are
+\item{\code{included}}{The distinct sources whose decision was \code{"include"}
+(the paths, not the display labels). Duplicates are left out; they are
 the same study, and \code{table} still has their rows. \code{gr_extract()} takes
 this, but prefer handing it the whole screening object: a character
 vector of paths cannot carry the search, so \code{gr_extract(screened)}
@@ -72,7 +72,7 @@ reason for every one, and nothing dropped on the way.
 \section{Three decisions, not two}{
 
 \code{decision} is \code{"include"}, \code{"exclude"} or \code{"unclear"}. The third is not a
-failure mode -- it is the answer when the excerpt does not settle the
+failure mode; it is the answer when the excerpt does not settle the
 question, and it is what stops an uncertain call from being recorded as a
 confident one. Those documents are for a person to look at. Every published
 evaluation of automated screening reaches the same conclusion: reliable on the
@@ -89,7 +89,7 @@ outstanding job. A review whose denominator is unknown is not a review.
 \code{table(x$table$criterion)} is the breakdown by exclusion criterion, which is
 what a flow diagram asks for. Duplicates were removed before screening, so
 \code{sum(!is.na(x$table$duplicate_of))} is the "duplicates removed" count and
-every one of them still has a row -- see \code{\link[=gr_read_many]{gr_read_many()}}.
+every one of them still has a row; see \code{\link[=gr_read_many]{gr_read_many()}}.
 }
 
 \examples{

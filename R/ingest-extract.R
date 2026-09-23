@@ -183,6 +183,9 @@ extract_pdf <- function(path, opts) {
   }
   pages <- pdftools::pdf_text(path)
   pages <- vapply(pages, as_chr1, character(1), USE.NAMES = FALSE)
+  # Pages whose text came from OCR rather than the text layer. Tesseract already
+  # returns a page in reading order, so the column pass below leaves them alone.
+  ocr_done <- rep(FALSE, length(pages))
 
   # PER-PAGE OCR decision. The old code demanded that *every* page be empty
   # before OCRing anything, so mixed scanned/digital PDFs silently lost content.
@@ -227,18 +230,32 @@ extract_pdf <- function(path, opts) {
       pages[needs] <- vapply(ocr_res, function(r) as_chr1(r$text), character(1),
                              USE.NAMES = FALSE)
       unread <- which(needs)[vapply(ocr_res, function(r) isTRUE(r$failed), logical(1))]
+      ocr_done <- needs
+      ocr_done[unread] <- FALSE
     }
   }
 
   # Emit one block per paragraph per page. Page provenance is a real column, not
   # a "--- Page Break ---" marker glued into the text where it would be read as
   # document content.
-  out <- do.call(rbind, lapply(seq_along(pages), function(i) {
-    p <- paragraphs_of(pages[i])
-    if (!length(p)) return(NULL)
-    data.frame(text = p, page = i, section = NA_character_, kind = "body",
-               stringsAsFactors = FALSE)
-  }))
+  if (identical(opts[["layout", exact = TRUE]] %||% "auto", "raw")) {
+    out <- do.call(rbind, lapply(seq_along(pages), function(i) {
+      p <- paragraphs_of(pages[i])
+      if (!length(p)) return(NULL)
+      data.frame(text = p, page = i, section = NA_character_, kind = "body",
+                 stringsAsFactors = FALSE)
+    }))
+  } else {
+    # Reading order: running heads and feet out, two columns read one after the
+    # other, and headings found so the blocks carry sections. See ingest-pdf.R.
+    lines <- drop_running_lines(lapply(pages, page_lines))
+    for (i in which(!ocr_done)) {
+      g <- column_gutter(lines[[i]])
+      if (!is.na(g)) lines[[i]] <- reorder_columns(lines[[i]], g)
+    }
+    out <- pdf_page_blocks(lines, heading_matcher(pdf_outline_titles(path)))
+    if (!nrow(out)) out <- NULL
+  }
   out <- as_blocks(out %||% data.frame(text = character(0)))
   attr(out, "gr_unread_pages") <- unread
   out

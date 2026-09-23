@@ -516,6 +516,18 @@
   columns: `needs`, the packages an extractor cannot run without, and
   `available`, whether they are installed.
 
+* **PDFs are read in reading order.** `pdftools::pdf_text()` returns a page as
+  it looks, so a page in two columns came out with every line joining the two
+  columns, the running head and foot landed in the text at each page break, and
+  a PDF had no sections. The PDF extractor now reads two columns one after the
+  other, drops short lines repeated at the top or bottom of many pages, and
+  marks headings, taken from the PDF's bookmarks or recognised as a line that is
+  only a standard section name ("Introduction", "2. Methods"). `structural`
+  chunking, `preview` and evidence locations now have sections to work with.
+  `gr_ingest_spec(layout = "raw")` keeps each page as it is laid out. The
+  setting is stored only when it is not the default, so the cache and store
+  keys of existing specs do not change.
+
 * **A website.** The README, the guides, the reference for every function
   (grouped by task, with the first version's entry points under "Superseded")
   and this changelog are built into <https://elkronos.github.io/readgpt/> by a

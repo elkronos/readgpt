@@ -13,7 +13,8 @@ gr_ingest_spec(
   min_chars = 20L,
   extractor = NULL,
   parallel = NULL,
-  cleaner_opts = list()
+  cleaner_opts = list(),
+  layout = c("auto", "raw")
 )
 }
 \arguments{
@@ -39,6 +40,16 @@ the file extension.}
 \item{parallel}{Parallelise page-level OCR.}
 
 \item{cleaner_opts}{Extra options passed to individual cleaners.}
+
+\item{layout}{How a PDF page's text is put in reading order. \code{"auto"} drops
+running heads and feet (short lines repeated at the top or bottom of many
+pages), reads a page set in two columns one column after the other, and
+marks headings, taken from the PDF's bookmarks or recognised as a standard
+section name ("Introduction", "Methods" and so on), so blocks carry
+sections. \code{"raw"} keeps each page as pdftools lays it out. Other formats
+are not affected. Stored in the spec only when it is not \code{"auto"}, so a
+default spec keeps the cache and store keys it had before the setting
+existed.}
 }
 \value{
 A list of class \code{gr_ingest_spec}.

@@ -72,7 +72,7 @@ gr_extractors()[, c("name", "extensions", "available")]
 | `md` | paragraphs, plus headings as sections and code blocks and tables marked as such | nothing |
 | `html` | text inside `<h1>` to `<h4>`, `<p>`, `<li>`, `<td>`, `<pre>` and `<blockquote>`; text anywhere else (a bare `<div>`, `<h5>`, `<th>`) is dropped, as are scripts, styles, navigation bars and footers | `xml2` |
 | `docx` | paragraphs, with Word's heading styles as sections; images inside the file are read by OCR when `tesseract` is installed | `xml2` |
-| `pdf` | the text of each page, with its page number; pages with no text are read by OCR | `pdftools` (and `tesseract` and `magick` for OCR) |
+| `pdf` | the text of each page in reading order, with its page number and headings as sections; pages with no text are read by OCR | `pdftools` (and `tesseract` and `magick` for OCR) |
 | `image` | the text in a picture, by OCR | `tesseract` |
 
 A file whose extension no extractor claims, such as an old `.doc` or a
@@ -110,8 +110,9 @@ and `<inline text>` when the string itself was.
 
 ## Sections and headings
 
-For Markdown, HTML and Word files, each block records the heading it falls under.
-The example report has these sections:
+For Markdown, HTML, Word and PDF files, each block records the heading it falls
+under (the next section says how a PDF's headings are found). The example report
+has these sections:
 
 ```{r}
 unique(doc$blocks$section)
@@ -138,12 +139,26 @@ for (page in list(c("Summary", "Revenue was 45.2 million dollars in fiscal 2024.
 invisible(grDevices::dev.off())
 
 report <- gr_ingest(pdf_file)
-report$blocks[, c("page", "text")]
+report$blocks[, c("page", "section", "kind", "text")]
 ```
 
-PDFs from the same source vary a lot. Text in several columns, footnotes, running
-headers and tables can come out in an order that reads oddly; check a few pages of
-`report$text` before relying on a new kind of PDF.
+A PDF's text comes out as the page looks, which is not always the order a person
+reads in, so readgpt puts it back in reading order:
+
+- A page set in two columns is read one column after the other. Without this,
+  each line would join the start of a line from each column.
+- Running heads and feet (short lines repeated at the top or bottom of many
+  pages, such as a journal name or "Page 3 of 12") are removed.
+- Headings are found, so blocks carry sections as they do for Markdown and
+  Word. They come from the PDF's bookmarks when it has them. Otherwise a line
+  that is only a standard section name ("Introduction", "2. Methods",
+  "Results") counts. That is how "Summary" was found above; "Outlook" is not a
+  standard name, so it stayed text.
+
+`gr_ingest_spec(layout = "raw")` turns all three off and keeps each page as it
+is laid out. Footnotes, tables and pages in three or more columns can still come
+out in an order that reads oddly, so check a few pages of `report$text` before
+relying on a new kind of PDF.
 
 ## Scanned pages and OCR
 

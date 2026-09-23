@@ -36,6 +36,15 @@
 #'   the file extension.
 #' @param parallel Parallelise page-level OCR.
 #' @param cleaner_opts Extra options passed to individual cleaners.
+#' @param layout How a PDF page's text is put in reading order. `"auto"` drops
+#'   running heads and feet (short lines repeated at the top or bottom of many
+#'   pages), reads a page set in two columns one column after the other, and
+#'   marks headings, taken from the PDF's bookmarks or recognised as a standard
+#'   section name ("Introduction", "Methods" and so on), so blocks carry
+#'   sections. `"raw"` keeps each page as pdftools lays it out. Other formats
+#'   are not affected. Stored in the spec only when it is not `"auto"`, so a
+#'   default spec keeps the cache and store keys it had before the setting
+#'   existed.
 #' @return A list of class `gr_ingest_spec`.
 #' @export
 #' @seealso [gr_ingest()], [gr_cleaners()] for the individual step names,
@@ -52,9 +61,10 @@
 gr_ingest_spec <- function(clean = "standard", ocr = c("auto", "always", "never"),
                            ocr_lang = "eng", ocr_dpi = 300, ocr_min_chars = 40L,
                            min_chars = 20L, extractor = NULL, parallel = NULL,
-                           cleaner_opts = list()) {
+                           cleaner_opts = list(), layout = c("auto", "raw")) {
   ocr <- match.arg(ocr)
-  structure(list(clean = clean, ocr = ocr, ocr_lang = ocr_lang, ocr_dpi = ocr_dpi,
+  layout <- match.arg(layout)
+  spec <- structure(list(clean = clean, ocr = ocr, ocr_lang = ocr_lang, ocr_dpi = ocr_dpi,
                  # Not bare as.integer(): NA and 3e9 both became NA_integer_, and
                  # `sum(nchar(text)) < NA` then failed EVERY document with "missing
                  # value where TRUE/FALSE needed". The OCR threshold is read by
@@ -64,6 +74,8 @@ gr_ingest_spec <- function(clean = "standard", ocr = c("auto", "always", "never"
                  min_chars = as_int1(na_default(min_chars, 20L, "min_chars"), 20L),
                  extractor = extractor, parallel = parallel, cleaner_opts = cleaner_opts),
             class = "gr_ingest_spec")
+  if (!identical(layout, "auto")) spec$layout <- layout
+  spec
 }
 
 #' Ingest a document into cleaned, provenance-bearing text blocks

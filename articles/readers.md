@@ -1,0 +1,497 @@
+# Choosing how the model reads
+
+Once a document is cut into chunks, something has to decide how the
+model works through them. Send everything at once? Ask each chunk
+separately and combine the answers? Find the few chunks most like the
+question and ignore the rest? These are *reading strategies*, which
+readgpt calls *readers*. They decide most of the cost of a run and much
+of the quality of its answer. The same chunks read two ways can take one
+request or dozens, and can find a fact or miss it.
+
+This guide explains each reader in plain terms, shows how they differ on
+the same document, and gives a way to choose. New to readgpt? Start with
+[`vignette("readgpt")`](https://elkronos.github.io/readgpt/articles/readgpt.md).
+
+## Setting up
+
+The examples use a stand-in for a real model, so they run for free. This
+one answers each kind of request the way a model would: it scores an
+excerpt when asked to score and quotes when asked to quote, so every
+reader can do its normal work. You do not need to follow its details; it
+plays the part of the model.
+
+``` r
+
+library(readgpt)
+old <- gr_options(verbose = FALSE, embedder = "lexical")
+
+stand_in <- function(messages, params) {
+  instructions <- messages[[1]]$content
+  everything <- paste(vapply(messages, function(m) m$content, character(1)),
+                      collapse = "\n")
+  task <- if (is.null(params$schema_name)) "" else params$schema_name
+  if (task == "relevance") {        # rerank: score one excerpt from 0 to 10
+    excerpt <- messages[[length(messages)]]$content
+    if (grepl("revenue", excerpt, ignore.case = TRUE)) {
+      return('{"score": 9, "reason": "States revenue."}')
+    }
+    return('{"score": 2, "reason": "About something else."}')
+  }
+  if (task == "iterative_step") {   # iterative: can I answer yet?
+    return('{"can_answer": true, "answer": "Revenue was 45.2 million dollars.", "next_query": ""}')
+  }
+  if (task == "reading_plan") {     # preview: which sections to read
+    return('{"sections": [{"id": 1, "treatment": "read", "reason": "States revenue."}]}')
+  }
+  if (grepl("You extract evidence", instructions, fixed = TRUE)) {   # skim: quote
+    quote <- regmatches(everything,
+                        regexpr("[^.\n]*revenue of [0-9.]+ million dollars[^.\n]*", everything))
+    return(if (length(quote)) quote else "NONE")
+  }
+  "Revenue was 45.2 million dollars."
+}
+```
+
+`embedder = "lexical"` makes the readers that search for similar text
+use simple word matching instead of a paid embedding service; more on
+that below.
+
+Now the document, cut into chunks along its section headings:
+
+``` r
+
+chunks <- gr_segment(gr_ingest(readgpt_example()),
+                     list(method = "structural", max_tokens = 120))
+gr_chunk_stats(chunks)
+#>       method n total_tokens min median mean max over_cap
+#> 1 structural 8          562  31     75 70.2 101        0
+```
+
+Eight chunks. A real report would have hundreds, and the differences
+below would be correspondingly larger.
+
+## Listing the readers
+
+``` r
+
+gr_readers()[, c("name", "signature", "cost_calls")]
+#>            name             signature                    cost_calls
+#> 1      ensemble   ensemble|sum+1|none            sum of members + 1
+#> 2       extract  all|N+conflicts|none N + one per disagreeing field
+#> 3  hierarchical     all|N+tree+1|tree         N + fan-in levels + 1
+#> 4     iterative topk|rounds*2|forward          up to 2 x max_rounds
+#> 5    map_reduce       all|N+logN|tree                    N + merges
+#> 6       preview    planned|1+s+1|none      1 + skimmed sections + 1
+#> 7        refine         all|N|forward                             N
+#> 8        rerank         topk|m+1|none                         m + 1
+#> 9      retrieve           topk|1|none                1 + embeddings
+#> 10       screen           head|1|none                             1
+#> 11         skim          all|N+1|none                         N + 1
+#> 12        stuff            all|1|none                             1
+```
+
+`cost_calls` is how many requests a reader makes, as a formula in **N**,
+the number of chunks. A reader whose count grows with N makes a hundred
+times as many requests on a document a hundred times longer. But you pay
+for tokens, not requests, and a reader that looks at every chunk sends
+every token: `stuff` makes one request whatever the length, yet that
+request carries the whole document, so its cost grows with the document
+too. Each request also repeats the instructions and writes its own
+reply, so among readers that see everything, more requests cost more.
+The readers that look at a selection of chunks (the `topk` ones below)
+cost roughly the same however long the document is.
+
+`signature` describes how a reader works, in three parts separated by
+`|`:
+
+- **which chunks it looks at**: `all` of them; the `topk` most relevant;
+  the `head` (opening) of the document; the chunks a `planned` reading
+  chose; or, for an `ensemble`, whatever its members looked at;
+- **how many requests it makes**, the same formula in short;
+- **what carries over between requests**: `none` (each request stands
+  alone), `tree` (answers are combined in stages), or `forward` (each
+  request builds on the one before).
+
+The built-in readers all have different signatures, and `ensemble`
+refuses members that share one: two readers with the same signature
+would be the same method under two names.
+
+## Every reader on one document
+
+Here is the same question put to the same eight chunks by each
+general-purpose reader. `extract` and `screen` are left out: they are
+built for literature reviews and need a schema or criteria.
+
+``` r
+
+read_with <- function(reader) {
+  model <- gr_mock_client(stand_in)
+  ans <- gr_read(chunks, "What was revenue in 2024?", model, reader)
+  data.frame(reader = reader, requests = length(model$calls()),
+             chunks_used = length(ans$chunks_used), partial = ans$partial)
+}
+readers <- c("stuff", "map_reduce", "refine", "skim", "hierarchical",
+             "retrieve", "rerank", "iterative", "preview", "ensemble")
+do.call(rbind, lapply(readers, read_with))
+#>          reader requests chunks_used partial
+#> 1         stuff        1           8   FALSE
+#> 2    map_reduce        9           8   FALSE
+#> 3        refine        8           8   FALSE
+#> 4          skim        9           1   FALSE
+#> 5  hierarchical        9           8   FALSE
+#> 6      retrieve        1           6   FALSE
+#> 7        rerank        9           2   FALSE
+#> 8     iterative        1           6   FALSE
+#> 9       preview        2           8   FALSE
+#> 10     ensemble       11           8   FALSE
+```
+
+The stand-in gives every reader the same answer, and none of the runs
+degraded (`partial` is `FALSE`). What differs is the work: from one
+request to eleven for eight chunks, and from reading everything to
+relying on a single passage. On a long document the gap widens: the
+number of requests grows with the document for some readers and not at
+all for others, and the cost grows for every reader that reads the whole
+document.
+
+## The readers
+
+### `stuff`: everything in one request
+
+Puts the whole document into a single prompt. It is the simplest reader,
+and usually the cheapest way to have the model read all of a document,
+with one set of instructions and one reply. Its cost still grows with
+the document’s length. The model sees everything at once, so it can
+connect facts from different places. The limit is the context window: if
+the document does not fit, `stuff` sends what fits, warns, and marks the
+answer partial (`on_overflow = "error"` makes it stop instead). Very
+long prompts also dilute attention; details in the middle of a long
+prompt are more easily missed.
+
+**Use it for** documents comfortably inside the model’s context window.
+**Recipe:** `"fast"`, which
+[`answer_document()`](https://elkronos.github.io/readgpt/reference/answer_document.md)
+uses by default for a document of up to 50,000 tokens, or less on a
+model with a small context window.
+
+### `map_reduce`: every chunk separately, then combined
+
+Asks the question of each chunk on its own (“map”), then combines the
+answers in stages (“reduce”). Nothing is skipped, each request is small,
+and the per-chunk requests can run in parallel. It costs N requests plus
+the combining steps, and a fact that only makes sense across two chunks
+can be missed, because no single request sees both.
+
+**Use it for** questions where every mention matters: “list every risk
+named in this report”. **Recipe:** `"thorough"`, which
+[`answer_document()`](https://elkronos.github.io/readgpt/reference/answer_document.md)
+uses by default for a longer document.
+
+### `refine`: a draft revised chunk by chunk
+
+Reads the chunks in order, keeping a running answer and revising it with
+each new chunk. Later text can correct earlier conclusions, which suits
+documents whose argument develops. It costs N requests that cannot run
+in parallel, and the running answer can drift.
+
+**Use it for** narratives and arguments that build. **Recipe:**
+`"narrative"`.
+
+### `skim`: quote first, then answer
+
+For each chunk, asks the model to copy out any passages that bear on the
+question, then answers once from those passages alone. The final answer
+rests on quotations, which readgpt checks against the text (see below).
+It costs N + 1 requests; the per-chunk step can use a cheaper model
+through `skim_model`.
+
+**Use it for** questions where you want the answer tied to exact
+wording. **Recipe:** `"precise"`.
+
+### `hierarchical`: summaries of summaries
+
+Summarises each chunk, then summarises groups of summaries (`fan_in` at
+a time), level by level, until everything fits in one prompt, and
+answers from that. It suits questions about a whole long document, such
+as “what is this report’s overall argument?”, at the price of detail
+lost in summarising. `summary_model` can use a cheaper model for the
+summaries; `max_levels` caps the depth.
+
+**Use it for** long, structured documents where you want an overview.
+**Recipe:** `"survey"`.
+
+### `retrieve`: only the most relevant chunks
+
+Turns the question and every chunk into *embeddings* (lists of numbers
+that place similar text close together) and sends only the `top_k`
+chunks closest to the question, in a single request. The cost of the
+answer does not grow with the document, which makes it the usual choice
+for finding one fact in something long. The risk: a chunk that answers
+the question but does not *look* like it is never sent.
+
+**Use it for** a specific fact in a long document. **Recipe:**
+`"needle"`.
+
+### `rerank`: shortlist, then let the model judge
+
+Makes a quick word-matching shortlist (`rerank_candidates` chunks, 20 by
+default), asks the model to score each for relevance from 0 to 10, and
+answers from the chunks scoring at least `rerank_min_score`. The model’s
+judgement is better than word matching, at the price of one scoring
+request per shortlisted chunk. `skim_model` can do the scoring more
+cheaply.
+
+If no chunk could be scored, for example because the provider does not
+support the structured replies the scoring needs, it falls back to the
+word-matching order and warns. If only some chunks were scored, the
+answer is marked partial.
+
+**Use it for** long documents where word matching alone picks badly,
+including scanned ones. **Recipe:** `"scanned"`.
+
+### `iterative`: look, decide what is missing, look again
+
+Retrieves a few chunks and asks the model whether it can answer yet, and
+if not, what it should look for next. Then it retrieves again, up to
+`max_rounds` times. It suits questions needing several facts from
+different places (“how did the drop in margin affect the dividend?”).
+`ans$notes$queries` records what it searched for in each round, and
+`ans$notes$stop_reason` why it stopped.
+
+**Use it for** multi-step questions. **Recipe:** `"research"`.
+
+### `preview`: plan, then read
+
+Shows the model an outline of the document (section headings, sizes, and
+short excerpts) and asks which sections to read in full, which to skim,
+and which to skip. Then it reads accordingly. A section the plan does
+not mention is read, never skipped, so silence cannot lose part of the
+document; the plan is recorded in `ans$notes$plan`, so “sections 3 and 5
+were not read” is visible. If no usable plan comes back, it reads
+everything and marks the answer partial.
+
+**Use it for** long documents with clear sections, when most of them are
+irrelevant to the question.
+
+### `ensemble`: several readers, compared
+
+Runs two or more different readers (`members`; by default `retrieve` and
+`map_reduce`) and asks the model to reconcile their answers. It costs
+the sum of its members plus one request, and pays off when a wrong
+answer is expensive. Members must have different signatures, because
+running the same method twice is not a second opinion.
+
+**Use it for** high-stakes questions. **Recipe:** `"consensus"`.
+
+### `extract` and `screen`
+
+`extract` fills in a table of details (a *schema*) from every chunk, and
+`screen` decides whether a document meets a set of criteria. Both belong
+to the literature-review workflow, shown in
+[`vignette("tour")`](https://elkronos.github.io/readgpt/articles/tour.md).
+
+## Choosing a reader
+
+| your situation | reader | cost grows with document length? |
+|----|----|----|
+| the document fits comfortably in one request | `stuff` | yes, though it is one request |
+| one specific fact, long document | `retrieve` | no (embeddings aside) |
+| one fact, and word matching picks badly | `rerank` | no, fixed by `rerank_candidates` |
+| every mention must be found | `map_reduce` | yes |
+| the answer must rest on exact quotations | `skim` | yes |
+| an overview of a long document | `hierarchical` | yes |
+| an argument that develops through the text | `refine` | yes |
+| several facts combined from different places | `iterative` | no, up to `max_rounds` (embeddings aside) |
+| long document, most sections irrelevant | `preview` | depends on the plan |
+| a wrong answer would be costly | `ensemble` | as its members |
+
+If unsure, run two or three on a document where you already know the
+answer and compare (see “Trying readers on your own documents” below).
+
+## Choosing and placing chunks
+
+`retrieve`, `rerank` and `iterative` choose which chunks the model sees.
+These settings control the choice and where the chosen chunks go; each
+says which readers it applies to.
+
+**`top_k`** (`retrieve`, `rerank`, `iterative`) is how many chunks to
+send, 6 by default. For `iterative` it is how many each round adds: the
+chunks gathered in earlier rounds stay in the prompt as long as they
+fit. Too few and the answer can be missed; too many and you pay for text
+that does not help.
+
+**`min_score`** (`retrieve`) drops chunks less similar to the question
+than a threshold, though the single best chunk is always kept.
+
+**`mmr`** (`retrieve`, `iterative`) stops near-duplicates crowding each
+other out. Plain top-k picks the chunks most like the question; if three
+paragraphs say the same thing, all three get in. Below 1, `mmr` balances
+relevance against similarity to what is already picked (0.7 is a
+reasonable start):
+
+``` r
+
+repetitive <- paste(c(
+  "Revenue was 45.2 million dollars in fiscal 2024.",
+  "Total revenue reached 45.2 million dollars in the 2024 fiscal year.",
+  "In fiscal 2024 the company recorded revenue of 45.2 million dollars.",
+  "Headcount grew to 1,204 employees across nine clinical sites.",
+  "The board approved a dividend of 0.42 dollars per share in March."),
+  collapse = "\n\n")
+pieces <- gr_segment(gr_ingest(repetitive), list(method = "paragraph", max_tokens = 40))
+model <- gr_mock_client(stand_in)
+picked <- function(mmr) {
+  gr_read(pieces, "What was revenue?", model,
+          list(reader = "retrieve", top_k = 3, mmr = mmr))$chunks_used
+}
+rbind("top-k (mmr = 1)" = picked(1), "mmr = 0.3" = picked(0.3))
+#>                 [,1] [,2] [,3]
+#> top-k (mmr = 1)    1    3    2
+#> mmr = 0.3          1    4    5
+```
+
+Plain top-k spent all three places on the same fact; `mmr = 0.3` kept
+the best one and used the other two for something different. It costs
+nothing extra.
+
+**`context_order`** (`retrieve`, `rerank`, `iterative`) decides where
+the chosen chunks sit in the prompt. Models attend best to the beginning
+and end of a long prompt, so `"edges"` puts the best chunk first and the
+second-best last; `"document"` keeps the order they appear in the
+document, which reads more naturally when chunks are consecutive; the
+default `"relevance"` puts the best first.
+
+**`restate`** (every reader but `extract` and `screen`) repeats the
+question before the excerpts as well as after them, because a question
+asked once, after several thousand tokens of text, is a long way from
+the start of the prompt. `"auto"` does this when the text is long,
+`"always"` and `"never"` override.
+
+Whether `mmr`, `context_order` or `restate` help depends on your
+documents and model; test them rather than assume.
+
+## Embeddings
+
+`retrieve`, `iterative` and the `semantic` way of cutting chunks need
+*embeddings*. By default readgpt asks the model provider for them, which
+costs a little and needs an internet connection.
+`gr_options(embedder = "lexical")` uses word-matching vectors computed
+locally instead: free, offline and exactly repeatable, but they match
+words rather than meaning, so “turnover” will not find “revenue”. Use
+lexical vectors for practice and testing, and real embeddings for real
+work.
+
+``` r
+
+gr_embedders()[, c("name", "deterministic", "description")]
+#>      name deterministic
+#> 1     api         FALSE
+#> 2 lexical          TRUE
+#>                                                    description
+#> 1                 Embeddings endpoint on the client's base URL
+#> 2 Hashed bag-of-words; free, offline, word overlap not meaning
+```
+
+## Asking for citations
+
+With `cite = TRUE` the model is asked to cite the chunks it used, as
+`[chunk 3]`. Each chunk id leads back to a page and section through
+`ans$evidence`:
+
+``` r
+
+citing <- gr_mock_client(function(messages, params)
+  "Revenue was 45.2 million dollars [chunk 2].")
+ans <- gr_read(chunks, "What was revenue in 2024?", citing,
+               list(reader = "stuff", cite = TRUE))
+ans$answer
+#> [1] "Revenue was 45.2 million dollars [chunk 2]."
+ans$evidence[ans$evidence$chunk_id == 2, c("chunk_id", "section")]
+#>   chunk_id section
+#> 2        2 Summary
+```
+
+A citation to a chunk the model was never sent is caught and recorded in
+`ans$notes$cited_unknown`, and marks the answer partial. `hierarchical`
+does not support citations, because it answers from summaries rather
+than chunks.
+
+## Checking what an answer rests on
+
+`ans$evidence` holds different things depending on the reader:
+
+| reader | `evidence$text` holds |
+|----|----|
+| `stuff`, `retrieve`, `rerank`, `iterative` | the chunks, word for word |
+| `skim` | passages the model copied out |
+| `map_reduce` | each chunk’s answer |
+| `refine`, `hierarchical` | nothing (the answer is built from drafts or summaries) |
+
+Chunks sent word for word are true copies of the document by
+construction. The passages `skim` collects are what the model *says* the
+document contains, so readgpt checks every one against the chunk it came
+from:
+
+``` r
+
+skimmed <- gr_read(chunks, "What was revenue in 2024?", gr_mock_client(stand_in), "skim")
+gr_verify_evidence(skimmed)[, c("chunk_id", "verified", "match")]
+#>   chunk_id verified match
+#> 1        2     TRUE     1
+```
+
+`match` is 1 for an exact quotation (ignoring spacing, capitals and
+quote marks). A quotation that is not in the document, such as a changed
+figure or an invented sentence, scores lower and is marked
+`verified = FALSE`. `ans$notes$unverified_evidence` counts such
+quotations, and any one of them makes the answer partial.
+
+## Trying readers on your own documents
+
+The best way to choose is to test on a few documents where you already
+know the answer.
+[`gr_compare()`](https://elkronos.github.io/readgpt/reference/gr_compare.md)
+runs several configurations on one document, extracting the text once
+and sharing chunks between configurations that cut them the same way:
+
+``` r
+
+cmp <- gr_compare(readgpt_example(), "What was revenue in 2024?", list(
+  gr_recipe("narrow", segment = list(method = "structural", max_tokens = 120),
+            read = list(reader = "retrieve", top_k = 2)),
+  gr_recipe("wide", segment = list(method = "structural", max_tokens = 120),
+            read = list(reader = "retrieve", top_k = 6)),
+  gr_recipe("all", segment = list(method = "structural", max_tokens = 120),
+            read = list(reader = "map_reduce"))),
+  client = gr_mock_client(stand_in))
+cmp$summary[, c("recipe", "reader", "settings", "chunks_used", "not_found", "partial")]
+#>   recipe     reader                settings chunks_used not_found partial
+#> 1 narrow   retrieve top_k=2, max_tokens=120           2     FALSE   FALSE
+#> 2   wide   retrieve          max_tokens=120           6     FALSE   FALSE
+#> 3    all map_reduce          max_tokens=120           8     FALSE   FALSE
+```
+
+`settings` names whatever each configuration changed from the defaults,
+so rows that differ only in a number can be told apart. Two
+configurations that would do exactly the same work are run once, with a
+warning, rather than paid for twice.
+
+## When a provider cannot do structured replies
+
+`rerank`, `iterative` and `preview` ask the model to reply in a fixed
+structure (JSON), which most current providers support. Where the
+structure is not supported or the reply cannot be read, each one falls
+back, warns, and marks the answer partial: `rerank` to word-matching
+order, `iterative` to a single retrieval, `preview` to reading
+everything. The answer is still produced; `partial` tells you it came by
+the fallback.
+
+## Next
+
+- [`vignette("ingest")`](https://elkronos.github.io/readgpt/articles/ingest.md):
+  getting the text out of files in the first place.
+- [`vignette("tour")`](https://elkronos.github.io/readgpt/articles/tour.md):
+  the ways of cutting documents into chunks, caching and replaying runs,
+  reading many documents, and literature reviews.
+- [`?gr_read_spec`](https://elkronos.github.io/readgpt/reference/gr_read_spec.md):
+  every reading setting, with its default and allowed range.

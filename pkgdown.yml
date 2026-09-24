@@ -1,0 +1,12 @@
+pandoc: 3.8.3
+pkgdown: 2.2.1
+pkgdown_sha: ~
+articles:
+  ingest: ingest.html
+  readers: readers.html
+  readgpt: readgpt.html
+  tour: tour.html
+last_built: 2026-09-24T00:06Z
+urls:
+  reference: https://elkronos.github.io/readgpt/reference
+  article: https://elkronos.github.io/readgpt/articles

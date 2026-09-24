@@ -28,7 +28,9 @@ option mid-session affects subsequent runs.
 \section{Options}{
 
 \describe{
-\item{\code{verbose} (TRUE)}{Print progress for each ingest/segment/read stage.}
+\item{\code{verbose} (TRUE)}{Print a line for each ingest, segment and read
+stage. In an interactive session, also keep one line up to date with how
+many chunks a long read has done and what the run has spent.}
 \item{\code{model} ("gpt-5.6-terra")}{Default chat model. Note the default is a
 reasoning model, which does not accept \code{temperature}.}
 \item{\code{embedding_model} ("text-embedding-3-small")}{Default embedding model.}
@@ -45,11 +47,11 @@ own; see that function's \code{headers} argument for the rules.}
 \item{\code{temperature} (NULL)}{Default sampling temperature. \code{NULL} omits the
 field. Dropped automatically for models that reject it.}
 \item{\code{max_retries} (4)}{Retries for transient failures. HTTP 400 is never
-retried -- a malformed request stays malformed.}
+retried: a malformed request stays malformed.}
 \item{\code{retry_pause_base} (2)}{Seconds; exponential backoff base.}
 \item{\code{request_timeout} (120)}{Per-request timeout, seconds.}
 \item{\code{safety_margin} (0.10)}{Fraction of the context window left unused to
-absorb tokenizer error. Not a spending cap -- see \code{max_cost_usd}.}
+absorb tokenizer error. Not a spending cap (see \code{max_cost_usd}).}
 \item{\code{min_output_tokens} (256)}{Floor on the completion room \code{\link[=gr_budget]{gr_budget()}}
 reserves \emph{when \code{reserve_output} is not given explicitly}. An explicit
 \code{reserve_output} is honoured down to 1.}
@@ -70,8 +72,18 @@ sessions and make a long run resumable.}
 future and future.apply packages; without them it warns and runs
 sequentially.}
 \item{\code{workers} (4)}{Worker processes when \code{parallel} is TRUE.}
-\item{\code{max_cost_usd} (5)}{Refuse a run whose pre-flight estimate exceeds
-this, in USD. \code{NULL} disables the check.}
+\item{\code{max_cost_usd} (5)}{Spending limit per run, in USD. A run whose
+reader sends every chunk is refused before it starts when sending them
+would cost more than this. Every run is checked again before each
+request, and stops with a \code{partial} answer once what it has spent reaches
+the limit. The cost of a request is known only once it is made, so a run
+can pass the limit by one request. With \code{parallel = TRUE} requests go out
+in batches that cannot be stopped part way, so a reader that sends
+batches is also refused before it starts when its worst case, every reply
+at its token cap and the price of the dearest model it uses, would pass
+the limit. Needs a model with a registered price (see \code{\link[=gr_models]{gr_models()}}).
+Under a limit of 0 a model registered at no cost runs and one with a
+price is refused. \code{NULL} removes the limit.}
 \item{\code{max_calls} (400)}{Hard cap on model calls per run, checked before
 the first call and again before every subsequent one. \code{NULL} removes the
 cap.}
@@ -90,10 +102,10 @@ single number of zero or more, with an error of class \code{gr_bad_option}: a
 limit that cannot be compared is not a limit, and ignoring it spends money.
 \code{NULL} and \code{Inf} both mean "no limit".
 
-The tuning settings -- \code{safety_margin} [0, 0.5], \code{min_output_tokens}
+The tuning settings (\code{safety_margin} [0, 0.5], \code{min_output_tokens}
 [0, 1e6], \code{max_retries} [0, 10], \code{retry_pause_base} [0, 60],
 \code{request_timeout} [1, 3600], \code{workers} [1, 32] and \code{temperature}
-[0, 2] -- read a number written as text as that number. A value they cannot
+[0, 2]) read a number written as text as that number. A value they cannot
 read, such as \code{NA} or \code{"x"}, warns (\code{gr_bad_option}) and leaves the current
 setting unchanged; a value outside the range is clamped into it, with the
 same warning. Whole-number settings are rounded down. \code{temperature} also

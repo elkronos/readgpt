@@ -75,6 +75,7 @@ as_int1 <- function(x, default = NA_integer_) {
 #' @noRd
 source_label <- function(source, inline = "<inline text>") {
   if (!is.character(source) || length(source) != 1L || is.na(source)) return(inline)
+  if (is_url(source)) return(trimws(source))
   if (grepl("\n", source, fixed = TRUE)) return(inline)
   if (nchar(source, type = "bytes") >= 1000L) return(inline)
   if (!file.exists(source)) return(inline)
@@ -158,7 +159,7 @@ warn_near_miss <- function(dots, formals, what) {
   })
   bad <- which(lengths(hits) > 0L)
   for (i in bad) {
-    gr_warn(sprintf(paste0("`%s` is not a %s setting, but `%s` is -- if that is a typo the ",
+    gr_warn(sprintf(paste0("`%s` is not a %s setting, but `%s` is. If that is a typo the ",
                            "real setting keeps its default and the run will look fine. Passed ",
                            "through as given."),
                     nms[i], what, paste(hits[[i]], collapse = "` or `")),
@@ -241,11 +242,39 @@ gr_abort <- function(msg, class = "gr_error", ...) {
 #' Emit a warning with a package class.
 #' @noRd
 gr_warn <- function(msg, class = "gr_warning", ...) {
+  # sys.parent(), not -1: when the call is wrapped in withCallingHandlers() to
+  # record it, -1 is that wrapper, and the console named it instead of the
+  # function the user called.
   warning(structure(
     class = c(class, "gr_warning", "warning", "condition"),
-    list(message = msg, call = sys.call(-1), ...)
+    list(message = msg, call = sys.call(sys.parent()), ...)
   ))
   invisible(NULL)
+}
+
+#' Record the package's warnings as they are raised, without muffling them.
+#'
+#' A warning printed at the console is gone once the script moves on, and in a
+#' run over a folder it cannot be tied to the document that raised it. Results
+#' keep their own copy: `record` is a calling handler for `gr_warning`, and
+#' `get()` returns the messages named by each condition's most specific class.
+#' The warning still reaches the console as before.
+#' @noRd
+warning_recorder <- function() {
+  env <- new.env(parent = emptyenv())
+  env$msg <- character(0)
+  env$cls <- character(0)
+  list(
+    record = function(w) {
+      # One valid string per warning, whatever the message was: a zero-length
+      # or two-element message would otherwise shift every name after it, and
+      # bytes in another encoding would break printing later.
+      env$msg <- c(env$msg, to_utf8(as_chr1(conditionMessage(w))))
+      env$cls <- c(env$cls, class(w)[1])
+      invisible(NULL)
+    },
+    get = function() stats::setNames(env$msg, env$cls)
+  )
 }
 
 #' Verbosity-aware message.

@@ -7,7 +7,7 @@
 answer_document(
   source,
   question,
-  recipe = "thorough",
+  recipe = "auto",
   client = NULL,
   return = c("answer", "text", "json"),
   trace = NULL,
@@ -15,12 +15,14 @@ answer_document(
 )
 }
 \arguments{
-\item{source}{File path, or raw text.}
+\item{source}{File path, web address, or raw text; see \code{\link[=gr_ingest]{gr_ingest()}}.}
 
 \item{question}{The question.}
 
 \item{recipe}{A \code{gr_recipe}, a recipe name from \code{gr_recipes()}, a reader name,
-or a named list of \code{ingest}/\code{segment}/\code{read}.}
+or a named list of \code{ingest}/\code{segment}/\code{read}. The default, \code{"auto"}, picks
+\code{"fast"} or \code{"thorough"} from the document's length; see "Choosing the
+recipe" below.}
 
 \item{client}{A \code{gr_client}; one is built from options when omitted.}
 
@@ -35,13 +37,38 @@ or a named list of \code{ingest}/\code{segment}/\code{read}.}
 being silently discarded.}
 }
 \value{
-Depends on \code{return}. The \code{gr_answer} carries \verb{$partial} -- check it
+Depends on \code{return}. The \code{gr_answer} carries \verb{$partial}; check it
 before trusting \verb{$answer}.
 }
 \description{
 One recipe, one pipeline: ingest, segment, read. The answer and its full
 trace come from a single run, so the trace always explains the answer you got.
 }
+\section{Choosing the recipe}{
+
+With \code{recipe = "auto"} the document is ingested first, and its length
+decides how it is read. \code{"fast"} sends the whole document in one request.
+It is used for a document of at most 50,000 tokens that also fills no more
+than half of the room one request leaves for the document, which is less on
+a model with a small context window. Anything longer is read with
+\code{"thorough"}: one request per chunk, then the requests that combine their
+answers. Both send every chunk, so the choice changes the number of requests
+and the cost, not how much of the document is read.
+
+The room is measured for the recipe's model and, unless \code{model} is passed in
+\code{...}, for the client's model as well, since a client built for another
+model may be what answers. A model whose limits readgpt has to guess (see
+\code{\link[=gr_model_info]{gr_model_info()}}) always gets \code{"thorough"}; register its real limits with
+\code{\link[=gr_register_model]{gr_register_model()}}.
+
+The answer's \code{recipe} names the recipe used, \code{notes$auto_recipe} records that
+\code{"auto"} chose it, and the trace has an \code{auto_recipe} step with the token
+count and the limit the choice was made on. A \code{\link[=gr_replay_client]{gr_replay_client()}} repeats
+the recorded choice rather than making it again. Overrides in \code{...} apply to
+whichever recipe is chosen. \code{\link[=gr_read_many]{gr_read_many()}}, \code{\link[=gr_compare]{gr_compare()}} and the review
+functions need one fixed recipe and refuse \code{"auto"}.
+}
+
 \examples{
 cl <- gr_mock_client(function(m, p) "The answer is 42.")
 txt <- "Chapter one.\n\nThe answer to the great question is 42, as recorded."

@@ -29,8 +29,8 @@ always run before late steps regardless of the order the user lists them.}
 \item{scope}{\code{"block"} (default) applies the step to each text block
 independently. \code{"document"} applies it once to all blocks joined together,
 which is required for anything that reasons about position or repetition
-across the whole document -- dropping a trailing bibliography, or detecting
-a running head by how often a line recurs. A document-scoped step that was
+across the whole document (dropping a trailing bibliography, or detecting
+a running head by how often a line recurs). A document-scoped step that was
 applied per block would simply never fire.}
 }
 \value{

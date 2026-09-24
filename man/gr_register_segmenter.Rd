@@ -17,23 +17,24 @@ gr_register_segmenter(
 existing name replaces it.}
 
 \item{fn}{Function of \verb{(doc, spec, client, trace)} returning a \code{gr_chunks}.
-Build the return value with \code{\link[=new_chunks]{new_chunks()}} -- \code{\link[=gr_segment]{gr_segment()}} rejects
+Build the return value with \code{\link[=new_chunks]{new_chunks()}}; \code{\link[=gr_segment]{gr_segment()}} rejects
 anything else. \code{doc} is a \link{gr_document}; \code{spec} carries \code{max_tokens},
 \code{overlap_tokens} and \code{min_tokens}, which \link[=new_chunks]{pack_units-style}
 helpers respect for you.}
 
 \item{description}{One-line description, shown by \code{\link[=gr_segmenters]{gr_segmenters()}}.}
 
-\item{cost}{\code{"free"}, \code{"embedding"} or \code{"llm"} -- what one run spends, so a
+\item{cost}{\code{"free"}, \code{"embedding"} or \code{"llm"}: what one run spends, so a
 UI can warn before it is spent.}
 
 \item{needs_client}{Whether the segmenter requires a client. \code{\link[=gr_segmenters]{gr_segmenters()}}
 reports it, so a UI can check before offering the strategy. When \code{TRUE} and
-no client is supplied, \code{\link[=gr_segment]{gr_segment()}} warns with class
-\code{"gr_segment_fallback"} before calling \code{fn} -- unless your \code{fn} emits its own
-fallback warning, which is better, because it can name what it fell back
-\emph{to}. Record the downgrade in the returned \code{method} (\code{"mine->paragraph"})
-so it survives into \code{gr_chunk_stats()}.}
+no client is supplied, \code{\link[=gr_segment]{gr_segment()}} calls \code{fn} and then warns with class
+\code{"gr_segment_fallback"}, unless \code{fn} raised a warning of that class itself,
+so one fallback gives one warning. Raising your own is better, because it
+can name what \code{fn} fell back \emph{to}:
+\code{warning(warningCondition("No client; using 'paragraph'.", class = "gr_segment_fallback"))}. Record the downgrade in the returned \code{method}
+(\code{"mine->paragraph"}) so it survives into \code{gr_chunk_stats()}.}
 }
 \value{
 Invisibly, \code{name}.

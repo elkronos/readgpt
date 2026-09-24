@@ -17,7 +17,7 @@ Every reader is instructed to reply with exactly \code{"NOT_IN_DOCUMENT"} when t
 excerpts do not answer the question. Use this rather than
 \code{grepl("NOT_IN_DOCUMENT", ans$answer)}: a real answer can quote the sentinel
 ("the log said NOT_IN_DOCUMENT, but revenue was 45.2 million"), and models do
-not reproduce the token byte-exactly -- they wrap it in quotes, bold it, or
+not reproduce the token byte-exactly. They wrap it in quotes, bold it, or
 add a full stop. This matches the sentinel \emph{alone}, modulo that decoration,
 and treats a blank answer as not-found too.
 }

@@ -40,8 +40,8 @@
 #' document with `retrieve` and another with `stuff` gives you a plausible
 #' answer built on part of a file with nothing saying so, and it makes
 #' `gr_compare()` meaningless because the corpus no longer had *a*
-#' configuration. Group the rows yourself -- `split(inv$files, inv$files$folder)`
-#' is usually all it takes -- and pass each group to the recipe you chose.
+#' configuration. Group the rows yourself (`split(inv$files, inv$files$folder)`
+#' is usually all it takes) and pass each group to the recipe you chose.
 #'
 #' @param sources A directory, or a character vector of paths. A directory is
 #'   walked; anything else is taken as given.
@@ -74,7 +74,7 @@
 #'   `"needs_ocr"` (a PDF whose pages have no text layer), `"needs_package"` (an
 #'   extractor claims it, but that extractor's package is not installed, so
 #'   reading it would abort), `"no_extractor"`,
-#'   `"empty"` (zero bytes, or nothing that reads as text -- `note` says which),
+#'   `"empty"` (zero bytes, or nothing that reads as text; `note` says which),
 #'   or `"unreadable"` (it exists but could not be opened, or probing it raised
 #'   an error; `note` carries the reason).
 #'
@@ -84,18 +84,18 @@
 #'   error. That is the same contract [gr_read_many()] gives a corpus run.
 #'
 #' @section Tokens, and what is left unknown:
-#' `tokens` is counted exactly where counting is cheap -- plain text, markdown,
+#' `tokens` is counted exactly where counting is cheap: plain text, markdown,
 #' HTML, CSV, and PDFs from the pages actually probed, scaled by page count. For
 #' formats needing an optional package that is not installed, and for scans
-#' whose text does not exist until OCR runs, it is `NA` -- not a guess. Those
+#' whose text does not exist until OCR runs, it is `NA`, not a guess. Those
 #' files are counted in `totals$tokens_unknown` rather than folded into the sum
 #' as zeroes, so the total is always a floor and always says how far from
 #' complete it is.
 #'
 #' `cost_floor_usd` is a floor: what a single call per document over that much
 #' input would cost. Every per-chunk reader costs more, most of them by a factor
-#' of the chunk count. It is there to catch the order of magnitude -- to tell
-#' four dollars from four hundred -- not to be a quote.
+#' of the chunk count. It is there to catch the order of magnitude (to tell
+#' four dollars from four hundred), not to be a quote.
 #'
 #' @seealso [gr_read_many()], [gr_extract()], [gr_extractors()],
 #'   [gr_ingest_spec()] for the OCR settings this predicts

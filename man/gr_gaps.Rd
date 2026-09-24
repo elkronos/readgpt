@@ -10,7 +10,7 @@ gr_gaps(claims, extraction = NULL, max_cells = 40L, min_reported = 0.5)
 \item{claims}{A \code{\link[=gr_claims]{gr_claims()}} result.}
 
 \item{extraction}{The \code{\link[=gr_extract]{gr_extract()}} result the claims came from. Only its
-\verb{$fields} is used, and only to learn which categories were \emph{declared} --
+\verb{$fields} is used, and only to learn which categories were \emph{declared};
 without it a category nobody studied is indistinguishable from one nobody
 thought of.}
 

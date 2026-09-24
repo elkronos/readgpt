@@ -29,7 +29,7 @@
 #' # One question, one pipeline.
 #' ans <- answer_document("report.pdf", "What was Q3 revenue?", recipe = "needle")
 #' ans$answer
-#' ans$partial          # TRUE means something degraded -- check this first
+#' ans$partial          # TRUE means something degraded; check this first
 #'
 #' # Which pipeline suits this document? Compare, then commit.
 #' cmp <- gr_compare("report.pdf", "What was Q3 revenue?",
@@ -59,11 +59,14 @@
 #' `gr_compare()` two or three on your own document and read `cmp$summary`.
 #'
 #' @section Cost control:
-#' Two rails are on by default and are checked **before** the first request:
-#' `max_cost_usd` (5) and `max_calls` (400). Both are [gr_options()]. A run that
-#' trips one raises a classed error naming the option to change. `max_calls` is
-#' re-checked before every subsequent call, so a run that hits it mid-flight
-#' returns a `partial` answer rather than continuing to spend.
+#' Two limits are on by default, both [gr_options()]: `max_cost_usd` (5) and
+#' `max_calls` (400). Before the first request, a run is refused with a classed
+#' error naming the option to change when it would need more calls than
+#' `max_calls`, or when its reader sends every chunk and sending them would cost
+#' more than `max_cost_usd`. Both are checked again before every request, so a
+#' run that reaches either one stops and returns a `partial` answer rather than
+#' continuing to spend. A parallel read that sends batches, which cannot be
+#' stopped part way, is held to its worst case instead; see [gr_options()].
 #'
 #' Preview segmentation for free before committing to a reader:
 #' ```r
@@ -99,35 +102,42 @@
 #' \describe{
 #'   \item{`answer`}{Character(1). Always a single string. The sentinel
 #'     `"NOT_IN_DOCUMENT"` means the model reported the document does not
-#'     contain the answer -- test it with `is_not_found()`-style matching rather
+#'     contain the answer. Test it with `is_not_found()`-style matching rather
 #'     than substring search.}
 #'   \item{`partial`}{Logical(1). `TRUE` when anything degraded: a call failed,
-#'     chunks were dropped, a cap was hit, a strategy fell back. **Check this
-#'     before trusting an answer.**}
+#'     chunks were dropped, a cap was hit, a strategy fell back, text was cut to
+#'     fit, or pages of the document never became text (a scan read without
+#'     OCR). **Check this before trusting an answer.**}
 #'   \item{`notes`}{List. Why it is partial, and per-reader detail:
 #'     `dropped_chunks`, `failed_calls`, `error`, `merge_levels`,
-#'     `degraded_to_bm25`, `stop_reason`, `call_cap_reached`, and so on. Two are
-#'     set for every reader: `cited_unknown`, chunk ids the answer cited that
-#'     were never sent, and `unverified_evidence`, the number of quoted spans
-#'     that are not in the chunk they claim to come from. Either makes the answer
-#'     `partial`.}
+#'     `degraded_to_bm25`, `stop_reason`, `call_cap_reached`, `cost_cap_reached`,
+#'     `summaries_truncated`, and so on. Three can be set for every reader:
+#'     `cited_unknown`, chunk ids the answer cited that were never sent;
+#'     `unverified_evidence`, the number of quoted spans that are not in the
+#'     chunk they claim to come from; and `unread_pages`, the pages that never
+#'     became text. Any of them makes the answer `partial`.}
+#'   \item{`warnings`}{Character. What readgpt warned about while the document
+#'     was ingested, cut and read, named by the warning's class. The warnings
+#'     still print as they happen; this copy stays with the answer, including
+#'     when the document came from the ingestion cache and nothing was raised
+#'     again.}
 #'   \item{`evidence`}{Data frame or `NULL`, with columns `chunk_id`, `text`,
 #'     `page`, `section`, `score`, `kind`. **What `text` holds depends on the reader**:
 #'     verbatim chunk text for `stuff`, `retrieve`, `rerank` and `iterative`;
 #'     model-extracted passages for `skim`; per-chunk model answers for
 #'     `map_reduce`. `refine` and `hierarchical` return `NULL`. `page` is
 #'     populated only for PDF sources; `score` only for `retrieve` (cosine) and
-#'     `rerank` (0-10, model-judged). Where the evidence is *model-written* --
-#'     `skim` -- three more columns appear: `source_text`, the chunk the span
+#'     `rerank` (0-10, model-judged). Where the evidence is *model-written*
+#'     (`skim`), three more columns appear: `source_text`, the chunk the span
 #'     claims to quote, plus `verified` and `match` from checking one against
 #'     the other; see [gr_verify_evidence()]. Readers whose evidence is verbatim
 #'     chunk text do not carry them, because the span and its source are the
-#'     same string. `kind` says what that row holds -- `"verbatim"`,
-#'     `"extracted"` or `"answer"` -- per row, because an `ensemble` mixes them.
+#'     same string. `kind` says what that row holds (`"verbatim"`,
+#'     `"extracted"` or `"answer"`) per row, because an `ensemble` mixes them.
 #'     A blank roxygen line inside a `\describe{}` item ends the item, which is
 #'     why this is one paragraph.}
 #'   \item{`chunks_used`}{Integer vector of `chunk_id`s that CONTRIBUTED to the answer. For the
-#'     per-chunk readers this is a subset of the chunks actually sent -- a chunk
+#'     per-chunk readers this is a subset of the chunks sent: a chunk
 #'     that answered `NOT_IN_DOCUMENT` was read and paid for but is not listed.
 #'     `notes$chunks` reports how many were sent.}
 #'   \item{`reader`, `signature`}{Which strategy ran, and its traversal
@@ -141,9 +151,9 @@
 #' }
 #'
 #' @section Methods:
-#' `print()` shows the answer, the partial flag, the call count and an evidence
-#' summary; [as_json()] serialises the answer together with every prompt and
-#' response from the same run.
+#' `print()` shows the answer, the calls, tokens and cost, where the evidence
+#' came from, and, when the answer is partial, why; [as_json()] serialises the
+#' answer together with every prompt and response from the same run.
 #' @seealso [answer_document()] and [gr_read()] which return one, [gr_compare()]
 #'   to compare several, [is_not_found()] to test the sentinel, [as_json()],
 #'   [new_answer()] to build one in a custom reader
@@ -201,14 +211,19 @@ NULL
 #'   \item{`blocks`}{Data frame of cleaned text blocks with provenance:
 #'     `text`, `page`, `section`, `kind`, `block_id`. `page` is set only by the
 #'     PDF extractor; `kind` is one of `"body"`, `"heading"`, `"code"`,
-#'     `"table"`, `"ocr"`.}
+#'     `"table"`, `"footnote"`, `"ocr"`.}
 #'   \item{`text`}{All blocks joined with blank lines.}
-#'   \item{`source`}{Absolute path, or `"<inline text>"` when the input was a
-#'     string rather than a file.}
+#'   \item{`source`}{Absolute path, the web address a document was fetched
+#'     from, or `"<inline text>"` when the input was a string of text.}
 #'   \item{`spec`}{The [gr_ingest_spec()] used.}
 #'   \item{`stats`}{`blocks`, `chars`, `chars_removed`, `tokens`, `pages`,
-#'     `clean_steps`, and `clean_log` (characters removed per cleaning step --
-#'     useful when cleaning ate more than you expected).}
+#'     `clean_steps`, `clean_log` (characters removed per cleaning step, useful
+#'     when cleaning ate more than you expected) and `unread_pages` (pages that
+#'     never became text, such as scanned pages read without OCR; an answer
+#'     drawn from the document is marked partial when there are any).}
+#'   \item{`warnings`}{Character. What readgpt warned about while extracting
+#'     and cleaning, named by the warning's class. Kept with the document, so a
+#'     copy served from the ingestion cache still carries them.}
 #' }
 #'
 #' @section Methods:

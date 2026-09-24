@@ -43,7 +43,7 @@
 #'   `"Hierarchical"`, `"MultiPass"`. Defaults to `"Chunked"` only.
 #' @param use_parallel Run per-chunk calls in parallel.
 #' @param refine Request chunk-level citations in the answer. v1's `refine`
-#'   verification pass is not reproduced -- it could never run, because it
+#'   verification pass is not reproduced: it could never run, because it
 #'   called a `search_text()` function that was never defined.
 #' @param return_json Return the answers, the comparison summary and the trace
 #'   as JSON instead of the answer string.
@@ -195,7 +195,7 @@ gpt_read_chunked <- function(chunks, question, client = NULL, return_json = FALS
 #' Deprecated: evidence-extraction reading
 #'
 #' Superseded by [gr_read()] with `reader = "skim"`, which extracts verbatim
-#' evidence from every chunk and then consolidates it -- so `ans$evidence` holds
+#' evidence from every chunk and then consolidates it, so `ans$evidence` holds
 #' passages from the document rather than the model's paraphrase of them.
 #'
 #' @inheritParams gpt_read_chunked

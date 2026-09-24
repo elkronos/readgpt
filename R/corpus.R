@@ -25,7 +25,7 @@
 #' What a run actually cost
 #'
 #' Costs a trace using each step's own model and counting only the calls that
-#' were really issued -- a call served from a [gr_cache()] or a
+#' were issued: a call served from a [gr_cache()] or a
 #' [gr_replay_client()] spent nothing, however many tokens its prompt contained.
 #'
 #' This is why the token totals on [gr_trace_summary()] are not a bill. They
@@ -46,7 +46,7 @@
 #' ans <- answer_document(readgpt_example(), "What was revenue?", "fast", client = cl)
 #' gr_trace_cost(ans$trace)
 #'
-#' # Priced by the model on the STEP -- the recipe's model -- not by the mock
+#' # Priced by the model on the STEP (the recipe's model), not by the mock
 #' # that answered. A cached re-run costs nothing for a different reason:
 #' # paid_calls falls to zero while calls does not.
 #' cache <- gr_cache(file.path(tempdir(), "readgpt-cost-example"))
@@ -84,6 +84,39 @@ gr_trace_cost <- function(trace) {
   }))
 }
 
+#' Which limit stopped the read behind an answer, in words, or NULL.
+#' @noRd
+limit_note <- function(ans) {
+  n <- as.list(ans$notes %||% list())
+  cost <- n[["cost_cap_reached", exact = TRUE]]
+  calls <- n[["call_cap_reached", exact = TRUE]]
+  if (!is.null(cost)) {
+    return(list(limit = sprintf("$%s spending limit", format(cost, scientific = FALSE)),
+                option = "gr_options(max_cost_usd =)"))
+  }
+  if (!is.null(calls)) {
+    return(list(limit = sprintf("%s-request limit", format(calls, scientific = FALSE)),
+                option = "gr_options(max_calls =)"))
+  }
+  NULL
+}
+
+#' A trace's cost in words, for the print methods.
+#'
+#' One wording everywhere a cost is shown: a model with no registered price
+#' makes the total unknown, never zero.
+#' @noRd
+format_trace_cost <- function(trace) {
+  cost <- gr_trace_cost(trace)
+  if (!nrow(cost)) return("no cost recorded")
+  total <- sum(cost$usd)
+  if (is.na(total)) {
+    return(sprintf("cost unknown (no registered price for %s)",
+                   paste(cost$model[is.na(cost$usd)], collapse = ", ")))
+  }
+  sprintf("$%.4f across %s", total, paste(cost$model, collapse = ", "))
+}
+
 #' Ask one question of many documents
 #'
 #' The counterpart to [gr_compare()]: that runs several recipes over one
@@ -92,18 +125,19 @@ gr_trace_cost <- function(trace) {
 #' code against.
 #'
 #' @param sources A character vector of file paths, or a single directory, or
-#'   raw text -- or a [gr_records()] or a [gr_screen()] result, either of which
+#'   raw text, or a [gr_records()] or a [gr_screen()] result, either of which
 #'   also carries the search forward to the audit. A directory, and a vector of
 #'   paths that all exist, are both filtered to the extensions some registered
-#'   extractor claims -- so which files are picked up follows [gr_extractors()],
+#'   extractor claims, so which files are picked up follows [gr_extractors()],
 #'   including any you registered yourself. Raw text, a mixed vector and a
-#'   `list()` of sources are passed through untouched.
+#'   `list()` of sources are passed through untouched, and a web address is
+#'   downloaded as [gr_ingest()] downloads one.
 #' @param question The question, asked of every document.
 #' @param recipe One recipe, applied to every document.
 #' @param client A `gr_client`. Wrap it in [gr_cache_client()] for a long run:
 #'   with a durable cache directory, a restart pays for nothing it has already
-#'   answered. A closure-backed client -- [gr_backend_client()] or
-#'   [gr_mock_client()] -- reuses a cache or a `store` across sessions only if it
+#'   answered. A closure-backed client ([gr_backend_client()] or
+#'   [gr_mock_client()]) reuses a cache or a `store` across sessions only if it
 #'   was given a stable `id`; see [gr_backend_client()] for why.
 #' @param store Optional directory. Each document's result is written there as
 #'   it completes and restored on a later run instead of being read again. This
@@ -113,7 +147,7 @@ gr_trace_cost <- function(trace) {
 #'   other hundred and ninety-nine.
 #' @param max_total_usd Stop once the run has spent this much, marking the
 #'   remaining documents `"skipped"`. This is a *corpus* ceiling and is separate
-#'   from `gr_options(max_cost_usd =)`, which is a per-document pre-flight check.
+#'   from `gr_options(max_cost_usd =)`, which is a limit per document.
 #'   It needs a model with a registered price: against one without, cost is
 #'   *unknown* rather than zero, the ceiling cannot be enforced, and you get a
 #'   `gr_corpus_cost_unknown` warning instead of a silent free pass.
@@ -123,7 +157,7 @@ gr_trace_cost <- function(trace) {
 #'   ceiling that bounds the run rather than each document:
 #'   `gr_options(max_calls =)` is per document, so a corpus can make
 #'   `length(sources)` times that many. Checked before each document, because a
-#'   call ceiling noticed after the calls is not a ceiling -- which means the run
+#'   call ceiling noticed after the calls is not a ceiling. This means the run
 #'   can overshoot by at most one document's worth, exactly as `max_total_usd`
 #'   does.
 #' @param keep_answers Keep every [gr_answer] in the result. Set `FALSE` for a
@@ -139,7 +173,7 @@ gr_trace_cost <- function(trace) {
 #' @param ... Overrides applied to the recipe, as in [answer_document()].
 #' @return An object of class `gr_corpus`: `summary` (one row per document),
 #'   `answers` (named list, empty when `keep_answers = FALSE`), `sources` (the
-#'   sources as read, aligned row for row with `summary` -- `summary$document` is
+#'   sources as read, aligned row for row with `summary`; `summary$document` is
 #'   a display label and cannot be turned back into a path), `records` (the
 #'   [gr_records()] the corpus came from, or `NULL`), `trace` (every call
 #'   made *this run*) and `store`.
@@ -147,29 +181,38 @@ gr_trace_cost <- function(trace) {
 #' @section The summary:
 #' `document`, `document_id`, `answer`, `not_found`, `partial`, `reader`,
 #' `chunks`, `chunks_used`, `calls`, `cached`, `tokens_in`, `tokens_out`,
-#' `cost_usd`, `seconds`, `status`, `duplicate_of`, `error`.
+#' `cost_usd`, `seconds`, `status`, `duplicate_of`, `error`, `warnings`.
 #'
-#' `document` is a filename and `document_id` is the hash of the cleaned text.
-#' Cite with the second: a filename changes when the file is renamed, collides
-#' between folders, and does not exist at all for a document passed as text,
-#' while the id is the same string for the same document in every run and on
-#' every machine. Two copies of one paper share an id, which is the same fact as
-#' the duplicate detection below.
+#' `warnings` holds what readgpt warned about while reading that document,
+#' joined with `" | "`, or `NA` when it raised nothing. The warnings still print
+#' as they happen; this column is what lets you tie them to a document afterwards.
+#'
+#' `document` is a filename and `document_id` is the hash of the cleaned text
+#' (and of the pages that never became text, when there are any). Cite with the
+#' second: a filename changes when the file is renamed, collides between
+#' folders, and does not exist at all for a document passed as text, while the
+#' id is the same string for the same document in every run and on every machine
+#' with the same OCR setup. Two copies of one paper share an id, which is the
+#' same fact as the duplicate detection below.
 #'
 #' `status` is `"ok"`, `"failed"`, `"skipped"` (the corpus ceiling was reached
 #' first), `"restored"` (read from `store`, not re-read now) or `"duplicate"`
-#' (see below). A restored row keeps the numbers from when that document was
-#' first read, so its `cost_usd` is what it cost then, not what this run spent --
-#' which is why the run's own spend comes from `gr_trace_cost(x$trace)` and not
-#' from summing the column.
+#' (see below). A document that `max_calls` or `max_cost_usd` stopped before it
+#' was read in full is `"failed"` too, with the limit in `error` and its partial
+#' answer in `answers`; it is not written to `store`, so a resumed run with a
+#' higher limit reads it again. A restored row keeps the numbers from when that
+#' document was first read, so its `cost_usd` is what it cost then, not what this
+#' run spent. That is why the run's own spend comes from `gr_trace_cost(x$trace)`
+#' and not from summing the column.
 #'
 #' @section Documents that are the same document:
 #' The same paper reaches you from three databases under three filenames. Each
-#' source is extracted and cleaned, and a document whose cleaned text is
-#' identical to one already read this run is **not read again**: its row is
-#' filled in from the first copy, `status` is `"duplicate"` and `duplicate_of`
-#' names the row it repeats. Nothing is dropped -- every source you passed still
-#' has a row -- so `subset(x$summary, is.na(duplicate_of))` is the deduplicated
+#' source is extracted and cleaned, and a document whose cleaned text (and set
+#' of unread pages) is identical to one already read this run is **not read
+#' again**: its row is filled in from the first copy, except for `warnings`,
+#' which are its own; `status` is `"duplicate"` and `duplicate_of`
+#' names the row it repeats. Nothing is dropped (every source you passed still
+#' has a row), so `subset(x$summary, is.na(duplicate_of))` is the deduplicated
 #' set and `sum(!is.na(x$summary$duplicate_of))` is the number to report as
 #' removed.
 #'
@@ -259,6 +302,9 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
   }
   rec <- apply_overrides(as_recipe(recipe), list(...))
   client <- client %||% gr_client(model = rec$read$model)
+  # Checked at the first document that has to be READ, not here: a run whose
+  # every document is already in `store` sends no request and needs no key.
+  credentials_checked <- FALSE
   root <- attr(sources, "root")
   labels <- make.unique(vapply(sources, corpus_label, character(1),
                                root = root, USE.NAMES = FALSE), sep = "#")
@@ -344,13 +390,16 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
     key <- if (is.null(store)) NULL else corpus_key(src, question, rec, client)
     restored <- if (is.null(key)) NULL else corpus_restore(store, key)
     if (!is.null(restored)) {
-      gr_msg(sprintf("[%d/%d] %s -- restored from store", i, length(sources), lab))
+      gr_msg(sprintf("[%d/%d] %s, restored from store", i, length(sources), lab))
       restored$row$document <- lab
       restored$row$status <- "restored"
       if (is.null(restored$row$document_id)) {
         restored$row$document_id <- as_chr1(restored$doc_hash, NA_character_)
       }
       if (is.null(restored$row$duplicate_of)) restored$row$duplicate_of <- NA_character_
+      if (is.null(restored$row[["warnings", exact = TRUE]])) {
+        restored$row$warnings <- NA_character_
+      }
       rows[[i]] <- restored$row
       if (keep_answers && !is.null(restored$answer)) answers[[lab]] <- restored$answer
       # A restored document is never ingested, so its text is not available to
@@ -369,40 +418,69 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
       next
     }
 
-    gr_msg(sprintf("[%d/%d] %s", i, length(sources), lab))
+    # Before this document is ingested: without a key it, and every document
+    # after it, would be read and then fail at its first request, and the run
+    # would report a folder of failures instead of the one thing that is wrong.
+    if (!credentials_checked) {
+      stop_if_no_credentials(client)
+      credentials_checked <- TRUE
+    }
+    # With what the run has spent so far, so a long run shows its cost as it
+    # goes. Left off when nothing has been spent, and when a model with no
+    # registered price makes the figure unknown.
+    gr_msg(sprintf("[%d/%d] %s%s", i, length(sources), lab,
+                   if (!is.na(spent) && spent > 0) sprintf(" ($%.4f spent so far)", spent)
+                   else ""))
     started <- Sys.time()
     # One trace per document, folded into the parent afterwards. Sharing the
     # parent outright would make `max_calls` count earlier documents against
     # later ones, so the same document would answer differently depending on
     # its position in the corpus -- the bug gr_compare() had between recipes.
     sub <- gr_trace(meta = list(recipe = rec$name, question = question, source = lab))
+    # What the run spent before this document, so the progress line gives the
+    # run's total and not this document's. NA when that is unknown.
+    sub$spent_before <- spent
 
-    out <- tryCatch({
+    # What a document raised before it failed has no answer to travel on, so it
+    # is recorded here for its row.
+    doc_rec <- warning_recorder()
+    # What this document's ingestion recorded. Reset for every document: `doc`
+    # below still holds the previous one when this ingestion fails.
+    doc_w <- NULL
+    out <- withCallingHandlers(tryCatch({
       doc <- gr_ingest(src, rec$ingest, trace = sub)
+      # From the document, not from what was raised just now: a document served
+      # from the ingestion cache raises nothing a second time.
+      doc_w <- doc$warnings
       # Identity is the CLEANED text, not the bytes: the same paper exported by
       # two databases differs in metadata and whitespace and is the same
       # document. Hashing before segmentation also means the check costs one
       # local ingest rather than one read.
       h <- gr_hash(list("readgpt-doc-v1", key_text(doc$text)))
+      # A document with pages that never became text is not a copy of one that
+      # was read in full, even when the text that did come out is the same.
+      # Documents read in full keep the hash they always had.
+      if (length(doc$stats$unread_pages)) h <- gr_hash(list(h, doc$stats$unread_pages))
       prior <- mget(h, envir = seen, ifnotfound = list(NULL))[[1]]
       if (!is.null(prior)) {
-        structure(list(of = prior, hash = h), class = "gr_corpus_duplicate")
+        structure(list(of = prior, hash = h, warnings = doc$warnings),
+                  class = "gr_corpus_duplicate")
       } else {
         ch <- gr_segment(doc, rec$segment, client = client, trace = sub)
-        a <- gr_read(ch, question, client, rec$read, trace = sub)
-        a$evidence <- resolve_evidence_pages(a$evidence, doc$blocks)
-        a$recipe <- rec$name
-        a$document <- list(source = doc$source, stats = doc$stats)
-        a$segmentation <- as.list(gr_chunk_stats(ch))
+        a <- finish_answer(gr_read(ch, question, client, rec$read, trace = sub),
+                           doc, ch, rec$name)
         attr(a, "doc_hash") <- h
         a
       }
     }, error = function(e) {
+      # Not this document's failure: every document after it would fail the
+      # same way, so the run stops here rather than recording each one.
+      if (inherits(e, "gr_auth_error")) stop(e)
       if (identical(on_error, "stop")) stop(e)
       gr_warn(sprintf("Document '%s' failed: %s", lab, conditionMessage(e)),
               class = "gr_document_failed")
       e
-    })
+    }), gr_warning = doc_rec$record)
 
     trace_absorb(trace, sub)
     secs <- round(as.numeric(difftime(Sys.time(), started, units = "secs")), 2)
@@ -414,11 +492,16 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
     spent <- spent + cost
 
     if (inherits(out, "condition")) {
+      raised <- doc_rec$get()
+      # The failure is the row's `status` and `error`; repeating it as a warning
+      # would say it twice.
+      raised <- raised[names(raised) != "gr_document_failed"]
       rows[[i]] <- corpus_row(lab, status = "failed", error = conditionMessage(out),
-                              trace = sub, seconds = secs, cost = cost)
+                              trace = sub, seconds = secs, cost = cost,
+                              warnings = c(doc_w, raised))
     } else if (inherits(out, "gr_corpus_duplicate")) {
       first <- labels[[out$of]]
-      gr_msg(sprintf("[%d/%d] %s -- same text as '%s', not read again",
+      gr_msg(sprintf("[%d/%d] %s has the same text as '%s' and is not read again",
                      i, length(sources), lab, first))
       # The first copy's row, relabelled. Its answer, reader and chunk counts
       # describe this content too; its call counts and cost do not, because this
@@ -427,6 +510,9 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
       r$document <- lab
       r$status <- "duplicate"
       r$duplicate_of <- first
+      # Its own warnings, not the first copy's: two files with the same text can
+      # still have been read with different problems.
+      r$warnings <- corpus_warnings(out$warnings)
       r[c("calls", "cached", "tokens_in", "tokens_out")] <- 0L
       r$cost_usd <- cost
       r$seconds <- secs
@@ -436,6 +522,17 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
       # Saved under its OWN key, so a resumed run restores it instead of paying
       # to rediscover that it is a duplicate.
       if (!is.null(key)) corpus_save(store, key, rows[[i]], dup_answer, out$hash)
+    } else if (!is.null(stopped_by <- limit_note(out))) {
+      # Not read in full, so not a result: reported and handled as a failure,
+      # kept out of the store so a resumed run with a higher limit reads it
+      # again, and left out of the duplicate check for the same reason. The
+      # partial answer stays in `answers`.
+      why <- sprintf("stopped at the %s before the document was read in full; raise %s",
+                     stopped_by$limit, stopped_by$option)
+      gr_warn(sprintf("Document '%s' failed: %s.", lab, why), class = "gr_document_failed")
+      rows[[i]] <- corpus_row(lab, status = "failed", error = why, trace = sub,
+                              seconds = secs, cost = cost, warnings = out$warnings)
+      if (keep_answers) answers[[lab]] <- out
     } else {
       rows[[i]] <- corpus_row(lab, status = "ok", answer = out, trace = sub,
                               seconds = secs, cost = cost,
@@ -499,14 +596,12 @@ print.gr_corpus <- function(x, ...) {
                 sum(done), sum(s$not_found[done], na.rm = TRUE),
                 sum(s$partial[done], na.rm = TRUE)))
   }
-  cost <- gr_trace_cost(x$trace)
-  total <- if (nrow(cost)) sum(cost$usd) else 0
   cat(sprintf("  this run: %d model call(s), %s\n", x$trace$calls,
-              if (!nrow(cost)) "no cost recorded"
-              else if (is.na(total))
-                sprintf("cost unknown (no registered price for %s)",
-                        paste(cost$model[is.na(cost$usd)], collapse = ", "))
-              else sprintf("$%.4f across %s", total, paste(cost$model, collapse = ", "))))
+              format_trace_cost(x$trace)))
+  warned <- if (is.null(s$warnings)) 0L else sum(!is.na(s$warnings))
+  if (warned) {
+    cat(sprintf("  %d document(s) raised warnings (see the `warnings` column)\n", warned))
+  }
   if (!is.null(x$store)) cat(sprintf("  store: %s\n", x$store))
   invisible(x)
 }
@@ -529,6 +624,9 @@ print.gr_corpus <- function(x, ...) {
 #' @noRd
 corpus_label <- function(source, inline = "<inline text>", root = NULL) {
   if (!is.character(source) || length(source) != 1L || is.na(source)) return(inline)
+  # The address without its scheme: a file name alone would make two sites'
+  # report.pdf one label.
+  if (is_url(source)) return(sub("^https?://", "", trimws(source), ignore.case = TRUE))
   if (grepl("\n", source, fixed = TRUE)) return(inline)
   if (nchar(source, type = "bytes") >= 1000L) return(inline)
   if (file.exists(source)) {
@@ -696,7 +794,8 @@ corpus_sources <- function(sources, recursive = FALSE, quiet = FALSE) {
 #' One row of the summary, from an answer or from a failure.
 #' @noRd
 corpus_row <- function(document, status, answer = NULL, trace = NULL, error = NA_character_,
-                       seconds = NA_real_, cost = NA_real_, document_id = NA_character_) {
+                       seconds = NA_real_, cost = NA_real_, document_id = NA_character_,
+                       warnings = NULL) {
   seg <- if (is.null(answer)) list() else (answer$segmentation %||% list())
   s <- if (is.null(trace)) NULL else gr_trace_summary(trace)
   data.frame(
@@ -727,8 +826,20 @@ corpus_row <- function(document, status, answer = NULL, trace = NULL, error = NA
     # column, which survives the round trip.
     duplicate_of = NA_character_,
     error       = as_chr1(error, NA_character_),
+    # Last, so code that reads the columns by position still finds them where
+    # they were. What the document raised while it was read: a warning printed
+    # during a run over two hundred files cannot be tied to any of them.
+    warnings    = corpus_warnings(warnings %||% answer[["warnings", exact = TRUE]]),
     stringsAsFactors = FALSE
   )
+}
+
+#' One document's warnings as one summary cell, or NA when there were none.
+#' @noRd
+corpus_warnings <- function(w) {
+  w <- unique(as.character(w %||% character(0)))
+  w <- w[!is.na(w) & nzchar(w)]
+  if (!length(w)) NA_character_ else paste(w, collapse = " | ")
 }
 
 #' Identity of one (document, question, pipeline, model) job.

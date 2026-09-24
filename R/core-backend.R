@@ -26,8 +26,8 @@
 #'
 #' Wraps an arbitrary R function as a client. `handler` receives
 #' `(messages, params)` and returns a string or a [gr_result]; everything else
-#' the package does -- context budgeting, cost and call caps, provenance, the
-#' run trace, [gr_cache()], [gr_replay_client()], [gr_compare()] -- works
+#' the package does (context budgeting, cost and call caps, provenance, the
+#' run trace, [gr_cache()], [gr_replay_client()], [gr_compare()]) works
 #' exactly as it does for the built-in HTTP client.
 #'
 #' Use it to reach a provider this package does not speak to, a company proxy, a
@@ -49,16 +49,16 @@
 #'   For [gr_client()] a cache key can be built from the API shape, base URL and
 #'   model, because those completely describe what will answer: two clients with
 #'   the same three give the same answers today and next month, which is what
-#'   makes a cache safe to keep on disk. A backend has none of that -- every one
-#'   of them is `api = "backend"`, `base_url = "backend://"` -- and the thing
+#'   makes a cache safe to keep on disk. A backend has none of that (every one
+#'   of them is `api = "backend"`, `base_url = "backend://"`), and the thing
 #'   that actually answers is an R closure, whose behaviour this package cannot
 #'   inspect.
 #'
 #'   So the default is a fresh id per client object, which is *safe*: two
 #'   different handlers can never trade answers. It is also *session-scoped*, so
 #'   a cache or store will not be reused by a later session. Pass a stable `id`
-#'   to get cross-session reuse -- and pass one **only** when the handler really
-#'   does answer the same way every time, because that is the assertion you are
+#'   to get cross-session reuse. Pass one **only** when the handler does
+#'   answer the same way every time, because that is the assertion you are
 #'   making. Hashing the closure would not do: two handlers can share a body and
 #'   differ in what they captured.
 #' @param model,embedding_model Model ids reported to the rest of the package.
@@ -66,7 +66,7 @@
 #'   warning and a conservative context window; [gr_register_model()] fixes that,
 #'   and getting it right matters because it is what sizes your chunks.
 #' @param max_retries,timeout Recorded on the client for completeness. Retrying
-#'   is the backend's business -- this package does not retry a handler, because
+#'   is the backend's business: this package does not retry a handler, because
 #'   it cannot know whether the failure was transient.
 #' @return An object of class `gr_backend_client`, usable anywhere a
 #'   [gr_client()] is, with `$calls()` recording every request made through it.
@@ -146,8 +146,8 @@ print.gr_backend_client <- function(x, ...) {
 #' Read documents through an ellmer chat
 #'
 #' Uses an `ellmer` `Chat` object as the transport, so every provider ellmer
-#' supports -- Anthropic, Google, Bedrock, Azure, Ollama, Hugging Face, and the
-#' rest -- becomes available to every reading strategy here, with this package's
+#' supports (Anthropic, Google, Bedrock, Azure, Ollama, Hugging Face, and the
+#' rest) becomes available to every reading strategy here, with this package's
 #' context budgeting, cost rails, traces, caching and replay unchanged around it.
 #'
 #' ellmer is a suggested dependency: this function is the only thing in the
@@ -156,20 +156,21 @@ print.gr_backend_client <- function(x, ...) {
 #' @param chat An ellmer `Chat`, e.g. from `ellmer::chat_anthropic()` or
 #'   `ellmer::chat_ollama()`.
 #' @param embed Optional function of `(texts, params)` returning one row per
-#'   input -- for example a thin wrapper around `ragnar::embed_ollama()`. Without
+#'   input, for example a thin wrapper around `ragnar::embed_ollama()`. Without
 #'   it, `retrieve` and the `semantic` segmenter fall back to lexical vectors and
 #'   warn.
 #' @param model Model id reported to this package. Defaults to the chat's own
-#'   model. Register it with [gr_register_model()] if it is not already known --
-#'   the context window is what sizes your chunks, so a wrong one is not cosmetic.
+#'   model. Register it with [gr_register_model()] if it is not already known.
+#'   The context window is what sizes your chunks, so a wrong one is not cosmetic.
 #' @return A [gr_backend_client()].
 #'
 #' @section Requirements on the chat:
 #' The adapter calls `$chat()`, `$chat_structured()`, `$clone()`, `$set_turns()`
 #' and `$set_system_prompt()`, and refuses a chat missing any of them
 #' (`gr_bad_backend`). `$chat_structured()` is used by every schema-bearing call
-#' -- each `rerank` score and each `iterative` round -- so a chat without it
-#' would have failed mid-run rather than at construction. The last two are not conveniences: this package puts its
+#' (each `rerank` score and each `iterative` round), so a chat without it
+#' would have failed mid-run rather than at construction.
+#' The last two are not conveniences: this package puts its
 #' instructions in the system prompt, and it clears turns so that one chunk's
 #' call cannot leak into the next. A chat that silently dropped either would
 #' produce unconstrained answers with nothing to show for it.

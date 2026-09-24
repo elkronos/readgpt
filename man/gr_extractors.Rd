@@ -7,13 +7,19 @@
 gr_extractors()
 }
 \value{
-A data frame with \code{name}, \code{extensions} and \code{description}.
+A data frame with \code{name}, \code{extensions}, \code{description}, \code{needs} (the
+packages the extractor cannot run without, comma-separated, \code{""} for none)
+and \code{available} (whether they are all installed now). OCR packages are not
+in \code{needs}: a PDF with a text layer reads without them.
 }
 \description{
 List registered extractors
 }
 \examples{
 gr_extractors()
+
+# What this installation can read right now.
+gr_extractors()[, c("name", "needs", "available")]
 }
 \seealso{
 \code{\link[=gr_register_extractor]{gr_register_extractor()}}, \code{\link[=gr_ingest]{gr_ingest()}}

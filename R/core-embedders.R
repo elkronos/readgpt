@@ -22,7 +22,7 @@
 #'
 #' Embedding is the sixth registry, alongside extractors, cleaners, segmenters,
 #' readers and models. Register a function and every part of the package that
-#' embeds -- the `semantic` segmenter, the `retrieve` and `iterative` readers --
+#' embeds (the `semantic` segmenter, the `retrieve` and `iterative` readers)
 #' uses it, with no change to any of them.
 #'
 #' @param name Short id, used as the value of `gr_options(embedder =)` and as
@@ -30,7 +30,7 @@
 #' @param fn Function of `(texts, params)` returning a numeric matrix with one
 #'   row per input. `params` carries `client`, `model`, `batch_size`, `cache`
 #'   and `trace`. Rows should be L2-normalised: everything downstream treats the
-#'   cross-product as cosine similarity. Signal failure by raising -- the caller
+#'   cross-product as cosine similarity. Signal failure by raising; the caller
 #'   applies its own `fallback` policy, which is not the embedder's business.
 #' @param description One line, shown by [gr_embedders()].
 #' @param deterministic `TRUE` if the same text always gives the same vector in

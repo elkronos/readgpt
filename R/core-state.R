@@ -54,7 +54,8 @@ gr_defaults <- list(
   embedder            = NULL,
   parallel            = FALSE,
   workers             = 4L,
-  # Refuse to start a run whose *estimated* cost exceeds this (USD). NULL = off.
+  # Spending limit per run (USD), checked before the run and before every
+  # request. NULL = off.
   max_cost_usd        = 5,
   # Refuse to issue more than this many model calls in one run.
   max_calls           = 400L,
@@ -174,7 +175,9 @@ check_option <- function(name, value) {
 #'
 #' @section Options:
 #' \describe{
-#'   \item{`verbose` (TRUE)}{Print progress for each ingest/segment/read stage.}
+#'   \item{`verbose` (TRUE)}{Print a line for each ingest, segment and read
+#'     stage. In an interactive session, also keep one line up to date with how
+#'     many chunks a long read has done and what the run has spent.}
 #'   \item{`model` ("gpt-5.6-terra")}{Default chat model. Note the default is a
 #'     reasoning model, which does not accept `temperature`.}
 #'   \item{`embedding_model` ("text-embedding-3-small")}{Default embedding model.}
@@ -191,11 +194,11 @@ check_option <- function(name, value) {
 #'   \item{`temperature` (NULL)}{Default sampling temperature. `NULL` omits the
 #'     field. Dropped automatically for models that reject it.}
 #'   \item{`max_retries` (4)}{Retries for transient failures. HTTP 400 is never
-#'     retried -- a malformed request stays malformed.}
+#'     retried: a malformed request stays malformed.}
 #'   \item{`retry_pause_base` (2)}{Seconds; exponential backoff base.}
 #'   \item{`request_timeout` (120)}{Per-request timeout, seconds.}
 #'   \item{`safety_margin` (0.10)}{Fraction of the context window left unused to
-#'     absorb tokenizer error. Not a spending cap -- see `max_cost_usd`.}
+#'     absorb tokenizer error. Not a spending cap (see `max_cost_usd`).}
 #'   \item{`min_output_tokens` (256)}{Floor on the completion room [gr_budget()]
 #'     reserves *when `reserve_output` is not given explicitly*. An explicit
 #'     `reserve_output` is honoured down to 1.}
@@ -216,8 +219,18 @@ check_option <- function(name, value) {
 #'     future and future.apply packages; without them it warns and runs
 #'     sequentially.}
 #'   \item{`workers` (4)}{Worker processes when `parallel` is TRUE.}
-#'   \item{`max_cost_usd` (5)}{Refuse a run whose pre-flight estimate exceeds
-#'     this, in USD. `NULL` disables the check.}
+#'   \item{`max_cost_usd` (5)}{Spending limit per run, in USD. A run whose
+#'     reader sends every chunk is refused before it starts when sending them
+#'     would cost more than this. Every run is checked again before each
+#'     request, and stops with a `partial` answer once what it has spent reaches
+#'     the limit. The cost of a request is known only once it is made, so a run
+#'     can pass the limit by one request. With `parallel = TRUE` requests go out
+#'     in batches that cannot be stopped part way, so a reader that sends
+#'     batches is also refused before it starts when its worst case, every reply
+#'     at its token cap and the price of the dearest model it uses, would pass
+#'     the limit. Needs a model with a registered price (see [gr_models()]).
+#'     Under a limit of 0 a model registered at no cost runs and one with a
+#'     price is refused. `NULL` removes the limit.}
 #'   \item{`max_calls` (400)}{Hard cap on model calls per run, checked before
 #'     the first call and again before every subsequent one. `NULL` removes the
 #'     cap.}
@@ -234,10 +247,10 @@ check_option <- function(name, value) {
 #' limit that cannot be compared is not a limit, and ignoring it spends money.
 #' `NULL` and `Inf` both mean "no limit".
 #'
-#' The tuning settings -- `safety_margin` \[0, 0.5\], `min_output_tokens`
+#' The tuning settings (`safety_margin` \[0, 0.5\], `min_output_tokens`
 #' \[0, 1e6\], `max_retries` \[0, 10\], `retry_pause_base` \[0, 60\],
 #' `request_timeout` \[1, 3600\], `workers` \[1, 32\] and `temperature`
-#' \[0, 2\] -- read a number written as text as that number. A value they cannot
+#' \[0, 2\]) read a number written as text as that number. A value they cannot
 #' read, such as `NA` or `"x"`, warns (`gr_bad_option`) and leaves the current
 #' setting unchanged; a value outside the range is clamped into it, with the
 #' same warning. Whole-number settings are rounded down. `temperature` also

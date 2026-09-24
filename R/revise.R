@@ -281,7 +281,7 @@ revise_once <- function(drafted, question, client, spec, trace, style, pass) {
     return(list(ran = FALSE, kept = FALSE, reason = "draft exceeds the context window"))
   }
   if (!trace_can_call(trace)) {
-    return(list(ran = FALSE, kept = FALSE, reason = "call cap reached"))
+    return(list(ran = FALSE, kept = FALSE, reason = paste(cap_name(trace), "reached")))
   }
   res <- gr_call(client, list(
     list(role = "system", content = sys),

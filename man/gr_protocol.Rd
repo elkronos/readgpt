@@ -18,7 +18,7 @@ gr_protocol(
 \arguments{
 \item{name}{A short name. Becomes the registry key if you register it.}
 
-\item{question}{The review question, in one sentence. Required -- it has a
+\item{question}{The review question, in one sentence. Required. It has a
 default only so that omitting it produces the explanation below rather than
 R's "argument is missing".}
 
@@ -48,7 +48,7 @@ cover. Pass one to \code{\link[=gr_extract]{gr_extract()}} in place of a schema.
 \section{Criteria are not free text}{
 
 \code{include} and \code{exclude} are separate, and both are kept, because a document
-can meet an inclusion criterion and still be excluded -- and a review has to
+can meet an inclusion criterion and still be excluded, and a review has to
 be able to say which. Collapsing them into one list of "criteria" loses the
 reason, which is the part anyone auditing the review will ask for.
 }

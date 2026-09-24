@@ -23,7 +23,10 @@
 #' @param name Short name for the extractor.
 #' @param extensions Character vector of file extensions it claims.
 #' @param fn Function of `(path, opts)` returning a data frame with columns
-#'   `text`, and optionally `page`, `section`, `kind`.
+#'   `text`, and optionally `page`, `section`, `kind`. Pages it could not turn
+#'   into text can be listed in `attr(result, "gr_unread_pages")`; an answer
+#'   drawn from the document is then marked partial, as it is for a PDF page
+#'   that needed OCR and did not get it.
 #' @param description One-line description shown by [gr_extractors()].
 #' @return Invisibly, `name`.
 #' @seealso [gr_extractors()], [gr_ingest()], [gr_register_cleaner()]
@@ -44,18 +47,30 @@ gr_register_extractor <- function(name, extensions, fn, description = "") {
 }
 
 #' List registered extractors
-#' @return A data frame with `name`, `extensions` and `description`.
+#' @return A data frame with `name`, `extensions`, `description`, `needs` (the
+#'   packages the extractor cannot run without, comma-separated, `""` for none)
+#'   and `available` (whether they are all installed now). OCR packages are not
+#'   in `needs`: a PDF with a text layer reads without them.
 #' @seealso [gr_register_extractor()], [gr_ingest()]
 #' @family ingest functions
 #' @export
 #' @examples
 #' gr_extractors()
+#'
+#' # What this installation can read right now.
+#' gr_extractors()[, c("name", "needs", "available")]
 gr_extractors <- function() {
   reg <- gr_state$extractors
   if (!length(reg)) return(data.frame())
-  do.call(rbind, lapply(reg, function(e) data.frame(
-    name = e$name, extensions = paste(e$extensions, collapse = ", "),
-    description = e$description, stringsAsFactors = FALSE)))
+  do.call(rbind, lapply(reg, function(e) {
+    need <- .gr_extractor_deps[[as_chr1(e$name)]] %||% character(0)
+    data.frame(
+      name = e$name, extensions = paste(e$extensions, collapse = ", "),
+      description = e$description,
+      needs = paste(need, collapse = ", "),
+      available = !length(missing_extractor_deps(e$name)),
+      stringsAsFactors = FALSE)
+  }))
 }
 
 #' Find the extractor that claims an extension.
@@ -168,6 +183,9 @@ extract_pdf <- function(path, opts) {
   }
   pages <- pdftools::pdf_text(path)
   pages <- vapply(pages, as_chr1, character(1), USE.NAMES = FALSE)
+  # Pages whose text came from OCR rather than the text layer. Tesseract already
+  # returns a page in reading order, so the column pass below leaves them alone.
+  ocr_done <- rep(FALSE, length(pages))
 
   # PER-PAGE OCR decision. The old code demanded that *every* page be empty
   # before OCRing anything, so mixed scanned/digital PDFs silently lost content.
@@ -179,6 +197,11 @@ extract_pdf <- function(path, opts) {
                   never  = rep(FALSE, length(pages)),
                   always = rep(TRUE,  length(pages)),
                   nchar(trimws(pages)) < min_chars)
+  # Pages whose content never became text. They travel with the document (as
+  # `stats$unread_pages`) so an answer drawn from it is marked partial: a warning
+  # printed once at the console is gone by the time anyone reads the answer, and
+  # a cached document does not raise it again at all.
+  unread <- integer(0)
   if (any(needs)) {
     if (!requireNamespace("tesseract", quietly = TRUE) ||
         !requireNamespace("magick", quietly = TRUE)) {
@@ -186,32 +209,56 @@ extract_pdf <- function(path, opts) {
                              "'tesseract' and/or 'magick' are not installed. Those pages are ",
                              "being returned empty rather than silently dropped."),
                       sum(needs), length(pages)), class = "gr_ocr_unavailable")
+      # Only pages that came out with no text at all. A page under the threshold
+      # still has its text layer, which is read (a cover, a divider, a figure
+      # with a caption); counting it as unread made most born-digital PDFs
+      # partial, and under ocr = "always" every page.
+      unread <- which(needs & !nzchar(trimws(pages)))
     } else {
       gr_msg(sprintf("OCR-ing %d of %d PDF page(s).", sum(needs), length(pages)))
       eng <- tesseract::tesseract(as_chr1(opts$ocr_lang %||% "eng"))
-      ocr_txt <- gr_lapply(which(needs), function(i, trace) {
+      ocr_res <- gr_lapply(which(needs), function(i, trace) {
         tryCatch({
           img <- magick::image_read_pdf(path, pages = i, density = as.numeric(opts$ocr_dpi %||% 300))
-          as_chr1(tesseract::ocr(img, engine = eng))
+          list(text = as_chr1(tesseract::ocr(img, engine = eng)), failed = FALSE)
         }, error = function(e) {
-          gr_warn(sprintf("OCR failed on page %d: %s", i, conditionMessage(e)))
-          ""
+          gr_warn(sprintf("OCR failed on page %d: %s", i, conditionMessage(e)),
+                  class = "gr_ocr_failed")
+          list(text = "", failed = TRUE)
         })
       }, parallel = opts$parallel, label = "OCR page")
-      pages[needs] <- vapply(ocr_txt, as_chr1, character(1), USE.NAMES = FALSE)
+      pages[needs] <- vapply(ocr_res, function(r) as_chr1(r$text), character(1),
+                             USE.NAMES = FALSE)
+      unread <- which(needs)[vapply(ocr_res, function(r) isTRUE(r$failed), logical(1))]
+      ocr_done <- needs
+      ocr_done[unread] <- FALSE
     }
   }
 
   # Emit one block per paragraph per page. Page provenance is a real column, not
   # a "--- Page Break ---" marker glued into the text where it would be read as
   # document content.
-  out <- do.call(rbind, lapply(seq_along(pages), function(i) {
-    p <- paragraphs_of(pages[i])
-    if (!length(p)) return(NULL)
-    data.frame(text = p, page = i, section = NA_character_, kind = "body",
-               stringsAsFactors = FALSE)
-  }))
-  as_blocks(out %||% data.frame(text = character(0)))
+  if (identical(opts[["layout", exact = TRUE]] %||% "auto", "raw")) {
+    out <- do.call(rbind, lapply(seq_along(pages), function(i) {
+      p <- paragraphs_of(pages[i])
+      if (!length(p)) return(NULL)
+      data.frame(text = p, page = i, section = NA_character_, kind = "body",
+                 stringsAsFactors = FALSE)
+    }))
+  } else {
+    # Reading order: running heads and feet out, two columns read one after the
+    # other, and headings found so the blocks carry sections. See ingest-pdf.R.
+    lines <- drop_running_lines(lapply(pages, page_lines))
+    for (i in which(!ocr_done)) {
+      g <- column_gutter(lines[[i]])
+      if (!is.na(g)) lines[[i]] <- reorder_columns(lines[[i]], g)
+    }
+    out <- pdf_page_blocks(lines, heading_matcher(pdf_outline_titles(path)))
+    if (!nrow(out)) out <- NULL
+  }
+  out <- as_blocks(out %||% data.frame(text = character(0)))
+  attr(out, "gr_unread_pages") <- unread
+  out
 }
 
 #' @noRd
@@ -229,25 +276,9 @@ extract_docx <- function(path, opts) {
   blocks <- data.frame(text = character(0), section = character(0), kind = character(0),
                        stringsAsFactors = FALSE)
   if (file.exists(doc_xml)) {
-    x <- xml2::read_xml(doc_xml)
-    ns <- xml2::xml_ns(x)
-    paras <- xml2::xml_find_all(x, ".//w:p", ns)
-    txt <- vapply(paras, function(p) {
-      paste(xml2::xml_text(xml2::xml_find_all(p, ".//w:t", ns)), collapse = "")
-    }, character(1))
-    style <- vapply(paras, function(p) {
-      s <- xml2::xml_find_first(p, ".//w:pStyle", ns)
-      if (inherits(s, "xml_missing")) "" else as_chr1(xml2::xml_attr(s, "val", ns))
-    }, character(1))
-    keep <- nzchar(trimws(txt))
-    txt <- txt[keep]; style <- style[keep]
-    if (length(txt)) {
-      is_head <- grepl("^Heading|^Title", style, ignore.case = TRUE)
-      section <- NA_character_; secs <- character(length(txt))
-      for (i in seq_along(txt)) { if (is_head[i]) section <- txt[i]; secs[i] <- section }
-      blocks <- data.frame(text = txt, section = secs,
-                           kind = ifelse(is_head, "heading", "body"), stringsAsFactors = FALSE)
-    }
+    # Tables row by row, notes beside what cites them, headings by style name;
+    # see ingest-docx.R.
+    blocks <- docx_blocks(dir)
   } else if (requireNamespace("readtext", quietly = TRUE)) {
     blocks <- data.frame(text = paragraphs_of(as_chr1(readtext::readtext(path)$text)),
                          section = NA_character_, kind = "body", stringsAsFactors = FALSE)
@@ -299,7 +330,7 @@ register_builtin_extractors <- function() {
   gr_register_extractor("pdf",   "pdf", extract_pdf,
                         "PDF with per-page OCR fallback and page provenance")
   gr_register_extractor("docx",  c("docx", "dotx"), extract_docx,
-                        "Word, keeping heading styles; OCRs embedded images")
+                        "Word: headings, tables by row, footnotes and endnotes; OCRs embedded images")
   gr_register_extractor("image", c("png", "jpg", "jpeg", "tif", "tiff", "bmp", "gif"),
                         extract_image, "Image OCR")
   invisible(NULL)

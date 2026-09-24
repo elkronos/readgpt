@@ -37,7 +37,7 @@ several over one document and reports how they differ.
 # One question, one pipeline.
 ans <- answer_document("report.pdf", "What was Q3 revenue?", recipe = "needle")
 ans$answer
-ans$partial          # TRUE means something degraded -- check this first
+ans$partial          # TRUE means something degraded; check this first
 
 # Which pipeline suits this document? Compare, then commit.
 cmp <- gr_compare("report.pdf", "What was Q3 revenue?",
@@ -71,11 +71,14 @@ See \code{\link[=gr_recipes]{gr_recipes()}} for what each one actually configure
 
 \section{Cost control}{
 
-Two rails are on by default and are checked \strong{before} the first request:
-\code{max_cost_usd} (5) and \code{max_calls} (400). Both are \code{\link[=gr_options]{gr_options()}}. A run that
-trips one raises a classed error naming the option to change. \code{max_calls} is
-re-checked before every subsequent call, so a run that hits it mid-flight
-returns a \code{partial} answer rather than continuing to spend.
+Two limits are on by default, both \code{\link[=gr_options]{gr_options()}}: \code{max_cost_usd} (5) and
+\code{max_calls} (400). Before the first request, a run is refused with a classed
+error naming the option to change when it would need more calls than
+\code{max_calls}, or when its reader sends every chunk and sending them would cost
+more than \code{max_cost_usd}. Both are checked again before every request, so a
+run that reaches either one stops and returns a \code{partial} answer rather than
+continuing to spend. A parallel read that sends batches, which cannot be
+stopped part way, is held to its worst case instead; see \code{\link[=gr_options]{gr_options()}}.
 
 Preview segmentation for free before committing to a reader:
 

@@ -23,7 +23,7 @@ An object of class \code{gr_replay_client}, usable anywhere a
 \description{
 Replays the responses in a trace instead of calling a model. Give it the
 trace from a run and the same document and question, and you get that run
-back -- same answers, same evidence, same merge decisions -- with no API key,
+back (same answers, same evidence, same merge decisions) with no API key,
 no network and no spend.
 }
 \details{
@@ -35,8 +35,8 @@ recording of exactly what went wrong.
 \section{Matching}{
 
 A response is matched on the exact prompt messages plus the model id. When a
-run issued the same prompt more than once -- which happens at a temperature
-above zero, and in readers that revisit a chunk -- the recorded responses are
+run issued the same prompt more than once (which happens at a temperature
+above zero, and in readers that revisit a chunk), the recorded responses are
 returned in the order they were produced. Once they are exhausted the last
 one repeats.
 }
@@ -44,7 +44,7 @@ one repeats.
 \section{Embeddings}{
 
 Embeddings are not model calls and are not recorded in a trace, so whether a
-replay reproduces a run's chunk \emph{ranking} depends on how the run embedded --
+replay reproduces a run's chunk \emph{ranking} depends on how the run embedded,
 and that is checked rather than assumed. The ranking reproduces exactly when
 the recording used a \strong{deterministic} embedder and the replay uses the
 \strong{same} one; both conditions, because replaying an API-embedded run with a
@@ -54,6 +54,17 @@ warns with class \code{gr_replay_no_embeddings}; every recorded answer is still
 reproduced, but the ranking may differ. Record a run you intend to publish
 with \code{gr_options(embedder = "lexical")}, or with your own embedder registered
 as \code{deterministic = TRUE}.
+}
+
+\section{The recipe "auto" chose}{
+
+A recording of \code{\link[=answer_document]{answer_document()}} with \code{recipe = "auto"} holds the recipe
+the choice picked for each document and question, and a replay of the same
+document and question repeats that choice rather than making it again. What
+the choice rests on (the token count, the registered models, the client's
+model) can differ between the session that recorded a run and the one
+replaying it, and a different choice would send prompts the recording does
+not have.
 }
 
 \section{What does not replay}{

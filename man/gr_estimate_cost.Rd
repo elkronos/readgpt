@@ -15,7 +15,7 @@ are summed).}
 \value{
 A single numeric USD figure, or \code{NA_real_} when the model has no
 pricing in the registry. Pricing is seeded from the registry's \code{as_of}
-snapshot -- treat it as an estimate, and use \code{\link[=gr_register_model]{gr_register_model()}} to
+snapshot. Treat it as an estimate, and use \code{\link[=gr_register_model]{gr_register_model()}} to
 correct it.
 }
 \description{

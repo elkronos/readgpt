@@ -11,3 +11,6 @@
 ^cran-comments\.md$
 ^\.Renviron$
 ^\.Rprofile$
+^_pkgdown\.yml$
+^docs$
+^pkgdown$

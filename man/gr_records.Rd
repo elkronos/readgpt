@@ -36,7 +36,7 @@ row a dropped record repeats, \code{file} the document matched to it, and
 \item{\code{counts}}{Identified, per database, duplicates removed, distinct
 records, reports sought, reports retrieved, reports not retrieved.}
 \item{\code{search}}{The \code{gr_search()}, or \code{NULL}.}
-\item{\code{unmatched_files}}{Documents on disk that no record claims — usually
+\item{\code{unmatched_files}}{Documents on disk that no record claims, usually
 a sign the export and the folder are out of step.}
 }
 }
@@ -54,15 +54,15 @@ are one paper, are questions a DOI answers exactly.
 \section{Why start here rather than at a folder}{
 
 A folder of PDFs cannot say which databases were searched, with what query,
-on what date, or how many records came back — PRISMA items 6, 7 and 16 — and
+on what date, or how many records came back (PRISMA items 6, 7 and 16), and
 no care further down substitutes for them. It also cannot say what is
 \emph{missing}: a record with no PDF is "report not retrieved", which is a finding
 about the review, and a folder represents it as nothing at all.
 
 It fixes something quieter too. \code{\link[=gr_synthesise]{gr_synthesise()}} cites by author and year,
-and without an export those come from asking a model to read a title page —
-the one part of a citation that must be exactly right, resting on the loosest
-guarantee in the pipeline. From an export they are data.
+and without an export those come from asking a model to read a title page.
+That is the one part of a citation that must be exactly right, resting on the
+loosest guarantee in the pipeline. From an export they are data.
 }
 
 \examples{

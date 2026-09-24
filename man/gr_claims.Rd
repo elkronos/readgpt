@@ -57,7 +57,7 @@ Every study number a claim names is verified against the table, exactly as a
 \verb{[study N]} marker in finished prose already is. A number that is not there is
 dropped and counted rather than trusted, a claim left with no supporting study
 is dropped entirely, and a \code{moderator} naming a column the table does not have
-is cleared -- an invented explanation for a real disagreement. \verb{$dropped}
+is cleared: it is an invented explanation for a real disagreement. \verb{$dropped}
 records all of it, so a claims table that looks thin can be told apart from a
 literature that is.
 

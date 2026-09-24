@@ -82,7 +82,7 @@ gr_tokenizer <- function() gr_options("tokenizer")
 #' @param text Character vector.
 #' @param model Optional model id; used only by tokenizers that are
 #'   encoding-specific (e.g. `"tiktoken"`).
-#' @return Integer vector of token counts -- a conservative upper bound under the
+#' @return Integer vector of token counts: a conservative upper bound under the
 #'   default tokenizer.
 #' @seealso [gr_set_tokenizer()], [gr_truncate_tokens()], [gr_budget()]
 #' @family cost and token functions
@@ -199,14 +199,14 @@ tok_tiktoken <- function(text, model = NULL) {
 #'
 #' Truncation happens at a word boundary where the text has whitespace, and at a
 #' character boundary where it does not (base64, a data URI, a CJK run, a minified
-#' line) -- otherwise the cap would be unenforceable for exactly the inputs that
+#' line); otherwise the cap would be unenforceable for exactly the inputs that
 #' most need it. Returns `""` for
 #' empty input and never returns `NA`.
 #'
 #' @param text A single string.
 #' @param n Maximum token count.
 #' @param marker Appended when truncation occurred; set `""` to suppress.
-#' @return A single string. `""` when `n <= 0` or the input is blank -- this is
+#' @return A single string. `""` when `n <= 0` or the input is blank. This is
 #'   not treated as an error.
 #' @seealso [gr_count_tokens()]
 #' @family cost and token functions

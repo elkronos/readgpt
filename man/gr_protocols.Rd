@@ -21,7 +21,7 @@ field of a built-in is meant to be edited before it is used.
 \details{
 \describe{
 \item{\code{bibliography}}{Who wrote it, what it is called, where it appeared.
-No screening -- everything is included -- so it is the cheapest way to
+No screening (everything is included), so it is the cheapest way to
 turn a folder into a reference list you can check.}
 \item{\code{evidence_table}}{One row per study: design, population, comparison,
 outcome, effect. No synthesis outline; the table is the output.}

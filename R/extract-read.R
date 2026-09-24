@@ -31,13 +31,11 @@ read_extract <- function(chunks, question, client, spec, trace) {
   listing <- fields_prompt(fields)
 
   if (!trace_can_call(trace, nrow(d))) {
-    gr_warn(sprintf(paste0("extract needs %d calls but the run cap is %s; segment more coarsely ",
-                           "or raise gr_options(max_calls =)."),
-                    nrow(d), format(gr_options("max_calls"))), class = "gr_call_cap")
+    warn_capped_batch(trace, "extract", nrow(d), "segment more coarsely")
   }
 
   got <- gr_lapply(seq_len(nrow(d)), function(i, trace) {
-    if (!trace_can_call(trace)) return(list(ok = FALSE, value = NULL))
+    if (!trace_can_call(trace)) return(list(ok = FALSE, value = NULL, capped = TRUE))
     out <- gr_call_json(client, list(
       list(role = "system", content = paste0(
         "You fill a data-extraction form from one excerpt of a document. Fill only the fields ",
@@ -55,7 +53,10 @@ read_extract <- function(chunks, question, client, spec, trace) {
     list(ok = isTRUE(out$ok), value = out$value, chunk = i)
   }, parallel = spec$parallel, label = "extract chunk", trace = trace)
 
-  failed <- sum(!vapply(got, function(g) isTRUE(g$ok), logical(1)))
+  # A request a limit stopped was not sent, so it did not fail: gr_read() names
+  # the limit.
+  capped <- vapply(got, function(g) isTRUE(g$capped), logical(1))
+  failed <- sum(!vapply(got, function(g) isTRUE(g$ok), logical(1)) & !capped)
   rec <- reconcile_fields(got, fields, d, client, spec, trace)
 
   ev <- if (length(rec$evidence_chunk)) {
@@ -105,7 +106,7 @@ read_extract <- function(chunks, question, client, spec, trace) {
              # paper in a screening run as a broken read. An UNSUPPORTED value is
              # a different matter: something is in the table that nothing in the
              # document backs, and that is exactly what `partial` is for.
-             partial = failed > 0 || length(unsupported) > 0,
+             partial = failed > 0 || any(capped) || length(unsupported) > 0,
              notes = list(chunks = nrow(d), fields = length(fields),
                           filled = length(filled),
                           not_reported = setdiff(names(fields), filled),

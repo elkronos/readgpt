@@ -1,0 +1,158 @@
+url: https://elkronos.github.io/readgpt/
+
+template:
+  bootstrap: 5
+
+articles:
+- title: Guides
+  navbar: Guides
+  contents:
+  - readgpt
+  - ingest
+  - readers
+- title: Overview
+  navbar: Overview
+  contents:
+  - tour
+
+reference:
+- title: Ask a question
+  desc: >
+    Start here. One call reads a document and answers a question, and the
+    answer says what it rests on and whether anything went wrong.
+  contents:
+  - answer_document
+  - gr_compare
+  - gr_recipes
+  - gr_recipe
+  - gr_answer
+  - is_not_found
+  - readgpt_example
+
+- title: Connect to a model
+  desc: >
+    Clients for OpenAI-compatible endpoints, any provider ellmer supports, any
+    function you write, and an offline stand-in for practice and tests.
+  contents:
+  - gr_client
+  - gr_api_key
+  - gr_ellmer_client
+  - gr_backend_client
+  - gr_mock_client
+  - gr_call
+  - gr_result
+  - gr_models
+  - gr_model_info
+  - gr_model_limits
+  - gr_register_model
+
+- title: Get text out of files
+  desc: >
+    Extraction, cleaning and a survey of a folder before anything is spent.
+    See `vignette("ingest")`.
+  contents:
+  - gr_ingest
+  - gr_ingest_spec
+  - gr_document
+  - gr_extractors
+  - gr_cleaners
+  - gr_clean
+  - gr_inventory
+
+- title: Cut documents into chunks
+  contents:
+  - gr_segment
+  - gr_segment_spec
+  - gr_segmenters
+  - gr_chunks
+  - gr_chunk_stats
+
+- title: Read the chunks
+  desc: >
+    The reading strategies, the settings that choose and place chunks, and
+    the check on quoted evidence. See `vignette("readers")`.
+  contents:
+  - gr_read
+  - gr_read_spec
+  - gr_readers
+  - gr_reader_signature
+  - gr_embed
+  - gr_embedders
+  - gr_verify_evidence
+
+- title: Many documents
+  contents:
+  - gr_read_many
+
+- title: Systematic and literature reviews
+  desc: >
+    From a search export to screened studies, an extraction table, a written
+    review and an audit report, with the screening measured against a
+    hand-screened sample.
+  contents:
+  - gr_protocol
+  - gr_protocols
+  - gr_protocol_save
+  - gr_register_protocol
+  - gr_search
+  - gr_records
+  - gr_screen
+  - gr_reference
+  - gr_calibrate
+  - '`[.gr_reference_frame`'
+  - gr_fields
+  - gr_field
+  - gr_extract
+  - gr_claims
+  - gr_outline
+  - gr_gaps
+  - gr_synthesise
+  - gr_flow
+  - gr_audit_report
+
+- title: Cost, tokens and tracing
+  contents:
+  - gr_options
+  - gr_estimate_cost
+  - gr_count_tokens
+  - gr_tokenizer
+  - gr_set_tokenizer
+  - gr_truncate_tokens
+  - gr_budget
+  - gr_trace
+  - gr_trace_summary
+  - gr_trace_cost
+  - gr_trace_save
+  - as_json
+
+- title: Caching and replaying runs
+  contents:
+  - gr_cache
+  - gr_cache_client
+  - gr_cache_stats
+  - gr_cache_clear
+  - gr_replay_client
+
+- title: Extending readgpt
+  desc: >
+    Every axis is a registry. An addition is used exactly like a built-in.
+  contents:
+  - gr_register_extractor
+  - gr_register_cleaner
+  - gr_register_segmenter
+  - gr_register_reader
+  - gr_register_embedder
+  - new_chunks
+  - new_answer
+
+- title: Superseded
+  desc: >
+    The entry points of the first version. They still work and warn once;
+    new code should use `answer_document()`, `gr_ingest()` and `gr_segment()`.
+  contents:
+  - answer_question
+  - parse_text
+  - gpt_read_chunked
+  - gpt_read_hierarchical
+  - gpt_read_multipass
+  - gpt_read_retrieval

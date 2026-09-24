@@ -23,17 +23,17 @@ gr_extract(
 )
 }
 \arguments{
-\item{sources}{As \code{\link[=gr_read_many]{gr_read_many()}}: file paths, a directory, or raw text --
-and, additionally, a \code{\link[=gr_screen]{gr_screen()}} result. Passing the screening object
+\item{sources}{As \code{\link[=gr_read_many]{gr_read_many()}}: file paths, a directory, or raw text,
+and additionally a \code{\link[=gr_screen]{gr_screen()}} result. Passing the screening object
 rather than \code{screened$included} is what carries the search forward, so
 \code{\link[=gr_audit_report]{gr_audit_report()}} can show it and the bibliographic fields the export
 supplied are joined to the table.}
 
-\item{fields}{A \code{\link[=gr_fields]{gr_fields()}} schema, or a \code{\link[=gr_protocol]{gr_protocol()}} -- a protocol
+\item{fields}{A \code{\link[=gr_fields]{gr_fields()}} schema, or a \code{\link[=gr_protocol]{gr_protocol()}}. A protocol
 carries its own schema, question and recipe, so passing one is the same as
 passing its three parts and it is the shorter way to say it.}
 
-\item{goal}{One sentence of context for the extraction -- "screening trials
+\item{goal}{One sentence of context for the extraction, such as "screening trials
 for a review of statins in primary prevention". It sharpens judgement calls
 about what counts as the primary outcome; it does not decide what is
 collected, because \code{fields} does that. Defaults to a neutral instruction.}
@@ -62,7 +62,7 @@ says no quote, no datum.}
 They hold every chunk's source text, so for a large corpus this is what
 runs you out of memory; the tables do not need them.}
 
-\item{...}{Recipe overrides, as in \code{\link[=gr_read_many]{gr_read_many()}} -- \verb{max_tokens =} is the
+\item{...}{Recipe overrides, as in \code{\link[=gr_read_many]{gr_read_many()}}. \verb{max_tokens =} is the
 one that matters here, because it decides how many chunks each document is
 cut into and therefore how many calls it costs.}
 }
@@ -72,8 +72,8 @@ An object of class \code{gr_extraction}:
 \item{\code{table}}{One row per document: \code{document}, one column per field in
 the schema and of that field's type, then \code{n_filled}, \code{n_unverified},
 \code{conflicts}, \code{status}, \code{duplicate_of}, \code{error}. A document whose cleaned
-text repeats one already read is not read again -- see
-\code{\link[=gr_read_many]{gr_read_many()}} -- so \code{subset(x$table, is.na(duplicate_of))} is the
+text repeats one already read is not read again (see
+\code{\link[=gr_read_many]{gr_read_many()}}), so \code{subset(x$table, is.na(duplicate_of))} is the
 set of distinct documents.}
 \item{\code{evidence}}{Long form, one row per supported cell: \code{document},
 \code{document_id}, \code{field}, \code{chunk_id}, \code{page}, \code{section}, \code{quote},
@@ -101,7 +101,7 @@ without checking \code{status} silently turns the second into the first.
 
 \section{What it costs}{
 
-One call per chunk per document -- every chunk is read, because a schema field
+One call per chunk per document: every chunk is read, because a schema field
 can be answered by a sentence anywhere in the paper and a retrieval step that
 looked at the top eight chunks would miss it silently. Reconciliation is free
 unless a document contradicts itself. Cut the cost by segmenting more coarsely
@@ -116,7 +116,7 @@ discarded for failing: a paraphrase stays in \verb{$evidence} with
 \code{verified = FALSE} and the fraction of it that did match in \code{match}.
 
 \code{n_unverified} counts the cells in that row whose value could not be tied to a
-verbatim span -- either because no quote was given, or because the quote is
+verbatim span, either because no quote was given, or because the quote is
 not in the chunk. That column is the one to look at before believing a table:
 \code{n_unverified} of zero means every value in the row can be pointed at in the
 document. A row where it is not zero is not wrong, but it is unaudited, and
@@ -136,14 +136,14 @@ hash of the cleaned text, which is the same in every run and on every machine.
 
 \code{chunk_id} is none of those. It numbers the pieces the document was cut into
 for \emph{this} segmentation, so re-running with a different \code{max_tokens} makes
-chunk 7 a different piece of text. It is a pointer inside one run -- useful
-for going back to \verb{$answers} -- and not a reference to publish.
+chunk 7 a different piece of text. It is a pointer inside one run, useful
+for going back to \verb{$answers}, and not a reference to publish.
 
 There is deliberately no attempt to guess a document's title or authors from
 its filename or its first few lines. A heuristic like that fails silently on
 preprints, reports and anything scanned, and a citation that is wrong without
-saying so is worse than none. Ask for them the same way as everything else --
-\code{gr_fields(title = , authors = , year = , doi = )} -- and each comes back with
+saying so is worse than none. Ask for them the same way as everything else:
+\code{gr_fields(title = , authors = , year = , doi = )}. Each comes back with
 the sentence it was taken from and a check that the sentence is really there.
 }
 

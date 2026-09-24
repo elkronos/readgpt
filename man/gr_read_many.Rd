@@ -21,12 +21,13 @@ gr_read_many(
 }
 \arguments{
 \item{sources}{A character vector of file paths, or a single directory, or
-raw text -- or a \code{\link[=gr_records]{gr_records()}} or a \code{\link[=gr_screen]{gr_screen()}} result, either of which
+raw text, or a \code{\link[=gr_records]{gr_records()}} or a \code{\link[=gr_screen]{gr_screen()}} result, either of which
 also carries the search forward to the audit. A directory, and a vector of
 paths that all exist, are both filtered to the extensions some registered
-extractor claims -- so which files are picked up follows \code{\link[=gr_extractors]{gr_extractors()}},
+extractor claims, so which files are picked up follows \code{\link[=gr_extractors]{gr_extractors()}},
 including any you registered yourself. Raw text, a mixed vector and a
-\code{list()} of sources are passed through untouched.}
+\code{list()} of sources are passed through untouched, and a web address is
+downloaded as \code{\link[=gr_ingest]{gr_ingest()}} downloads one.}
 
 \item{question}{The question, asked of every document.}
 
@@ -34,8 +35,8 @@ including any you registered yourself. Raw text, a mixed vector and a
 
 \item{client}{A \code{gr_client}. Wrap it in \code{\link[=gr_cache_client]{gr_cache_client()}} for a long run:
 with a durable cache directory, a restart pays for nothing it has already
-answered. A closure-backed client -- \code{\link[=gr_backend_client]{gr_backend_client()}} or
-\code{\link[=gr_mock_client]{gr_mock_client()}} -- reuses a cache or a \code{store} across sessions only if it
+answered. A closure-backed client (\code{\link[=gr_backend_client]{gr_backend_client()}} or
+\code{\link[=gr_mock_client]{gr_mock_client()}}) reuses a cache or a \code{store} across sessions only if it
 was given a stable \code{id}; see \code{\link[=gr_backend_client]{gr_backend_client()}} for why.}
 
 \item{store}{Optional directory. Each document's result is written there as
@@ -48,7 +49,7 @@ other hundred and ninety-nine.}
 
 \item{max_total_usd}{Stop once the run has spent this much, marking the
 remaining documents \code{"skipped"}. This is a \emph{corpus} ceiling and is separate
-from \code{gr_options(max_cost_usd =)}, which is a per-document pre-flight check.
+from \code{gr_options(max_cost_usd =)}, which is a limit per document.
 It needs a model with a registered price: against one without, cost is
 \emph{unknown} rather than zero, the ceiling cannot be enforced, and you get a
 \code{gr_corpus_cost_unknown} warning instead of a silent free pass.}
@@ -59,7 +60,7 @@ many model calls, marking the rest \code{"skipped"}. The counterpart to
 ceiling that bounds the run rather than each document:
 \code{gr_options(max_calls =)} is per document, so a corpus can make
 \code{length(sources)} times that many. Checked before each document, because a
-call ceiling noticed after the calls is not a ceiling -- which means the run
+call ceiling noticed after the calls is not a ceiling. This means the run
 can overshoot by at most one document's worth, exactly as \code{max_total_usd}
 does.}
 
@@ -81,7 +82,7 @@ ceiling. Omit it and there is no parent.}
 \value{
 An object of class \code{gr_corpus}: \code{summary} (one row per document),
 \code{answers} (named list, empty when \code{keep_answers = FALSE}), \code{sources} (the
-sources as read, aligned row for row with \code{summary} -- \code{summary$document} is
+sources as read, aligned row for row with \code{summary}; \code{summary$document} is
 a display label and cannot be turned back into a path), \code{records} (the
 \code{\link[=gr_records]{gr_records()}} the corpus came from, or \code{NULL}), \code{trace} (every call
 made \emph{this run}) and \code{store}.
@@ -96,31 +97,40 @@ code against.
 
 \code{document}, \code{document_id}, \code{answer}, \code{not_found}, \code{partial}, \code{reader},
 \code{chunks}, \code{chunks_used}, \code{calls}, \code{cached}, \code{tokens_in}, \code{tokens_out},
-\code{cost_usd}, \code{seconds}, \code{status}, \code{duplicate_of}, \code{error}.
+\code{cost_usd}, \code{seconds}, \code{status}, \code{duplicate_of}, \code{error}, \code{warnings}.
 
-\code{document} is a filename and \code{document_id} is the hash of the cleaned text.
-Cite with the second: a filename changes when the file is renamed, collides
-between folders, and does not exist at all for a document passed as text,
-while the id is the same string for the same document in every run and on
-every machine. Two copies of one paper share an id, which is the same fact as
-the duplicate detection below.
+\code{warnings} holds what readgpt warned about while reading that document,
+joined with \code{" | "}, or \code{NA} when it raised nothing. The warnings still print
+as they happen; this column is what lets you tie them to a document afterwards.
+
+\code{document} is a filename and \code{document_id} is the hash of the cleaned text
+(and of the pages that never became text, when there are any). Cite with the
+second: a filename changes when the file is renamed, collides between
+folders, and does not exist at all for a document passed as text, while the
+id is the same string for the same document in every run and on every machine
+with the same OCR setup. Two copies of one paper share an id, which is the
+same fact as the duplicate detection below.
 
 \code{status} is \code{"ok"}, \code{"failed"}, \code{"skipped"} (the corpus ceiling was reached
 first), \code{"restored"} (read from \code{store}, not re-read now) or \code{"duplicate"}
-(see below). A restored row keeps the numbers from when that document was
-first read, so its \code{cost_usd} is what it cost then, not what this run spent --
-which is why the run's own spend comes from \code{gr_trace_cost(x$trace)} and not
-from summing the column.
+(see below). A document that \code{max_calls} or \code{max_cost_usd} stopped before it
+was read in full is \code{"failed"} too, with the limit in \code{error} and its partial
+answer in \code{answers}; it is not written to \code{store}, so a resumed run with a
+higher limit reads it again. A restored row keeps the numbers from when that
+document was first read, so its \code{cost_usd} is what it cost then, not what this
+run spent. That is why the run's own spend comes from \code{gr_trace_cost(x$trace)}
+and not from summing the column.
 }
 
 \section{Documents that are the same document}{
 
 The same paper reaches you from three databases under three filenames. Each
-source is extracted and cleaned, and a document whose cleaned text is
-identical to one already read this run is \strong{not read again}: its row is
-filled in from the first copy, \code{status} is \code{"duplicate"} and \code{duplicate_of}
-names the row it repeats. Nothing is dropped -- every source you passed still
-has a row -- so \code{subset(x$summary, is.na(duplicate_of))} is the deduplicated
+source is extracted and cleaned, and a document whose cleaned text (and set
+of unread pages) is identical to one already read this run is \strong{not read
+again}: its row is filled in from the first copy, except for \code{warnings},
+which are its own; \code{status} is \code{"duplicate"} and \code{duplicate_of}
+names the row it repeats. Nothing is dropped (every source you passed still
+has a row), so \code{subset(x$summary, is.na(duplicate_of))} is the deduplicated
 set and \code{sum(!is.na(x$summary$duplicate_of))} is the number to report as
 removed.
 

@@ -33,19 +33,35 @@
 
 gr_lapply <- function(x, fn, parallel = NULL, workers = NULL, key = NULL, label = "task",
                       trace = NULL) {
+  # In this process, one item after another, with a progress line when someone
+  # is watching (see core-progress.R).
+  sequential <- function() {
+    p <- progress_start(length(x), label, trace)
+    done <- 0L
+    with_progress(p, lapply(x, function(item) {
+      out <- fn(item, trace)
+      done <<- done + 1L
+      progress_tick(p, done)
+      out
+    }))
+  }
   parallel <- isTRUE(parallel %||% gr_options("parallel"))
-  if (!parallel || length(x) <= 1L) return(lapply(x, function(item) fn(item, trace)))
+  if (!parallel || length(x) <= 1L) return(sequential())
+  # A run that has reached a limit sends no batch. Run in this process, each
+  # item checks the run's own trace and returns without a request; handed to
+  # workers, each of which starts a count of its own, every item would be sent.
+  # Inside a batch the workers cannot see what the run spends, which is why
+  # preflight() holds a parallel read to its worst case.
+  if (inherits(trace, "gr_trace") && !trace_can_call(trace)) return(sequential())
 
   if (!requireNamespace("future", quietly = TRUE) ||
       !requireNamespace("future.apply", quietly = TRUE)) {
     gr_warn(paste0("parallel = TRUE needs the 'future' and 'future.apply' packages; ",
                    "running sequentially instead."), class = "gr_parallel_unavailable")
-    # `fn(item, trace)`, not `fn`: every other dispatch here passes the trace,
-    # and lazy evaluation hid the omission until the worker's first line touched
-    # it -- so the branch that promises to run sequentially instead died with
-    # "argument \"trace\" is missing", after ingestion, segmentation and any
-    # calls already paid for. The warning said degrade; the next line aborted.
-    return(lapply(x, function(item) fn(item, trace)))
+    # Each item is handed the trace, as in every other branch. Leaving it out
+    # once made this fallback fail with "argument \"trace\" is missing" after
+    # ingestion, segmentation and any calls already paid for.
+    return(sequential())
   }
 
   workers <- as.integer(clamp(workers %||% gr_options("workers"), 1, 32))

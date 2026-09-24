@@ -44,14 +44,24 @@ read_stuff <- function(chunks, question, client, spec, trace) {
                       notes = list(reason = "no chunk fits the context window")))
   }
   sub <- d[fit$idx, , drop = FALSE]
+  # One request, but not one past a limit: as an ensemble member this can run
+  # after another member has spent the budget.
+  if (!trace_can_call(trace)) {
+    return(new_answer(.NOT_FOUND, "stuff", question, integer(0), trace, partial = TRUE,
+                      chunks_sent = integer(0),
+                      notes = list(dropped_chunks = length(fit$dropped),
+                                   reason = paste(cap_name(trace), "reached before the request"))))
+  }
   res <- gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite,
                                     restate = spec$restate),
                  model = spec$model, max_output = spec$max_answer_tokens,
                  temperature = spec$temperature, trace = trace, label = "stuff.answer")
   ok <- usable_text(res)
+  # The chunks are what an answer rests on. With no answer they are not
+  # evidence of anything.
   new_answer(if (ok) res$text else .NOT_FOUND, "stuff", question, sub$chunk_id, trace,
-             evidence = evidence_table(sub$chunk_id, sub$text, sub$page, sub$section,
-                                       kind = "verbatim"),
+             evidence = if (ok) evidence_table(sub$chunk_id, sub$text, sub$page, sub$section,
+                                               kind = "verbatim"),
              partial = !ok || length(fit$dropped) > 0,
              notes = list(dropped_chunks = length(fit$dropped), error = res$error))
 }
@@ -65,11 +75,7 @@ read_stuff <- function(chunks, question, client, spec, trace) {
 read_map_reduce <- function(chunks, question, client, spec, trace) {
   d <- chunks$chunks
   if (!trace_can_call(trace, nrow(d))) {
-    # %s, not %d: max_calls is a whole DOUBLE, and %d refuses one beyond the
-    # integer range.
-    gr_warn(sprintf("map_reduce needs %d calls but the run cap is %s; reduce the chunk count or raise gr_options(max_calls=).",
-                    nrow(d), format(gr_options("max_calls"), scientific = FALSE)),
-            class = "gr_call_cap")
+    warn_capped_batch(trace, "map_reduce", nrow(d), "reduce the chunk count")
   }
   res <- gr_lapply(seq_len(nrow(d)), function(i, trace) {
     if (!trace_can_call(trace)) return(list(ok = FALSE, text = "", capped = TRUE))
@@ -87,11 +93,15 @@ read_map_reduce <- function(chunks, question, client, spec, trace) {
   # into the literal string "NULL" and spliced it into the merge prompt as if it
   # were a finding.
   useful <- ok & !vapply(texts, is_not_found, logical(1))
-  n_failed <- sum(!ok)
+  # A request a limit stopped was not sent, so it did not fail: gr_read() names
+  # the limit, and counting it here as well said "68 request(s) failed" of a
+  # run that had spent its budget.
+  capped <- vapply(res, function(r) isTRUE(r$capped), logical(1))
+  n_failed <- sum(!ok & !capped)
 
   if (!any(useful)) {
     return(new_answer(.NOT_FOUND, "map_reduce", question, d$chunk_id, trace,
-                      partial = n_failed > 0,
+                      partial = n_failed > 0 || any(capped),
                       notes = list(chunks = nrow(d), failed_calls = n_failed,
                                    reason = "no chunk yielded an answer")))
   }
@@ -103,7 +113,7 @@ read_map_reduce <- function(chunks, question, client, spec, trace) {
              evidence = evidence_table(d$chunk_id[useful], texts[useful],
                                        d$page[useful], d$section[useful],
                                        kind = "answer"),
-             partial = n_failed > 0 || !merged$ok,
+             partial = n_failed > 0 || any(capped) || !merged$ok,
              notes = list(chunks = nrow(d), answered = sum(useful), failed_calls = n_failed,
                           merge_levels = merged$levels, merge_ok = merged$ok))
 }
@@ -126,7 +136,9 @@ read_refine <- function(chunks, question, client, spec, trace) {
   overhead <- max(prompt_overhead(question, .gr_prompts$refine_system, spec$restate),
                   prompt_overhead(question, answer_system(spec$cite), spec$restate))
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
-  for (i in seq_len(nrow(d))) {
+  p <- progress_start(nrow(d), "chunk", trace)
+  with_progress(p, for (i in seq_len(nrow(d))) {
+    if (i > 1L) progress_tick(p, i - 1L)
     if (!trace_can_call(trace)) break
     excerpt <- render_chunks(d[i, , drop = FALSE])
     # Halve the budget between the running draft and the incoming excerpt.
@@ -160,9 +172,11 @@ read_refine <- function(chunks, question, client, spec, trace) {
       draft <- res$text
     }
     if (spec$delay_between_calls > 0) Sys.sleep(spec$delay_between_calls)
-  }
+  })
   new_answer(draft %||% .NOT_FOUND, "refine", question, used, trace,
-             partial = failures > 0 || length(used) < nrow(d),
+             # A cut excerpt or draft is text no request saw. `preview` applies
+             # the same rule to a truncated skim.
+             partial = failures > 0 || length(used) < nrow(d) || truncated > 0L,
              notes = list(chunks = nrow(d), visited = length(used),
                           revisions = revisions, failed_calls = failures,
                           truncations = truncated))
@@ -178,7 +192,7 @@ read_refine <- function(chunks, question, client, spec, trace) {
 read_skim <- function(chunks, question, client, spec, trace) {
   d <- chunks$chunks
   res <- gr_lapply(seq_len(nrow(d)), function(i, trace) {
-    if (!trace_can_call(trace)) return(list(ok = FALSE, text = ""))
+    if (!trace_can_call(trace)) return(list(ok = FALSE, text = "", capped = TRUE))
     r <- gr_call(client, list(
       list(role = "system", content = .gr_prompts$extract_system),
       list(role = "user", content = paste0("Question: ", question)),
@@ -191,12 +205,14 @@ read_skim <- function(chunks, question, client, spec, trace) {
   }, parallel = spec$parallel, label = "skim chunk", trace = trace)
 
   ok <- vapply(res, function(r) isTRUE(r$ok), logical(1))
+  # Not sent is not failed; see map_reduce.
+  capped <- vapply(res, function(r) isTRUE(r$capped), logical(1))
   txt <- vapply(res, function(r) as_chr1(r$text), character(1))
   keep <- ok & !grepl("^[\"'`*_ ]*NONE[\"'`*_. ]*$", trimws(txt), ignore.case = TRUE) & has_content(txt)
   if (!any(keep)) {
     return(new_answer(.NOT_FOUND, "skim", question, integer(0), trace,
                       partial = any(!ok),
-                      notes = list(chunks = nrow(d), failed_calls = sum(!ok),
+                      notes = list(chunks = nrow(d), failed_calls = sum(!ok & !capped),
                                    reason = "no chunk contained relevant evidence")))
   }
   # `skim` is the one reader whose evidence is written by the model rather than
@@ -220,11 +236,14 @@ read_skim <- function(chunks, question, client, spec, trace) {
                                     restate = spec$restate),
             model = spec$model, max_output = spec$max_answer_tokens,
             temperature = spec$temperature, trace = trace, label = "skim.answer")
-  } else gr_result(FALSE, error = "call cap reached before the synthesis step")
+  } else gr_result(FALSE, error = paste(cap_name(trace), "reached before the synthesis step"))
+  # No answer, no evidence; see stuff. The passages found are counted in the
+  # notes all the same.
   new_answer(if (usable_text(res2)) res2$text else .NOT_FOUND, "skim", question, ev$chunk_id, trace,
-             chunks_sent = d$chunk_id, evidence = ev, partial = any(!ok) || !res2$ok,
+             chunks_sent = d$chunk_id, evidence = if (usable_text(res2)) ev,
+             partial = any(!ok) || !res2$ok,
              notes = list(chunks = nrow(d), with_evidence = nrow(ev),
-                          failed_calls = sum(!ok), evidence_consolidated = dropped > 0,
+                          failed_calls = sum(!ok & !capped), evidence_consolidated = dropped > 0,
                           evidence_verified = sum(isTRUE_vec(ev$verified))))
 }
 
@@ -273,13 +292,17 @@ read_retrieve <- function(chunks, question, client, spec, trace) {
              list(k = k, kept = nrow(sub), embedding_source = src,
                   mmr = lambda, context_order = as_chr1(spec$context_order, "relevance"),
                   top_scores = round(utils::head(sort(scores, decreasing = TRUE), 5), 4)))
-  res <- gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite,
+  # Checked, as every request is: as an ensemble member this can run after
+  # another member has spent the budget.
+  res <- if (trace_can_call(trace)) {
+    gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite,
                                     restate = spec$restate),
-                 model = spec$model, max_output = spec$max_answer_tokens,
-                 temperature = spec$temperature, trace = trace, label = "retrieve.answer")
+            model = spec$model, max_output = spec$max_answer_tokens,
+            temperature = spec$temperature, trace = trace, label = "retrieve.answer")
+  } else gr_result(FALSE, error = paste(cap_name(trace), "reached before the answer step"))
   new_answer(if (res$ok) res$text else .NOT_FOUND, "retrieve", question, sub$chunk_id, trace,
-             evidence = evidence_table(sub$chunk_id, sub$text, sub$page, sub$section,
-                                       scores[fit$idx], kind = "verbatim"),
+             evidence = if (res$ok) evidence_table(sub$chunk_id, sub$text, sub$page, sub$section,
+                                                   scores[fit$idx], kind = "verbatim"),
              partial = !res$ok || length(fit$dropped) > 0 || degraded_embed,
              notes = list(chunks = nrow(d), top_k = k, used = nrow(sub),
                           embedding_source = src, embedding_fallback = degraded_embed,
@@ -363,7 +386,7 @@ read_rerank <- function(chunks, question, client, spec, trace) {
     why <- c(if (n_failed) sprintf("%d call(s) failed", n_failed),
              if (n_unscorable) sprintf("%d returned a value that is not a number between 0 and 10",
                                        n_unscorable),
-             if (n_capped) sprintf("%d not made because the call cap was reached", n_capped))
+             if (n_capped) sprintf("%d not made because the %s was reached", n_capped, cap_name(trace)))
     gr_warn(if (n_failed == length(scored))
               paste0("Every rerank scoring call failed (does this endpoint support JSON schema ",
                      "output?). Falling back to the BM25 prefilter ranking, which is lexical, ",
@@ -415,10 +438,11 @@ read_rerank <- function(chunks, question, client, spec, trace) {
                                     restate = spec$restate),
             model = spec$model, max_output = spec$max_answer_tokens,
             temperature = spec$temperature, trace = trace, label = "rerank.answer")
-  } else gr_result(FALSE, error = "call cap reached before the answer step")
+  } else gr_result(FALSE, error = paste(cap_name(trace), "reached before the answer step"))
+  # No answer, no evidence; see stuff.
   new_answer(if (res$ok) res$text else .NOT_FOUND, "rerank", question, sub$chunk_id, trace,
-             evidence = evidence_table(sub$chunk_id, sub$text, sub$page, sub$section,
-                                       sc[match(fit$idx, ii)], kind = "verbatim"),
+             evidence = if (res$ok) evidence_table(sub$chunk_id, sub$text, sub$page, sub$section,
+                                                   sc[match(fit$idx, ii)], kind = "verbatim"),
              partial = !res$ok || degraded || unjudged,
              notes = list(chunks = nrow(d), candidates = m, used = nrow(sub),
                           scoring_failures = n_failed, unscorable = n_unscorable,
@@ -437,8 +461,9 @@ read_hierarchical <- function(chunks, question, client, spec, trace) {
   d <- chunks$chunks
   summary_failures <- 0L
   summarise <- function(texts, level) {
-    unlist(gr_lapply(seq_along(texts), function(i, trace) {
-      if (!trace_can_call(trace)) return("")
+    got <- gr_lapply(seq_along(texts), function(i, trace) {
+      # Not sent is not failed; see map_reduce.
+      if (!trace_can_call(trace)) return(list(text = "", capped = TRUE))
       r <- gr_call(client, list(
         list(role = "system", content = .gr_prompts$summarise_system),
         list(role = "user", content = paste0("Question: ", question)),
@@ -446,12 +471,13 @@ read_hierarchical <- function(chunks, question, client, spec, trace) {
       ), model = spec$summary_model %||% spec$model, max_output = spec$max_summary_tokens,
          temperature = spec$temperature, trace = trace,
          label = sprintf("hier.summarise.L%d", level))
-      if (usable_text(r)) r$text else ""
-    }, parallel = spec$parallel, label = sprintf("summary L%d", level),
-       trace = trace), use.names = FALSE)
+      list(text = if (usable_text(r)) r$text else "", capped = FALSE)
+    }, parallel = spec$parallel, label = sprintf("summary L%d", level), trace = trace)
+    structure(vapply(got, function(g) as_chr1(g$text), character(1)),
+              capped = vapply(got, function(g) isTRUE(g$capped), logical(1)))
   }
   count_failures <- function(texts, got) {
-    summary_failures <<- summary_failures + sum(!has_content(got))
+    summary_failures <<- summary_failures + sum(!has_content(got) & !attr(got, "capped"))
     got
   }
 
@@ -475,14 +501,22 @@ read_hierarchical <- function(chunks, question, client, spec, trace) {
     fan <- as.integer(spec$fan_in)
     groups <- split(current, ceiling(seq_along(current) / fan))
     prev_n <- length(current)
-    current <- summarise(vapply(groups, paste, character(1), collapse = "\n\n"), level)
-    current <- current[has_content(current)]
-    gr_msg(sprintf("Hierarchical level %d: %d -> %d summaries.", level, prev_n, length(current)))
-    if (!length(current) || length(current) >= prev_n) break
+    nxt <- summarise(vapply(groups, paste, character(1), collapse = "\n\n"), level)
+    nxt <- nxt[has_content(nxt)]
+    gr_msg(sprintf("Hierarchical level %d: %d -> %d summaries.", level, prev_n, length(nxt)))
+    # A level that produced nothing, because a limit stopped it or every call
+    # failed, leaves the summaries already paid for; they are cut to fit below.
+    if (!length(nxt)) break
+    current <- nxt
+    if (length(current) >= prev_n) break
   }
 
   body <- paste(current, collapse = "\n\n")
-  if (gr_count_tokens(body) > bud$input) {
+  # Cutting the summaries to fit drops part of the document from the answer, the
+  # same loss `stuff` reports as dropped chunks, so it is partial and not only a
+  # warning.
+  truncated <- gr_count_tokens(body) > bud$input
+  if (truncated) {
     body <- gr_truncate_tokens(body, bud$input)
     gr_warn(sprintf("Hierarchical summaries still exceed the budget after %d level(s); truncating.", level),
             class = "gr_overflow")
@@ -496,11 +530,12 @@ read_hierarchical <- function(chunks, question, client, spec, trace) {
                                     restate = spec$restate),
             model = spec$model, max_output = spec$max_answer_tokens,
             temperature = spec$temperature, trace = trace, label = "hier.answer")
-  } else gr_result(FALSE, error = "call cap reached before the answer step")
+  } else gr_result(FALSE, error = paste(cap_name(trace), "reached before the answer step"))
   new_answer(if (usable_text(res)) res$text else body, "hierarchical", question, d$chunk_id, trace,
-             partial = !usable_text(res) || summary_failures > 0,
+             partial = !usable_text(res) || summary_failures > 0 || truncated,
              notes = list(chunks = nrow(d), levels = level, final_summaries = length(current),
-                          failed_summaries = summary_failures))
+                          failed_summaries = summary_failures,
+                          summaries_truncated = truncated))
 }
 
 # ---------------------------------------------------------------------------
@@ -580,7 +615,7 @@ read_iterative <- function(chunks, question, client, spec, trace) {
     seen <- c(seen, take)
     seen_score <- c(seen_score, sc[take])
 
-    if (!trace_can_call(trace)) { done_reason <- "call cap"; break }
+    if (!trace_can_call(trace)) { done_reason <- cap_name(trace); break }
     obud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens,
                       overhead = prompt_overhead(question, step_system, spec$restate))
     step <- iterative_fit(d, seen, seen_score, obud$input, spec$context_order)
@@ -611,7 +646,7 @@ read_iterative <- function(chunks, question, client, spec, trace) {
       if (rounds == 1L) {
         gr_warn(paste0("The first iterative step returned no parsable structured output, so the ",
                        "retrieve-assess loop cannot run (does this endpoint support JSON schema ",
-                       "output?). Answering from the first retrieval only -- this is effectively ",
+                       "output?). Answering from the first retrieval only, which is in effect ",
                        "'retrieve', not 'iterative'."), class = "gr_iterative_degraded")
       }
       break
@@ -660,10 +695,11 @@ read_iterative <- function(chunks, question, client, spec, trace) {
                                     restate = spec$restate),
             model = spec$model, max_output = spec$max_answer_tokens,
             temperature = spec$temperature, trace = trace, label = "iterative.final")
-  } else gr_result(FALSE, error = "call cap reached before the answer step")
+  } else gr_result(FALSE, error = paste(cap_name(trace), "reached before the answer step"))
+  # No answer, no evidence; see stuff.
   new_answer(if (res$ok) res$text else .NOT_FOUND, "iterative", question, sub$chunk_id, trace,
-             evidence = evidence_table(sub$chunk_id, sub$text, sub$page, sub$section,
-                                       kind = "verbatim"),
+             evidence = if (res$ok) evidence_table(sub$chunk_id, sub$text, sub$page, sub$section,
+                                                   kind = "verbatim"),
              partial = TRUE,
              notes = list(rounds = rounds, chunks_seen = length(seen),
                           chunks_dropped = length(final$dropped), queries = queries,
@@ -694,7 +730,7 @@ read_ensemble <- function(chunks, question, client, spec, trace) {
     dup <- members[duplicated(sigs) | duplicated(sigs, fromLast = TRUE)]
     gr_abort(sprintf(paste0("Ensemble members %s share the traversal signature '%s', so they would ",
                             "issue the same calls and produce the same answer at temperature 0. ",
-                            "Pick members with different signatures -- see gr_readers()."),
+                            "Pick members with different signatures; see gr_readers()."),
                      paste(sprintf("'%s'", dup), collapse = " and "), sigs[duplicated(sigs)][1]),
              class = "gr_bad_ensemble")
   }
@@ -716,9 +752,15 @@ read_ensemble <- function(chunks, question, client, spec, trace) {
     sub <- spec; sub$reader <- m; sub$members <- NULL
     r <- registry_get("readers", m, "readers")
     tryCatch(r$fn(chunks, question, client, sub, trace),
-             error = function(e) new_answer(.NOT_FOUND, m, question, integer(0), trace,
-                                            partial = TRUE,
-                                            notes = list(error = conditionMessage(e))))
+             error = function(e) {
+               # A missing key fails every member the same way; recording it as
+               # one member's failure would let the run carry on to the next.
+               # Re-raised from inside this handler: a separate `gr_auth_error =`
+               # handler would re-raise into this one and be recorded after all.
+               if (inherits(e, "gr_auth_error")) stop(e)
+               new_answer(.NOT_FOUND, m, question, integer(0), trace, partial = TRUE,
+                          notes = list(error = conditionMessage(e)))
+             })
   })
   names(results) <- members
   usable <- vapply(results, function(r) !is_not_found(r$answer), logical(1))
@@ -747,7 +789,7 @@ read_ensemble <- function(chunks, question, client, spec, trace) {
       list(role = "user", content = paste0("Question: ", question))
     ), model = spec$model, max_output = spec$max_answer_tokens, temperature = spec$temperature,
        trace = trace, label = "ensemble.adjudicate")
-  } else gr_result(FALSE, error = "call cap reached before adjudication")
+  } else gr_result(FALSE, error = paste(cap_name(trace), "reached before adjudication"))
 
   ev <- rbind_evidence(lapply(results[usable], function(r) r$evidence))
 
@@ -968,11 +1010,12 @@ read_preview <- function(chunks, question, client, spec, trace) {
   skim_units <- which(treat == "skim")
   ev_skim <- NULL
   failed <- 0L
+  not_sent <- 0L
   truncated <- 0L
   if (length(skim_units)) {
     res <- gr_lapply(skim_units, function(i, trace) {
       rows <- units[[i]]
-      if (!trace_can_call(trace)) return(list(ok = FALSE, text = "", rows = rows))
+      if (!trace_can_call(trace)) return(list(ok = FALSE, text = "", rows = rows, capped = TRUE))
       body <- render_chunks(d[rows, , drop = FALSE])
       cap <- max(64L, bud$input %/% 2L)
       # What the truncation costs is reported, not swallowed. A skimmed unit
@@ -993,7 +1036,10 @@ read_preview <- function(chunks, question, client, spec, trace) {
     truncated <- sum(vapply(res, function(r) as.integer(r$lost %||% 0L), integer(1)))
     ok <- vapply(res, function(r) isTRUE(r$ok), logical(1))
     txt <- vapply(res, function(r) as_chr1(r$text), character(1))
-    failed <- sum(!ok)
+    # Not sent is not failed; see map_reduce.
+    capped <- vapply(res, function(r) isTRUE(r$capped), logical(1))
+    failed <- sum(!ok & !capped)
+    not_sent <- sum(capped)
     keep <- ok & !grepl("^[\"'`*_ ]*NONE[\"'`*_. ]*$", trimws(txt), ignore.case = TRUE) &
       has_content(txt)
     if (any(keep)) {
@@ -1056,19 +1102,20 @@ read_preview <- function(chunks, question, client, spec, trace) {
     gr_call(client, answer_messages(question, body, cite = spec$cite, restate = spec$restate),
             model = spec$model, max_output = spec$max_answer_tokens,
             temperature = spec$temperature, trace = trace, label = "preview.answer")
-  } else gr_result(FALSE, error = "call cap reached before the answer step")
+  } else gr_result(FALSE, error = paste(cap_name(trace), "reached before the answer step"))
 
   used <- unique(c(d$chunk_id[keep_rows], if (!is.null(ev_skim)) ev_skim$chunk_id))
+  # No answer, no evidence; see stuff.
   new_answer(if (usable_text(res2)) res2$text else .NOT_FOUND, "preview", question, used, trace,
-             chunks_sent = d$chunk_id, evidence = ev,
+             chunks_sent = d$chunk_id, evidence = if (usable_text(res2)) ev,
              # A run that deliberately did not read part of the document is
              # partial in the sense the word carries everywhere else here: the
              # answer does not rest on everything that was available.
              # A truncated skim is the same kind of gap as a skipped section:
              # part of the document did not reach any model. It counts here for
              # the same reason `skip` does.
-             partial = !res2$ok || failed > 0L || any(treat == "skip") || degraded ||
-               truncated > 0L,
+             partial = !res2$ok || failed > 0L || not_sent > 0L || any(treat == "skip") ||
+               degraded || truncated > 0L,
              notes = list(sections = n_units, plan = plan_tab,
                           read = sum(treat == "read"), skimmed = sum(treat == "skim"),
                           skipped = sum(treat == "skip"), demoted_to_skim = length(demoted),

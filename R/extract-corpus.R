@@ -24,15 +24,15 @@
 #' every document and returns a tidy table, one row per document and one column
 #' per field, with a separate long table saying where every value came from.
 #'
-#' @param sources As [gr_read_many()]: file paths, a directory, or raw text --
-#'   and, additionally, a [gr_screen()] result. Passing the screening object
+#' @param sources As [gr_read_many()]: file paths, a directory, or raw text,
+#'   and additionally a [gr_screen()] result. Passing the screening object
 #'   rather than `screened$included` is what carries the search forward, so
 #'   [gr_audit_report()] can show it and the bibliographic fields the export
 #'   supplied are joined to the table.
-#' @param fields A [gr_fields()] schema, or a [gr_protocol()] -- a protocol
+#' @param fields A [gr_fields()] schema, or a [gr_protocol()]. A protocol
 #'   carries its own schema, question and recipe, so passing one is the same as
 #'   passing its three parts and it is the shorter way to say it.
-#' @param goal One sentence of context for the extraction -- "screening trials
+#' @param goal One sentence of context for the extraction, such as "screening trials
 #'   for a review of statins in primary prevention". It sharpens judgement calls
 #'   about what counts as the primary outcome; it does not decide what is
 #'   collected, because `fields` does that. Defaults to a neutral instruction.
@@ -54,7 +54,7 @@
 #' @param keep_answers Keep the underlying [gr_answer] objects in `$answers`.
 #'   They hold every chunk's source text, so for a large corpus this is what
 #'   runs you out of memory; the tables do not need them.
-#' @param ... Recipe overrides, as in [gr_read_many()] -- `max_tokens =` is the
+#' @param ... Recipe overrides, as in [gr_read_many()]. `max_tokens =` is the
 #'   one that matters here, because it decides how many chunks each document is
 #'   cut into and therefore how many calls it costs.
 #'
@@ -63,8 +63,8 @@
 #'     \item{`table`}{One row per document: `document`, one column per field in
 #'       the schema and of that field's type, then `n_filled`, `n_unverified`,
 #'       `conflicts`, `status`, `duplicate_of`, `error`. A document whose cleaned
-#'       text repeats one already read is not read again -- see
-#'       [gr_read_many()] -- so `subset(x$table, is.na(duplicate_of))` is the
+#'       text repeats one already read is not read again (see
+#'       [gr_read_many()]), so `subset(x$table, is.na(duplicate_of))` is the
 #'       set of distinct documents.}
 #'     \item{`evidence`}{Long form, one row per supported cell: `document`,
 #'       `document_id`, `field`, `chunk_id`, `page`, `section`, `quote`,
@@ -84,7 +84,7 @@
 #' without checking `status` silently turns the second into the first.
 #'
 #' @section What it costs:
-#' One call per chunk per document -- every chunk is read, because a schema field
+#' One call per chunk per document: every chunk is read, because a schema field
 #' can be answered by a sentence anywhere in the paper and a retrieval step that
 #' looked at the top eight chunks would miss it silently. Reconciliation is free
 #' unless a document contradicts itself. Cut the cost by segmenting more coarsely
@@ -97,7 +97,7 @@
 #' `verified = FALSE` and the fraction of it that did match in `match`.
 #'
 #' `n_unverified` counts the cells in that row whose value could not be tied to a
-#' verbatim span -- either because no quote was given, or because the quote is
+#' verbatim span, either because no quote was given, or because the quote is
 #' not in the chunk. That column is the one to look at before believing a table:
 #' `n_unverified` of zero means every value in the row can be pointed at in the
 #' document. A row where it is not zero is not wrong, but it is unaudited, and
@@ -115,14 +115,14 @@
 #'
 #' `chunk_id` is none of those. It numbers the pieces the document was cut into
 #' for *this* segmentation, so re-running with a different `max_tokens` makes
-#' chunk 7 a different piece of text. It is a pointer inside one run -- useful
-#' for going back to `$answers` -- and not a reference to publish.
+#' chunk 7 a different piece of text. It is a pointer inside one run, useful
+#' for going back to `$answers`, and not a reference to publish.
 #'
 #' There is deliberately no attempt to guess a document's title or authors from
 #' its filename or its first few lines. A heuristic like that fails silently on
 #' preprints, reports and anything scanned, and a citation that is wrong without
-#' saying so is worse than none. Ask for them the same way as everything else --
-#' `gr_fields(title = , authors = , year = , doi = )` -- and each comes back with
+#' saying so is worse than none. Ask for them the same way as everything else:
+#' `gr_fields(title = , authors = , year = , doi = )`. Each comes back with
 #' the sentence it was taken from and a check that the sentence is really there.
 #'
 #' @seealso [gr_fields()], [gr_protocol()], [gr_read_many()],

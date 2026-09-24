@@ -11,8 +11,8 @@ gr_trace_summary(trace)
 }
 \value{
 A one-row data frame: \code{run_id}, \code{calls}, \code{cached}, \code{steps},
-\code{tokens_in}, \code{tokens_out}, \code{errors}, \code{elapsed_s}. There is no cost column
--- combine \code{tokens_in}/\code{tokens_out} with \code{\link[=gr_estimate_cost]{gr_estimate_cost()}} for that.
+\code{tokens_in}, \code{tokens_out}, \code{errors}, \code{elapsed_s}. There is no cost column;
+combine \code{tokens_in}/\code{tokens_out} with \code{\link[=gr_estimate_cost]{gr_estimate_cost()}} for that.
 
 \code{cached} is how many of those calls were answered from a \code{\link[=gr_cache]{gr_cache()}} or a
 \code{\link[=gr_replay_client]{gr_replay_client()}}. Their tokens are still counted in \code{tokens_in} and

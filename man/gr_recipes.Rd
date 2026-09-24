@@ -19,6 +19,16 @@ of \code{gr_recipe}s.
 Named starting points that pair a segmentation strategy with a reader that
 suits it. Each is a plain \code{gr_recipe}, so you can modify any field.
 }
+\section{\code{"auto"}}{
+
+\code{\link[=answer_document]{answer_document()}} defaults to \code{recipe = "auto"}. It is not a recipe but a
+choice between two of these, made once the document is ingested: \code{"fast"}
+for a document of at most 50,000 tokens (less on a model with a small
+context window), \code{"thorough"} for anything longer. "Choosing the recipe" in
+\code{\link[=answer_document]{answer_document()}} gives the whole rule. Functions that read several
+documents or compare recipes take one fixed recipe, and refuse \code{"auto"}.
+}
+
 \examples{
 # What each built-in actually is, in one table.
 do.call(rbind, lapply(names(gr_recipes()), function(n) {

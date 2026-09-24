@@ -3,18 +3,21 @@
 #' Register a reading strategy
 #'
 #' Axis 3 is a registry, so how the model is made to *read* a chunk set is
-#' yours to define -- and a registered reader is a first-class one: it appears in
+#' yours to define. A registered reader is a first-class one: it appears in
 #' [gr_readers()], can be named in a [gr_recipe()] or an `ensemble`, and is
-#' subject to the same pre-flight cost and call caps as the built-ins.
+#' subject to the same call and spending limits as the built-ins.
 #'
 #' @param name Reader name. Re-registering an existing name replaces it.
+#'   `"auto"` is reserved for [answer_document()].
 #' @param fn Function of `(chunks, question, client, spec, trace)` returning a
 #'   `gr_answer`. See the section below.
 #' @param signature Traversal signature, `"select|calls|state"`. Two readers with
 #'   the same signature are the same methodology under two names; [gr_compare()]
 #'   uses it, together with the ingest and segment specs, to decide whether two
 #'   recipes are the same experiment, and `ensemble` refuses members that share
-#'   one.
+#'   one. A `select` of `"all"` says the reader sends every chunk, so a run
+#'   whose chunks alone would cost more than `max_cost_usd` is refused before
+#'   its first request.
 #' @param description One-line description, shown by [gr_readers()].
 #' @param cost_calls Human-readable call count in terms of N chunks (`"N + 1"`,
 #'   `"1 + embeddings"`), shown by [gr_readers()].
@@ -29,9 +32,9 @@
 #'   \item{`client`}{Pass it to [gr_call()]; never construct your own.}
 #'   \item{`spec`}{A [gr_read_spec()]. Honour at least `model`,
 #'     `max_answer_tokens` and `temperature`.}
-#'   \item{`trace`}{Pass it to every [gr_call()] so your calls are counted, and
-#'     check `readgpt:::trace_can_call(trace)` before each one so the run cap is
-#'     respected.}
+#'   \item{`trace`}{Pass it to every [gr_call()] so your calls are counted and
+#'     priced, and check `readgpt:::trace_can_call(trace)` before each one so
+#'     the run's call and spending limits are respected.}
 #' }
 #' Return [new_answer()]. Budget your prompt with [gr_budget()] rather than
 #' assuming the document fits.
@@ -58,6 +61,11 @@
 #'         "longest")$answer
 gr_register_reader <- function(name, fn, signature, description = "", cost_calls = "") {
   if (!is.function(fn)) gr_abort("`fn` must be a function of (chunks, question, client, spec, trace).")
+  # answer_document(recipe = "auto") would never reach a reader of that name.
+  if (identical(as_chr1(name, ""), "auto")) {
+    gr_abort(paste0("'auto' is reserved: answer_document() uses it to choose a recipe. ",
+                    "Register the reader under another name."), class = "gr_reserved_name")
+  }
   if (!grepl("^[^|]+\\|[^|]+\\|[^|]+$", as_chr1(signature))) {
     gr_abort("`signature` must have the form 'select|calls|state', e.g. 'topk|1|none'.")
   }
@@ -72,8 +80,8 @@ gr_register_reader <- function(name, fn, signature, description = "", cost_calls
 #' what that costs, both before you spend anything.
 #'
 #' @return A data frame with one row per registered reader: `name`, `signature`
-#'   (see [gr_reader_signature()]), `cost_calls` -- a formula in N, the number
-#'   of chunks, not a number -- and `description`.
+#'   (see [gr_reader_signature()]), `cost_calls` (a formula in N, the number
+#'   of chunks, not a number) and `description`.
 #' @seealso [gr_read()], [gr_reader_signature()], [gr_register_reader()],
 #'   [gr_read_spec()], [gr_compare()] to run several and compare
 #' @family reading functions
@@ -137,18 +145,18 @@ gr_reader_signature <- function(reader) {
 #' @param min_score For `retrieve`: chunks scoring below this are dropped, but
 #'   if that would leave nothing the single best chunk is used anyway. `-Inf`
 #'   disables the filter. Not a cosine similarity when embeddings fall back to
-#'   lexical vectors -- the score is then a blend of cosine and BM25.
+#'   lexical vectors: the score is then a blend of cosine and BM25.
 #' @param mmr Diversity of selection, for `retrieve` and `iterative`. `1` (the
 #'   default) is plain top-k. Below 1, chunks are picked greedily by
 #'   `mmr * relevance - (1 - mmr) * similarity to what is already picked`, so
 #'   three chunks saying the same thing do not all get in and pay for each other.
-#'   Costs nothing -- the vectors are already computed. `0.7` is a reasonable
+#'   Costs nothing: the vectors are already computed. `0.7` is a reasonable
 #'   place to start; `0` selects for novelty alone and will happily pick
 #'   irrelevant chunks because they are different.
 #' @param restate Whether to repeat the question before the excerpts as well as
 #'   after them: `"auto"` when the body is long enough to bury the first ask,
 #'   `"always"`, or `"never"`. A setting rather than a rule, because whether it
-#'   helps is a question about your corpus and your model -- point [gr_compare()]
+#'   helps is a question about your corpus and your model. Point [gr_compare()]
 #'   at two recipes differing only in this and find out.
 #' @param context_order Where the selected chunks sit in the prompt.
 #'   `"relevance"` (default) is most relevant first; `"document"` restores the
@@ -156,7 +164,7 @@ gr_reader_signature <- function(reader) {
 #'   consecutive; `"edges"` puts the strongest first and second-strongest last,
 #'   burying the weakest in the middle, because transformers attend measurably
 #'   better to the beginning and end of a long context than to its middle.
-#'   Selection is unaffected -- this decides only placement, and it applies to
+#'   Selection is unaffected. This decides only placement, and it applies to
 #'   `retrieve` and `rerank`, the two readers that put several ranked chunks in
 #'   one prompt.
 #' @param rerank_candidates,rerank_min_score For `rerank`: how many chunks to
@@ -165,8 +173,8 @@ gr_reader_signature <- function(reader) {
 #'   the recursion depth cap.
 #' @param max_rounds For `iterative`: retrieve-assess cycles.
 #' @param preview_tokens For `preview`: the cap on the outline the planner sees.
-#'   The outline is built from section labels, sizes and short excerpts -- never
-#'   the full text -- and per-section excerpts shrink until the whole thing fits,
+#'   The outline is built from section labels, sizes and short excerpts (never
+#'   the full text), and per-section excerpts shrink until the whole thing fits,
 #'   so every section stays visible to the planner rather than the outline being
 #'   truncated and some sections never being offered to it at all. The planner is
 #'   an LLM call about a long document and so prone to exactly the degradation
@@ -185,11 +193,13 @@ gr_reader_signature <- function(reader) {
 #'   The trace is complete either way: workers keep their own and the parent
 #'   absorbs them, in input order, so a parallel run reports the same calls,
 #'   tokens and cost as the same run made sequentially. Two things do not cross
-#'   the process boundary. `gr_options(max_calls =)` is checked per worker while
-#'   the fan-out is in flight, so the pre-flight estimate -- which runs in the
-#'   parent and knows the total -- is what bounds a parallel run. And a client
-#'   that keeps its own log in a closure, such as [gr_mock_client()], only sees
-#'   the calls made in this process; ask the trace instead.
+#'   the process boundary. The limits in [gr_options()] are checked before a
+#'   batch is sent and not inside it, since a worker cannot see what the others
+#'   spend, so the pre-flight check, which runs in the parent, is what bounds a
+#'   parallel run: its estimated calls against `max_calls`, and its worst case,
+#'   every reply at its cap, against `max_cost_usd`. And a client that keeps its
+#'   own log in a closure, such as [gr_mock_client()], only sees the calls made
+#'   in this process; ask the trace instead.
 #' @param delay_between_calls Seconds to sleep between sequential calls, for
 #'   rate-limit shaping. Honoured by `map_reduce`, `refine` and `skim`; the
 #'   other readers do not sleep.
@@ -272,8 +282,8 @@ gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL
 #' Read chunks and answer a question
 #'
 #' The third axis. Reading is a separate decision from segmentation because the
-#' call pattern -- which chunks reach the model, in how many requests, and
-#' whether anything flows between them -- is where both cost and answer quality
+#' call pattern (which chunks reach the model, in how many requests, and
+#' whether anything flows between them) is where both cost and answer quality
 #' are actually decided. The same chunk set can be read many ways;
 #' [gr_readers()] lists them with what each costs.
 #'
@@ -309,16 +319,41 @@ gr_read <- function(chunks, question, client, spec = NULL, trace = NULL) {
 
   gr_msg(sprintf("Reading with '%s' (%s) over %d chunk(s).",
                  spec$reader, rd$signature, nrow(chunks$chunks)))
-  preflight(chunks, spec, trace)
-
-  out <- rd$fn(chunks, question, client, spec, trace)
+  # A limit that stopped an earlier read on the same trace did not stop this
+  # one. The trace keeps that record unless this read is stopped too.
+  if (inherits(trace, "gr_trace")) {
+    earlier <- list(stop = isTRUE(trace$budget_stop), reason = trace$stop_reason %||% NA_character_)
+    trace$budget_stop <- FALSE
+    trace$stop_reason <- NA_character_
+    on.exit(if (!isTRUE(trace$budget_stop)) {
+      trace$budget_stop <- earlier$stop
+      trace$stop_reason <- earlier$reason
+    }, add = TRUE)
+  }
+  rec <- warning_recorder()
+  out <- withCallingHandlers({
+    preflight(chunks, spec, trace)
+    rd$fn(chunks, question, client, spec, trace)
+  }, gr_warning = rec$record)
   if (!inherits(out, "gr_answer")) {
     gr_abort(sprintf("Reader '%s' did not return a gr_answer object.", spec$reader))
   }
   if (isTRUE(trace$budget_stop)) {
     out$partial <- TRUE
-    out$notes$call_cap_reached <- gr_options("max_calls")
+    if (identical(trace$stop_reason, "cost")) {
+      out$notes$cost_cap_reached <- gr_options("max_cost_usd")
+    } else {
+      out$notes$call_cap_reached <- gr_options("max_calls")
+    }
   }
+  # Pages that never became text are missing from every chunk, so nothing this
+  # reader did could have seen them. The answer rests on part of the document.
+  unread <- chunks[["unread_pages", exact = TRUE]] %||% integer(0)
+  if (length(unread)) {
+    out$partial <- TRUE
+    out$notes["unread_pages"] <- list(unread)
+  }
+  out$warnings <- c(chunks[["warnings", exact = TRUE]] %||% character(0), rec$get())
   out$signature <- rd$signature
   out
 }
@@ -327,6 +362,16 @@ gr_read <- function(chunks, question, client, spec = NULL, trace = NULL) {
 #'
 #' The previous release had nothing like this, which is why an unrecognised
 #' model name could silently turn a 10,000-word document into ~10,001 API calls.
+#'
+#' Only what is known refuses a run: how many requests the reader will make,
+#' and, for a reader that sends every chunk, what sending them costs. What the
+#' replies will cost is not known, and neither is which chunks a top-k reader
+#' will pick. The old check priced every reply at its token cap and refused a
+#' run at an estimate of $5.54 that cost $0.11. Now a run is refused before it
+#' starts only when it cannot finish under `max_cost_usd`, and
+#' `trace_can_call()` stops any run once its spending reaches the limit. The
+#' worst case is still recorded in the trace, and still refuses a parallel
+#' read: a batch sent to workers cannot be stopped part way through.
 #' @noRd
 preflight <- function(chunks, spec, trace) {
   n <- nrow(chunks$chunks)
@@ -369,32 +414,117 @@ preflight <- function(chunks, spec, trace) {
                      spec$reader, n, est_calls, already, format(cap, scientific = FALSE)),
              class = "gr_call_cap")
   }
-  est_in <- sum(chunks$chunks$tokens) + est_calls * 200L
+  tok <- sum(chunks$chunks$tokens)
+  est_in <- tok + est_calls * 200L
   # Size the completion estimate by the LARGER of the two caps: only the
   # per-chunk readers use max_chunk_tokens, and the rest size their answers with
   # max_answer_tokens, so using the per-chunk cap under-estimated output by
   # whatever ratio the user chose -- measured at 97x in one configuration.
+  # This is the worst case, recorded below; it refuses only a parallel read.
   est_out <- est_calls * max(spec$max_chunk_tokens, spec$max_answer_tokens,
                              spec$max_summary_tokens)
-  cost <- gr_estimate_cost(spec$model, est_in, est_out)
-  budget <- gr_options("max_cost_usd")
-  if (is.na(cost) && !is.null(budget) && is.finite(budget)) {
-    # No pricing for this model, so the cap cannot be enforced. Say so rather
-    # than silently running with no spending guard at all.
-    gr_warn(sprintf(paste0("Model '%s' has no pricing in the registry, so the $%.2f ",
-                           "max_cost_usd cap cannot be checked for this run. Register prices ",
-                           "with gr_register_model(input_usd =, output_usd =) to enable it."),
-                    spec$model, budget), class = "gr_cost_uncheckable")
+  # The reader warns about an unrecognised model itself; once is enough.
+  quiet_model <- function(expr) suppressWarnings(expr, classes = "gr_unknown_model")
+  # Every request at the price of the dearest model the run uses: skim_model and
+  # summary_model take most of the requests of the readers that use them, and a
+  # bound priced at `model` alone understated a run whose per-chunk model was
+  # the dear one.
+  models <- unique(c(spec$model, spec$skim_model, spec$summary_model))
+  worst <- max(vapply(models, function(m) as.numeric(quiet_model(
+    gr_estimate_cost(m, est_in, est_out))), numeric(1)))
+  # What sending every chunk once costs, for each reader in the run that sends
+  # them all, at the price of the model that receives them: skim and extract
+  # send chunks to skim_model and hierarchical to summary_model, which exist to
+  # be cheaper. stuff sends what fits in one request. A reader that picks chunks
+  # adds nothing, since what it sends is not known until it has ranked them.
+  sends_all <- function(r) startsWith(as_chr1(tryCatch(
+    registry_get("readers", r, "readers")$signature, error = function(e) ""), ""), "all|")
+  readers <- if (identical(spec$reader, "ensemble")) spec$members %||% c("retrieve", "map_reduce")
+             else spec$reader
+  floor_usd <- function(r) {
+    if (!sends_all(r)) return(0)
+    to <- switch(r, skim = , extract = spec$skim_model %||% spec$model,
+                 hierarchical = spec$summary_model %||% spec$model, spec$model)
+    sent <- tok
+    if (identical(r, "stuff")) {
+      room <- tryCatch(quiet_model(gr_budget(spec$model,
+                                             reserve_output = spec$max_answer_tokens)$input),
+                       error = function(e) tok)
+      sent <- min(tok, room)
+    }
+    as.numeric(quiet_model(gr_estimate_cost(to, sent, 0)))
   }
-  if (!is.na(cost) && !is.null(budget) && is.finite(budget) && cost > budget) {
-    gr_abort(sprintf(paste0("Estimated worst-case cost for '%s' over %d chunks is about $%.2f ",
-                            "(~%d calls), above the $%.2f limit. Raise it with ",
-                            "gr_options(max_cost_usd = ...) or choose a cheaper configuration."),
-                     spec$reader, n, cost, est_calls, budget), class = "gr_cost_cap")
+  every_chunk <- any(vapply(readers, sends_all, logical(1)))
+  input_cost <- sum(vapply(readers, floor_usd, numeric(1)))
+  budget <- gr_options("max_cost_usd")
+  if (!is.null(budget) && is.finite(budget)) {
+    limit <- format(budget, scientific = FALSE)
+    # No pricing for a model, so what its requests cost is not counted. Say so
+    # rather than silently running with no spending guard at all.
+    unit <- vapply(models, function(m) as.numeric(quiet_model(gr_estimate_cost(m, 1, 1))),
+                   numeric(1))
+    unpriced <- models[is.na(unit)]
+    if (length(unpriced)) {
+      gr_warn(sprintf(paste0("%s no pricing in the registry, so what %s requests cost cannot be ",
+                             "counted against the $%s max_cost_usd limit. Register prices with ",
+                             "gr_register_model(input_usd =, output_usd =) to enable it."),
+                      if (length(unpriced) == 1L) sprintf("Model '%s' has", unpriced)
+                      else sprintf("Models %s have", paste0("'", unpriced, "'", collapse = ", ")),
+                      if (length(unpriced) == 1L) "its" else "their", limit),
+              class = "gr_cost_uncheckable")
+    }
+    # What this run has spent already counts, as calls already made count
+    # against the call cap: several readers on one trace are one run.
+    spent <- if (inherits(trace, "gr_trace")) as_num1(trace$spent_usd, 0) else 0
+    if (limit_reached(spent, budget)) {
+      gr_abort(sprintf(paste0("This run has already spent $%s, which reaches the $%s limit. ",
+                              "Raise it with gr_options(max_cost_usd = ...)."),
+                       fmt_usd(spent), limit),
+               class = "gr_cost_cap")
+    }
+    # A limit of nothing: a model that costs nothing may run, and the first
+    # request to one that has a price would already pass it.
+    if (budget <= 0 && any(!is.na(unit) & unit > 0)) {
+      gr_abort(sprintf(paste0("The spending limit is $0, and '%s' has a price. Raise it with ",
+                              "gr_options(max_cost_usd = ...), or use a model registered at no cost."),
+                       models[!is.na(unit) & unit > 0][1]),
+               class = "gr_cost_cap")
+    }
+    already <- if (spent > 0) sprintf(", and this run has already spent $%s", fmt_usd(spent)) else ""
+    if (every_chunk && !is.na(input_cost) && spent + input_cost > budget) {
+      gr_abort(sprintf(paste0("Reading this document with '%s' sends every chunk at least once, ",
+                              "which costs about $%s before any reply (%d chunk(s), %s input ",
+                              "tokens)%s, above the $%s limit. Raise it with ",
+                              "gr_options(max_cost_usd = ...), or use a reader that sends only the ",
+                              "chunks it picks, such as recipe = \"needle\"."),
+                       spec$reader, fmt_usd(input_cost), n,
+                       format(tok, big.mark = ",", scientific = FALSE), already, limit),
+               class = "gr_cost_cap")
+    }
+    # Only readers that send batches: stuff, retrieve and screen make one
+    # request, and refine and iterative make theirs one at a time, each checked.
+    batches <- function(r) !r %in% c("stuff", "retrieve", "screen", "refine", "iterative")
+    parallel_read <- isTRUE(spec$parallel) && any(vapply(readers, batches, logical(1))) &&
+      requireNamespace("future", quietly = TRUE) && requireNamespace("future.apply", quietly = TRUE)
+    if (parallel_read && !is.na(worst) && spent + worst > budget) {
+      gr_abort(sprintf(paste0("With parallel = TRUE, requests go out in batches that cannot be ",
+                              "stopped part way, so a parallel read is held to its worst case: ",
+                              "every reply at its cap, about $%s for '%s' over %d chunk(s)%s, ",
+                              "above the $%s limit. Raise it with gr_options(max_cost_usd = ...), ",
+                              "or read without parallel = TRUE, where spending is checked before ",
+                              "every request."),
+                       fmt_usd(worst), spec$reader, n, already, limit),
+               class = "gr_cost_cap")
+    }
   }
   trace_note(trace, "preflight", list(reader = spec$reader, chunks = n,
                                       est_calls = est_calls,
-                                      est_cost_usd = if (is.na(cost)) NULL else round(cost, 4),
+                                      # Every chunk once, for a reader that sends
+                                      # them all: the floor that can refuse a run.
+                                      est_input_usd = if (is.na(input_cost)) NULL
+                                                      else round(input_cost, 4),
+                                      # Every reply at its cap: an upper bound.
+                                      est_cost_usd = if (is.na(worst)) NULL else round(worst, 4),
                                       # What was changed from the defaults, so
                                       # the trace records the configuration and
                                       # not just the reader's name.

@@ -79,7 +79,7 @@
 #' `[study N]` marker in finished prose already is. A number that is not there is
 #' dropped and counted rather than trusted, a claim left with no supporting study
 #' is dropped entirely, and a `moderator` naming a column the table does not have
-#' is cleared -- an invented explanation for a real disagreement. `$dropped`
+#' is cleared: it is an invented explanation for a real disagreement. `$dropped`
 #' records all of it, so a claims table that looks thin can be told apart from a
 #' literature that is.
 #'
@@ -178,14 +178,30 @@ gr_claims <- function(extraction, question = NULL, protocol = NULL, client = NUL
   groups <- synth_batches(rendered, bud$input)
 
   raw <- list()
+  not_sent <- 0L
   for (g in seq_along(groups)) {
     if (length(groups) > 1L) gr_msg(sprintf("Claims from batch %d of %d.", g, length(groups)))
+    # A batch a limit stopped is not a batch the model found nothing in.
+    if (!trace_can_call(trace)) {
+      not_sent <- not_sent + 1L
+      next
+    }
     raw[[g]] <- claims_batch(groups[[g]], question, client, spec, trace)
+  }
+  if (not_sent > 0L) {
+    gr_warn(sprintf(paste0("%d of %d batch(es) of studies were not sent: the run reached its %s. ",
+                           "The studies in them contribute no claims. Raise the limit and run ",
+                           "gr_claims() again."),
+                    not_sent, length(groups), cap_name(trace)),
+            class = "gr_claims_capped")
   }
   got <- do.call(rbind, raw[!vapply(raw, is.null, logical(1))])
   if (is.null(got) || !nrow(got)) {
-    gr_warn(paste0("No claims came back. Every call failed, or the model returned none. There is ",
-                   "nothing for gr_outline() or gr_synthesise(claims = ) to work from."),
+    gr_warn(paste0("No claims came back. ",
+                   if (not_sent == length(groups)) sprintf("No batch was sent: the run had reached its %s. ",
+                                                           cap_name(trace))
+                   else "Every call failed, or the model returned none. ",
+                   "There is nothing for gr_outline() or gr_synthesise(claims = ) to work from."),
             class = "gr_no_claims")
     return(new_claims(empty_claim_rows(), used, question, empty_dropped(), trace))
   }
@@ -198,12 +214,13 @@ gr_claims <- function(extraction, question = NULL, protocol = NULL, client = NUL
   # real disagreement is the most convincing error this layer can make.
   checked <- claims_verify(got, used, cols = study_fields(used, hide = hidden))
   if (!nrow(checked$claims)) {
-    gr_warn(paste0("Every claim was dropped in verification -- see `$dropped`. The usual cause is ",
+    gr_warn(paste0("Every claim was dropped in verification; see `$dropped`. The usual cause is ",
                    "a model citing study numbers that are not in the table."),
             class = "gr_no_claims")
     return(new_claims(empty_claim_rows(), used, question, checked$dropped, trace))
   }
-  final <- if (length(groups) > 1L) {
+  # Claims can repeat only across batches that returned some.
+  final <- if (sum(vapply(raw, function(r) NROW(r) > 0L, logical(1))) > 1L) {
     claims_reconcile(checked$claims, question, client, spec, trace)
   } else checked$claims
   new_claims(final, used, question, checked$dropped, trace)
@@ -386,7 +403,14 @@ claims_verify <- function(got, used, cols = study_fields(used)) {
 #' @noRd
 claims_reconcile <- function(claims, question, client, spec, trace) {
   n <- nrow(claims)
-  if (n < 2L || !trace_can_call(trace)) return(reindex_claims(claims))
+  if (n < 2L) return(reindex_claims(claims))
+  if (!trace_can_call(trace)) {
+    gr_warn(sprintf(paste0("Claims from different batches were not merged: the run reached its %s, ",
+                           "so one finding can appear as more than one claim."),
+                    cap_name(trace)),
+            class = "gr_claims_capped")
+    return(reindex_claims(claims))
+  }
   listed <- paste(sprintf("%d. %s", seq_len(n), claims$claim), collapse = "\n")
   res <- gr_call_json(client, list(
     list(role = "system", content = .gr_prompts$reconcile_system),
@@ -638,7 +662,7 @@ claim_order <- function(claims, support, weights) {
 #'
 #' [gr_synthesise()] takes an `outline` fixed before the reading, which makes the
 #' review's structure the author's hypothesis rather than a finding. It is often
-#' the strongest thing a review has to say -- that a literature splits into three
+#' the strongest thing a review has to say: that a literature splits into three
 #' incompatible operationalisations, say, and that the argument about effect size
 #' is really an argument about measurement. This derives the structure from the
 #' claims instead, and hands it back for you to accept or replace.
@@ -647,7 +671,7 @@ claim_order <- function(claims, support, weights) {
 #' Every claim is assigned to exactly one section. A claim number that does not
 #' exist is dropped; a claim assigned twice keeps its first section; a claim the
 #' reply never placed is put in the closing section rather than lost, with a
-#' message saying so. A section left with no claims is removed -- except the
+#' message saying so. A section left with no claims is removed, except the
 #' closing one, which is allowed to be empty because it is where [gr_gaps()]
 #' writes and gaps are not claims.
 #'
@@ -660,7 +684,7 @@ claim_order <- function(claims, support, weights) {
 #'   and anything unplaced. `NULL` for no closing section.
 #' @param trace A [gr_trace()] to record into.
 #' @return A named character vector shaped exactly like the `outline` argument of
-#'   [gr_synthesise()] -- headings as names, briefs as values -- carrying
+#'   [gr_synthesise()] (headings as names, briefs as values), carrying
 #'   `attr(, "claims")` (a `section`/`claim_id` frame), `attr(, "rationale")` and
 #'   `attr(, "closing")`.
 #' @seealso [gr_claims()], [gr_synthesise()], [gr_gaps()]
@@ -704,7 +728,8 @@ gr_outline <- function(claims, question = NULL, client = NULL, model = NULL,
                           ifelse(is.na(cw$moderator), "",
                                  sprintf(" (contested; distinguished by %s)", cw$moderator))),
                   collapse = "\n")
-  res <- if (trace_can_call(trace)) {
+  capped <- !trace_can_call(trace)
+  res <- if (!capped) {
     gr_call_json(client, list(
       list(role = "system", content = .gr_prompts$outline_system),
       list(role = "user", content = paste0("Review question: ", question)),
@@ -718,8 +743,12 @@ gr_outline <- function(claims, question = NULL, client = NULL, model = NULL,
 
   secs <- if (isTRUE(res$ok)) outline_rows(json_field(res$value, "sections", scalar = FALSE)) else NULL
   if (is.null(secs) || !nrow(secs)) {
-    gr_warn(paste0("The outline call did not return usable sections, so every claim was put in ",
-                   "one section. Pass an `outline` to gr_synthesise() yourself, or try again."),
+    gr_warn(if (capped) sprintf(paste0("The outline was not requested: the run had reached its %s. ",
+                                       "Every claim was put in one section. Raise the limit, or ",
+                                       "pass an `outline` to gr_synthesise() yourself."),
+                                cap_name(trace))
+            else paste0("The outline call did not return usable sections, so every claim was put ",
+                        "in one section. Pass an `outline` to gr_synthesise() yourself, or try again."),
             class = "gr_outline_failed")
     secs <- data.frame(heading = "Findings", brief = "What the evidence supports",
                        rationale = NA_character_, stringsAsFactors = FALSE)
@@ -861,7 +890,7 @@ finish_outline <- function(secs, cw, closing, max_sections) {
 #'
 #' @param claims A [gr_claims()] result.
 #' @param extraction The [gr_extract()] result the claims came from. Only its
-#'   `$fields` is used, and only to learn which categories were *declared* --
+#'   `$fields` is used, and only to learn which categories were *declared*;
 #'   without it a category nobody studied is indistinguishable from one nobody
 #'   thought of.
 #' @param max_cells Cap on reported empty combinations, which grow as the product
@@ -1015,7 +1044,7 @@ print.gr_gaps <- function(x, ...) {
               format(attr(x, "studies") %||% NA)))
   if (!isTRUE(attr(x, "had_schema"))) {
     cat("  no schema given, so a category nobody studied cannot be told from one\n")
-    cat("  nobody asked about -- pass `extraction =` for those\n")
+    cat("  nobody asked about; pass `extraction =` for those\n")
   }
   if (nrow(x)) {
     k <- table(x$kind)

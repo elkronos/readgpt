@@ -15,13 +15,13 @@ A named list: \code{id}, \code{context_window}, \code{max_output}, \code{input_u
 \code{supports_temperature}, \code{kind}, \code{dimensions}, \code{as_of}, \code{certain}, and
 \code{source} (\code{"registered"}, \code{"builtin"}, \code{"alias"}, \code{"pattern:..."} or
 \code{"default"}). \code{certain} is \code{FALSE} when the answer came from a family regex
-or the fallback -- verify before relying on it for cost control.
+or the fallback; verify before relying on it for cost control.
 }
 \description{
 Resolution order: user-registered exact id, built-in exact id, alias, family
 regex, then a conservative default. The returned list always carries
-\code{certain}, which is \code{FALSE} when the answer came from a regex or the default
--- treat that as "verify before trusting for cost control".
+\code{certain}, which is \code{FALSE} when the answer came from a regex or the default.
+Treat that as "verify before trusting for cost control".
 }
 \examples{
 gr_model_info("gpt-4o")[c("context_window", "max_output", "certain")]

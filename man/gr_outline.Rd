@@ -33,14 +33,14 @@ and anything unplaced. \code{NULL} for no closing section.}
 }
 \value{
 A named character vector shaped exactly like the \code{outline} argument of
-\code{\link[=gr_synthesise]{gr_synthesise()}} -- headings as names, briefs as values -- carrying
+\code{\link[=gr_synthesise]{gr_synthesise()}} (headings as names, briefs as values), carrying
 \code{attr(, "claims")} (a \code{section}/\code{claim_id} frame), \code{attr(, "rationale")} and
 \code{attr(, "closing")}.
 }
 \description{
 \code{\link[=gr_synthesise]{gr_synthesise()}} takes an \code{outline} fixed before the reading, which makes the
 review's structure the author's hypothesis rather than a finding. It is often
-the strongest thing a review has to say -- that a literature splits into three
+the strongest thing a review has to say: that a literature splits into three
 incompatible operationalisations, say, and that the argument about effect size
 is really an argument about measurement. This derives the structure from the
 claims instead, and hands it back for you to accept or replace.
@@ -50,7 +50,7 @@ claims instead, and hands it back for you to accept or replace.
 Every claim is assigned to exactly one section. A claim number that does not
 exist is dropped; a claim assigned twice keeps its first section; a claim the
 reply never placed is put in the closing section rather than lost, with a
-message saying so. A section left with no claims is removed -- except the
+message saying so. A section left with no claims is removed, except the
 closing one, which is allowed to be empty because it is where \code{\link[=gr_gaps]{gr_gaps()}}
 writes and gaps are not claims.
 }

@@ -21,7 +21,7 @@ the query string run against it. The query is the point; a review reporting
 \item{dates}{When each search was run, as \code{YYYY-MM-DD}. One value, or one per
 database. Searches drift: a review is a statement about a date.}
 
-\item{limits}{Limits applied — language, publication years, study design
+\item{limits}{Limits applied: language, publication years, study design
 filters. Free text; a review states them whatever they were.}
 
 \item{registration}{Registration identifier (a PROSPERO number, say), or
@@ -43,7 +43,7 @@ strategy for at least one database \emph{so that it could be repeated}.
 }
 \details{
 This function computes nothing. It exists so the answer travels with the run
-instead of living in a lab notebook — it reaches \code{\link[=gr_flow]{gr_flow()}} and the audit
+instead of living in a lab notebook. It reaches \code{\link[=gr_flow]{gr_flow()}} and the audit
 report, and it round-trips through \code{\link[=gr_protocol_save]{gr_protocol_save()}} alongside the
 criteria, so what was searched and what was eligible are one artifact.
 }

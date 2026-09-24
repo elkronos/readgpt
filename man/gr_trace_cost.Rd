@@ -17,7 +17,7 @@ unpriced model is impossible.
 }
 \description{
 Costs a trace using each step's own model and counting only the calls that
-were really issued -- a call served from a \code{\link[=gr_cache]{gr_cache()}} or a
+were issued: a call served from a \code{\link[=gr_cache]{gr_cache()}} or a
 \code{\link[=gr_replay_client]{gr_replay_client()}} spent nothing, however many tokens its prompt contained.
 }
 \details{
@@ -31,7 +31,7 @@ cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
 ans <- answer_document(readgpt_example(), "What was revenue?", "fast", client = cl)
 gr_trace_cost(ans$trace)
 
-# Priced by the model on the STEP -- the recipe's model -- not by the mock
+# Priced by the model on the STEP (the recipe's model), not by the mock
 # that answered. A cached re-run costs nothing for a different reason:
 # paid_calls falls to zero while calls does not.
 cache <- gr_cache(file.path(tempdir(), "readgpt-cost-example"))

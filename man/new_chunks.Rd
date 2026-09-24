@@ -35,9 +35,9 @@ A \link{gr_chunks}.
 Exported because it is part of the extension API: \code{\link[=gr_segment]{gr_segment()}} rejects
 anything that does not inherit \code{"gr_chunks"}, so a custom segmenter
 registered with \code{\link[=gr_register_segmenter]{gr_register_segmenter()}} cannot be written without this.
-Using it also gets you the shared invariants for free -- blank units dropped,
+Using it also gets you the shared invariants for free (blank units dropped,
 \code{chunk_id} assigned in order, tokens and characters measured, provenance
-recycled to match -- so your segmenter behaves like the built-ins wherever
+recycled to match), so your segmenter behaves like the built-ins wherever
 the rest of the package touches it.
 }
 \details{

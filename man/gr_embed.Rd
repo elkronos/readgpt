@@ -41,7 +41,8 @@ the client, if any, and otherwise to \code{gr_options("embedder")}.}
 \value{
 A numeric matrix, one row per input, carrying an \code{"embedding_source"}
 attribute naming the embedder that produced it (\code{"api"} or \code{"lexical"} for
-the built-ins) -- always check it before treating the rows as semantic. Rows from the API and lexical paths are L2-normalised.
+the built-ins). Always check it before treating the rows as semantic.
+Rows from the API and lexical paths are L2-normalised.
 With \code{fallback = "none"} and a failed request the result is a 0 x 0 matrix.
 }
 \description{

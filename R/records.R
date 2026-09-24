@@ -287,15 +287,15 @@ title_key <- function(x) {
 #'
 #' @section Why start here rather than at a folder:
 #' A folder of PDFs cannot say which databases were searched, with what query,
-#' on what date, or how many records came back — PRISMA items 6, 7 and 16 — and
+#' on what date, or how many records came back (PRISMA items 6, 7 and 16), and
 #' no care further down substitutes for them. It also cannot say what is
 #' *missing*: a record with no PDF is "report not retrieved", which is a finding
 #' about the review, and a folder represents it as nothing at all.
 #'
 #' It fixes something quieter too. [gr_synthesise()] cites by author and year,
-#' and without an export those come from asking a model to read a title page —
-#' the one part of a citation that must be exactly right, resting on the loosest
-#' guarantee in the pipeline. From an export they are data.
+#' and without an export those come from asking a model to read a title page.
+#' That is the one part of a citation that must be exactly right, resting on the
+#' loosest guarantee in the pipeline. From an export they are data.
 #'
 #' @param exports Paths to `.ris`, `.txt`, `.bib` or `.bibtex` files, or a
 #'   directory containing them. Several exports from several databases is the
@@ -316,7 +316,7 @@ title_key <- function(x) {
 #'     \item{`counts`}{Identified, per database, duplicates removed, distinct
 #'       records, reports sought, reports retrieved, reports not retrieved.}
 #'     \item{`search`}{The `gr_search()`, or `NULL`.}
-#'     \item{`unmatched_files`}{Documents on disk that no record claims — usually
+#'     \item{`unmatched_files`}{Documents on disk that no record claims, usually
 #'       a sign the export and the folder are out of step.}
 #'   }
 #' @seealso [gr_search()], [gr_screen()], [gr_flow()], [gr_inventory()]
@@ -410,7 +410,7 @@ read_export <- function(path) {
   if (grepl("(^|\n)TY[[:space:]]{0,2}-", head_txt)) {
     return(records_from_ris(lines, basename(path)))
   }
-  gr_warn(sprintf(paste0("'%s' does not look like RIS or BibTeX -- no 'TY  -' and no '@article{'. ",
+  gr_warn(sprintf(paste0("'%s' does not look like RIS or BibTeX: no 'TY  -' and no '@article{'. ",
                          "It contributed no records."), basename(path)),
           class = "gr_unknown_export")
   empty_records()
@@ -596,7 +596,7 @@ print.gr_records <- function(x, ...) {
 #' strategy for at least one database *so that it could be repeated*.
 #'
 #' This function computes nothing. It exists so the answer travels with the run
-#' instead of living in a lab notebook — it reaches [gr_flow()] and the audit
+#' instead of living in a lab notebook. It reaches [gr_flow()] and the audit
 #' report, and it round-trips through [gr_protocol_save()] alongside the
 #' criteria, so what was searched and what was eligible are one artifact.
 #'
@@ -605,7 +605,7 @@ print.gr_records <- function(x, ...) {
 #'   "we searched PubMed" without it cannot be repeated.
 #' @param dates When each search was run, as `YYYY-MM-DD`. One value, or one per
 #'   database. Searches drift: a review is a statement about a date.
-#' @param limits Limits applied — language, publication years, study design
+#' @param limits Limits applied: language, publication years, study design
 #'   filters. Free text; a review states them whatever they were.
 #' @param registration Registration identifier (a PROSPERO number, say), or
 #'   `NA` and say so. PRISMA item 24 asks either way.
@@ -670,7 +670,7 @@ print.gr_search <- function(x, ...) {
   if (!is.na(x$limits[1])) cat(sprintf("  limits : %s\n", paste(x$limits, collapse = "; ")))
   for (o in x$other) cat(sprintf("  also   : %s\n", o))
   cat(sprintf("  registration: %s\n",
-              if (is.na(x$registration)) "NOT REGISTERED -- say so in the report"
+              if (is.na(x$registration)) "NOT REGISTERED; say so in the report"
               else x$registration))
   invisible(x)
 }

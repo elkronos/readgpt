@@ -22,9 +22,9 @@ A \code{json}-classed character string. \code{NULL} fields are written as
 \description{
 A generic so traces, answers, chunk sets and documents all serialise
 consistently and safely (\code{auto_unbox} plus \code{null = "null"}, so a missing
-field appears as \code{null} rather than vanishing -- assigning \code{NULL} into an R
+field appears as \code{null} rather than vanishing). Assigning \code{NULL} into an R
 list \emph{deletes the key}, which is why the old code's \code{final_answer} field
-silently disappeared from the JSON whenever a call failed).
+silently disappeared from the JSON whenever a call failed.
 }
 \examples{
 cl <- gr_mock_client(function(m, p) "45.2 million dollars")

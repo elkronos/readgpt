@@ -37,7 +37,8 @@
 #'   continues. Use `"error"` to fail fast, or `"none"` to get an empty matrix.
 #' @return A numeric matrix, one row per input, carrying an `"embedding_source"`
 #'   attribute naming the embedder that produced it (`"api"` or `"lexical"` for
-#'   the built-ins) -- always check it before treating the rows as semantic. Rows from the API and lexical paths are L2-normalised.
+#'   the built-ins). Always check it before treating the rows as semantic.
+#'   Rows from the API and lexical paths are L2-normalised.
 #'   With `fallback = "none"` and a failed request the result is a 0 x 0 matrix.
 #' @export
 #' @seealso [gr_embedders()] for what is registered, [gr_register_embedder()]
@@ -105,9 +106,9 @@ gr_embed <- function(client, texts, model = NULL, batch_size = 64L, cache = NULL
         "Replaying a run cannot reproduce its embeddings: ", why, ". A trace records model ",
         "calls, not embedding vectors. Falling back to hashed lexical vectors, so chunk ",
         "ranking may differ from the original run even though every recorded answer is ",
-        "reproduced exactly. Record the run with a deterministic embedder -- ",
-        "gr_options(embedder = 'lexical'), or one registered with ",
-        "gr_register_embedder(deterministic = TRUE) -- and replay it with the same one, ",
+        "reproduced exactly. Record the run with a deterministic embedder ",
+        "(gr_options(embedder = 'lexical'), or one registered with ",
+        "gr_register_embedder(deterministic = TRUE)) and replay it with the same one, ",
         "and the replay is exact."),
         "gr_replay_no_embeddings"))
     }
@@ -123,13 +124,17 @@ gr_embed <- function(client, texts, model = NULL, batch_size = 64L, cache = NULL
       "embed text. Falling back to hashed lexical vectors: these approximate word overlap, ",
       "not meaning, so semantic segmentation and top-k retrieval will be markedly less ",
       "accurate. Pass `embed =` to gr_backend_client() or gr_ellmer_client(), or set ",
-      "gr_options(embedder = ) to a registered embedder -- see gr_embedders()."),
+      "gr_options(embedder = ) to a registered embedder; see gr_embedders()."),
       "gr_backend_no_embeddings"))
   }
 
   m <- tryCatch(emb$fn(texts, list(client = client, model = model, batch_size = batch_size,
                                    cache = cache, trace = trace, embedder = emb$name)),
                 error = function(e) e)
+  # A missing key is not an embedder failing: falling back to lexical vectors
+  # would hide it behind a quality warning, and every later request would fail
+  # the same way. It stops the run.
+  if (inherits(m, "gr_auth_error")) stop(m)
   bad <- if (inherits(m, "condition")) conditionMessage(m)
          else if (!is.numeric(m)) "it did not return a numeric matrix"
          else if (NROW(m) != length(texts))
@@ -179,7 +184,7 @@ embed_api <- function(texts, params) {
       # `api-key` header for chat needs it for embeddings too, and two copies of
       # the header logic is how one of them ends up a release behind.
       headers <- request_headers(client)
-      if (is.null(headers)) gr_abort("no API key available", class = "gr_embed_error")
+      if (is.null(headers)) no_credentials_error()
       resp <- tryCatch(
         httr::POST(paste0(client$base_url, "/embeddings"),
                    httr::content_type_json(),

@@ -41,12 +41,12 @@ is how the automatic \code{Authorization} is dropped.}
 }
 \value{
 An object of class \code{gr_client}: a list of the settings above.
-Constructing one makes no request and does not require a key -- the key is
+Constructing one makes no request and does not require a key; the key is
 resolved at call time by \code{\link[=gr_api_key]{gr_api_key()}}.
 }
 \description{
 The client is an object, not a global. Passing it explicitly is what lets a
-Shiny app serve two users with two different keys in one R process -- the old
+Shiny app serve two users with two different keys in one R process. The old
 code called \code{Sys.setenv(OPENAI_API_KEY = ...)}, which is process-wide, so the
 second user's key silently billed the first user's requests.
 }
@@ -70,15 +70,15 @@ scheme needs no \code{OPENAI_API_KEY} set at all:
 }\if{html}{\out{</div>}}
 
 Headers are credentials and routing metadata, not part of what answers, so
-they are excluded from the \code{\link[=gr_cache]{gr_cache()}} key for the same reason \code{api_key} is
--- a rotating bearer or a per-request correlation id would otherwise make
+they are excluded from the \code{\link[=gr_cache]{gr_cache()}} key for the same reason \code{api_key} is.
+A rotating bearer or a per-request correlation id would otherwise make
 every cache lookup miss. If a header changes \emph{which} model answers, give that
 client its own \code{base_url} or \code{model} so the cache can tell them apart.
 }
 
 \examples{
-# A client is a value, not a global. Two of them, two keys, one R process --
-# which is what makes a Shiny app serving two users safe.
+# A client is a value, not a global. Two of them, two keys, one R process.
+# That is what makes a Shiny app serving two users safe.
 a <- gr_client(model = "gpt-4o",  api_key = "sk-user-a")
 b <- gr_client(model = "gpt-4.1", api_key = "sk-user-b", timeout = 30)
 vapply(list(a = a, b = b), function(cl) cl$model, character(1))

@@ -42,8 +42,8 @@
 #' @param scope `"block"` (default) applies the step to each text block
 #'   independently. `"document"` applies it once to all blocks joined together,
 #'   which is required for anything that reasons about position or repetition
-#'   across the whole document -- dropping a trailing bibliography, or detecting
-#'   a running head by how often a line recurs. A document-scoped step that was
+#'   across the whole document (dropping a trailing bibliography, or detecting
+#'   a running head by how often a line recurs). A document-scoped step that was
 #'   applied per block would simply never fire.
 #' @return Invisibly, `name`.
 #' @seealso [gr_cleaners()], [gr_clean()], [gr_ingest_spec()]
@@ -101,7 +101,7 @@ gr_cleaners <- function() {
 #'   `NULL` for the `default_on` set. Unlike [gr_ingest_spec()]'s `clean`
 #'   argument this does **not** accept preset names. Steps are reordered so every
 #'   `"early"` cleaner runs before every `"late"` one, regardless of the order
-#'   given -- this is what stops digit removal from running before the page and
+#'   given. This is what stops digit removal from running before the page and
 #'   figure filters that need digits to match.
 #' @param opts Named list passed to every step.
 #' @return The cleaned character vector, with a `"gr_clean_log"` attribute
@@ -111,7 +111,7 @@ gr_cleaners <- function() {
 #'   [gr_ingest_spec()] to use a configuration in a real run
 #' @family ingest functions
 #' @examples
-#' # Listed late-then-early, but page_numbers still runs FIRST -- otherwise
+#' # Listed late-then-early, but page_numbers still runs FIRST; otherwise
 #' # remove_numbers eats the "1" and "Page" survives as body text.
 #' out <- gr_clean(c("Page 1", "Revenue rose to 45.2 million in 2024."),
 #'                 steps = c("remove_numbers", "page_numbers"))
@@ -283,11 +283,11 @@ register_builtin_cleaners <- function() {
     })
 
   gr_register_cleaner("remove_numbers", stage = "late", default_on = FALSE,
-    description = "Replace every digit with a space. OFF by default -- this makes figures, dates and percentages unanswerable",
+    description = "Replace every digit with a space. OFF by default: this makes figures, dates and percentages unanswerable",
     fn = function(x, o) gsub("\\d+", " ", x, perl = TRUE))
 
   gr_register_cleaner("remove_punctuation", stage = "late", default_on = FALSE,
-    description = "Replace punctuation with spaces. OFF by default -- destroys sentence boundaries",
+    description = "Replace punctuation with spaces. OFF by default: destroys sentence boundaries",
     # (*UCP) makes \w Unicode-aware; without it [[:alnum:]] is ASCII-only under
     # PCRE here and every accented or non-Latin letter was deleted too.
     fn = function(x, o) gsub("(*UCP)[^\\w\\s]", " ", x, perl = TRUE))

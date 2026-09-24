@@ -17,7 +17,7 @@ The client, with the cache attached.
 \description{
 Returns the same client with the cache attached, so a cached mock client is
 still a mock client and \verb{$calls()} still records only the calls that were
-actually issued -- which is exactly how you check that the cache is working.
+issued, which is how you check that the cache is working.
 }
 \examples{
 calls <- 0

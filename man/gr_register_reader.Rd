@@ -7,7 +7,8 @@
 gr_register_reader(name, fn, signature, description = "", cost_calls = "")
 }
 \arguments{
-\item{name}{Reader name. Re-registering an existing name replaces it.}
+\item{name}{Reader name. Re-registering an existing name replaces it.
+\code{"auto"} is reserved for \code{\link[=answer_document]{answer_document()}}.}
 
 \item{fn}{Function of \verb{(chunks, question, client, spec, trace)} returning a
 \code{gr_answer}. See the section below.}
@@ -16,7 +17,9 @@ gr_register_reader(name, fn, signature, description = "", cost_calls = "")
 the same signature are the same methodology under two names; \code{\link[=gr_compare]{gr_compare()}}
 uses it, together with the ingest and segment specs, to decide whether two
 recipes are the same experiment, and \code{ensemble} refuses members that share
-one.}
+one. A \code{select} of \code{"all"} says the reader sends every chunk, so a run
+whose chunks alone would cost more than \code{max_cost_usd} is refused before
+its first request.}
 
 \item{description}{One-line description, shown by \code{\link[=gr_readers]{gr_readers()}}.}
 
@@ -28,9 +31,9 @@ Invisibly, \code{name}.
 }
 \description{
 Axis 3 is a registry, so how the model is made to \emph{read} a chunk set is
-yours to define -- and a registered reader is a first-class one: it appears in
+yours to define. A registered reader is a first-class one: it appears in
 \code{\link[=gr_readers]{gr_readers()}}, can be named in a \code{\link[=gr_recipe]{gr_recipe()}} or an \code{ensemble}, and is
-subject to the same pre-flight cost and call caps as the built-ins.
+subject to the same call and spending limits as the built-ins.
 }
 \section{Writing a reader}{
 
@@ -42,9 +45,9 @@ Your function receives:
 \item{\code{client}}{Pass it to \code{\link[=gr_call]{gr_call()}}; never construct your own.}
 \item{\code{spec}}{A \code{\link[=gr_read_spec]{gr_read_spec()}}. Honour at least \code{model},
 \code{max_answer_tokens} and \code{temperature}.}
-\item{\code{trace}}{Pass it to every \code{\link[=gr_call]{gr_call()}} so your calls are counted, and
-check \code{readgpt:::trace_can_call(trace)} before each one so the run cap is
-respected.}
+\item{\code{trace}}{Pass it to every \code{\link[=gr_call]{gr_call()}} so your calls are counted and
+priced, and check \code{readgpt:::trace_can_call(trace)} before each one so
+the run's call and spending limits are respected.}
 }
 Return \code{\link[=new_answer]{new_answer()}}. Budget your prompt with \code{\link[=gr_budget]{gr_budget()}} rather than
 assuming the document fits.

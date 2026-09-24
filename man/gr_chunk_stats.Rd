@@ -12,7 +12,7 @@ gr_chunk_stats(chunks)
 \value{
 A one-row data frame: \code{method}, \code{n}, \code{total_tokens}, \code{min}, \code{median},
 \code{mean}, \code{max}, \code{over_cap}. \code{method} reports any fallback that occurred.
-\code{total_tokens} exceeds the document's own token count when overlap is on --
+\code{total_tokens} exceeds the document's own token count when overlap is on;
 that difference is the duplication overlap buys you.
 }
 \description{

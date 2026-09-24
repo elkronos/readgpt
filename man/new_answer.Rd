@@ -25,7 +25,7 @@ failure.}
 
 \item{question}{The question, carried through for the record.}
 
-\item{chunks_used}{Integer \code{chunk_id}s that CONTRIBUTED to the answer -- not
+\item{chunks_used}{Integer \code{chunk_id}s that CONTRIBUTED to the answer, not
 every chunk you sent.}
 
 \item{trace}{The \code{gr_trace} passed to your reader. Pass it through; do not
@@ -34,7 +34,7 @@ create a new one, or your calls will not appear in the run's totals.}
 \item{evidence}{Optional data frame of supporting spans; build it with the
 columns \code{chunk_id}, \code{text}, \code{page}, \code{section}, \code{score}.}
 
-\item{partial}{\code{TRUE} if anything degraded -- a failed call, a dropped chunk,
+\item{partial}{\code{TRUE} if anything degraded: a failed call, a dropped chunk,
 a truncated prompt. Callers are told to check this before trusting
 \verb{$answer}, so setting it honestly matters more than it looks.}
 

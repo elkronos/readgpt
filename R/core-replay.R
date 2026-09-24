@@ -52,7 +52,7 @@ gr_trace_save <- function(trace, path) {
 #'
 #' Replays the responses in a trace instead of calling a model. Give it the
 #' trace from a run and the same document and question, and you get that run
-#' back -- same answers, same evidence, same merge decisions -- with no API key,
+#' back (same answers, same evidence, same merge decisions) with no API key,
 #' no network and no spend.
 #'
 #' This is what makes a published result checkable. Ship the trace next to the
@@ -72,14 +72,14 @@ gr_trace_save <- function(trace, path) {
 #'
 #' @section Matching:
 #' A response is matched on the exact prompt messages plus the model id. When a
-#' run issued the same prompt more than once -- which happens at a temperature
-#' above zero, and in readers that revisit a chunk -- the recorded responses are
+#' run issued the same prompt more than once (which happens at a temperature
+#' above zero, and in readers that revisit a chunk), the recorded responses are
 #' returned in the order they were produced. Once they are exhausted the last
 #' one repeats.
 #'
 #' @section Embeddings:
 #' Embeddings are not model calls and are not recorded in a trace, so whether a
-#' replay reproduces a run's chunk *ranking* depends on how the run embedded --
+#' replay reproduces a run's chunk *ranking* depends on how the run embedded,
 #' and that is checked rather than assumed. The ranking reproduces exactly when
 #' the recording used a **deterministic** embedder and the replay uses the
 #' **same** one; both conditions, because replaying an API-embedded run with a
@@ -89,6 +89,15 @@ gr_trace_save <- function(trace, path) {
 #' reproduced, but the ranking may differ. Record a run you intend to publish
 #' with `gr_options(embedder = "lexical")`, or with your own embedder registered
 #' as `deterministic = TRUE`.
+#'
+#' @section The recipe "auto" chose:
+#' A recording of [answer_document()] with `recipe = "auto"` holds the recipe
+#' the choice picked for each document and question, and a replay of the same
+#' document and question repeats that choice rather than making it again. What
+#' the choice rests on (the token count, the registered models, the client's
+#' model) can differ between the session that recorded a run and the one
+#' replaying it, and a different choice would send prompts the recording does
+#' not have.
 #'
 #' @section What does not replay:
 #' Traces do not record the JSON schema a call requested, so two calls that
@@ -117,6 +126,7 @@ gr_trace_save <- function(trace, path) {
 gr_replay_client <- function(source, strict = TRUE) {
   steps <- replay_steps(source)
   embed_source <- replay_embed_source(source)
+  auto_choices <- replay_auto_choices(source)
   if (!length(steps)) {
     gr_abort(paste0("That trace has no recorded model calls, so there is nothing to replay. ",
                     "A run that made no calls (every reader failed, or the budget stopped it ",
@@ -131,6 +141,7 @@ gr_replay_client <- function(source, strict = TRUE) {
   idx$hits <- 0L
   idx$repeats <- 0L
   idx$misses <- list()
+  idx$auto_used <- rep(FALSE, nrow(auto_choices))
 
   for (st in steps) {
     kf <- replay_key(st$prompt, st$model)
@@ -158,6 +169,18 @@ gr_replay_client <- function(source, strict = TRUE) {
     # Which embedder the RECORDING used, so a replay can tell an embedding it
     # can reproduce from one it cannot. See gr_embed().
     embed_source = embed_source,
+    # The recipe answer_document()'s "auto" chose in the recording for a
+    # document and question, found by their key. Replayed rather than chosen
+    # again: what the choice rests on (the token count, the registered models,
+    # the client) can differ between the session that recorded a run and the
+    # one replaying it. Several recorded choices for one key are handed out in
+    # the order they were made.
+    auto_choice = function(key = NULL) {
+      hit <- which(auto_choices$key == as_chr1(key, "") & !idx$auto_used)
+      if (!length(hit)) return(NULL)
+      idx$auto_used[hit[1]] <- TRUE
+      auto_choices$chose[hit[1]]
+    },
     n_recorded = length(steps),
     stats = function() data.frame(
       recorded = length(steps), distinct = length(idx$full),
@@ -257,6 +280,28 @@ replay_embed_source <- function(source) {
   if (length(srcs) == 1L) srcs else NA_character_
 }
 
+#' The choices "auto" made in a recording: the key of the document and question
+#' each was made for, and the recipe it picked, in the order they were made.
+#' @noRd
+replay_auto_choices <- function(source) {
+  none <- data.frame(key = character(0), chose = character(0), stringsAsFactors = FALSE)
+  obj <- source
+  if (inherits(source, "gr_trace")) obj <- trace_as_list(source)
+  else if (is.character(source) && length(source) == 1L && file.exists(source)) {
+    obj <- tryCatch(jsonlite::fromJSON(source, simplifyVector = FALSE),
+                    error = function(e) NULL)
+  }
+  if (!is.list(obj)) return(none)
+  rows <- lapply(obj$steps %||% list(), function(st) {
+    if (!is.list(st) || !identical(as_chr1(st$label, ""), "auto_recipe")) return(NULL)
+    d <- st$detail %||% list()
+    data.frame(key = as_chr1(d$key, ""), chose = as_chr1(d$chose, NA_character_),
+               stringsAsFactors = FALSE)
+  })
+  out <- do.call(rbind, c(list(none), rows))
+  out[!is.na(out$chose) & out$chose %in% c("fast", "thorough") & nzchar(out$key), , drop = FALSE]
+}
+
 #' Normalise a recorded prompt to a plain list of role/content pairs.
 #' @noRd
 replay_prompt <- function(p) {
@@ -294,7 +339,7 @@ replay_lookup <- function(client, messages, model, params) {
   if (is.null(recorded)) {
     other <- idx$prompt[[replay_key(messages, NULL)]]
     detail <- if (!is.null(other)) {
-      sprintf(" The same prompt IS recorded under model %s -- replay the run with that model.",
+      sprintf(" The same prompt IS recorded under model %s; replay the run with that model.",
               paste(sprintf("'%s'", other), collapse = " or "))
     } else {
       sprintf(" The recording holds %d distinct prompt(s); this is not one of them, so the replay has diverged from the run that produced it (a different document, question, recipe or segmenter).",

@@ -37,21 +37,21 @@ and getting it right matters because it is what sizes your chunks.}
 For \code{\link[=gr_client]{gr_client()}} a cache key can be built from the API shape, base URL and
 model, because those completely describe what will answer: two clients with
 the same three give the same answers today and next month, which is what
-makes a cache safe to keep on disk. A backend has none of that -- every one
-of them is \code{api = "backend"}, \code{base_url = "backend://"} -- and the thing
+makes a cache safe to keep on disk. A backend has none of that (every one
+of them is \code{api = "backend"}, \code{base_url = "backend://"}), and the thing
 that actually answers is an R closure, whose behaviour this package cannot
 inspect.
 
 So the default is a fresh id per client object, which is \emph{safe}: two
 different handlers can never trade answers. It is also \emph{session-scoped}, so
 a cache or store will not be reused by a later session. Pass a stable \code{id}
-to get cross-session reuse -- and pass one \strong{only} when the handler really
-does answer the same way every time, because that is the assertion you are
+to get cross-session reuse. Pass one \strong{only} when the handler does
+answer the same way every time, because that is the assertion you are
 making. Hashing the closure would not do: two handlers can share a body and
 differ in what they captured.}
 
 \item{max_retries, timeout}{Recorded on the client for completeness. Retrying
-is the backend's business -- this package does not retry a handler, because
+is the backend's business: this package does not retry a handler, because
 it cannot know whether the failure was transient.}
 }
 \value{
@@ -61,8 +61,8 @@ An object of class \code{gr_backend_client}, usable anywhere a
 \description{
 Wraps an arbitrary R function as a client. \code{handler} receives
 \verb{(messages, params)} and returns a string or a \link{gr_result}; everything else
-the package does -- context budgeting, cost and call caps, provenance, the
-run trace, \code{\link[=gr_cache]{gr_cache()}}, \code{\link[=gr_replay_client]{gr_replay_client()}}, \code{\link[=gr_compare]{gr_compare()}} -- works
+the package does (context budgeting, cost and call caps, provenance, the
+run trace, \code{\link[=gr_cache]{gr_cache()}}, \code{\link[=gr_replay_client]{gr_replay_client()}}, \code{\link[=gr_compare]{gr_compare()}}) works
 exactly as it does for the built-in HTTP client.
 }
 \details{

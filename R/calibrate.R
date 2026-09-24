@@ -40,8 +40,8 @@
 #'
 #' @section Which rows to sample:
 #' `of = "excluded"` is usually the right answer and is not the obvious one.
-#' Sensitivity failures hide among the exclusions — a study the screener threw
-#' away is gone, and nothing downstream will ever mention it — while the records
+#' Sensitivity failures hide among the exclusions: a study the screener threw
+#' away is gone, and nothing downstream will ever mention it, while the records
 #' it kept are going to be read by a person anyway. Sampling everything at a
 #' realistic inclusion rate spends most of the sample confirming exclusions that
 #' were never in doubt, and leaves two or three positives to estimate
@@ -159,12 +159,12 @@ as_screening_table <- function(screening) {
 #' Compares [gr_screen()]'s decisions with a person's on the same documents, and
 #' reports what that sample supports: how much of the eligible literature the
 #' screener kept, how much of the irrelevant literature it removed, and how much
-#' reading it saved — each with an interval, and each refused when the sample is
-#' too small to say.
+#' reading it saved. Each comes with an interval, and each is refused when the
+#' sample is too small to say.
 #'
 #' @section Two sensitivities, and the gap between them:
 #' `"unclear"` is a deferral, not a miss. A record the screener could not settle
-#' goes to a person, so it is not lost — and counting it as a failure would
+#' goes to a person, so it is not lost, and counting it as a failure would
 #' punish the screener for the one behaviour that makes it safe.
 #'
 #' So two figures are reported. **Sensitivity as deployed** asks what fraction of
@@ -201,7 +201,7 @@ as_screening_table <- function(screening) {
 #'   \describe{
 #'     \item{`counts`}{The confusion matrix, as kept/excluded by eligible/not.}
 #'     \item{`metrics`}{One row per statistic: `estimate`, `lower`, `upper`, `n`.}
-#'     \item{`missed`}{The eligible studies the screener excluded — the rows
+#'     \item{`missed`}{The eligible studies the screener excluded: the rows
 #'       themselves, because a list of the misses says more than a rate.}
 #'     \item{`disagreements`}{Every row where the two differ, in either
 #'       direction.}
@@ -285,14 +285,14 @@ gr_calibrate <- function(screening, reference, positive = "include", min_positiv
     gr_abort(paste0("This reference stacks more than one sampling frame (",
                     paste(sort(unique(as.character(ref$sampled_from))), collapse = " and "),
                     "). An unweighted figure over stratified samples is wrong, not just ",
-                    "imprecise. Calibrate each frame separately -- one gr_calibrate() call ",
-                    "per file -- or pass `of =` if the rows really are one frame."),
+                    "imprecise. Calibrate each frame separately (one gr_calibrate() call ",
+                    "per file), or pass `of =` if the rows are one frame."),
              class = "gr_mixed_frame")
   }
   if (identical(of, "unknown")) {
     gr_warn(paste0("This reference does not say which part of the screening run it came ",
                    "from, so the figures below assume a sample of EVERYTHING screened. If ",
-                   "it is a sample of one stratum -- the exclusions, say -- sensitivity ",
+                   "it is a sample of one stratum (the exclusions, say), sensitivity ",
                    "and specificity are artifacts of that frame rather than facts about ",
                    "the screener. Pass `of = \"excluded\"`, `\"kept\"` or `\"all\"` to say which."),
             class = "gr_unknown_frame")
@@ -441,7 +441,7 @@ cohen_kappa <- function(a, b) {
 #' Subsetting a reference frame gives a plain data frame.
 #'
 #' `[` on an object whose class extends `data.frame` keeps the CLASS and drops
-#' every other attribute -- so `ref[, cols]` came back still claiming to be a
+#' every other attribute, so `ref[, cols]` came back still claiming to be a
 #' `gr_reference_frame` while `of`, `frame_n`, `screened_n` and `seed` were gone,
 #' and gr_calibrate() then computed the corpus-wide metric set from a stratified
 #' sample. The same trap, and the same fix, as `[.gr_gaps`.
@@ -479,10 +479,10 @@ print.gr_calibration <- function(x, ...) {
   }
   if (identical(x$frame$of, "excluded")) {
     cat("  (sampled from exclusions only: this frame estimates what was lost, not\n")
-    cat("   sensitivity or specificity -- it contains no kept records to compute them from)\n")
+    cat("   sensitivity or specificity: it contains no kept records to compute them from)\n")
   } else if (identical(x$frame$of, "kept")) {
     cat("  (sampled from kept records only: this frame estimates how much of what was\n")
-    cat("   kept is worth keeping, not sensitivity -- the misses are not in it)\n")
+    cat("   kept is worth keeping, not sensitivity: the misses are not in it)\n")
   }
   if (nrow(x$missed)) {
     cat(sprintf("  ! %d eligible stud%s excluded by the screener:\n", nrow(x$missed),

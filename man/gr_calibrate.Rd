@@ -32,7 +32,7 @@ An object of class \code{gr_calibration}:
 \describe{
 \item{\code{counts}}{The confusion matrix, as kept/excluded by eligible/not.}
 \item{\code{metrics}}{One row per statistic: \code{estimate}, \code{lower}, \code{upper}, \code{n}.}
-\item{\code{missed}}{The eligible studies the screener excluded — the rows
+\item{\code{missed}}{The eligible studies the screener excluded: the rows
 themselves, because a list of the misses says more than a rate.}
 \item{\code{disagreements}}{Every row where the two differ, in either
 direction.}
@@ -44,13 +44,13 @@ direction.}
 Compares \code{\link[=gr_screen]{gr_screen()}}'s decisions with a person's on the same documents, and
 reports what that sample supports: how much of the eligible literature the
 screener kept, how much of the irrelevant literature it removed, and how much
-reading it saved — each with an interval, and each refused when the sample is
-too small to say.
+reading it saved. Each comes with an interval, and each is refused when the
+sample is too small to say.
 }
 \section{Two sensitivities, and the gap between them}{
 
 \code{"unclear"} is a deferral, not a miss. A record the screener could not settle
-goes to a person, so it is not lost — and counting it as a failure would
+goes to a person, so it is not lost, and counting it as a failure would
 punish the screener for the one behaviour that makes it safe.
 
 So two figures are reported. \strong{Sensitivity as deployed} asks what fraction of

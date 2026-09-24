@@ -13,7 +13,9 @@ gr_audit_report(
   title = NULL,
   claims = NULL,
   records = NULL,
-  calibration = NULL
+  calibration = NULL,
+  answer = NULL,
+  open = interactive()
 )
 }
 \arguments{
@@ -32,8 +34,8 @@ a reader checks the decisions against.}
 carries. It adds the link the rest of the report cannot make: the claim a
 sentence is making, back to the studies meant to support it.}
 
-\item{records}{A \code{\link[=gr_records]{gr_records()}}. Adds the search itself to the report --
-which sources, with what query, on what date -- and starts the flow counts
+\item{records}{A \code{\link[=gr_records]{gr_records()}}. Adds the search itself to the report
+(which sources, with what query, on what date) and starts the flow counts
 at identification. Without one the report says so, because a missing search
 is a defect in the review rather than in the report.}
 
@@ -41,6 +43,15 @@ is a defect in the review rather than in the report.}
 the screening is: sensitivity, specificity, kappa, and how many eligible
 studies the screener threw away. Without it the report says what the run did
 and nothing about whether it did it well.}
+
+\item{answer}{A \link{gr_answer} from \code{\link[=answer_document]{answer_document()}}, or a \code{gr_corpus} from
+\code{\link[=gr_read_many]{gr_read_many()}}. Adds the question, the answer, whether it is complete,
+what it cost, and the passages it came from in document order; see "An
+answer" below.}
+
+\item{open}{Open the report once it is written: in the RStudio viewer when
+the file is under \code{\link[=tempdir]{tempdir()}}, and otherwise in the web browser. By
+default only in an interactive session.}
 }
 \value{
 \code{path}, invisibly.
@@ -83,6 +94,35 @@ do not exist are all counted near the top. An audit that showed only what
 worked would look like diligence and be the opposite.
 }
 
+\section{An answer}{
+
+With \code{answer}, the report shows the answer or says that it was not found,
+whether it is partial and why, the recipe, reader, number of requests and
+cost, and any warnings. Then the passages behind it, grouped by chunk and in
+document order, each with its page, section and chunk number:
+\itemize{
+\item A quotation a reader copied out (\code{skim}, \code{extract}) is highlighted in
+the chunk it came from. One that is not in that chunk is listed under it
+and flagged.
+\item A chunk a reader sent whole (\code{stuff}, \code{retrieve}, \code{rerank}) is shown
+with the numbers from the answer highlighted where they occur. That shows
+where to look, not that the chunk supports the answer. A chunk the answer
+cites as \verb{[chunk n]} is marked as cited.
+\item \code{map_reduce} answers each chunk and then combines the answers. Its
+answer from each chunk is shown as such: the model's words, not the
+document's. \code{refine} and \code{hierarchical} keep no passages, and the report
+says so.
+}
+A passage over 6,000 characters, such as a whole document sent in one
+request, is cut to the text around what is highlighted, with each cut shown
+as "[...]".
+Last comes one row per request, from \code{as.data.frame()} on the answer's
+trace (see \code{\link[=gr_trace]{gr_trace()}}), without the prompts and replies.
+
+A \code{gr_corpus} gives one row per document, then each document's answer and
+passages. Answers are there only if the run kept them (\code{keep_answers}).
+}
+
 \examples{
 fields <- gr_fields(design = "The study design")
 cl <- gr_mock_client(function(messages, params) {
@@ -91,10 +131,15 @@ cl <- gr_mock_client(function(messages, params) {
 f <- tempfile(fileext = ".txt"); writeLines("We ran a randomised trial.", f)
 x <- gr_extract(f, fields, client = cl)
 
-out <- gr_audit_report(tempfile(fileext = ".html"), extraction = x)
+out <- gr_audit_report(tempfile(fileext = ".html"), extraction = x, open = FALSE)
 file.exists(out)
+
+# One answer and the passages behind it.
+cl2 <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
+ans <- answer_document(readgpt_example(), "What was revenue?", "fast", client = cl2)
+page <- gr_audit_report(tempfile(fileext = ".html"), answer = ans, open = FALSE)
 }
 \seealso{
 \code{\link[=gr_flow]{gr_flow()}}, \code{\link[=gr_screen]{gr_screen()}}, \code{\link[=gr_extract]{gr_extract()}}, \code{\link[=gr_synthesise]{gr_synthesise()}},
-\code{\link[=gr_verify_evidence]{gr_verify_evidence()}}
+\code{\link[=gr_verify_evidence]{gr_verify_evidence()}}, \code{\link[=answer_document]{answer_document()}}, \code{\link[=gr_read_many]{gr_read_many()}}
 }

@@ -101,6 +101,33 @@ limit_note <- function(ans) {
   NULL
 }
 
+#' Which requests failed in the read behind an answer, in words, or NULL.
+#'
+#' Two records, because neither holds every failure. The trace has each request
+#' that came back failed (a transport error, a 5xx or 429 after its retries, a
+#' refusal, a handler error), wherever in the pipeline it was made. The reader's
+#' notes also count replies that arrived and could not be read, such as prose
+#' where JSON was asked for, which the trace records as successful requests. The
+#' two overlap, so the larger count is taken, not the sum.
+#' @noRd
+failed_note <- function(ans, trace = NULL) {
+  n <- as.list(ans$notes %||% list())
+  num <- function(k) {
+    v <- suppressWarnings(as.numeric(n[[k, exact = TRUE]]))
+    if (length(v) == 1L && !is.na(v)) v else 0
+  }
+  errs <- if (inherits(trace, "gr_trace")) trace$errors else list()
+  failed <- max(num("failed_calls") + num("scoring_failures") + num("failed_summaries") +
+                  isTRUE(n[["failed_call", exact = TRUE]]),
+                length(errs))
+  if (failed <= 0) return(NULL)
+  first <- as_chr1(n[["error", exact = TRUE]], "")
+  if (!nzchar(first) && length(errs)) first <- as_chr1(errs[[1]]$error, "")
+  sprintf("%s request(s) failed, so the document was not read in full%s",
+          format(failed, scientific = FALSE),
+          if (nzchar(first)) sprintf(" (first error: %s)", substr(first, 1, 200)) else "")
+}
+
 #' A trace's cost in words, for the print methods.
 #'
 #' One wording everywhere a cost is shown: a model with no registered price
@@ -141,7 +168,13 @@ format_trace_cost <- function(trace) {
 #'   was given a stable `id`; see [gr_backend_client()] for why.
 #' @param store Optional directory. Each document's result is written there as
 #'   it completes and restored on a later run instead of being read again. This
-#'   is what makes a four-hour run survive being interrupted.
+#'   is what makes a four-hour run survive being interrupted. Only a document
+#'   read in full is written, so one that failed (see `status` below) is read
+#'   again by the next run. An entry is restored only for the same document,
+#'   question, recipe, tokenizer and client configuration: model, endpoint,
+#'   `extra_body`, embedding model and embedder. An entry that is not plain
+#'   data, as a file planted in a shared directory could be, is ignored and the
+#'   document read again.
 #' @param on_error `"continue"` (default) records the failure and moves on;
 #'   `"stop"` aborts. One unreadable file in two hundred should not cost you the
 #'   other hundred and ninety-nine.
@@ -200,10 +233,14 @@ format_trace_cost <- function(trace) {
 #' (see below). A document that `max_calls` or `max_cost_usd` stopped before it
 #' was read in full is `"failed"` too, with the limit in `error` and its partial
 #' answer in `answers`; it is not written to `store`, so a resumed run with a
-#' higher limit reads it again. A restored row keeps the numbers from when that
-#' document was first read, so its `cost_usd` is what it cost then, not what this
-#' run spent. That is why the run's own spend comes from `gr_trace_cost(x$trace)`
-#' and not from summing the column.
+#' higher limit reads it again. So is a document one of whose model requests
+#' failed (a network error, a 5xx or 429 after the retries, a refusal, a reply
+#' that was not the JSON asked for): `error` says how many and gives the first
+#' error, the partial answer is in `answers`, and a resumed run reads it again
+#' rather than restoring what the failure left. A restored row keeps the
+#' numbers from when that document was first read, so its `cost_usd` is what it
+#' cost then, not what this run spent. That is why the run's own spend comes
+#' from `gr_trace_cost(x$trace)` and not from summing the column.
 #'
 #' @section Documents that are the same document:
 #' The same paper reaches you from three databases under three filenames. Each
@@ -533,6 +570,17 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
       rows[[i]] <- corpus_row(lab, status = "failed", error = why, trace = sub,
                               seconds = secs, cost = cost, warnings = out$warnings)
       if (keep_answers) answers[[lab]] <- out
+    } else if (!is.null(why <- failed_note(out, sub))) {
+      # The same treatment, for the same reason. A request that failed is a
+      # property of the moment -- an outage, a rate limit, a key since fixed --
+      # and this answer is what was left without it: NOT_IN_DOCUMENT, an
+      # "unclear" nobody decided, a record with empty fields. Reported as "ok"
+      # and saved, it came back "restored" on every later run with no call
+      # made, long after the provider had recovered.
+      gr_warn(sprintf("Document '%s' failed: %s.", lab, why), class = "gr_document_failed")
+      rows[[i]] <- corpus_row(lab, status = "failed", error = why, trace = sub,
+                              seconds = secs, cost = cost, warnings = out$warnings)
+      if (keep_answers) answers[[lab]] <- out
     } else {
       rows[[i]] <- corpus_row(lab, status = "ok", answer = out, trace = sub,
                               seconds = secs, cost = cost,
@@ -652,6 +700,17 @@ known_extensions <- function() {
   tolower(unique(trimws(ext[nzchar(ext)])))
 }
 
+#' File paths in one order on every machine.
+#'
+#' `sort()` follows the locale's collation, so a folder of adams, Baker and
+#' Evora came out in one order under en_US and in another under C (cron, Docker,
+#' R CMD check). That order is the corpus's row order, and a synthesis numbers
+#' its studies by row: `[study 4]` named a different paper on the reader's
+#' machine, and a shipped trace no longer replayed. Radix order compares UTF-8
+#' bytes, whatever the locale.
+#' @noRd
+corpus_sort_paths <- function(x) x[order(enc2utf8(x), method = "radix")]
+
 #' A run-level call ceiling, or nothing.
 #'
 #' `is.finite()` alone failed OPEN: NA, Inf, and a character value read from a
@@ -731,14 +790,14 @@ corpus_sources <- function(sources, recursive = FALSE, quiet = FALSE) {
     files <- list.files(sources, full.names = TRUE, recursive = recursive, no.. = TRUE)
     files <- files[!dir.exists(files)]
     keep <- tolower(tools::file_ext(files)) %in% ext
-    skipped <- sort(files[!keep])
+    skipped <- corpus_sort_paths(files[!keep])
     # Files sitting further down that a non-recursive scan never looked at. The
     # single most likely reason a directory looks empty.
     below <- if (recursive) character(0) else {
       deep <- list.files(sources, full.names = TRUE, recursive = TRUE, no.. = TRUE)
       deep <- deep[!dir.exists(deep)]
       deep <- setdiff(deep, files)
-      sort(deep[tolower(tools::file_ext(deep)) %in% ext])
+      corpus_sort_paths(deep[tolower(tools::file_ext(deep)) %in% ext])
     }
     if (!quiet && length(skipped)) {
       by_ext <- sort(table(tolower(tools::file_ext(skipped))), decreasing = TRUE)
@@ -750,7 +809,7 @@ corpus_sources <- function(sources, recursive = FALSE, quiet = FALSE) {
                       paste(sprintf("%s (%d)", nm, as.integer(by_ext)), collapse = ", ")),
               class = "gr_sources_skipped")
     }
-    out <- sort(files[keep])
+    out <- corpus_sort_paths(files[keep])
     attr(out, "root") <- sources
     attr(out, "skipped") <- skipped
     attr(out, "below") <- below
@@ -767,7 +826,7 @@ corpus_sources <- function(sources, recursive = FALSE, quiet = FALSE) {
       all(nzchar(sources)) && all(file.exists(sources)) && !any(dir.exists(sources))) {
     ext <- known_extensions()
     keep <- tolower(tools::file_ext(sources)) %in% ext
-    skipped <- sort(sources[!keep])
+    skipped <- corpus_sort_paths(sources[!keep])
     if (!quiet && length(skipped)) {
       by_ext <- sort(table(tolower(tools::file_ext(skipped))), decreasing = TRUE)
       nm <- names(by_ext); nm[!nzchar(nm)] <- "(no extension)"
@@ -857,7 +916,13 @@ corpus_key <- function(src, question, rec, client) {
   } else {
     list("text", key_text(as.character(src)))
   }
-  gr_hash(list("readgpt-corpus-v2", ident, key_text(question),
+  # The embedder the readers and the semantic segmenter would use. They call
+  # gr_embed() without naming one, so it comes from gr_options(embedder =) or the
+  # client. An unregistered name is an error for the run to raise, not the key.
+  embedder <- tryCatch(as_chr1(resolve_embedder(client)$name, "?"),
+                       error = function(e) as_chr1(gr_options("embedder"), "?"))
+  # v3: the client's extra_body and the embedding configuration joined the key.
+  gr_hash(list("readgpt-corpus-v3", ident, key_text(question),
                # The tokenizer, because it is what turns `max_tokens = 300` into
                # an actual chunk boundary: the same document under "chars" and
                # under "words" segments differently and is answered differently.
@@ -870,7 +935,16 @@ corpus_key <- function(src, question, rec, client) {
                # As in cache_key(): for a closure-backed client the transport
                # fields are identical constants, so without this a store restored
                # one client's answers for a different client's run.
-               as_chr1(client$.client_id, "<url-addressed>")))
+               as_chr1(client$.client_id, "<url-addressed>"),
+               # Also as in cache_key(): extra_body goes into every request
+               # (reasoning effort, seed, provider routing) and changes the reply.
+               # Without it a rerun at a higher effort restored the low-effort
+               # answers, made no calls, and compared a run with itself.
+               gr_hash(client$extra_body %||% list()),
+               # What ranks the chunks for the embedding readers and places the
+               # semantic segmenter's cuts: another model or embedder is another
+               # set of chunks in front of the model.
+               as_chr1(client$embedding_model, "?"), embedder))
 }
 
 #' Give the sources back in the shape they arrived in.
@@ -894,13 +968,116 @@ simplify_sources <- function(x) {
 #' @noRd
 corpus_store_path <- function(store, key) file.path(store, paste0(key, ".rds"))
 
+#' A store entry, or NULL when there is none that can be trusted.
+#'
+#' A store is a directory, and a directory gets shared, synced, and unpacked
+#' from somebody else's archive. `readRDS()` rebuilds any R object: an
+#' environment whose active bindings run code the moment a field is read, or
+#' anything at all carrying a class attribute, which is all `inherits()` and
+#' `is.data.frame()` look at. Checking the shape and then using the object
+#' therefore ran whatever the file's author chose, in this session. So nothing
+#' in an entry is read until all of it is known to be plain data, and the row
+#' and the answer are rebuilt from it, not used as they came. Anything else is
+#' a miss and the document is read again, which is always safe.
 #' @noRd
 corpus_restore <- function(store, key) {
   path <- corpus_store_path(store, key)
   if (!file.exists(path)) return(NULL)
   entry <- tryCatch(readRDS(path), error = function(e) NULL, warning = function(w) NULL)
-  if (!is.list(entry) || !identical(entry$format, 1L) || !is.data.frame(entry$row)) return(NULL)
-  entry
+  tryCatch(corpus_entry(entry), error = function(e) NULL, warning = function(w) NULL)
+}
+
+#' @noRd
+corpus_entry <- function(entry) {
+  if (!identical(typeof(entry), "list") || isS4(entry)) return(NULL)
+  # .subset2() and unclass() throughout: `$` and `[[` dispatch on the class
+  # attribute, which the file chose.
+  entry <- unclass(entry)
+  fmt <- .subset2(entry, "format")
+  if (!identical(fmt, 1L) && !identical(fmt, 2L)) return(NULL)
+  ans <- .subset2(entry, "answer")
+  if (!is.null(ans)) {
+    if (!identical(typeof(ans), "list") || isS4(ans) || !inherits(ans, "gr_answer")) return(NULL)
+    ans <- unclass(ans)
+    # Format 1 saved the answer's trace as the environment it is in memory.
+    # Those entries are still good answers, so the trace is read binding by
+    # binding in a way that cannot run anything, and refused otherwise.
+    if (identical(fmt, 1L) && is.environment(.subset2(ans, "trace"))) {
+      tr <- corpus_trace_bindings(.subset2(ans, "trace"))
+      if (is.null(tr)) return(NULL)
+      ans[["trace"]] <- tr
+    }
+    entry[["answer"]] <- ans
+  }
+  if (!corpus_is_plain(entry)) return(NULL)
+
+  row <- .subset2(entry, "row")
+  if (!is.data.frame(row)) return(NULL)
+  cols <- unclass(row)
+  nm <- names(cols)
+  if (!length(cols) || is.null(nm) || !all(nzchar(nm)) || anyDuplicated(nm) ||
+      !all(vapply(cols, function(v) is.atomic(v) && length(v) == 1L, logical(1)))) {
+    return(NULL)
+  }
+  row <- structure(lapply(seq_along(cols), function(i) .subset2(cols, i)), names = nm,
+                   row.names = c(NA_integer_, -1L), class = "data.frame")
+  if (!is.null(ans)) {
+    ans <- .subset2(entry, "answer")
+    ans["trace"] <- list(corpus_trace_rebuild(.subset2(ans, "trace")))
+    class(ans) <- "gr_answer"
+  }
+  h <- .subset2(entry, "doc_hash")
+  if (!is.character(h) || length(h) != 1L || is.na(h)) h <- NULL
+  list(format = fmt, key = .subset2(entry, "key"), created = .subset2(entry, "created"),
+       row = row, answer = ans, doc_hash = h)
+}
+
+#' Atomic vectors and lists, all the way down, attributes included.
+#'
+#' What a store entry is made of when this package wrote it. Environments,
+#' functions, calls, symbols, promises, external pointers and S4 objects are
+#' the things that can run code or reach outside the file, and none of them is
+#' ever part of a result.
+#' @noRd
+corpus_is_plain <- function(x) {
+  if (isS4(x)) return(FALSE)
+  if (!typeof(x) %in% c("NULL", "logical", "integer", "double", "complex", "character",
+                        "raw", "list")) return(FALSE)
+  if (is.list(x)) {
+    u <- unclass(x)
+    for (i in seq_along(u)) if (!corpus_is_plain(.subset2(u, i))) return(FALSE)
+  }
+  a <- attributes(x)
+  for (i in seq_along(a)) if (!corpus_is_plain(a[[i]])) return(FALSE)
+  TRUE
+}
+
+#' The bindings of a trace saved as an environment (store format 1), or NULL.
+#'
+#' Read without running anything: an active binding is refused before it is
+#' touched, and `substitute()` returns a promise's code instead of forcing it,
+#' which then fails the plain-data test. A gr_trace() has an empty parent and
+#' only plain values, so a real one always passes.
+#' @noRd
+corpus_trace_bindings <- function(e) {
+  if (isS4(e) || !inherits(e, "gr_trace") || !identical(parent.env(e), emptyenv())) return(NULL)
+  out <- list()
+  for (nm in ls(e, all.names = TRUE, sorted = TRUE)) {
+    if (bindingIsActive(nm, e)) return(NULL)
+    v <- eval(call("substitute", as.name(nm), e))
+    if (!corpus_is_plain(v)) return(NULL)
+    out[nm] <- list(v)
+  }
+  out
+}
+
+#' A gr_trace again, from the plain list a store entry holds.
+#' @noRd
+corpus_trace_rebuild <- function(x) {
+  if (!is.list(x) || !length(x)) return(NULL)
+  e <- list2env(x, envir = new.env(parent = emptyenv()))
+  class(e) <- "gr_trace"
+  e
 }
 
 #' Written to a temporary name and renamed, so an interrupt cannot leave a half
@@ -909,11 +1086,16 @@ corpus_restore <- function(store, key) {
 corpus_save <- function(store, key, row, answer, doc_hash = NULL) {
   path <- corpus_store_path(store, key)
   tmp <- paste0(path, ".tmp-", Sys.getpid())
+  # Format 2: the answer's trace is saved as a plain list rather than as the
+  # environment it is in memory, so the whole entry is plain data and
+  # corpus_restore() can refuse anything that is not. `doc_hash` is additive
+  # and did not move the format: an entry written before it existed is still a
+  # perfectly good answer, it just cannot seed duplicate detection.
+  if (!is.null(answer) && is.environment(answer$trace)) {
+    answer$trace <- as.list.environment(answer$trace, all.names = TRUE)
+  }
   ok <- tryCatch({
-    # `doc_hash` is additive and the format number does not move: an entry
-    # written before it existed is still a perfectly good answer, it just cannot
-    # seed duplicate detection.
-    saveRDS(list(format = 1L, key = key, created = Sys.time(), row = row,
+    saveRDS(list(format = 2L, key = key, created = Sys.time(), row = row,
                  answer = answer, doc_hash = doc_hash),
             tmp, compress = TRUE)
     file.rename(tmp, path)

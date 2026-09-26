@@ -26,7 +26,11 @@
 #' @param model Embedding model id; defaults to the client's.
 #' @param batch_size Texts per request.
 #' @param cache Use the session embedding cache.
-#' @param trace Optional trace.
+#' @param trace Optional trace. With the built-in `"api"` embedder, each
+#'   request to the embeddings endpoint is checked against `max_calls` and
+#'   `max_cost_usd` (see [gr_options()]) before it is sent and recorded in the
+#'   trace, priced, once it is made. A request the limits refuse is a failure,
+#'   handled by `fallback`.
 #' @param embedder A registered embedder name (see [gr_embedders()]), or a
 #'   function of `(texts, params)`. Defaults to the embed function supplied with
 #'   the client, if any, and otherwise to `gr_options("embedder")`.
@@ -177,14 +181,31 @@ embed_api <- function(texts, params) {
     payload <- vapply(texts[todo], function(t) gr_truncate_tokens(t, max(limit - 16L, 16L), ""),
                       character(1), USE.NAMES = FALSE)
     batch <- as.integer(clamp(params$batch_size %||% 64L, 1, 2048))
-    for (start in seq(1, length(todo), by = batch)) {
+    starts <- seq(1, length(todo), by = batch)
+    trace <- params$trace
+    for (b in seq_along(starts)) {
+      start <- starts[b]
       idx <- todo[start:min(start + batch - 1L, length(todo))]
-      body <- list(model = model, input = as.list(payload[match(idx, todo)]))
+      texts_b <- payload[match(idx, todo)]
+      body <- list(model = model, input = as.list(texts_b))
       # Same auth path as gr_call(), deliberately: a gateway that needs an
       # `api-key` header for chat needs it for embeddings too, and two copies of
       # the header logic is how one of them ends up a release behind.
       headers <- request_headers(client)
       if (is.null(headers)) no_credentials_error()
+      # An embeddings request is billed like any other request, so it answers
+      # to the same limits and goes in the same ledger. It used to do neither:
+      # semantic segmentation, retrieve and iterative spent outside
+      # max_calls and max_cost_usd (even `max_calls = 0` sent them), and the
+      # trace and gr_trace_cost() said the run cost nothing. A refusal raises
+      # like any other failure here, so gr_embed()'s `fallback` decides what
+      # happens next; cache hits never get this far and stay free.
+      if (!trace_can_call(trace)) {
+        gr_abort(embed_cap_message(trace, b, length(starts)),
+                 class = c(if (identical(cap_name(trace), "spending limit")) "gr_cost_cap"
+                           else "gr_call_cap", "gr_embed_error"))
+      }
+      started <- Sys.time()
       resp <- tryCatch(
         httr::POST(paste0(client$base_url, "/embeddings"),
                    httr::content_type_json(),
@@ -195,6 +216,8 @@ embed_api <- function(texts, params) {
       parsed <- if (inherits(resp, "condition") || httr::status_code(resp) >= 300) NULL else
         tryCatch(httr::content(resp, as = "parsed", type = "application/json"),
                  error = function(e) NULL)
+      embed_record(trace, model, texts_b, resp, parsed,
+                   seconds = as.numeric(difftime(Sys.time(), started, units = "secs")))
       if (is.null(parsed$data)) {
         gr_abort(sprintf("the request to '%s' did not return embeddings", model),
                  class = "gr_embed_error")
@@ -213,6 +236,49 @@ embed_api <- function(texts, params) {
     if (length(v) < d) v <- c(v, rep(0, d - length(v)))
     v[seq_len(d)]
   }, numeric(d), USE.NAMES = FALSE))
+}
+
+#' Record one embeddings request in the trace, priced like a model call.
+#'
+#' It has no prompt messages, so a replay passes over it (a trace does not
+#' record vectors; see gr_embed()), while gr_trace_cost(), `spent_usd` and
+#' `as.data.frame()` count it like any other request. Tokens are the provider's
+#' `usage.prompt_tokens`, or a local count when it reports none (see
+#' settle_usage()). A failed request is recorded as failed with no tokens, as
+#' http_call() records one.
+#' @noRd
+embed_record <- function(trace, model, texts, resp, parsed, seconds = NA_real_) {
+  if (!inherits(trace, "gr_trace")) return(invisible(NULL))
+  res <- if (is.list(parsed) && !is.null(parsed[["data"]])) {
+    ug <- if (is.list(parsed[["usage"]])) parsed[["usage"]] else list()
+    gr_result(TRUE, model = model,
+              usage = settle_usage(list(input = ug[["prompt_tokens"]] %||% ug[["input_tokens"]],
+                                        output = 0L),
+                                   sum(gr_count_tokens(texts)), ""))
+  } else {
+    status <- if (inherits(resp, "condition")) 0L else as_int1(httr::status_code(resp), NA_integer_)
+    gr_result(FALSE, model = model, status = status, error = sprintf(
+      "Embeddings request to '%s' failed: %s", model,
+      if (inherits(resp, "condition")) conditionMessage(resp)
+      else if (!is.na(status) && status >= 300L) sprintf("HTTP %d", status)
+      else "the response held no embeddings"))
+  }
+  trace_record(trace, "embed.request", list(), res,
+               params = list(model = model, texts = length(texts)), seconds = seconds)
+}
+
+#' Why an embeddings request was not sent, naming the limit and its setting.
+#' @noRd
+embed_cap_message <- function(trace, i, n) {
+  what <- if (n > 1L) sprintf("embeddings request %d of %d", i, n) else "the embeddings request"
+  if (identical(cap_name(trace), "spending limit")) {
+    sprintf(paste0("the run has spent $%s, which reaches the $%s spending limit, so %s was ",
+                   "not sent; raise gr_options(max_cost_usd =)"),
+            fmt_usd(trace$spent_usd), format(gr_options("max_cost_usd"), scientific = FALSE), what)
+  } else {
+    sprintf("%s would pass the run's %s-call cap, so it was not sent; raise gr_options(max_calls =)",
+            what, format(gr_options("max_calls"), scientific = FALSE))
+  }
 }
 
 #' Key for one cached embedding.
@@ -250,8 +316,7 @@ finish_embedding <- function(m, source, trace, n) {
 #' @noRd
 lexical_embed <- function(texts, dim = 512L) {
   m <- t(vapply(texts, function(tx) {
-    w <- tolower(words_of(gsub("[^[:alnum:][:space:]]", " ", as_chr1(tx), perl = TRUE)))
-    w <- w[nchar(w) > 2L]
+    w <- lexical_terms(tx, min_chars = 3L)
     v <- numeric(dim)
     if (!length(w)) return(v)
     tf <- table(w)
@@ -289,10 +354,7 @@ cosine_against <- function(mat, vec) {
 #' the offline path for `retrieve` when embeddings are unavailable.
 #' @noRd
 bm25_scores <- function(docs, query, k1 = 1.5, b = 0.75) {
-  norm <- function(x) {
-    w <- tolower(words_of(gsub("[^[:alnum:][:space:]]", " ", as_chr1(x), perl = TRUE)))
-    w[nchar(w) > 1L]
-  }
+  norm <- function(x) lexical_terms(x, min_chars = 2L)
   dt <- lapply(docs, norm)
   q <- unique(norm(query))
   if (!length(q) || !length(dt)) return(rep(0, length(docs)))
@@ -310,4 +372,47 @@ bm25_scores <- function(docs, query, k1 = 1.5, b = 0.75) {
       idf * (f * (k1 + 1)) / (f + k1 * (1 - b + b * lens[i] / avg))
     }, numeric(1)))
   }, numeric(1))
+}
+
+#' The terms of a text for word matching: lowercased runs of letters, marks and
+#' digits, in any script.
+#'
+#' Unicode classes, not POSIX ones. Without `(*UCP)`, PCRE's `[:alnum:]`
+#' matches ASCII only, so the old `[^[:alnum:][:space:]]` blanked every letter
+#' outside A-Z: a Russian, Greek, Arabic or Chinese document had no terms at
+#' all, BM25 scored every chunk 0 and lexical vectors were all zero, so rerank
+#' and retrieve picked chunks in document order without saying so, and
+#' "Größe" became "Gr" and "e". `\p{M}` is in the class because Devanagari,
+#' Thai, Arabic and Hebrew write vowels and diacritics as combining marks, and
+#' blanking those broke every word apart. For ASCII text nothing changes.
+#'
+#' Scripts written without spaces between words (Chinese, Japanese, Thai, Lao,
+#' Khmer, Myanmar) give one "word" per clause, which matches nothing, so a run
+#' of those characters is indexed as overlapping character pairs, the usual
+#' unit for matching such text without a dictionary. The pairs are kept
+#' whatever `min_chars` says: the floor is there to drop short function words
+#' in space-separated scripts.
+#' @noRd
+lexical_terms <- function(x, min_chars = 2L) {
+  x <- gsub("[^\\p{L}\\p{M}\\p{N}\\s]", " ", to_utf8(as_chr1(x)), perl = TRUE)
+  w <- tolower(words_of(x))
+  if (!length(w)) return(character(0))
+  dense_script <- "\\p{Han}\\p{Hiragana}\\p{Katakana}\\p{Thai}\\p{Lao}\\p{Khmer}\\p{Myanmar}"
+  # A run starts with a character of such a script and carries on through
+  # modifier letters and marks (the Japanese long-vowel mark, Thai tone marks).
+  run_re <- sprintf("[%s][%s\\p{Lm}\\p{M}]*", dense_script, dense_script)
+  dense <- grepl(sprintf("[%s]", dense_script), w, perl = TRUE)
+  out <- w[!dense & nchar(w) >= min_chars]
+  if (any(dense)) {
+    d <- w[dense]
+    runs <- unlist(regmatches(d, gregexpr(run_re, d, perl = TRUE)), use.names = FALSE)
+    rest <- unlist(lapply(gsub(run_re, " ", d, perl = TRUE), words_of), use.names = FALSE)
+    pairs <- unlist(lapply(strsplit(runs, "", fixed = TRUE), function(ch) {
+      if (length(ch) < 2L) ch else paste0(ch[-length(ch)], ch[-1L])
+    }), use.names = FALSE)
+    out <- c(out, rest[nchar(rest) >= min_chars], pairs)
+  }
+  # Labelled consistently: lexical_embed() hashes each term, and a hash of the
+  # same characters differs by encoding label (see key_text()).
+  mark_utf8(out)
 }

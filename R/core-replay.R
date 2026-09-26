@@ -71,7 +71,10 @@ gr_trace_save <- function(trace, path) {
 #'   [gr_client()] is. It also carries `$stats()` and `$missed()`.
 #'
 #' @section Matching:
-#' A response is matched on the exact prompt messages plus the model id. When a
+#' A response is matched on the exact prompt messages plus the model id the
+#' call asked for. That can differ from the model the trace records as
+#' answering: a [gr_ellmer_client()] answers with its chat's model whatever the
+#' recipe asked for, and its runs replay all the same. When a
 #' run issued the same prompt more than once (which happens at a temperature
 #' above zero, and in readers that revisit a chunk), the recorded responses are
 #' returned in the order they were produced. Once they are exhausted the last
@@ -165,7 +168,7 @@ gr_replay_client <- function(source, strict = TRUE) {
     # recording's answers while replaying another, which is exactly the failure
     # the client identity was introduced to prevent.
     .client_id = paste0("replay-", gr_hash(lapply(steps, function(s)
-      c(s$model, s$response, unlist(lapply(s$prompt, function(m) m$content)))))),
+      c(s$answered_model, s$response, unlist(lapply(s$prompt, function(m) m$content)))))),
     # Which embedder the RECORDING used, so a replay can tell an embedding it
     # can reproduce from one it cannot. See gr_embed().
     embed_source = embed_source,
@@ -231,9 +234,22 @@ replay_steps <- function(source) {
     prompt <- replay_prompt(st$prompt)
     if (!length(prompt)) next
     tok <- st$tokens %||% list()
+    params <- if (is.list(st$params)) st$params else list()
+    requested <- as_chr1(params[["model", exact = TRUE]], NA_character_)
+    answered <- as_chr1(st$model, NA_character_)
     out[[length(out) + 1L]] <- list(
       prompt = prompt,
-      model = as_chr1(st$model %||% (st$params %||% list())$model, NA_character_),
+      # The model the call ASKED for, which is what a replayed gr_call() looks
+      # up. The step's own `model` is the one that answered, and a client that
+      # reports the provider's model (gr_ellmer_client() always does; so can a
+      # backend handler) records a different name there: keyed on that, no
+      # prompt of such a run was ever found, and every replay stopped with
+      # gr_replay_miss on its first call. A trace without `params` (an older
+      # or hand-built one) falls back to the answering model.
+      model = if (!is.na(requested)) requested else answered,
+      # Kept for what the replayed result reports, so pricing and display name
+      # the model the recording says answered.
+      answered_model = if (!is.na(answered)) answered else requested,
       ok = isTRUE(st$ok),
       response = as_chr1(st$response, ""),
       error = if (isTRUE(st$ok)) NULL else as_chr1(st$error, "recorded failure"),
@@ -366,7 +382,7 @@ replay_lookup <- function(client, messages, model, params) {
   gr_result(
     ok = st$ok, text = st$response, error = st$error, status = NA_integer_,
     usage = list(input = st$tokens$input, output = st$tokens$output),
-    model = as_chr1(st$model, model),
+    model = as_chr1(st$answered_model, model),
     # From the recording. Hard-coded NA here made every replayed call look like
     # a clean stop, including the ones the live run rejected for being cut off.
     finish_reason = as_chr1(st$finish_reason, NA_character_),

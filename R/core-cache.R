@@ -65,6 +65,12 @@
 #' does not accumulate copies of your documents. The response itself is stored
 #' in full, and a model response can of course quote the document it read.
 #'
+#' An entry is used only if the file holds plain data (lists, strings and
+#' numbers) in the shape this cache writes, and the response is rebuilt from
+#' those fields; anything else is a miss. So reading a cache directory someone
+#' else wrote cannot run code. It can still hold any answer its author chose,
+#' so treat a shared cache as you would its author's results.
+#'
 #' @section Caching a stochastic call:
 #' At a temperature above zero a cache hit replays one sample rather than
 #' drawing a new one. That is the point: it is what makes a run reproducible.
@@ -171,7 +177,9 @@ gr_cache_stats <- function(cache) {
 #' Delete every entry in a cache
 #'
 #' Removes the stored responses and resets the session counters. The directory
-#' itself is left in place.
+#' itself is left in place, and so is anything in it that is not a cache entry
+#' (a [gr_read_many()] store, your own files): only files in the cache's own
+#' layout are removed.
 #'
 #' @param cache A [gr_cache()].
 #' @return The number of entries removed, invisibly.
@@ -195,7 +203,6 @@ gr_cache_clear <- function(cache) {
 
 # --- internals -------------------------------------------------------------
 
-#' Every entry file under a cache directory.
 #' A per-session cache directory under `tempdir()`.
 #'
 #' Resolved on every call, never stored in `gr_defaults`: a `tempdir()` written
@@ -205,10 +212,24 @@ gr_cache_clear <- function(cache) {
 #' @noRd
 default_cache_dir <- function() file.path(tempdir(), "readgpt-cache")
 
+#' Every entry file under a cache directory.
+#'
+#' Only files in the layout cache_path() writes: `<shard>/<key>.rds`, where the
+#' key is 16 hex digits and the shard is its first two. gr_cache_clear() unlinks
+#' whatever this returns, and a cache directory is often a real project folder
+#' (the documentation suggests passing one) that also holds a gr_read_many()
+#' store, saved results or anything else ending in `.rds`. Matching on the
+#' extension alone deleted all of them, outright, and counted them as entries.
 #' @noRd
 cache_files <- function(dir) {
   if (!nzchar(dir) || !dir.exists(dir)) return(character(0))
-  list.files(dir, pattern = "\\.rds$", recursive = TRUE, full.names = TRUE)
+  shards <- list.files(dir, pattern = "^[0-9a-f]{2}$", full.names = TRUE)
+  shards <- shards[dir.exists(shards)]
+  out <- unlist(lapply(shards, function(s) {
+    list.files(s, pattern = paste0("^", basename(s), "[0-9a-f]{14}\\.rds$"), full.names = TRUE)
+  }), use.names = FALSE)
+  if (!length(out)) return(character(0))
+  out[utils::file_test("-f", out)]
 }
 
 #' The key for one request.
@@ -284,15 +305,69 @@ cache_get <- function(cache, key) {
     return(NULL)
   }
   entry <- tryCatch(readRDS(path), error = function(e) NULL, warning = function(w) NULL)
-  ok <- is.list(entry) && identical(entry$format, 1L) && inherits(entry$result, "gr_result")
-  if (!ok) {
+  res <- tryCatch(cache_entry_result(entry), error = function(e) NULL)
+  if (is.null(res)) {
     cache$.stats$misses <- cache$.stats$misses + 1L
     return(NULL)
   }
   cache$.stats$hits <- cache$.stats$hits + 1L
-  res <- entry$result
-  res$cached <- TRUE
   res
+}
+
+#' The response a cache file holds, rebuilt from its fields, or NULL.
+#'
+#' RDS can rebuild any R object, including an environment or a closure, and a
+#' class attribute costs nothing to forge. The old check,
+#' `inherits(entry$result, "gr_result")`, passed an environment carrying that
+#' class, and the next line wrote a field into it: reading or writing a field of
+#' an environment can run code its author chose, in the session of whoever
+#' pointed a cache at a directory they did not write (a shared cache, a
+#' reproducibility bundle). So nothing is read from an entry until the whole
+#' object is known to be plain data, and what comes back is a fresh `gr_result`
+#' built from the expected fields, never the object from the file.
+#' @noRd
+cache_entry_result <- function(entry) {
+  if (!is_plain_data(entry) || !is.list(entry)) return(NULL)
+  if (!identical(.subset2(entry, "format"), 1L)) return(NULL)
+  r <- .subset2(entry, "result")
+  if (!is.list(r) || !inherits(r, "gr_result")) return(NULL)
+  # Failures are never written (see cache_put()), so an entry holding one did
+  # not come from this cache.
+  if (!isTRUE(.subset2(r, "ok"))) return(NULL)
+  u <- .subset2(r, "usage")
+  if (!is.list(u)) u <- list()
+  gr_result(TRUE,
+            text = as_chr1(.subset2(r, "text")),
+            status = as_int1(.subset2(r, "status"), NA_integer_),
+            usage = list(input = as_int1(.subset2(u, "input"), 0L),
+                         output = as_int1(.subset2(u, "output"), 0L)),
+            model = as_chr1(.subset2(r, "model"), NA_character_),
+            finish_reason = as_chr1(.subset2(r, "finish_reason"), NA_character_),
+            cached = TRUE)
+}
+
+#' Is `x` plain data all the way down?
+#'
+#' NULL, atomic vectors and lists of them, with attributes that are plain data
+#' too. Anything else (an environment, a closure, a language object, an external
+#' pointer, an S4 object) is refused before it is touched. Elements are reached
+#' with `x[[i]]` handed straight to this function, never bound to a loop
+#' variable, and the first thing done with each is `typeof()`, which looks at an
+#' object without evaluating it. The depth limit is far beyond anything
+#' cache_put() writes.
+#' @noRd
+is_plain_data <- function(x, depth = 0L) {
+  if (depth > 16L) return(FALSE)
+  if (!typeof(x) %in% c("NULL", "logical", "integer", "double", "complex",
+                        "character", "raw", "list")) return(FALSE)
+  if (isS4(x)) return(FALSE)
+  a <- attributes(x)
+  if (length(a) && !all(vapply(seq_along(a), function(i) is_plain_data(a[[i]], depth + 1L),
+                               logical(1)))) return(FALSE)
+  if (is.list(x) && length(x) &&
+      !all(vapply(seq_along(x), function(i) is_plain_data(x[[i]], depth + 1L),
+                  logical(1)))) return(FALSE)
+  TRUE
 }
 
 #' Store one response.

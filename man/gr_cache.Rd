@@ -47,6 +47,12 @@ nothing downstream reads it and keeping it multiplied the cache size for no
 benefit. The prompt is \strong{not} stored, only its hash, so a cache directory
 does not accumulate copies of your documents. The response itself is stored
 in full, and a model response can of course quote the document it read.
+
+An entry is used only if the file holds plain data (lists, strings and
+numbers) in the shape this cache writes, and the response is rebuilt from
+those fields; anything else is a miss. So reading a cache directory someone
+else wrote cannot run code. It can still hold any answer its author chose,
+so treat a shared cache as you would its author's results.
 }
 
 \section{Caching a stochastic call}{

@@ -35,7 +35,10 @@ gr_read_spec(
 \arguments{
 \item{reader}{Reader name; see \code{gr_readers()}.}
 
-\item{model}{Chat model id.}
+\item{model}{Chat model id. \code{NULL} (the default) means the model of the
+client the spec is read with, so \code{gr_client(model = "gpt-4o-mini")} is the
+model that answers, is budgeted for and is billed. A model named here, or
+in a recipe, is used whatever the client's.}
 
 \item{temperature}{Sampling temperature, or \code{NULL} to omit the field. You do
 not need to null it yourself for reasoning models: it is dropped
@@ -75,7 +78,12 @@ Selection is unaffected. This decides only placement, and it applies to
 one prompt.}
 
 \item{rerank_candidates, rerank_min_score}{For \code{rerank}: how many chunks to
-score, and the score below which a chunk is discarded.}
+score, and the score below which a chunk is discarded. The candidates are
+the chunks the word-matching prefilter ranks highest. When no chunk shares
+a word with the question, it cannot rank them, so they are picked by
+embedding similarity instead, or, when embeddings cannot rank them either,
+spread evenly over the document and the answer marked partial. Either way
+the run warns (\code{gr_rerank_prefilter}) and \code{notes$prefilter} says which.}
 
 \item{fan_in, max_levels}{For \code{hierarchical}: summaries combined per call, and
 the recursion depth cap.}
@@ -115,9 +123,12 @@ absorbs them, in input order, so a parallel run reports the same calls,
 tokens and cost as the same run made sequentially. Two things do not cross
 the process boundary. The limits in \code{\link[=gr_options]{gr_options()}} are checked before a
 batch is sent and not inside it, since a worker cannot see what the others
-spend, so the pre-flight check, which runs in the parent, is what bounds a
-parallel run: its estimated calls against \code{max_calls}, and its worst case,
-every reply at its cap, against \code{max_cost_usd}. And a client that keeps its
+spend. So the pre-flight check, which runs in the parent, holds a parallel
+run to its worst case, every reply at its cap and as many merge or
+summary levels as replies that size need, against both \code{max_calls} and
+\code{max_cost_usd}; and each batch goes to the workers only when it fits what
+the run has left at its own worst case, and otherwise runs one request at
+a time, each checked. And a client that keeps its
 own log in a closure, such as \code{\link[=gr_mock_client]{gr_mock_client()}}, only sees the calls made
 in this process; ask the trace instead.}
 

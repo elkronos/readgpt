@@ -34,7 +34,10 @@ recording of exactly what went wrong.
 }
 \section{Matching}{
 
-A response is matched on the exact prompt messages plus the model id. When a
+A response is matched on the exact prompt messages plus the model id the
+call asked for. That can differ from the model the trace records as
+answering: a \code{\link[=gr_ellmer_client]{gr_ellmer_client()}} answers with its chat's model whatever the
+recipe asked for, and its runs replay all the same. When a
 run issued the same prompt more than once (which happens at a temperature
 above zero, and in readers that revisit a chunk), the recorded responses are
 returned in the order they were produced. Once they are exhausted the last

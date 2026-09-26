@@ -31,7 +31,8 @@
 #'   \item{`question`}{The question, already validated as non-blank.}
 #'   \item{`client`}{Pass it to [gr_call()]; never construct your own.}
 #'   \item{`spec`}{A [gr_read_spec()]. Honour at least `model`,
-#'     `max_answer_tokens` and `temperature`.}
+#'     `max_answer_tokens` and `temperature`. [gr_read()] has already filled
+#'     `model` from the client when the spec named none.}
 #'   \item{`trace`}{Pass it to every [gr_call()] so your calls are counted and
 #'     priced, and check `readgpt:::trace_can_call(trace)` before each one so
 #'     the run's call and spending limits are respected.}
@@ -132,7 +133,10 @@ gr_reader_signature <- function(reader) {
 #' Describe a reading configuration
 #'
 #' @param reader Reader name; see `gr_readers()`.
-#' @param model Chat model id.
+#' @param model Chat model id. `NULL` (the default) means the model of the
+#'   client the spec is read with, so `gr_client(model = "gpt-4o-mini")` is the
+#'   model that answers, is budgeted for and is billed. A model named here, or
+#'   in a recipe, is used whatever the client's.
 #' @param temperature Sampling temperature, or `NULL` to omit the field. You do
 #'   not need to null it yourself for reasoning models: it is dropped
 #'   automatically for any model whose registry entry has
@@ -168,7 +172,12 @@ gr_reader_signature <- function(reader) {
 #'   `retrieve` and `rerank`, the two readers that put several ranked chunks in
 #'   one prompt.
 #' @param rerank_candidates,rerank_min_score For `rerank`: how many chunks to
-#'   score, and the score below which a chunk is discarded.
+#'   score, and the score below which a chunk is discarded. The candidates are
+#'   the chunks the word-matching prefilter ranks highest. When no chunk shares
+#'   a word with the question, it cannot rank them, so they are picked by
+#'   embedding similarity instead, or, when embeddings cannot rank them either,
+#'   spread evenly over the document and the answer marked partial. Either way
+#'   the run warns (`gr_rerank_prefilter`) and `notes$prefilter` says which.
 #' @param fan_in,max_levels For `hierarchical`: summaries combined per call, and
 #'   the recursion depth cap.
 #' @param max_rounds For `iterative`: retrieve-assess cycles.
@@ -195,9 +204,12 @@ gr_reader_signature <- function(reader) {
 #'   tokens and cost as the same run made sequentially. Two things do not cross
 #'   the process boundary. The limits in [gr_options()] are checked before a
 #'   batch is sent and not inside it, since a worker cannot see what the others
-#'   spend, so the pre-flight check, which runs in the parent, is what bounds a
-#'   parallel run: its estimated calls against `max_calls`, and its worst case,
-#'   every reply at its cap, against `max_cost_usd`. And a client that keeps its
+#'   spend. So the pre-flight check, which runs in the parent, holds a parallel
+#'   run to its worst case, every reply at its cap and as many merge or
+#'   summary levels as replies that size need, against both `max_calls` and
+#'   `max_cost_usd`; and each batch goes to the workers only when it fits what
+#'   the run has left at its own worst case, and otherwise runs one request at
+#'   a time, each checked. And a client that keeps its
 #'   own log in a closure, such as [gr_mock_client()], only sees the calls made
 #'   in this process; ask the trace instead.
 #' @param delay_between_calls Seconds to sleep between sequential calls, for
@@ -241,7 +253,11 @@ gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL
   warn_near_miss(list(...), names(formals(gr_read_spec)), "read")
   spec <- structure(c(list(
     reader = reader,
-    model = as_chr1(model %||% gr_options("model")),
+    # NULL is kept, not filled from gr_options("model"): filled here, every
+    # reader passed a model to gr_call(), which only falls back to the client's
+    # when given none, so a client built for another model was never the one
+    # asked, budgeted for or billed. gr_read() fills it from the client.
+    model = if (is.null(model)) NULL else as_chr1(model),
     temperature = temperature %||% gr_options("temperature"),
     max_answer_tokens = clamp_warn(na_default(max_answer_tokens, 1500L, "max_answer_tokens"), 16, 1e6, "max_answer_tokens"),
     max_chunk_tokens = clamp_warn(na_default(max_chunk_tokens, 700L, "max_chunk_tokens"), 16, 1e6, "max_chunk_tokens"),
@@ -314,6 +330,10 @@ gr_read <- function(chunks, question, client, spec = NULL, trace = NULL) {
   if (!is_nonblank(question)) gr_abort("`question` must be a non-empty string.")
   if (!inherits(client, "gr_client")) gr_abort("`client` must come from gr_client() or gr_mock_client().")
   spec <- as_read_spec(spec)
+  # What the caller configured, for the trace: a model that merely follows the
+  # client is not a setting, as one that followed gr_options() was not.
+  settings <- read_settings(spec)
+  spec <- resolve_read_model(spec, client)
   trace <- trace %||% gr_trace(meta = list(reader = spec$reader))
   rd <- registry_get("readers", spec$reader, "readers")
 
@@ -332,7 +352,7 @@ gr_read <- function(chunks, question, client, spec = NULL, trace = NULL) {
   }
   rec <- warning_recorder()
   out <- withCallingHandlers({
-    preflight(chunks, spec, trace)
+    preflight(chunks, spec, trace, client = client, question = question, settings = settings)
     rd$fn(chunks, question, client, spec, trace)
   }, gr_warning = rec$record)
   if (!inherits(out, "gr_answer")) {
@@ -372,10 +392,26 @@ gr_read <- function(chunks, question, client, spec = NULL, trace = NULL) {
 #' `trace_can_call()` stops any run once its spending reaches the limit. The
 #' worst case is still recorded in the trace, and still refuses a parallel
 #' read: a batch sent to workers cannot be stopped part way through.
+#'
+#' `client` is what the run is billed through: an ellmer chat bills every call
+#' as its own model whatever the request names. `question` sizes the merge and
+#' summary levels of the worst case, as the readers size them.
 #' @noRd
-preflight <- function(chunks, spec, trace) {
+preflight <- function(chunks, spec, trace, client = NULL, question = "",
+                      settings = read_settings(spec)) {
   n <- nrow(chunks$chunks)
-  est_calls <- switch(spec$reader,
+  readers <- if (identical(spec$reader, "ensemble")) spec$members %||% c("retrieve", "map_reduce")
+             else spec$reader
+  ensemble <- identical(spec$reader, "ensemble")
+  # Requests to the embeddings endpoint count toward max_calls too (see
+  # embed_api()). Left out, a cap too small for them passed this check, and
+  # the run stopped part way: its embeddings refused, a lexical fallback in
+  # their place, and the answer never asked for.
+  embeds <- embed_requests(client, readers, chunks$chunks$text, question, spec)
+  # The model requests one reader is expected to make; with its embedding
+  # requests, what refuses a run against max_calls. One function for a reader
+  # alone and as an ensemble member, so the two estimates cannot drift apart.
+  model_calls_for <- function(r) as.integer(switch(r,
     stuff = 1L, retrieve = 1L,
     # `screen` reads the opening of the document in ONE call whatever its size.
     # Falling through to the default `n` made the pre-flight warn about the cost
@@ -386,17 +422,70 @@ preflight <- function(chunks, spec, trace) {
     extract = n,
     rerank = min(spec$rerank_candidates, n) + 1L,
     hierarchical = n + ceiling(n / spec$fan_in) + 1L,
-    iterative = spec$max_rounds * 2L,
-    ensemble = 1L + sum(vapply(spec$members %||% c("retrieve", "map_reduce"),
-                               function(m) as.integer(switch(m,
-                                 stuff = 1L, retrieve = 1L, refine = n, skim = n + 1L,
-                                 map_reduce = n + ceiling(n / 5),
-                                 rerank = min(spec$rerank_candidates, n) + 1L,
-                                 iterative = spec$max_rounds * 2L,
-                                 hierarchical = n + ceiling(n / spec$fan_in) + 1L,
-                                 n)), integer(1))),
-    n)
+    # A step a round and the answer after them. This was max_rounds * 2, which
+    # stood for a query embedding and a step a round; embeddings are counted
+    # apart now, the chunks' included, which it never counted.
+    iterative = spec$max_rounds + 1L,
+    n))
+  calls_for <- function(r) model_calls_for(r) + embeds[[r]]
+  est_calls <- if (ensemble) 1L + sum(vapply(readers, calls_for, integer(1)))
+               else calls_for(spec$reader)
   est_calls <- as.integer(est_calls)
+  embed_calls <- as.integer(sum(embeds))
+
+  # The reader warns about an unrecognised model itself; once is enough.
+  quiet_model <- function(expr) suppressWarnings(expr, classes = "gr_unknown_model")
+  # The worst case: every reply at its cap, and as many levels as replies that
+  # size take to fit the window. `hierarchical` recurses up to max_levels, and
+  # map_reduce's merge and skim's consolidation are tree_merge() trees. Counted
+  # from `n` alone, a parallel run's "worst case" held two of hierarchical's
+  # five levels and none of a merge tree's, and the run spent 14% past a bound
+  # it was said to be held to.
+  out_cap <- function(m, cap) {
+    mo <- tryCatch(as.numeric(quiet_model(gr_model_info(m))$max_output),
+                   error = function(e) NA_real_)
+    as.numeric(if (length(mo) != 1L || is.na(mo)) cap else min(cap, mo))
+  }
+  room <- function(system, restate = "never") tryCatch(as.numeric(quiet_model(gr_budget(
+    spec$model, reserve_output = spec$max_answer_tokens,
+    overhead = prompt_overhead(question, system, restate)))$input), error = function(e) NA_real_)
+  worst_for <- function(r) {
+    base <- list(calls = calls_for(r), input = 0)
+    got <- switch(r,
+      map_reduce = {
+        m <- merge_tree_worst(n, out_cap(spec$model, spec$max_chunk_tokens),
+                              out_cap(spec$model, spec$max_answer_tokens),
+                              room(.gr_prompts$merge_system))
+        if (!is.null(m)) list(calls = n + m$calls, input = m$input)
+      },
+      skim = {
+        piece <- out_cap(spec$skim_model %||% spec$model, spec$max_chunk_tokens)
+        fit <- room(answer_system(spec$cite), spec$restate)
+        body <- n * piece
+        m <- if (is.na(fit)) NULL
+             else if (body <= fit) list(calls = 0, input = 0)
+             else merge_tree_worst(n, piece, out_cap(spec$model, spec$max_answer_tokens),
+                                   room(.gr_prompts$summarise_system))
+        if (!is.null(m)) list(calls = n + m$calls + 1, input = m$input + min(body, fit))
+      },
+      hierarchical = summary_levels_worst(
+        n, out_cap(spec$summary_model %||% spec$model, spec$max_summary_tokens),
+        room(answer_system(FALSE), spec$restate), spec$fan_in, spec$max_levels),
+      NULL)
+    got %||% base
+  }
+  worst_parts <- lapply(readers, worst_for)
+  # Never below the expected count: a worst case under the estimate is not one.
+  part_calls <- vapply(worst_parts, function(w) as.numeric(w$calls), numeric(1))
+  worst_calls <- as.integer(max(est_calls, (if (ensemble) 1 else 0) + sum(part_calls)))
+  level_in <- sum(vapply(worst_parts, function(w) as.numeric(w$input), numeric(1)))
+
+  # Only readers that send batches: stuff, retrieve and screen make one
+  # request, and refine and iterative make theirs one at a time, each checked.
+  batches <- function(r) !r %in% c("stuff", "retrieve", "screen", "refine", "iterative")
+  parallel_read <- isTRUE(spec$parallel) && any(vapply(readers, batches, logical(1))) &&
+    requireNamespace("future", quietly = TRUE) && requireNamespace("future.apply", quietly = TRUE)
+
   # `gr_options(max_calls = NULL)` is the documented way to remove the cap, and
   # NULL is genuinely storable. `is.finite(NULL)` is logical(0), so the `if`
   # below failed with "argument is of length zero" -- every read aborted with an
@@ -407,31 +496,63 @@ preflight <- function(chunks, spec, trace) {
   # pre-flight checks and still blow the budget.
   already <- if (inherits(trace, "gr_trace")) trace$calls else 0L
   if (is.finite(cap) && (already + est_calls) > cap) {
-    gr_abort(sprintf(paste0("Reader '%s' over %d chunks would need about %d more model calls ",
-                            "(%d already made this run), above the %s-call cap. Use a larger ",
+    gr_abort(sprintf(paste0("Reader '%s' over %d chunks would need about %d more %s ",
+                            "(%s%d already made this run), above the %s-call cap. Use a larger ",
                             "`max_tokens` when segmenting (fewer chunks), pick a top-k reader, ",
                             "or raise gr_options(max_calls = ...)."),
-                     spec$reader, n, est_calls, already, format(cap, scientific = FALSE)),
+                     spec$reader, n, est_calls,
+                     if (embed_calls > 0L) "requests" else "model calls",
+                     if (embed_calls > 0L) sprintf("%d of them for embeddings; ", embed_calls)
+                     else "",
+                     already, format(cap, scientific = FALSE)),
+             class = "gr_call_cap")
+  }
+  # A parallel batch is not stopped part way, so a parallel read is held to its
+  # worst case against the call cap as it is against the spending limit.
+  if (is.finite(cap) && parallel_read && (already + worst_calls) > cap) {
+    gr_abort(sprintf(paste0("With parallel = TRUE, requests go out in batches that cannot be ",
+                            "stopped part way, so a parallel read is held to its worst case: ",
+                            "'%s' over %d chunks can need up to %d more model calls (%d already ",
+                            "made this run), above the %s-call cap. Raise it with ",
+                            "gr_options(max_calls = ...), or read without parallel = TRUE, where ",
+                            "the cap is checked before every request."),
+                     spec$reader, n, worst_calls, already, format(cap, scientific = FALSE)),
              class = "gr_call_cap")
   }
   tok <- sum(chunks$chunks$tokens)
-  est_in <- tok + est_calls * 200L
+  # Priced below as model requests: an embedding request has no reply, and
+  # what it sends goes at the embedding model's price, a small fraction of the
+  # chat model's.
+  model_worst <- worst_calls - embed_calls
+  # What the worst case sends: every chunk, the fixed prompt of every request,
+  # and what the merge and summary levels are handed, which is replies at
+  # their caps.
+  est_in <- tok + model_worst * 200L + level_in
   # Size the completion estimate by the LARGER of the two caps: only the
   # per-chunk readers use max_chunk_tokens, and the rest size their answers with
   # max_answer_tokens, so using the per-chunk cap under-estimated output by
   # whatever ratio the user chose -- measured at 97x in one configuration.
   # This is the worst case, recorded below; it refuses only a parallel read.
-  est_out <- est_calls * max(spec$max_chunk_tokens, spec$max_answer_tokens,
-                             spec$max_summary_tokens)
-  # The reader warns about an unrecognised model itself; once is enough.
-  quiet_model <- function(expr) suppressWarnings(expr, classes = "gr_unknown_model")
+  est_out <- model_worst * max(spec$max_chunk_tokens, spec$max_answer_tokens,
+                               spec$max_summary_tokens)
+  # An ellmer chat answers, and is billed, as the model it was built with,
+  # whatever a request names, and the trace prices its calls by that model. So
+  # that is the model to price: pricing the recipe's instead found a price,
+  # raised no warning, and ran a limit that the calls, billed as a model with
+  # no registered price, could never reach.
+  billed <- client_billed_model(client)
   # Every request at the price of the dearest model the run uses: skim_model and
   # summary_model take most of the requests of the readers that use them, and a
   # bound priced at `model` alone understated a run whose per-chunk model was
   # the dear one.
-  models <- unique(c(spec$model, spec$skim_model, spec$summary_model))
-  worst <- max(vapply(models, function(m) as.numeric(quiet_model(
-    gr_estimate_cost(m, est_in, est_out))), numeric(1)))
+  models <- billed %||% unique(c(spec$model, spec$skim_model, spec$summary_model))
+  priced_worst <- vapply(models, function(m) as.numeric(quiet_model(
+    gr_estimate_cost(m, est_in, est_out))), numeric(1))
+  # The dearest PRICED model. One model without a price made max() NA, and the
+  # parallel refusal below, which needs a number, was then skipped for the whole
+  # run, the priced model that receives the batch included. Only a run with no
+  # priced model at all has no worst case.
+  worst <- if (all(is.na(priced_worst))) NA_real_ else max(priced_worst, na.rm = TRUE)
   # What sending every chunk once costs, for each reader in the run that sends
   # them all, at the price of the model that receives them: skim and extract
   # send chunks to skim_model and hierarchical to summary_model, which exist to
@@ -439,12 +560,9 @@ preflight <- function(chunks, spec, trace) {
   # adds nothing, since what it sends is not known until it has ranked them.
   sends_all <- function(r) startsWith(as_chr1(tryCatch(
     registry_get("readers", r, "readers")$signature, error = function(e) ""), ""), "all|")
-  readers <- if (identical(spec$reader, "ensemble")) spec$members %||% c("retrieve", "map_reduce")
-             else spec$reader
   floor_usd <- function(r) {
-    if (!sends_all(r)) return(0)
-    to <- switch(r, skim = , extract = spec$skim_model %||% spec$model,
-                 hierarchical = spec$summary_model %||% spec$model, spec$model)
+    to <- billed %||% switch(r, skim = , extract = spec$skim_model %||% spec$model,
+                             hierarchical = spec$summary_model %||% spec$model, spec$model)
     sent <- tok
     if (identical(r, "stuff")) {
       room <- tryCatch(quiet_model(gr_budget(spec$model,
@@ -454,8 +572,14 @@ preflight <- function(chunks, spec, trace) {
     }
     as.numeric(quiet_model(gr_estimate_cost(to, sent, 0)))
   }
-  every_chunk <- any(vapply(readers, sends_all, logical(1)))
-  input_cost <- sum(vapply(readers, floor_usd, numeric(1)))
+  sending <- readers[vapply(readers, sends_all, logical(1))]
+  every_chunk <- length(sending) > 0L
+  floors <- vapply(sending, floor_usd, numeric(1))
+  # The same rule as `worst`: an ensemble member read by an unpriced model has
+  # an unknown share, and summing it made the whole floor NA and waived the
+  # refusal for the members whose share is known.
+  input_cost <- if (!every_chunk) 0 else if (all(is.na(floors))) NA_real_
+                else sum(floors, na.rm = TRUE)
   budget <- gr_options("max_cost_usd")
   if (!is.null(budget) && is.finite(budget)) {
     limit <- format(budget, scientific = FALSE)
@@ -501,11 +625,6 @@ preflight <- function(chunks, spec, trace) {
                        format(tok, big.mark = ",", scientific = FALSE), already, limit),
                class = "gr_cost_cap")
     }
-    # Only readers that send batches: stuff, retrieve and screen make one
-    # request, and refine and iterative make theirs one at a time, each checked.
-    batches <- function(r) !r %in% c("stuff", "retrieve", "screen", "refine", "iterative")
-    parallel_read <- isTRUE(spec$parallel) && any(vapply(readers, batches, logical(1))) &&
-      requireNamespace("future", quietly = TRUE) && requireNamespace("future.apply", quietly = TRUE)
     if (parallel_read && !is.na(worst) && spent + worst > budget) {
       gr_abort(sprintf(paste0("With parallel = TRUE, requests go out in batches that cannot be ",
                               "stopped part way, so a parallel read is held to its worst case: ",
@@ -519,6 +638,12 @@ preflight <- function(chunks, spec, trace) {
   }
   trace_note(trace, "preflight", list(reader = spec$reader, chunks = n,
                                       est_calls = est_calls,
+                                      # Of those, requests to the embeddings
+                                      # endpoint.
+                                      embed_calls = embed_calls,
+                                      # Every reply at its cap and every level
+                                      # that takes: what `est_cost_usd` prices.
+                                      worst_calls = worst_calls,
                                       # Every chunk once, for a reader that sends
                                       # them all: the floor that can refuse a run.
                                       est_input_usd = if (is.na(input_cost)) NULL
@@ -528,8 +653,134 @@ preflight <- function(chunks, spec, trace) {
                                       # What was changed from the defaults, so
                                       # the trace records the configuration and
                                       # not just the reader's name.
-                                      settings = read_settings(spec)))
+                                      settings = settings))
   invisible(NULL)
+}
+
+#' The requests to the embeddings endpoint each of `readers` will send.
+#'
+#' `retrieve` embeds the question with every chunk; `iterative` every chunk,
+#' then one query a round, the first being the question; `rerank` embeds as
+#' `retrieve` does when no chunk shares a word with the question and it has
+#' more chunks than candidates (rerank_prefilter()). Only the built-in "api"
+#' embedder sends requests: a client's own embed function, a registered one
+#' such as "lexical", and a backend or replay client (which gr_embed() moves to
+#' lexical vectors) send none. A text in the session's embedding cache is not
+#' sent again, and with the cache on a reader finds what an earlier ensemble
+#' member embedded there. 64 texts to a request, gr_embed()'s default. A
+#' query not known yet (iterative's later rounds) counts as a request of its
+#' own.
+#' @return An integer per reader, named by reader.
+#' @noRd
+embed_requests <- function(client, readers, texts, question, spec) {
+  out <- stats::setNames(integer(length(readers)), readers)
+  if (!inherits(client, "gr_client")) return(out)
+  emb <- tryCatch(resolve_embedder(client), error = function(e) NULL)
+  if (is.null(emb) || !identical(emb$fn, embed_api) || inherits(client, "gr_replay_client") ||
+      as_chr1(client[["api", exact = TRUE]], "") %in% c("backend", "replay")) {
+    return(out)
+  }
+  cache <- isTRUE(gr_options("cache_embeddings"))
+  model <- as_chr1(client[["embedding_model", exact = TRUE]], "")
+  # The key embed_api() files a vector under. Should the two drift apart, a
+  # cached text is counted as sent, which can refuse a run near the cap but
+  # never lets one start that the cap stops part way.
+  endpoint <- paste0(as_chr1(client[["base_url", exact = TRUE]], "?"), "|",
+                     as_chr1(client[[".client_id", exact = TRUE]], "<url-addressed>"))
+  earlier <- character(0)
+  requests <- function(x) {
+    if (cache && length(x)) {
+      keys <- vapply(x, function(t) embed_cache_key("api", model, t, endpoint), character(1),
+                     USE.NAMES = FALSE)
+      held <- vapply(keys, function(k) !is.null(gr_state$embed_cache[[k]]), logical(1),
+                     USE.NAMES = FALSE)
+      x <- x[!held & !keys %in% earlier]
+      earlier <<- c(earlier, keys)
+    }
+    as.integer(ceiling(length(x) / 64))
+  }
+  n <- length(texts)
+  for (r in readers) {
+    out[[r]] <- switch(r,
+      retrieve = requests(c(question, texts)),
+      iterative = requests(texts) + requests(question) + as.integer(spec$max_rounds) - 1L,
+      rerank = if (min(spec$rerank_candidates, n) < n && shares_no_word(texts, question))
+                 requests(c(question, texts)) else 0L,
+      0L)
+  }
+  out
+}
+
+#' The requests tree_merge() makes at worst, and the tokens they are handed.
+#'
+#' `k` findings of up to `piece` tokens are grouped greedily into merges that
+#' fit `room`, each merge replying with up to `answer` tokens, level after
+#' level, until one merge takes everything that is left. A group of one is
+#' passed on without a request, and tree_merge() gives up after seven levels or
+#' a level that does not shrink the pile. NULL when the room is not known.
+#' @noRd
+merge_tree_worst <- function(k, piece, answer, room) {
+  if (length(room) != 1L || is.na(room) || room <= 0) return(NULL)
+  if (k <= 1) return(list(calls = 0, input = 0))
+  calls <- 0
+  input <- 0
+  for (level in seq_len(7L)) {
+    per <- max(1, floor(room / max(piece, 1)))
+    if (k <= per) return(list(calls = calls + 1, input = input + k * piece))
+    groups <- ceiling(k / per)
+    if (per >= 2) calls <- calls + (k %/% per) + ((k %% per) >= 2)
+    input <- input + k * piece
+    if (groups >= k) break
+    k <- groups
+    piece <- answer
+  }
+  list(calls = calls, input = input)
+}
+
+#' The requests `hierarchical` makes at worst, and the tokens they are handed.
+#'
+#' Every summary at `summary` tokens: levels of `fan`-way summaries until they
+#' fit `room` or `max_levels` is reached, as read_hierarchical() recurses, then
+#' one answer. The first level's input is the document, counted by the caller.
+#' @noRd
+summary_levels_worst <- function(n, summary, room, fan, max_levels) {
+  if (length(room) != 1L || is.na(room)) return(NULL)
+  calls <- n
+  input <- 0
+  cur <- n
+  level <- 1L
+  while (cur * summary > room && level < max_levels) {
+    level <- level + 1L
+    prev <- cur
+    input <- input + cur * summary
+    cur <- ceiling(cur / fan)
+    calls <- calls + cur
+    if (cur >= prev) break
+  }
+  list(calls = calls + 1, input = input + min(cur * summary, room))
+}
+
+#' The model a spec reads with: the one it names, or else the client's.
+#' @noRd
+resolve_read_model <- function(spec, client) {
+  if (!is.null(spec$model)) return(spec)
+  m <- as_chr1(client[["model", exact = TRUE]], "")
+  spec$model <- if (nzchar(m)) m else as_chr1(gr_options("model"))
+  spec
+}
+
+#' The model a client's calls are billed as, when the client fixes it rather
+#' than each request naming it.
+#'
+#' An ellmer chat answers with the model it was built with whatever a request
+#' asks for, and gr_ellmer_client() reports that model on every result, which
+#' is the model the trace prices a call by. NULL for every other client, whose
+#' calls are billed as the model each request names.
+#' @noRd
+client_billed_model <- function(client) {
+  if (!inherits(client, "gr_ellmer_client")) return(NULL)
+  m <- as_chr1(client[["model", exact = TRUE]], "")
+  if (nzchar(m)) m else NULL
 }
 
 #' @noRd

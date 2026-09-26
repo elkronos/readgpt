@@ -9,7 +9,10 @@
 # do not: the first two work on the concatenated document text by design, and
 # `proposition` REWRITES the text, so no chunk corresponds to any source block.
 # That is the cost of ignoring (or rewriting) structure, and it is reported as
-# NA rather than guessed at.
+# NA rather than guessed at. What `proposition` and `contextual` do keep is the
+# document text behind each chunk, in `source_text`, because their chunk text
+# holds words that are not the document's -- a model's rewrite, a context line
+# -- and a quote has to be checked against the document.
 #
 #   fixed       -- meaning is uniform; cut on a ruler. The control condition.
 #   paragraph   -- the author's paragraph breaks are the real boundaries.
@@ -227,8 +230,17 @@ seg_structural <- function(doc, spec, client, trace) {
   if (all(is.na(sec))) {
     is_head <- grepl("^(#{1,6}[ \t]|\\d+(\\.\\d+)*[ \t.)]+[A-Z]|[A-Z][A-Z0-9 ,'\u2019&/-]{6,}$)",
                      b$text, perl = TRUE) & gr_count_tokens(b$text) < 30L
+    # The label is the heading line as written, less any markdown hashes. The
+    # heading block is dropped from the body below and this label is prefixed
+    # in its place, so it has to carry the whole line: the normalised form
+    # stripped leading numbers, and "2022 Results" and "2023 Results" both
+    # became "## Results", leaving neither year in any chunk -- and a
+    # year-led sentence taken for a heading lost its year the same way.
     cur <- NA_character_
-    for (i in seq_len(nrow(b))) { if (is_head[i]) cur <- heading_label(b$text[i]); sec[i] <- cur }
+    for (i in seq_len(nrow(b))) {
+      if (is_head[i]) cur <- trimws(sub("^#{1,6}[ \t]*", "", trimws(b$text[i]), perl = TRUE))
+      sec[i] <- cur
+    }
   } else {
     # The extractor supplied sections. A block whose entire text is the section
     # label is the heading itself. Normalise BOTH sides: the extractor's label
@@ -238,10 +250,17 @@ seg_structural <- function(doc, spec, client, trace) {
     is_head <- !is.na(sec) & heading_label(b$text) == heading_label(sec)
   }
   sec[is.na(sec)] <- .gr_no_section
-  groups <- split(seq_len(nrow(b)), factor(sec, levels = unique(sec)))
+  # One group per unbroken run of a section, not per label. Grouping by label
+  # gathered every section of the same name into the first one: a paper's two
+  # studies each with a "Methods" gave one chunk holding both studies' methods,
+  # placed before the second study's heading, and a document's preamble was
+  # joined to trailing endnotes because both had no section. Order is the
+  # document's, and a run never crosses a heading.
+  run <- cumsum(c(TRUE, sec[-1L] != sec[-length(sec)]))[seq_along(sec)]
+  groups <- split(seq_len(nrow(b)), run)
   out <- character(0); pg <- integer(0); sc <- character(0); bid <- integer(0)
-  for (nm in names(groups)) {
-    idx <- groups[[nm]]
+  for (idx in groups) {
+    nm <- sec[idx[1]]
     labelled <- isTRUE(spec$prefix_section) && !identical(nm, .gr_no_section)
     # Drop the heading block only when the prefix will carry it. Without the
     # prefix, dropping it would lose the heading text from the document.
@@ -279,7 +298,8 @@ seg_structural <- function(doc, spec, client, trace) {
 #' compare a block's text against its section label, which reach `seg_structural`
 #' in different shapes: the markdown extractor stores "3.1 Methods" while the
 #' block itself still reads "## 3.1 Methods". The label the segmenter PREFIXES
-#' is the extractor's section string, not this normalised form.
+#' is the extractor's section string, or for a heading found inline the heading
+#' line itself, never this normalised form.
 #' @noRd
 heading_label <- function(x) {
   x <- trimws(as.character(x))
@@ -382,6 +402,22 @@ seg_semantic <- function(doc, spec, client, trace) {
   out
 }
 
+#' The most one segmentation request can cost: `input_tokens` of prompt and a
+#' reply at `max_output`, or the model's own ceiling if lower, at the client
+#' model's price. NA when the model has no price, which the trace cannot count
+#' either.
+#' @noRd
+seg_call_usd <- function(client, input_tokens, max_output) {
+  model <- as_chr1(client$model, "unknown")
+  # The segmenter's own call warns about an unknown model; once is enough.
+  quiet <- function(expr) tryCatch(suppressWarnings(expr, classes = "gr_unknown_model"),
+                                   error = function(e) NULL)
+  info <- quiet(gr_model_info(model))
+  if (is.null(info)) return(NA_real_)
+  out <- min(as_num1(max_output, 0), as_num1(info$max_output, Inf))
+  as_num1(quiet(gr_estimate_cost(model, input_tokens, out)), NA_real_)
+}
+
 #' @noRd
 seg_contextual <- function(doc, spec, client, trace) {
   # Contextual retrieval: each chunk keeps a short pointer to
@@ -402,16 +438,22 @@ seg_contextual <- function(doc, spec, client, trace) {
 
   headers <- if (identical(src, "llm")) {
     doc_summary <- gr_truncate_tokens(doc$text, 1500, "")
+    sys_prompt <- "You situate an excerpt within its source document. Reply with one sentence, no preamble."
+    ask <- function(excerpt) paste0(
+      "<document>\n", doc_summary, "\n</document>\n\n<excerpt>\n", excerpt,
+      "\n</excerpt>\n\nIn one sentence, say what this excerpt is about and where it fits in the document.")
+    # The longest excerpt with its reply at the cap: what gr_lapply() holds a
+    # parallel batch to, since the workers cannot see what the run spends.
+    worst <- seg_call_usd(client, sum(gr_count_tokens(c(sys_prompt, ask("")))) + max(d$tokens), 90L)
     unlist(gr_lapply(seq_len(nrow(d)), function(i, trace) {
       if (!trace_can_call(trace)) return("")
       res <- gr_call(client, list(
-        list(role = "system", content = "You situate an excerpt within its source document. Reply with one sentence, no preamble."),
-        list(role = "user", content = paste0(
-          "<document>\n", doc_summary, "\n</document>\n\n<excerpt>\n", d$text[i],
-          "\n</excerpt>\n\nIn one sentence, say what this excerpt is about and where it fits in the document."))
+        list(role = "system", content = sys_prompt),
+        list(role = "user", content = ask(d$text[i]))
       ), max_output = 90L, trace = trace, label = "segment.context")
       if (res$ok) res$text else ""
-    }, parallel = spec$parallel, label = "context blurb", trace = trace),
+    }, parallel = spec$parallel, label = "context blurb", trace = trace,
+       client = client, item_usd = worst),
       use.names = FALSE)
   } else {
     vapply(seq_len(nrow(d)), function(i) {
@@ -422,9 +464,16 @@ seg_contextual <- function(doc, spec, client, trace) {
       paste(bits, collapse = " | ")
     }, character(1))
   }
-  d$text <- ifelse(nzchar(headers), paste0("[", headers, "]\n\n", d$text), d$text)
+  # The header is not the document's text, and under context_source = "llm" a
+  # model wrote it. Kept as the chunk's text it became part of what quotes were
+  # checked against, so a quote of a figure the context-writing call invented
+  # ("revenue rose to 52 million" of a document that says 45.2) verified as a
+  # verbatim quotation. `source_text` is the body alone; see new_chunks().
+  body <- d$text
+  d$text <- ifelse(nzchar(headers), paste0("[", headers, "]\n\n", body), body)
   out <- new_chunks(d$text, "contextual", spec, page = d$page, section = d$section,
-                    block_id = d$block_id)
+                    block_id = d$block_id,
+                    source_text = ifelse(nzchar(headers), body, NA_character_))
   out$extra <- list(context_source = src)
   out
 }
@@ -472,14 +521,19 @@ seg_proposition <- function(doc, spec, client, trace) {
   # which EVERY batch failed noticed, by falling back to sentences. A segmenter
   # must never lose text.
   keep <- function(i) list(p = batches$text[i], kept = TRUE)
+  sys_prompt <- paste0(
+    "Decompose text into standalone propositions. Each proposition must be a single ",
+    "self-contained factual statement: resolve every pronoun and abbreviation to the ",
+    "entity it refers to, keep all numbers, dates and units verbatim, and add nothing ",
+    "that is not stated in the text.")
+  # The largest batch with its reply at the cap: what gr_lapply() holds a
+  # parallel batch to, since the workers cannot see what the run spends.
+  worst <- seg_call_usd(client, gr_count_tokens(sys_prompt) +
+                          max(c(0L, gr_count_tokens(batches$text))), 2000L)
   res <- gr_lapply(seq_along(batches$text), function(i, trace) {
     if (!trace_can_call(trace)) return(keep(i))
     out <- gr_call_json(client, list(
-      list(role = "system", content = paste0(
-        "Decompose text into standalone propositions. Each proposition must be a single ",
-        "self-contained factual statement: resolve every pronoun and abbreviation to the ",
-        "entity it refers to, keep all numbers, dates and units verbatim, and add nothing ",
-        "that is not stated in the text.")),
+      list(role = "system", content = sys_prompt),
       list(role = "user", content = batches$text[i])
     ), schema = schema, schema_name = "propositions", trace = trace,
        label = "segment.proposition", max_output = 2000L)
@@ -490,7 +544,8 @@ seg_proposition <- function(doc, spec, client, trace) {
     p <- prop_strings(json_field(out$value, "propositions", scalar = FALSE))
     p <- p[has_content(p)]
     if (!length(p)) keep(i) else list(p = p, kept = FALSE)
-  }, parallel = spec$parallel, label = "proposition batch", trace = trace)
+  }, parallel = spec$parallel, label = "proposition batch", trace = trace,
+     client = client, item_usd = worst)
   kept <- vapply(res, function(r) isTRUE(r$kept), logical(1))
   if (all(kept)) {
     gr_warn("Proposition extraction returned nothing; falling back to 'sentence'.",
@@ -505,9 +560,23 @@ seg_proposition <- function(doc, spec, client, trace) {
             class = "gr_segment_fallback")
   }
   props <- unlist(lapply(res, function(r) r$p), use.names = FALSE)
-  props <- props[has_content(props)]
+  # Which batch each proposition came from, so each chunk can name the
+  # document text it was written from.
+  from <- rep(seq_along(res), vapply(res, function(r) length(r$p), integer(1)))
+  real <- has_content(props)
+  props <- props[real]
+  from <- from[real]
   packed <- pack_units(props, spec$max_tokens, 0L, spec$min_tokens, joiner = "\n")
-  out <- new_chunks(packed$text, "proposition", spec)
+  # The propositions are the model's words, not the document's: a fact the
+  # decomposing call added was checked against itself and verified, match 1.
+  # `source_text` holds the batches each chunk's propositions came from, which
+  # is what a quote from it has to be found in. A batch kept as written is its
+  # own source.
+  source <- vapply(seq_len(nrow(packed$span)), function(k) {
+    b <- seq(from[packed$span$first[k]], from[packed$span$last[k]])
+    paste(batches$text[b], collapse = "\n\n")
+  }, character(1))
+  out <- new_chunks(packed$text, "proposition", spec, source_text = source)
   # `propositions` counts propositions: a batch kept as written is a paragraph,
   # and counting it here reported a partly decomposed document as fully done.
   n_props <- sum(vapply(res[!kept], function(r) length(r$p), integer(1)))

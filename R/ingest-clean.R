@@ -44,7 +44,13 @@
 #'   which is required for anything that reasons about position or repetition
 #'   across the whole document (dropping a trailing bibliography, or detecting
 #'   a running head by how often a line recurs). A document-scoped step that was
-#'   applied per block would simply never fire.
+#'   applied per block would simply never fire. Its result is matched back to
+#'   the blocks line by line, so such a step should remove whole lines, or cut
+#'   the text at the start of a line, and leave the lines it keeps as they
+#'   were: each block then keeps whichever of its lines survived. A step that
+#'   rewrites text inside lines is matched line for line when it keeps every
+#'   line; otherwise it is applied to each block on its own, with a
+#'   `gr_clean_unmapped` warning.
 #' @return Invisibly, `name`.
 #' @seealso [gr_cleaners()], [gr_clean()], [gr_ingest_spec()]
 #' @family ingest functions
@@ -160,16 +166,19 @@ gr_clean <- function(text, steps = NULL, opts = list()) {
       # head only looks like one when you can see the whole document at once.
       joined <- paste(text, collapse = sep)
       cleaned <- as_chr1(reg[[s]]$fn(joined, opts))
-      text <- vapply(text, function(bt) {
-        trimmed <- trimws(bt)
-        if (!nzchar(trimmed)) return("")
-        if (grepl(trimmed, cleaned, fixed = TRUE)) return(bt)
-        # The block did not survive intact. It may still contain a line the
-        # cleaner strips (a running head inside a longer block), so try the
-        # cleaner on the block alone before discarding it.
-        sub <- as_chr1(reg[[s]]$fn(bt, opts))
-        if (nzchar(trimws(sub)) && !identical(sub, bt)) sub else ""
-      }, character(1), USE.NAMES = FALSE)
+      mapped <- map_document_step(text, joined, cleaned)
+      if (is.null(mapped)) {
+        # Re-running a document-level decision on one block cannot repeat it
+        # (a running head needs the other pages to be seen as one), so this is
+        # a fallback, and it says so rather than passing for the real thing.
+        gr_warn(sprintf(paste0("The document-scoped cleaner '%s' rewrote text inside lines, so its ",
+                               "result could not be matched back to the blocks it came from. It ",
+                               "was applied to each block on its own instead."), s),
+                class = "gr_clean_unmapped")
+        mapped <- vapply(text, function(bt) as_chr1(reg[[s]]$fn(bt, opts)), character(1),
+                         USE.NAMES = FALSE)
+      }
+      text <- mapped
     } else {
       text <- vapply(text, function(tx) as_chr1(reg[[s]]$fn(tx, opts)), character(1), USE.NAMES = FALSE)
     }
@@ -178,6 +187,68 @@ gr_clean <- function(text, steps = NULL, opts = list()) {
   }
   attr(text, "gr_clean_log") <- log
   text
+}
+
+#' Map a document-scoped step's result back onto the blocks it was given.
+#'
+#' The step saw `joined`, the blocks separated by blank lines, and returned
+#' `cleaned`. Keeping a block only when its WHOLE text survived deleted every
+#' block the step edited in part: a paragraph that began with a running head,
+#' or a conclusion with the References heading on its next line, went with the
+#' line the step removed. So the result is matched line by line instead: each
+#' non-blank line of `cleaned` is found, in order, among the lines of `joined`,
+#' and every block keeps the lines of it that survived. A block none of whose
+#' lines survived comes back as "".
+#'
+#' That covers a step that removes whole lines or cuts the text at the start
+#' of a line, which is what the built-in ones do. A step that rewrites text
+#' inside lines but keeps every line is mapped line for line. Anything else
+#' returns NULL, and the caller falls back.
+#' @noRd
+map_document_step <- function(text, joined, cleaned) {
+  if (identical(cleaned, joined)) return(ifelse(has_content(text), text, ""))
+  # A trailing "\n" is appended so strsplit() keeps a block's own trailing
+  # empty line. With it, the lines of `joined` are exactly each block's lines
+  # with one empty separator line between blocks.
+  lines_of <- function(s) strsplit(paste0(s, "\n"), "\n", fixed = TRUE)[[1]]
+  orig <- lines_of(joined)
+  n <- vapply(text, function(t) length(lines_of(t)), integer(1), USE.NAMES = FALSE)
+  owner <- rep(rbind(seq_along(text), 0L), rbind(n, 1L))
+  owner <- owner[seq_len(length(owner) - 1L)]     # no separator after the last block
+  if (length(owner) != length(orig)) return(NULL)
+  out_lines <- lines_of(cleaned)
+  blank <- !nzchar(trimws(orig))
+
+  by_block <- function(x) split(x, factor(owner, levels = c(0L, seq_along(text))))[-1L]
+
+  # Blank lines carry nothing to match; a step may add or drop them freely.
+  kept <- rep(FALSE, length(orig))
+  subsequence <- TRUE
+  i <- 1L
+  for (line in out_lines[nzchar(trimws(out_lines))]) {
+    while (i <= length(orig) && orig[i] != line) i <- i + 1L
+    if (i > length(orig)) { subsequence <- FALSE; break }
+    kept[i] <- TRUE
+    i <- i + 1L
+  }
+  if (!subsequence) {
+    # Not the input with lines taken out. The same number of lines means text
+    # was rewritten in place, and each block takes back its own lines.
+    if (length(out_lines) != length(orig)) return(NULL)
+    return(vapply(by_block(out_lines), function(l) {
+      t <- paste(l, collapse = "\n")
+      if (nzchar(trimws(t))) t else ""
+    }, character(1), USE.NAMES = FALSE))
+  }
+
+  idx <- by_block(seq_along(orig))
+  vapply(seq_along(text), function(b) {
+    own <- idx[[b]]
+    content <- own[!blank[own]]
+    if (!length(content) || !any(kept[content])) return("")
+    if (all(kept[content])) return(text[b])
+    paste(orig[own[kept[own] | blank[own]]], collapse = "\n")
+  }, character(1), USE.NAMES = FALSE)
 }
 
 # ---------------------------------------------------------------------------
@@ -236,8 +307,15 @@ register_builtin_cleaners <- function() {
     })
 
   gr_register_cleaner("hyphenation", stage = "early", default_on = TRUE,
-    description = "Rejoin words split across line breaks by PDF layout ('mito-\\nchondria')",
-    fn = function(x, o) gsub("(\\w)[-\u2010\u2011]\\s*\n\\s*(\\w)", "\\1\\2", x, perl = TRUE))
+    description = "Rejoin words split across line breaks by PDF layout ('mito-\\nchondria'); number ranges ('18-\\n65') are left alone",
+    # A letter before the hyphen and a lower-case letter after it. `\w` also
+    # matched digits, so a range that wrapped at its hyphen ("aged 18-" / "65
+    # years") became one wrong number, "aged 1865 years", and a quote of that
+    # number then checked out against the document. An upper-case letter after
+    # the break is a compound ("Anglo-" / "Saxon"), not a split word. `[ \t]`
+    # rather than `\s`, so the match cannot run across a blank line.
+    fn = function(x, o) gsub("(\\p{L})[-\u2010\u2011][ \t]*\n[ \t]*(\\p{Ll})", "\\1\\2", x,
+                             perl = TRUE))
 
   gr_register_cleaner("headers_footers", stage = "early", default_on = FALSE, scope = "document",
     description = "Drop short lines repeated on many pages (running heads)",

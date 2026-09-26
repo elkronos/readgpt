@@ -323,11 +323,33 @@ hash_parts <- function(x, prefix = "", depth = 0L) {
                           depth + 1L)
              }), use.names = FALSE)))
   }
+  if (is.function(x)) {
+    # as.character() cannot turn a function into text, so every function used
+    # to serialise as the bare word "function" and any two hashed alike. A
+    # cleaner fixed and registered again under its old name was then served
+    # from the ingest cache as the broken one had left it. The code is hashed
+    # (deparse() leaves out source references and byte code), and so is where
+    # it runs: the same code in two closures can hold different values. A
+    # named environment (the global one, a package) goes in by name, so a key
+    # built from one is the same in every session; any other by identity.
+    return(paste0(prefix, "=function:", paste(deparse(x), collapse = "\n"),
+                  "@", env_identity(environment(x))))
+  }
   v <- tryCatch(as.character(x), error = function(e) class(x)[1])
   nms <- names(x)
   paste0(prefix, "=", class(x)[1], ":",
          if (is.null(nms)) "" else paste0("[", paste(nms, collapse = ","), "]"),
          paste(v, collapse = "\u0002"))
+}
+
+#' What a function's environment is, for a hash: its name when it has one,
+#' otherwise its address.
+#' @noRd
+env_identity <- function(env) {
+  if (is.null(env)) return("<primitive>")
+  nm <- environmentName(env)
+  if (nzchar(nm)) return(nm)
+  utils::capture.output(print.default(env))[1]
 }
 
 #' @noRd

@@ -55,11 +55,10 @@
 #' answers. Both send every chunk, so the choice changes the number of requests
 #' and the cost, not how much of the document is read.
 #'
-#' The room is measured for the recipe's model and, unless `model` is passed in
-#' `...`, for the client's model as well, since a client built for another
-#' model may be what answers. A model whose limits readgpt has to guess (see
-#' [gr_model_info()]) always gets `"thorough"`; register its real limits with
-#' [gr_register_model()].
+#' The room is measured for the model that answers: the one passed as `model`
+#' in `...`, or else the client's. A model whose limits readgpt has to guess
+#' (see [gr_model_info()]) always gets `"thorough"`; register its real limits
+#' with [gr_register_model()].
 #'
 #' The answer's `recipe` names the recipe used, `notes$auto_recipe` records that
 #' `"auto"` chose it, and the trace has an `auto_recipe` step with the token
@@ -108,11 +107,10 @@ answer_document <- function(source, question, recipe = "auto", client = NULL,
   # The two candidates ingest alike, so the document is read once either way.
   doc <- gr_ingest(source, first$ingest, trace = trace)
   if (auto) {
-    # The request goes out under the recipe's model, but a client built for
-    # another one may be what answers, so without a `model` override both are
-    # measured.
-    models <- c(first$read$model,
-                if (!"model" %in% names(list(...))) as_chr1(client[["model", exact = TRUE]], ""))
+    # Measured for the model that answers: the one named by `model` or the
+    # recipe, or else the client's, which is what gr_read() reads with when the
+    # spec names none.
+    models <- first$read$model %||% as_chr1(client[["model", exact = TRUE]], "")
     pick <- pick_auto_recipe(gr_count_tokens(doc$text), first, models, client, trace,
                              key = gr_hash(list("auto", doc$text, question)))
     for (w in cand[[pick]]$warnings) warning(w)
@@ -180,8 +178,8 @@ auto_shared_warnings <- function(cand) {
 #' is no basis for sending everything at once, and neither is a document whose
 #' size cannot be counted; both are read the way that works at any size.
 #' @noRd
-pick_auto_recipe <- function(tokens, fast, models = fast$read$model, client = NULL,
-                             trace = NULL, key = NULL) {
+pick_auto_recipe <- function(tokens, fast, models = fast$read$model %||% gr_options("model"),
+                             client = NULL, trace = NULL, key = NULL) {
   # A replay makes the choice the recorded run made for this document and
   # question; see gr_replay_client().
   recorded <- if (is.function(client[["auto_choice", exact = TRUE]])) client$auto_choice(key)
@@ -234,6 +232,13 @@ finish_answer <- function(ans, doc, chunks, recipe) {
 #' identical read spec are collapsed with a warning rather than billed twice. A
 #' shared reader signature alone is not enough: two `retrieve` recipes with
 #' different `top_k` share a signature and are genuinely different runs.
+#'
+#' A comparison is one run for the spending limit: `max_cost_usd` in
+#' [gr_options()] is checked against what every recipe and every segmentation
+#' has spent so far, so a recipe that reaches it stops `partial` and the ones
+#' after it are refused and recorded as failed. `max_calls` is counted for
+#' each recipe on its own, so a recipe's answer does not depend on its
+#' position in the list.
 #'
 #' @param source File path, web address, or raw text; see [gr_ingest()].
 #' @param question The question.
@@ -331,14 +336,25 @@ gr_compare <- function(source, question, recipes = c("fast", "needle", "thorough
       ch <- seg_cache[[skey]]
       if (is.null(ch)) { ch <- gr_segment(d, r$segment, client = client, trace = trace)
                          seg_cache[[skey]] <- ch }
-      # Each recipe gets its own budget accounting, then its steps are folded
-      # into the shared trace. Sharing the trace outright meant `max_calls`
-      # counted earlier recipes against later ones, so the same recipe returned
-      # a different answer depending on its position in the comparison.
+      # Each recipe gets its own call count, then its steps are folded into
+      # the shared trace. Sharing the trace outright meant `max_calls` counted
+      # earlier recipes against later ones, so the same recipe returned a
+      # different answer depending on its position in the comparison.
       sub <- gr_trace(meta = list(recipe = nm, source = source_label(source)))
-      # What the comparison has spent so far, for the progress line.
-      sub$spent_before <- sum(gr_trace_cost(trace)$usd)
+      # Money is the exception. `max_cost_usd` is a limit on the run, and a
+      # comparison is one run: a fresh count for each recipe let four recipes
+      # spend four times the limit with nothing stopped and nothing partial.
+      # So each recipe starts from what the comparison has spent, segmentation
+      # included, which is charged to the shared trace, and pre-flight and
+      # every request check the total.
+      seed <- as_num1(trace$spent_usd, 0)
+      sub$spent_usd <- seed
+      # What the comparison had spent beyond that, for the progress line, which
+      # adds this trace's own spend. NA, when a cost is unknown, stays NA.
+      sub$spent_before <- sum(gr_trace_cost(trace)$usd) - seed
       a <- gr_read(ch, question, client, r$read, trace = sub)
+      # Only this recipe's spend is folded in: the seed is already there.
+      sub$spent_usd <- sub$spent_usd - seed
       trace_absorb(trace, sub)
       finish_answer(a, d, ch, nm)
     }, error = function(e) {

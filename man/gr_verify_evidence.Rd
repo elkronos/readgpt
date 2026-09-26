@@ -11,8 +11,11 @@ gr_verify_evidence(answer, chunks = NULL)
 
 \item{chunks}{The \link{gr_chunks} the answer was read from. Needed for readers
 whose evidence is verbatim, where the comparison is against the chunk the
-span claims to come from. \code{skim} answers already carry their sources, so
-they can be checked without it; an \code{ensemble} needs it for the rows
+span claims to come from: its \code{source_text} where the segmenter recorded
+one (the document text behind a chunk whose \code{text} carries model-written
+context or propositions), and its \code{text} otherwise. \code{skim} answers
+already carry their sources, so they can be checked without it; an
+\code{ensemble} needs it for the rows
 its verbatim members contributed, even though its \code{skim} rows do not.
 
 Pass the chunks the answer was actually read from. Chunk ids are positional,
@@ -30,6 +33,12 @@ mixes them in one table, and the same value appears as the \code{kind} column on
 question does not apply: a \code{map_reduce} evidence row is a per-chunk
 \emph{answer}, not a quotation, and asking whether it appears in the chunk is a
 category error.
+
+For an \code{extract} answer, a quote has to carry the value it is cited for as
+well as appear in the chunk, and only the reader can check the first: it
+knows the value. A row the reader marked \code{verified = FALSE} for that
+reason stays \code{FALSE} here, with a \code{match} of 1 when the sentence itself is
+in the document. It is there, and it does not say this.
 }
 \description{
 \code{ans$evidence} says what an answer rests on. For most readers those spans are
@@ -47,8 +56,12 @@ reason not to do it.
 
 \code{match} is 1 for an exact quotation once whitespace, quote marks, dashes and
 case are folded away. These are the differences a faithful quotation introduces.
+It has to match whole words and whole numbers: "5\%" is not found in "25\%",
+nor "12\%" in "-12\%", nor "20" in "200". A span made of several passages (on
+separate lines, as a list, or joined by "..." or "[...]") is checked passage
+by passage and is verified when every passage is found.
 Below 1 it is the fraction of the span's words carried by its longest
-consecutive \strong{run} in the source.
+consecutive \strong{run} in the source, for the passage that matches worst.
 
 Read that number with its shape in mind. Because it measures a run, \emph{where}
 the change falls matters as much as how much changed: altering the last word
@@ -65,7 +78,10 @@ quotation from a paraphrase assembled out of the same words.
 With \code{cite = TRUE} a reader asks the model to mark its sources as
 \verb{[chunk 3]}. Every answer is checked for citations pointing at chunks that
 were never sent, whatever this function is called with; the result is
-\code{ans$notes$cited_unknown}, and an answer carrying one is \code{partial}.
+\code{ans$notes$cited_unknown}, and an answer carrying one is \code{partial}. Lists
+and ranges are read (\verb{[chunks 1, 2, and 9]}, \verb{[chunks 1-9]}), and a bracket
+that opens like a citation but cannot be read, such as \verb{[chunk nine]}, is
+listed in \code{ans$notes$cited_unparsed} and makes the answer \code{partial} too.
 }
 
 \examples{

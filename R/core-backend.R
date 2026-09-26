@@ -176,7 +176,7 @@ print.gr_backend_client <- function(x, ...) {
 #' produce unconstrained answers with nothing to show for it.
 #'
 #' @section What does not carry over:
-#' Two things, both worth knowing before you rely on them.
+#' A few things, all worth knowing before you rely on them.
 #'
 #' `temperature` belongs to the chat object, not to the call. ellmer fixes
 #' sampling parameters when the chat is constructed, so a `temperature` in a
@@ -184,10 +184,29 @@ print.gr_backend_client <- function(x, ...) {
 #' once (`gr_ellmer_temperature`). Build a second chat if you need a second
 #' temperature.
 #'
+#' The output cap does carry over, with ellmer 0.5.0 or later: each call runs on
+#' a chat rebuilt from yours (same provider, settings, system prompt and tools)
+#' with `max_tokens` set to that call's cap, as the built-in client sends it.
+#' Callbacks registered with `$on_request_start()` and the like are not carried
+#' onto that copy. With an older ellmer, or a chat that is not ellmer's, the
+#' chat's own limit applies and this is warned about once
+#' (`gr_ellmer_max_output`). Either way the provider's stop reason is reported,
+#' so a reply cut off at the limit comes back with `finish_reason = "length"`.
+#'
+#' A JSON schema ellmer cannot express is sent as an instruction in the prompt
+#' instead of as structured output, and warned about once (`gr_ellmer_schema`).
+#' Every schema this package sends converts.
+#'
 #' Each call is independent. An ellmer chat accumulates turns, and this package
 #' issues many unrelated calls per run, so every call runs against a fresh deep
 #' clone with its turns cleared. Your chat object is never mutated, and no
 #' conversation history leaks from one chunk's call into the next.
+#'
+#' For [gr_cache()] and [gr_read_many()]'s `store`, the client's identity covers
+#' the provider, endpoint, model, the chat's `params()` and `api_args`, and its
+#' system prompt, so two chats that differ in any of them never share answers.
+#' A chat whose settings cannot be read gets an identity that lasts only for the
+#' session.
 #'
 #' @seealso [gr_backend_client()], [gr_client()], [gr_register_model()]
 #' @export
@@ -221,11 +240,14 @@ gr_ellmer_client <- function(chat, embed = NULL, model = NULL) {
   handler <- function(messages, params) {
     if (!identical(as_chr1(params$model, model), model) && is.null(warned$model)) {
       warned$model <- TRUE
-      gr_warn(sprintf(paste0("This run asked for model '%s', but an ellmer chat answers with ",
-                             "the model it was built with ('%s'). The call is going to '%s'. ",
-                             "Recipes carry a model, so pass model = '%s' to override it and ",
-                             "keep the context window and cost estimates honest."),
-                      as_chr1(params$model, "?"), model, model, model),
+      # Only a model the caller named can differ: the built-in recipes name
+      # none, so a read with no `model` goes out as the client's, which is this
+      # chat's. The old advice ("recipes carry a model, so pass model = ...")
+      # told the caller to name one, which is what causes the mismatch.
+      gr_warn(sprintf(paste0("This run named model '%s', but an ellmer chat answers, and is ",
+                             "billed, as the model it was built with ('%s'). Leave `model` ",
+                             "unset to read with the chat's model."),
+                      as_chr1(params$model, "?"), model),
               class = "gr_ellmer_model")
     }
     if (!is.null(params$temperature) && is.null(warned$temp)) {
@@ -240,6 +262,28 @@ gr_ellmer_client <- function(chat, embed = NULL, model = NULL) {
     user <- parts$user
 
     one <- chat$clone(deep = TRUE)
+    # The per-call output cap. Every cap this package sets -- a map step's 700
+    # tokens, a revision's room for the whole draft, the context-headroom clamp
+    # in gr_call() -- was dropped here, and the chat's own max_tokens went out
+    # instead: a default chat_anthropic() cut a 7000-token revision at 4096, and
+    # a chat built with a large limit wrote replies far longer than the caps the
+    # cost preflight priced.
+    capped <- ellmer_capped(one, params$max_output)
+    if (!is.null(capped)) {
+      one <- capped
+    } else if (is.null(warned$max_output)) {
+      warned$max_output <- TRUE
+      own <- as_int1(ellmer_model_config(one)$params$max_tokens)
+      gr_warn(sprintf(paste0("This run caps each reply (this call at %d tokens), but this chat sends ",
+                             "the output limit it was built with (%s) and gives no way to change ",
+                             "it per call, so the run's caps are not applied. Replies can run ",
+                             "longer than cost estimates assume; one cut off at the chat's own ",
+                             "limit is reported with finish_reason \"length\". ellmer 0.5.0 or ",
+                             "later lets readgpt set the cap on each call."),
+                      as_int1(params$max_output, 0L),
+                      if (is.na(own)) "the provider's default" else sprintf("max_tokens = %d", own)),
+              class = "gr_ellmer_max_output")
+    }
     # Turns first, then the system prompt: a fresh call must not inherit the
     # history of the previous chunk's call, and must not append to the caller's.
     #
@@ -262,33 +306,140 @@ gr_ellmer_client <- function(chat, embed = NULL, model = NULL) {
       if (is.null(type)) {
         # Not convertible: take the documented degraded path rather than sending
         # a schema ellmer cannot express. Readers that need JSON already handle
-        # unparseable output.
-        one$chat(user, echo = "none")
+        # unparseable output. It used to be taken in silence, with nothing in the
+        # prompt asking for JSON, so the free-text reply failed to parse and
+        # every document was screened "unclear" with status "ok". Now it says
+        # so, and the schema goes in the prompt instead.
+        if (is.null(warned$schema)) {
+          warned$schema <- TRUE
+          gr_warn(sprintf(paste0("The '%s' schema could not be expressed as an ellmer type, so ",
+                                 "those calls ask for JSON in the prompt instead of through ",
+                                 "structured output. Replies that do not parse take the reader's ",
+                                 "degraded path."), as_chr1(params$schema_name, "result")),
+                  class = "gr_ellmer_schema")
+        }
+        one$chat(paste0(user, "\n\nReply with only a JSON object matching this JSON Schema, ",
+                        "and nothing else:\n",
+                        jsonlite::toJSON(params$schema, auto_unbox = TRUE, null = "null")),
+                 echo = "none")
       } else {
         as.character(jsonlite::toJSON(one$chat_structured(user, type = type, echo = "none"),
                                       auto_unbox = TRUE, null = "null"))
       }
     }
-    ellmer_result(txt, model, ellmer_usage(one, params, txt))
+    ellmer_result(txt, model, ellmer_usage(one, params, txt), ellmer_finish_reason(one))
   }
 
   # Unlike a bare backend, an ellmer chat wraps something addressable and
   # stable: a provider, a model, an endpoint. So this one CAN say what it is,
   # and a durable cache or a resumable store works across sessions -- which for
   # the real transport is the whole point of having them.
-  gr_backend_client(handler, embed = embed, model = model,
-                    embedding_model = paste0(model, "-embed"),
-                    id = ellmer_identity(chat, model))
+  cl <- gr_backend_client(handler, embed = embed, model = model,
+                          embedding_model = paste0(model, "-embed"),
+                          id = ellmer_identity(chat, model))
+  # The chat bills as its own model whatever a recipe names, so pricing has to
+  # be able to tell an ellmer client from a bare backend (client_billed_model()).
+  class(cl) <- c("gr_ellmer_client", class(cl))
+  cl
 }
 
 #' A stable identity for an ellmer chat: what will answer, not which object asked.
+#'
+#' What answers is more than a provider, a model and an endpoint. The sampling
+#' parameters (temperature, max_tokens, reasoning effort), the provider-specific
+#' `api_args`, and the chat's own system prompt -- which the adapter keeps
+#' whenever this package sends none -- all live on the chat, and none of them
+#' were in the id. Two chats that differed only there shared a cache: the one
+#' at temperature 1.5 replayed the temperature-0 chat's answers, including the
+#' replies its 200-token cap had cut off. The per-call cap does not need to be
+#' here; cache_key() already carries it.
+#'
+#' A chat whose settings cannot be read (not ellmer's, or an ellmer that keeps
+#' them somewhere else) gets a session-scoped id, the same safe default as a
+#' bare [gr_backend_client()]: a cache that cannot be reused next session rather
+#' than one that returns another chat's answers.
 #' @noRd
 ellmer_identity <- function(chat, model) {
+  cfg <- ellmer_model_config(chat)
+  if (is.null(cfg)) return(gr_new_id("ellmer"))
   provider <- tryCatch(chat$get_provider(), error = function(e) NULL)
-  bits <- c("readgpt-ellmer-v1", as_chr1(model, "?"),
-            as_chr1(class(provider)[1], "?"),
-            as_chr1(tryCatch(as_chr1(provider@base_url), error = function(e) NULL), "?"))
-  paste0("ellmer-", gr_hash(bits))
+  paste0("ellmer-", gr_hash(list(
+    "readgpt-ellmer-v2", as_chr1(model, "?"),
+    as_chr1(class(provider)[1], "?"),
+    as_chr1(tryCatch(as_chr1(provider@base_url), error = function(e) NULL), "?"),
+    params = cfg$params, extra_args = cfg$extra_args,
+    system_prompt = as_chr1(tryCatch(chat$get_system_prompt(), error = function(e) NULL), ""))))
+}
+
+#' The settings an ellmer chat was built with: `params()` and `api_args`.
+#'
+#' ellmer 0.5.0 moved them from the provider to a Model object
+#' (`$get_model_object()`) and deprecated the provider's copies, so the Model is
+#' asked first and the provider only when there is no Model. `NULL` when neither
+#' holds a readable `params` list.
+#' @noRd
+ellmer_model_config <- function(chat) {
+  obj <- tryCatch(chat$get_model_object(), error = function(e) NULL)
+  if (is.null(obj)) obj <- tryCatch(chat$get_provider(), error = function(e) NULL)
+  params <- tryCatch(suppressWarnings(obj@params), error = function(e) NULL)
+  if (!is.list(params)) return(NULL)
+  extra <- tryCatch(suppressWarnings(obj@extra_args), error = function(e) NULL)
+  list(params = params, extra_args = if (is.list(extra)) extra else list())
+}
+
+#' A copy of one call's chat that sends this call's output cap.
+#'
+#' ellmer fixes `max_tokens` when the chat is built and has no setter for it.
+#' From 0.5.0 its public interface can still build the same chat with a
+#' different limit: a new `Chat` from the clone's provider, its model object
+#' with `max_tokens` replaced, its system prompt and its tools. Callbacks
+#' registered with `$on_request_start()` and the like have no getter and are not
+#' carried over. Returns `one` itself when it already sends that limit, and
+#' `NULL` when this chat or this ellmer cannot be given one, so the caller can
+#' say so.
+#' @noRd
+ellmer_capped <- function(one, max_output) {
+  cap <- as_int1(max_output)
+  model_obj <- tryCatch(one$get_model_object(), error = function(e) NULL)
+  params <- tryCatch(model_obj@params, error = function(e) NULL)
+  if (is.na(cap) || !is.list(params)) return(NULL)
+  if (identical(as_int1(params$max_tokens), cap)) return(one)
+  tryCatch({
+    params$max_tokens <- cap
+    model_obj@params <- params
+    fresh <- ellmer::Chat$new(provider = one$get_provider(), model = model_obj,
+                              system_prompt = one$get_system_prompt())
+    tools <- one$get_tools()
+    if (length(tools)) fresh$set_tools(tools)
+    fresh
+  }, error = function(e) NULL)
+}
+
+#' Why an ellmer reply stopped, in the provider's words or ellmer's.
+#'
+#' From ellmer 0.5.0 the assistant turn carries a normalised `finish_reason`
+#' (`"max_tokens"` when the reply hit the output limit). Before that only the
+#' provider's own reply is there, so that is read instead. Either way
+#' gr_result() maps the truncation spellings to `"length"`. It used to be left
+#' NA, so nothing downstream could tell a cut-off reply from a complete one.
+#' @noRd
+ellmer_finish_reason <- function(chat) {
+  turn <- tryCatch(chat$last_turn(), error = function(e) NULL)
+  if (is.null(turn)) return(NA_character_)
+  fr <- tryCatch(as_chr1(turn@finish_reason, NA_character_), error = function(e) NA_character_)
+  if (!is.na(fr) && nzchar(fr)) return(fr)
+  js <- tryCatch(turn@json, error = function(e) NULL)
+  fld <- function(x, nm) if (is.list(x)) x[[nm, exact = TRUE]] else NULL
+  first <- function(x) if (is.list(x) && length(x)) x[[1]] else NULL
+  status <- fld(js, "status")
+  if (identical(as_chr1(status), "incomplete")) {
+    status <- fld(fld(js, "incomplete_details"), "reason") %||% status
+  }
+  as_chr1(fld(js, "stop_reason") %||%                          # Anthropic
+            fld(first(fld(js, "choices")), "finish_reason") %||% # Chat Completions
+            fld(first(fld(js, "candidates")), "finishReason") %||% # Gemini
+            status,                                             # Responses API
+          NA_character_)
 }
 
 #' The methods this adapter actually calls, and the check that they are there.
@@ -334,14 +485,15 @@ check_chat_methods <- function(chat) {
 #' empty reply is a refusal, a content filter or a tool call, not an answer.
 #' Building the `gr_result` inside the handler bypassed that check, so a run in
 #' which every call was refused reported zero errors and billed them as paid.
+#' `finish_reason` is the stop reason read from the chat's last turn.
 #' @noRd
-ellmer_result <- function(txt, model, usage) {
+ellmer_result <- function(txt, model, usage, finish_reason = NA_character_) {
   txt <- as_chr1(txt)
   if (!nzchar(trimws(txt))) {
     return(gr_result(FALSE, text = "", error = "empty completion", model = model,
                      finish_reason = "empty", usage = usage))
   }
-  gr_result(TRUE, text = txt, model = model, usage = usage)
+  gr_result(TRUE, text = txt, model = model, usage = usage, finish_reason = finish_reason)
 }
 
 #' Split readgpt messages into ellmer's two slots.
@@ -399,46 +551,72 @@ ellmer_usage <- function(chat, params, txt) {
        output = if (is.na(out)) local$output else out)
 }
 
-#' Convert a flat JSON Schema object to an ellmer type.
+#' Convert a JSON Schema object to an ellmer type.
 #'
 #' Returns NULL for anything it cannot express, so the caller can degrade rather
-#' than send something wrong. Only flat objects of scalars, enums and scalar
-#' arrays are handled -- which is every schema this package sends, and the
-#' common case for a user-written reader.
+#' than send something wrong. Handles objects, arrays, scalars and enums, nested
+#' to any depth, and the nullable form `type = c("string", "null")` -- which is
+#' what every schema this package sends is made of.
+#'
+#' The type is read as a VECTOR. It was read with as_chr1(), which joins
+#' `c("string", "null")` into "string\nnull"; no branch matched that, so the
+#' screening, extraction and claims schemas -- all of which have nullable fields
+#' -- converted to NULL and went out as a bare chat with no schema. Every
+#' document was then screened "unclear" with status "ok". Arrays of objects
+#' (claims, outline, preview plans) and arrays of arrays (claim reconciliation)
+#' were refused the same way.
+#'
+#' A field that is nullable, or that the object does not list as required,
+#' becomes `required = FALSE` in ellmer, which sends it as nullable to
+#' providers that demand every field and as optional to the rest. Descriptions
+#' are carried, because in this package they are instructions ("copied
+#' verbatim, or null if none does"). A null among an enum's values is the
+#' nullable marker, not a value.
 #' @noRd
 ellmer_type <- function(schema) {
-  if (!is.list(schema) || !identical(as_chr1(schema$type, ""), "object")) return(NULL)
-  props <- schema$properties
-  if (!is.list(props) || !length(props) || is.null(names(props))) return(NULL)
-  required <- as.character(unlist(schema$required %||% names(props), use.names = FALSE))
-
-  scalar <- function(p) {
-    switch(as_chr1(p$type, ""),
-           string  = if (length(p$enum)) ellmer::type_enum(
-                       values = as.character(unlist(p$enum, use.names = FALSE)))
-                     else ellmer::type_string(),
-           integer = ellmer::type_integer(),
-           number  = ellmer::type_number(),
-           boolean = ellmer::type_boolean(),
-           NULL)
-  }
-  fields <- list()
-  for (nm in names(props)) {
-    p <- props[[nm]]
+  convert <- function(p, required = TRUE) {
     if (!is.list(p)) return(NULL)
-    ty <- if (identical(as_chr1(p$type, ""), "array")) {
-      inner <- scalar(p$items %||% list())
-      if (is.null(inner)) return(NULL)
-      ellmer::type_array(items = inner)
-    } else {
-      scalar(p)
-    }
-    if (is.null(ty)) return(NULL)
-    fields[[nm]] <- ty
+    types <- as.character(unlist(p$type, use.names = FALSE))
+    kind <- setdiff(types, "null")
+    if (length(kind) != 1L) return(NULL)
+    req <- required && !("null" %in% types)
+    desc <- if (is.character(p$description) && length(p$description) == 1L) p$description
+    switch(kind,
+      string = {
+        if (length(p$enum)) {
+          vals <- as.character(unlist(p$enum, use.names = FALSE))
+          vals <- vals[!is.na(vals)]
+          if (!length(vals)) return(NULL)
+          ellmer::type_enum(values = vals, description = desc, required = req)
+        } else {
+          ellmer::type_string(description = desc, required = req)
+        }
+      },
+      integer = ellmer::type_integer(description = desc, required = req),
+      number  = ellmer::type_number(description = desc, required = req),
+      boolean = ellmer::type_boolean(description = desc, required = req),
+      array = {
+        items <- convert(p$items %||% list())
+        if (is.null(items)) return(NULL)
+        ellmer::type_array(items = items, description = desc, required = req)
+      },
+      object = {
+        props <- p$properties
+        if (!is.list(props) || !length(props) || is.null(names(props))) return(NULL)
+        need <- as.character(unlist(p$required %||% names(props), use.names = FALSE))
+        fields <- list()
+        for (nm in names(props)) {
+          ty <- convert(props[[nm]], nm %in% need)
+          if (is.null(ty)) return(NULL)
+          fields[[nm]] <- ty
+        }
+        do.call(ellmer::type_object, c(list(.description = desc), fields, list(.required = req)))
+      },
+      NULL)
   }
-  # `required` is per-field in ellmer and per-object in JSON Schema.
-  out <- tryCatch(
-    do.call(ellmer::type_object, c(fields, list(.required = all(names(props) %in% required)))),
-    error = function(e) tryCatch(do.call(ellmer::type_object, fields), error = function(e2) NULL))
-  out
+  if (!is.list(schema) ||
+      !identical(setdiff(as.character(unlist(schema$type, use.names = FALSE)), "null"), "object")) {
+    return(NULL)
+  }
+  tryCatch(convert(schema), error = function(e) NULL)
 }

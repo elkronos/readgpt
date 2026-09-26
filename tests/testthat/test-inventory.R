@@ -282,8 +282,13 @@ test_that("a transport failure on one document is reported as partial, not as an
   out <- quiet(gr_read_many(file.path(d, c("good.txt", "second.txt")), "Q?", "fast",
                             client = flaky))
   expect_equal(nrow(out$summary), 2L)
-  expect_true(out$summary$partial[1])          # the one whose call failed
-  expect_true(out$summary$not_found[1])        # and it did not invent an answer
+  # The one whose call failed is a failed document, with the provider's error,
+  # not a row of results; its partial answer is kept, and invents nothing.
+  expect_identical(out$summary$status[1], "failed")
+  expect_match(out$summary$error[1], "simulated 503")
+  expect_true(is.na(out$summary$answer[1]))
+  expect_true(out$answers[[1]]$partial)
+  expect_true(is_not_found(out$answers[[1]]$answer))
   expect_false(out$summary$partial[2])
   expect_identical(out$summary$answer[2], "AN ANSWER")
 })

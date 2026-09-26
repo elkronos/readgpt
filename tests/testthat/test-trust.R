@@ -369,9 +369,19 @@ test_that("a run whose documents are all in the store needs no key", {
   local_clean_cache()
   store <- tempfile("store-")
   dead <- function() gr_client(base_url = "http://127.0.0.1:9", max_retries = 0L, timeout = 5)
+  # The first run has to SUCCEED to be stored: a document whose requests failed
+  # is kept out of the store so that the next run reads it again. So its one
+  # request is answered here, and every later request goes to the dead address.
   withr::with_envvar(c(OPENAI_API_KEY = "sk-test-first-run"),
-    quiet(gr_read_many(readgpt_example(), "What was revenue?", "fast", client = dead(),
-                       store = store)))
+    testthat::with_mocked_bindings(
+      first <- quiet(gr_read_many(readgpt_example(), "What was revenue?", "fast", client = dead(),
+                                  store = store)),
+      http_call = function(client, url, body) {
+        gr_result(TRUE, text = "Revenue was 45.2 million dollars.", status = 200L,
+                  model = as_chr1(body$model, "gpt-4o-mini"))
+      },
+      .package = "readgpt"))
+  expect_identical(first$summary$status, "ok")
   no_key()
   again <- gr_read_many(readgpt_example(), "What was revenue?", "fast", client = dead(),
                         store = store)

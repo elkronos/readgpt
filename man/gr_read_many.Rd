@@ -41,7 +41,13 @@ was given a stable \code{id}; see \code{\link[=gr_backend_client]{gr_backend_cli
 
 \item{store}{Optional directory. Each document's result is written there as
 it completes and restored on a later run instead of being read again. This
-is what makes a four-hour run survive being interrupted.}
+is what makes a four-hour run survive being interrupted. Only a document
+read in full is written, so one that failed (see \code{status} below) is read
+again by the next run. An entry is restored only for the same document,
+question, recipe, tokenizer and client configuration: model, endpoint,
+\code{extra_body}, embedding model and embedder. An entry that is not plain
+data, as a file planted in a shared directory could be, is ignored and the
+document read again.}
 
 \item{on_error}{\code{"continue"} (default) records the failure and moves on;
 \code{"stop"} aborts. One unreadable file in two hundred should not cost you the
@@ -116,10 +122,14 @@ first), \code{"restored"} (read from \code{store}, not re-read now) or \code{"du
 (see below). A document that \code{max_calls} or \code{max_cost_usd} stopped before it
 was read in full is \code{"failed"} too, with the limit in \code{error} and its partial
 answer in \code{answers}; it is not written to \code{store}, so a resumed run with a
-higher limit reads it again. A restored row keeps the numbers from when that
-document was first read, so its \code{cost_usd} is what it cost then, not what this
-run spent. That is why the run's own spend comes from \code{gr_trace_cost(x$trace)}
-and not from summing the column.
+higher limit reads it again. So is a document one of whose model requests
+failed (a network error, a 5xx or 429 after the retries, a refusal, a reply
+that was not the JSON asked for): \code{error} says how many and gives the first
+error, the partial answer is in \code{answers}, and a resumed run reads it again
+rather than restoring what the failure left. A restored row keeps the
+numbers from when that document was first read, so its \code{cost_usd} is what it
+cost then, not what this run spent. That is why the run's own spend comes
+from \code{gr_trace_cost(x$trace)} and not from summing the column.
 }
 
 \section{Documents that are the same document}{

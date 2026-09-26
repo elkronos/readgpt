@@ -664,6 +664,184 @@
 
 ## Fixed
 
+* **A reply is only ever parsed, never fetched or opened.** When a model's reply
+  was a web address or a file path instead of JSON, `jsonlite::fromJSON()`
+  treated it as a location: it downloaded the address or read the file, and the
+  package used what came back as the model's answer. A document could steer a
+  model into this, which leaked the question in the request, let a server decide
+  a screening, or hung the run on a special file. Replies now go through
+  `jsonlite::parse_json()`, and one that is not JSON counts as a reply that
+  could not be read. The same applies when `gr_extract()` rebuilds a table from
+  a stored answer.
+
+* **Spending limits hold in parallel, in segmentation, and across a comparison.**
+  - A parallel batch now goes to workers only when the run has room for all of
+    it under `max_calls` and, where the most one request can cost is known,
+    under `max_cost_usd`; otherwise it runs one request at a time, each checked.
+    Each worker used to count from zero, so a parallel `proposition` or
+    `contextual` segmentation sent its whole batch whatever the limits were
+    (40 calls under a limit of 20), and later levels of a parallel read went past
+    the cap. Every reader's batches (map, summary, scoring, skim, merge,
+    extraction) now carry that per-request price. A batch that passes a limit
+    anyway sets `budget_stop`.
+  - The worst case a parallel read is held to counts every level:
+    `hierarchical` up to `max_levels`, and the merge trees of `map_reduce` and
+    `skim`. A parallel read whose worst case passes `max_calls` is refused before
+    it starts, as one passing `max_cost_usd` already was. A model without a price
+    no longer switches the check off for the models that have one.
+  - `gr_segment()` makes its own trace when none is passed, so an LLM
+    segmenter's calls are limited and recorded, and returns it as `$trace`. The
+    Shiny chunking preview applies the cost field to segmenters that call a
+    model, says so, and no longer calls itself free.
+  - `gr_compare()` holds the whole comparison to `max_cost_usd`. Each recipe
+    started from zero, so four recipes could spend four times the limit.
+  - Requests to an embeddings endpoint count toward `max_calls` and
+    `max_cost_usd`, are priced in the trace and `gr_trace_cost()`, and are
+    included in the pre-flight estimate. They used to be sent outside every
+    limit, even `max_calls = 0`.
+  - An ellmer chat is priced as the model it answers with, and a chat whose
+    model has no price raises `gr_cost_uncheckable`. The recipe's model was
+    priced instead, so the chat's calls were never counted.
+
+* **A client's model is the model a read uses.** Every reader ignored
+  `gr_client(model = "gpt-4o-mini")`, `gr_backend_client(model = )` and an ellmer
+  chat's model, and sent, sized and billed each request as `gr_options("model")`.
+  `gr_read_spec()` now leaves `model` unset unless you name one, and
+  `gr_read()`, `gr_synthesise()`, `gr_claims()` and `gr_outline()` take it from
+  the client. A model named in the spec, the recipe or `model =` still wins.
+
+* **Calls the mock accepted and real providers refused now go through.**
+  - With `api = "chat"`, reasoning models, the default model included, are sent
+    `max_completion_tokens`; OpenAI rejected `max_tokens` for them on every call.
+    A limit field you set in `extra_body` is used instead of the automatic one.
+  - The claims and outline schemas list every property as required, as OpenAI's
+    strict structured outputs demand. Every `gr_claims()` call on the default
+    client was refused with HTTP 400, and `gr_outline()` always fell back to one
+    section.
+  - With `gr_ellmer_client()`, schemas with optional fields and nested lists now
+    translate. Screening, extraction and claims went out without their structure,
+    so every document was screened "unclear" and extraction filled nothing.
+
+* **A reply cut off at the output cap is reported as cut off, everywhere.**
+  Providers say this in different ways (`length`, `max_tokens`, `incomplete`,
+  `MAX_TOKENS`, ...), and only `length` was recognised, so on the default
+  Responses API a truncated answer, section or revision passed as whole, and a
+  cut-off coherence revision replaced the draft. `finish_reason` is now `"length"`
+  whatever the provider's spelling, ellmer chats report their stop reason, and a
+  truncated reply is not saved in the response cache. Every reader, including
+  its intermediate map, summary, extraction and merge steps, marks the answer
+  partial, counts `notes$truncated_calls` and prints the reason. A write-up
+  section is marked partial and counted in `$sections$n_truncated`;
+  `gr_claims()` results carry `$partial` and `$lost`. ellmer chats also receive
+  the per-call output cap (ellmer 0.5.0 or later; older versions warn once).
+
+* **A failed request is never recorded as a finding.**
+  - A screening request that failed is status `"failed"` with no decision and
+    the error in `error`. It used to be the decision "unclear" with status
+    "ok", so `gr_flow()` counted an outage as the model deferring to a person
+    and `gr_calibrate()` counted it as screener behaviour.
+  - An extraction whose requests partly failed has status `"incomplete"`: its
+    values are real, an empty cell is unknown, and `error` says how many
+    requests failed. All failed is `"failed"`. Fields lost to a failed request
+    used to read "not reported" with status "ok". `gr_flow()` and the audit
+    report give these documents their own "read in part" row.
+  - With a `store`, a document whose requests failed is kept out of the store
+    and read again next run. It used to be saved and "restored" on every later
+    run, long after the provider had recovered.
+
+* **Quotations and citations are checked more strictly.**
+  - Quotes match whole words and whole numbers: "5%" no longer verifies as a
+    quotation of "25%", nor "82" of "482".
+  - An extracted value is verified only when its quote states it, and
+    `gr_verify_evidence()` agrees with the extract reader.
+  - Quotes are checked against a chunk's new `source_text` column when a
+    segmenter recorded one, so text a model wrote (a `contextual` header, a
+    `proposition` rewrite) no longer verifies as the document's.
+  - A quotation made of several passages (separate lines, bullets, "...") is
+    checked passage by passage; faithful extractions like these used to fail.
+  - Citation checks read lists and ranges as models write them
+    (`[studies 1, 2, and 7]`, `[studies 1-7]`), so a made-up id in those forms no
+    longer passes. A citation bracket that cannot be read makes an answer or
+    section partial (`notes$cited_unparsed`, `$sections$n_unparsed`).
+  - With `claims =`, a section citing a study it was never shown is partial,
+    counted in `$sections$n_unsupplied`, flagged in the audit report and kept
+    out of the reference list.
+  - When several chunks give the same extracted value, the best quote any of
+    them gave is used, so `require_quote = TRUE` no longer deletes a supported
+    value.
+
+* **Cleaning and extraction keep the text.**
+  - The default hyphenation cleaner no longer joins a number range broken at a
+    line end ("aged 18-" then "65") into one number ("1865"); it rejoins only
+    letters.
+  - Document-wide cleaners (the `scan` and `academic` presets) remove only the
+    lines they target, not every block they touch.
+  - Running-foot removal no longer deletes the edge rows of a table that runs
+    across pages.
+  - HTML is read in full: text directly in `<div>` or `<span>`, table headers,
+    `<h5>`/`<h6>`, one block per table row, and no doubled nested blocks.
+  - Two-column PDFs: full-width tables are read row by row, rows set one space
+    apart are split, columns are found when their rows do not line up, and more
+    running heads are removed. Pages where pdftotext moves the right column
+    within the page are still read imperfectly.
+  - OCR works with `parallel = TRUE`, and a page whose OCR fails keeps its text
+    layer.
+  - `structural` groups blocks by unbroken runs of a section, so two sections
+    with the same heading are no longer merged out of order, and a heading it
+    finds keeps its leading number ("2023 Results").
+
+* **Caches and stores return the right answer, and only their own files.**
+  - `gr_cache_clear()` removes only cache entries. It deleted every `.rds` file
+    under the cache directory, including a store and your own files.
+  - Cache and store entries are used only when they hold plain data, and are
+    rebuilt from it; an entry planted in a shared directory could run code when
+    read.
+  - Re-registering a fixed cleaner or extractor takes effect at once; every
+    function hashed the same, so the document cache kept the old output.
+  - The ellmer cache identity covers temperature, output limit, other settings
+    and the system prompt; the store key covers `extra_body`, the embedding
+    model and the embedder.
+  - Replay works for ellmer runs, and a replay under `parallel = TRUE` hands out
+    its recording in order and reports its misses.
+  - `as_json()` and extraction answer text keep full numeric precision; a
+    p-value of 0.00003 was written as 0.
+
+* **Word matching works in every script.** The `rerank` prefilter, BM25 and the
+  `lexical` embedder dropped every letter outside A-Z, so a Russian, Greek,
+  Arabic or Chinese document scored zero everywhere. Chinese, Japanese and Thai
+  are matched on character pairs. When no chunk shares a word with the question,
+  `rerank` ranks by embeddings, or scores an evenly spread sample and marks the
+  answer partial, and warns `gr_rerank_prefilter`.
+
+* **Reference records are matched and de-duplicated correctly.**
+  - The title fallback keeps letters in every script, never merges titles under
+    12 letters on title alone, and requires the first author to agree. "PPARα"
+    and "PPARγ" merged, and different Chinese titles reduced to "2".
+  - A record without a DOI is recognised as a duplicate of the same paper
+    exported with one.
+  - BibTeX fields are read at the right brace depth, so accented authors
+    (`M{\"{u}}ller`) no longer truncate the author list.
+  - Files are matched across the whole export, strongest route first, with
+    surnames as whole words; a file two records match goes to neither. A
+    document attached only to a duplicate now counts for the kept record.
+  - `gr_calibrate()` refuses samples stacked with `rbind()` as mixed frames, and
+    samples whose rows the run did not exclude (or keep).
+
+* **Results are the same on every machine.** Folders, record exports and
+  inventories are listed in byte order, so `[study N]` numbering no longer
+  depends on the locale and a shipped trace replays. The reference list and the
+  names inside a citation follow one fixed alphabetical rule; same-author,
+  same-year papers are lettered by title.
+
+* **Author names are cited correctly or not at all.** Vancouver/PubMed lists
+  ("Smith JA, Okafor AB"), APA lists with ", &" and short first names are cited
+  by the right surnames, and a list that cannot be read with confidence falls
+  back to `[study N]` markers instead of printing "(JA & AB, 2019)".
+
+* **Workspace functions work in parallel workers.** A backend or mock handler, a
+  tokenizer or a registered strategy that calls your own helpers used to fail on
+  every chunk with "could not find function". What they need is now sent along.
+
 * **A missing API key no longer looks like an answer.** Without a key every
   request failed on its own, and the answer came back as `NOT_IN_DOCUMENT`
   marked partial, which reads as "the document does not say". The reason was
@@ -927,6 +1105,21 @@
   the cheap per-chunk pass to a cheaper model, which is a headline cost feature)
   and `rerank_min_score`. All three are now checked, and reader coverage rose
   from 75.1% to 82.5%.
+
+## Behaviour
+
+* Stored results written by earlier versions are read again once: the store key
+  now covers the client's `extra_body`, embedding model and embedder. Response
+  cache entries made through an ellmer chat are not reused either, since the
+  chat's settings are now part of its identity.
+* `gr_read_spec()`'s `model` defaults to `NULL`, meaning the client's model. Code
+  that relied on the default model being used with a client set to another
+  model will now use the client's.
+* Screening and extraction tables can hold the new statuses `"failed"` (for a
+  screening request that failed) and `"incomplete"` (for a partly read
+  extraction). Neither is used by `gr_synthesise()` or `gr_claims()`.
+* Answers that were cut off at the output cap, or that quote text a model wrote,
+  are now partial where they were not before.
 
 # readgpt 0.5.0
 

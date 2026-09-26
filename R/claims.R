@@ -25,6 +25,12 @@
 #' @noRd
 .gr_claim_kinds <- c("finding", "method", "measurement", "gap")
 
+#' Every property is in `required`, the optional ones written as "string or
+#' null" or as an array that may be empty. That is not style: the schema is sent
+#' with `strict = TRUE`, and OpenAI refuses a strict schema whose `required`
+#' leaves a property out, with a 400 that is not retried. Leaving out
+#' `contradicted_by`, `moderator` and `scope` made every claims call on the
+#' default client fail, and gr_claims() report that no claims came back.
 #' @noRd
 .gr_claims_schema <- list(
   type = "object", additionalProperties = FALSE,
@@ -33,7 +39,7 @@
     type = "array",
     items = list(
       type = "object", additionalProperties = FALSE,
-      required = list("claim", "kind", "supported_by"),
+      required = list("claim", "kind", "supported_by", "contradicted_by", "moderator", "scope"),
       properties = list(
         claim = list(type = "string",
                      description = paste0("One sentence about the LITERATURE, not about one ",
@@ -46,7 +52,8 @@
                             description = paste0("The [study N] numbers that support it. Use only ",
                                                  "numbers shown. At least one.")),
         contradicted_by = list(type = "array", items = list(type = "integer"),
-                               description = "The [study N] numbers that contradict it, if any."),
+                               description = paste0("The [study N] numbers that contradict it, ",
+                                                    "or an empty array if none do.")),
         moderator = list(type = c("string", "null"),
                          description = paste0("The FIELD NAME from the table that distinguishes ",
                                               "the supporting studies from the contradicting ",
@@ -76,12 +83,13 @@
 #'
 #' @section What makes a claim checkable:
 #' Every study number a claim names is verified against the table, exactly as a
-#' `[study N]` marker in finished prose already is. A number that is not there is
-#' dropped and counted rather than trusted, a claim left with no supporting study
-#' is dropped entirely, and a `moderator` naming a column the table does not have
-#' is cleared: it is an invented explanation for a real disagreement. `$dropped`
-#' records all of it, so a claims table that looks thin can be told apart from a
-#' literature that is.
+#' `[study N]` marker in finished prose already is, and against the batch the
+#' claim was drawn from: a claim may only name studies its call was shown. A
+#' number that fails either is dropped and counted rather than trusted, a claim
+#' left with no supporting study is dropped entirely, and a `moderator` naming a
+#' column the table does not have is cleared: it is an invented explanation for
+#' a real disagreement. `$dropped` records all of it, so a claims table that
+#' looks thin can be told apart from a literature that is.
 #'
 #' The study numbers are the same ones [gr_synthesise()] cites, because both
 #' derive them from one function. A claim resting on study 3 and a sentence
@@ -95,6 +103,11 @@
 #' group claims that already exist: every claim it fails to place stays on its
 #' own rather than disappearing.
 #'
+#' A batch is limited by the reply as well as by the context window, because the
+#' reply names every study it uses: with the default `max_claim_tokens` a batch
+#' holds about 30 studies. A batch whose reply is cut off, or whose call fails,
+#' is reported with the number of studies it held rather than passed over.
+#'
 #' @param extraction A [gr_extract()] result, or a data frame shaped like its
 #'   `$table`.
 #' @param question The review question. Taken from `protocol` if omitted.
@@ -102,6 +115,9 @@
 #'   not given.
 #' @param client A [gr_client()]. One is built from `model` if omitted.
 #' @param model,temperature,max_claim_tokens Passed to the model call.
+#'   `max_claim_tokens` is the reply limit for each call, and it also sets how
+#'   many studies go into one: about `(max_claim_tokens - 400) / 40`. Raise it
+#'   for fewer, larger batches.
 #' @param include_unclear Keep rows with nothing extracted. Off by default, the
 #'   same as [gr_synthesise()].
 #' @param trace A [gr_trace()] to record into.
@@ -113,6 +129,10 @@
 #'       `"contradicts"`). Join it to `$studies` to reach documents and quotes.}
 #'     \item{`studies`}{The rows the claims were drawn from, numbered.}
 #'     \item{`dropped`}{What verification removed, and why.}
+#'     \item{`partial`}{`TRUE` when some studies contributed nothing because
+#'       their batch was cut off at the reply limit, failed, or was not sent
+#'       for a call or cost limit.}
+#'     \item{`lost`}{The study numbers of those studies.}
 #'   }
 #' @seealso [gr_outline()] to derive sections from these claims,
 #'   [gr_synthesise()] to write from them, [gr_gaps()] for what they do not
@@ -164,6 +184,9 @@ gr_claims <- function(extraction, question = NULL, protocol = NULL, client = NUL
                                  16, 1e6, "max_claim_tokens")
   spec <- gr_read_spec("stuff", model = model, temperature = temperature,
                        max_answer_tokens = max_claim_tokens)
+  # One model for the batch sizing and the requests. Left NULL, gr_budget()
+  # sized batches for gr_options("model") while gr_call() asked the client's.
+  spec <- resolve_read_model(spec, client)
   trace <- trace %||% gr_trace(meta = list(stage = "claims", question = question,
                                            studies = nrow(used)))
 
@@ -175,18 +198,32 @@ gr_claims <- function(extraction, question = NULL, protocol = NULL, client = NUL
   # "never": claims_batch() sends the question once.
   overhead <- prompt_overhead(question, .gr_prompts$claims_system, "never")
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
-  groups <- synth_batches(rendered, bud$input)
+  # Sized by what comes BACK as well as by what goes in. The reply names every
+  # study it uses and carries a claim, a scope and a moderator per claim, so it
+  # grows with the batch while `max_claim_tokens` stays where it is. Sized by the
+  # input window alone, a 128k model put 300 studies in one call with a
+  # 1600-token reply; the JSON was cut off, did not parse, and every study in
+  # the batch contributed nothing.
+  groups <- synth_batches(rendered, bud$input, max_n = claims_per_batch(bud$output))
+  index <- attr(groups, "index")
 
   raw <- list()
   not_sent <- 0L
+  unsent <- integer(0)
+  failed <- integer(0)
+  cut_off <- integer(0)
   for (g in seq_along(groups)) {
     if (length(groups) > 1L) gr_msg(sprintf("Claims from batch %d of %d.", g, length(groups)))
     # A batch a limit stopped is not a batch the model found nothing in.
     if (!trace_can_call(trace)) {
       not_sent <- not_sent + 1L
+      unsent <- c(unsent, g)
       next
     }
-    raw[[g]] <- claims_batch(groups[[g]], question, client, spec, trace)
+    b <- claims_batch(groups[[g]], question, client, spec, trace, shown = used$study[index[[g]]])
+    if (identical(b$status, "cut_off")) cut_off <- c(cut_off, g)
+    if (identical(b$status, "failed")) failed <- c(failed, g)
+    raw[[g]] <- b$rows
   }
   if (not_sent > 0L) {
     gr_warn(sprintf(paste0("%d of %d batch(es) of studies were not sent: the run reached its %s. ",
@@ -195,15 +232,37 @@ gr_claims <- function(extraction, question = NULL, protocol = NULL, client = NUL
                     not_sent, length(groups), cap_name(trace)),
             class = "gr_claims_capped")
   }
+  # A batch that was sent and came back with nothing usable. With one batch this
+  # was only "every call failed"; with several, the survivors' claims hid the
+  # loss entirely, and a review was written from the leftover batch.
+  lost <- c(cut_off, failed)
+  # The studies that contributed nothing, on the result as well as in the
+  # warnings: a claims table missing a third of the corpus otherwise looks
+  # exactly like a complete one to anything that reads it later.
+  lost_studies <- sort(used$study[unlist(index[c(unsent, lost)], use.names = FALSE)])
+  lost_msg <- if (!length(lost)) NULL else sprintf(paste0(
+    "%d of %d batch(es) of studies, holding %d of %d studies, returned nothing usable (%s), ",
+    "so those studies contribute no claims."),
+    length(lost), length(groups), length(unlist(index[lost])), nrow(used),
+    paste(c(if (length(cut_off)) sprintf(paste0(
+              "%d cut off at the %d-token reply limit before the JSON closed; raise ",
+              "`max_claim_tokens`"), length(cut_off), spec$max_answer_tokens),
+            if (length(failed)) sprintf("%d call(s) failed", length(failed))),
+          collapse = "; "))
   got <- do.call(rbind, raw[!vapply(raw, is.null, logical(1))])
   if (is.null(got) || !nrow(got)) {
     gr_warn(paste0("No claims came back. ",
                    if (not_sent == length(groups)) sprintf("No batch was sent: the run had reached its %s. ",
                                                            cap_name(trace))
-                   else "Every call failed, or the model returned none. ",
+                   else if (length(lost)) paste0(lost_msg, " ")
+                   else "The model returned none. ",
                    "There is nothing for gr_outline() or gr_synthesise(claims = ) to work from."),
             class = "gr_no_claims")
-    return(new_claims(empty_claim_rows(), used, question, empty_dropped(), trace))
+    return(new_claims(empty_claim_rows(), used, question, empty_dropped(), trace, lost_studies))
+  }
+  if (length(lost)) {
+    gr_warn(lost_msg, class = if (length(cut_off)) c("gr_claims_truncated", "gr_claims_batch_failed")
+                              else "gr_claims_batch_failed")
   }
 
   # The columns the model was SHOWN, not every column in the table. The moderator
@@ -217,19 +276,41 @@ gr_claims <- function(extraction, question = NULL, protocol = NULL, client = NUL
     gr_warn(paste0("Every claim was dropped in verification; see `$dropped`. The usual cause is ",
                    "a model citing study numbers that are not in the table."),
             class = "gr_no_claims")
-    return(new_claims(empty_claim_rows(), used, question, checked$dropped, trace))
+    return(new_claims(empty_claim_rows(), used, question, checked$dropped, trace, lost_studies))
   }
   # Claims can repeat only across batches that returned some.
   final <- if (sum(vapply(raw, function(r) NROW(r) > 0L, logical(1))) > 1L) {
     claims_reconcile(checked$claims, question, client, spec, trace)
   } else checked$claims
-  new_claims(final, used, question, checked$dropped, trace)
+  new_claims(final, used, question, checked$dropped, trace, lost_studies)
+}
+
+#' What a claims reply costs, for sizing batches by it.
+#'
+#' A base for the JSON around the claims plus a share per study: each study is
+#' named at least once, and every few studies carry a claim sentence, a scope
+#' and a moderator. Deliberately generous. A batch too large for its reply is
+#' lost whole, while a batch smaller than it needed to be costs one more call.
+#' @noRd
+.gr_claims_reply_tokens <- c(base = 400L, per_study = 40L)
+
+#' How many studies one claims call can take and still answer in `reply` tokens.
+#' @noRd
+claims_per_batch <- function(reply) {
+  max(1L, as.integer(floor((reply - .gr_claims_reply_tokens[["base"]]) /
+                             .gr_claims_reply_tokens[["per_study"]])))
 }
 
 #' One claims call over one batch of studies.
+#'
+#' Returns the rows and how the call went: "ok" (which may be no claims at
+#' all), "cut_off" (the reply stopped at the limit and the JSON never closed) or
+#' "failed". The caller has to tell those apart, because a batch the model
+#' found nothing in and a batch whose answer was lost look identical as rows.
+#' `shown` is the study numbers in the batch, which is what its claims may cite.
 #' @noRd
-claims_batch <- function(block, question, client, spec, trace) {
-  if (!trace_can_call(trace)) return(NULL)
+claims_batch <- function(block, question, client, spec, trace, shown = NULL) {
+  if (!trace_can_call(trace)) return(list(rows = NULL, status = "not_sent"))
   res <- gr_call_json(client, list(
     list(role = "system", content = .gr_prompts$claims_system),
     list(role = "user", content = paste0("Review question: ", question)),
@@ -238,8 +319,12 @@ claims_batch <- function(block, question, client, spec, trace) {
   ), schema = .gr_claims_schema, schema_name = "claims", model = spec$model,
      max_output = spec$max_answer_tokens, temperature = spec$temperature,
      trace = trace, label = "claims.draw")
-  if (!isTRUE(res$ok)) return(NULL)
-  claim_rows(json_field(res$value, "claims", scalar = FALSE))
+  if (!isTRUE(res$ok)) {
+    return(list(rows = NULL, status = if (reply_cut_off(res$result)) "cut_off" else "failed"))
+  }
+  rows <- claim_rows(json_field(res$value, "claims", scalar = FALSE))
+  if (!is.null(rows) && !is.null(shown)) rows$.shown <- rep(list(as.integer(shown)), nrow(rows))
+  list(rows = rows, status = "ok")
 }
 
 #' Normalise whatever jsonlite made of the reply into a flat frame.
@@ -340,6 +425,9 @@ claim_rows <- function(x) {
 #'   * A study number that is not in the table is removed. This is the same check
 #'     `cited_ids()` makes on finished prose, one link earlier -- and it is the
 #'     one that matters most, because everything downstream trusts these numbers.
+#'     So is one that IS in the table but was not in the batch the claim came
+#'     from (`.shown`, when the rows carry it): the model never saw that study,
+#'     so naming it is the same fabrication with a number that happens to exist.
 #'   * A claim left with no supporting study is dropped. A claim attached to
 #'     nothing is an opinion.
 #'   * A study cannot both support and contradict one claim, so it is removed
@@ -366,6 +454,18 @@ claims_verify <- function(got, used, cols = study_fields(used)) {
       note[i] <- sprintf("dropped study number(s) %s", paste(sort(bad), collapse = ", "))
     }
     sup <- intersect(sup, ids); con <- intersect(con, ids)
+    # Checked against the whole table alone, a claim from batch 2 naming a study
+    # only batch 1 was shown was kept as support, with nothing in `$dropped`.
+    shown <- if (is.null(got[[".shown"]])) NULL else got[[".shown"]][[i]]
+    unseen <- if (is.null(shown)) integer(0) else setdiff(c(sup, con), shown)
+    if (length(unseen)) {
+      add(got$claim[i], "study number not shown to the batch that wrote the claim",
+          paste(sort(unseen), collapse = ", "))
+      note[i] <- paste(stats::na.omit(c(note[i], sprintf(
+        "dropped study number(s) %s, not shown to its batch", paste(sort(unseen), collapse = ", ")))),
+        collapse = "; ")
+      sup <- setdiff(sup, unseen); con <- setdiff(con, unseen)
+    }
     both <- intersect(sup, con)
     if (length(both)) {
       con <- setdiff(con, both)
@@ -388,6 +488,7 @@ claims_verify <- function(got, used, cols = study_fields(used)) {
     got$.support[[i]] <- sort(sup); got$.contradict[[i]] <- sort(con)
   }
   got$note <- note
+  got[[".shown"]] <- NULL
   list(claims = got[keep, , drop = FALSE],
        dropped = if (length(drops)) do.call(rbind, drops) else empty_dropped())
 }
@@ -419,7 +520,18 @@ claims_reconcile <- function(claims, question, client, spec, trace) {
   ), schema = .gr_reconcile_schema, schema_name = "claim_groups", model = spec$model,
      max_output = spec$max_answer_tokens, temperature = spec$temperature,
      trace = trace, label = "claims.reconcile")
-  if (!isTRUE(res$ok)) return(reindex_claims(claims))
+  if (!isTRUE(res$ok)) {
+    # Said, as the capped case above is. Batches sized by their reply make this
+    # pass the normal route for a large corpus, and its reply names every claim.
+    gr_warn(sprintf(paste0("Claims from different batches were not merged: the reconcile call %s, ",
+                           "so one finding can appear as more than one claim."),
+                    if (reply_cut_off(res$result))
+                      sprintf("was cut off at the %d-token reply limit (raise `max_claim_tokens`)",
+                              spec$max_answer_tokens)
+                    else "failed"),
+            class = "gr_claims_unmerged")
+    return(reindex_claims(claims))
+  }
 
   raw <- json_field(res$value, "groups", scalar = FALSE)
   g <- as_id_list(if (is.list(raw) || is.matrix(raw)) raw else list(raw),
@@ -501,8 +613,11 @@ empty_dropped <- function() {
              stringsAsFactors = FALSE)
 }
 
+#' `lost` is the study numbers whose batch contributed nothing -- cut off at
+#' the reply limit, failed, or not sent -- and `partial` says whether there
+#' are any.
 #' @noRd
-new_claims <- function(claims, used, question, dropped, trace) {
+new_claims <- function(claims, used, question, dropped, trace, lost = integer(0)) {
   claims <- reindex_claims(claims)
   support <- claim_support_table(claims)
   wide <- data.frame(
@@ -513,7 +628,8 @@ new_claims <- function(claims, used, question, dropped, trace) {
     note = claims$note, stringsAsFactors = FALSE)
   rownames(wide) <- NULL
   structure(list(claims = wide, support = support, studies = used, question = question,
-                 dropped = dropped, trace = trace), class = "gr_claims")
+                 dropped = dropped, partial = length(lost) > 0L, lost = as.integer(lost),
+                 trace = trace), class = "gr_claims")
 }
 
 #' Long form, the shape `$citations` already uses: one row per claim per study.
@@ -560,6 +676,12 @@ print.gr_claims <- function(x, ...) {
   }
   if (nrow(x$dropped)) {
     cat(sprintf("  %d dropped in verification; see $dropped\n", nrow(x$dropped)))
+  }
+  # `%||%` for a claims table saved before the field existed.
+  if (length(x$lost %||% integer(0))) {
+    cat(sprintf(paste0("  PARTIAL: %d of %d studies contributed nothing, their batch cut off, ",
+                       "failed or not sent; see $lost\n"),
+                length(x$lost), nrow(x$studies)))
   }
   invisible(x)
 }
@@ -638,6 +760,8 @@ claim_order <- function(claims, support, weights) {
   order(-breadth, -mass, claims$claim_id)
 }
 
+#' `rationale` is required and nullable rather than optional, for the reason
+#' given at .gr_claims_schema: strict mode refuses anything else.
 #' @noRd
 .gr_outline_schema <- list(
   type = "object", additionalProperties = FALSE,
@@ -646,7 +770,7 @@ claim_order <- function(claims, support, weights) {
     type = "array",
     items = list(
       type = "object", additionalProperties = FALSE,
-      required = list("heading", "brief", "claims"),
+      required = list("heading", "brief", "claims", "rationale"),
       properties = list(
         heading = list(type = "string",
                        description = "The section heading, as it will be printed."),
@@ -721,6 +845,9 @@ gr_outline <- function(claims, question = NULL, client = NULL, model = NULL,
   client <- client %||% gr_client(model = model %||% gr_options("model"))
   spec <- gr_read_spec("stuff", model = model, temperature = temperature,
                        max_answer_tokens = 1200L)
+  # The model the request goes to, named on the request: gr_read_spec() leaves
+  # it NULL when none is given.
+  spec <- resolve_read_model(spec, client)
   trace <- trace %||% claims$trace %||% gr_trace(meta = list(stage = "outline"))
 
   cw <- claims$claims
@@ -743,13 +870,22 @@ gr_outline <- function(claims, question = NULL, client = NULL, model = NULL,
 
   secs <- if (isTRUE(res$ok)) outline_rows(json_field(res$value, "sections", scalar = FALSE)) else NULL
   if (is.null(secs) || !nrow(secs)) {
+    # A reply cut off at the limit never closes its JSON, so it arrives here
+    # like any failed call. Said apart, because "try again" cannot help: the
+    # same claims ask for the same reply, and it stops in the same place.
+    cut <- !capped && reply_cut_off(res$result)
     gr_warn(if (capped) sprintf(paste0("The outline was not requested: the run had reached its %s. ",
                                        "Every claim was put in one section. Raise the limit, or ",
                                        "pass an `outline` to gr_synthesise() yourself."),
                                 cap_name(trace))
+            else if (cut) sprintf(paste0("The outline reply stopped at the %d-token reply limit before ",
+                                         "it finished, so every claim was put in one section. Pass an ",
+                                         "`outline` to gr_synthesise() yourself, or lower ",
+                                         "`max_sections`."),
+                                  spec$max_answer_tokens)
             else paste0("The outline call did not return usable sections, so every claim was put ",
                         "in one section. Pass an `outline` to gr_synthesise() yourself, or try again."),
-            class = "gr_outline_failed")
+            class = if (cut) c("gr_outline_truncated", "gr_outline_failed") else "gr_outline_failed")
     secs <- data.frame(heading = "Findings", brief = "What the evidence supports",
                        rationale = NA_character_, stringsAsFactors = FALSE)
     secs$.claims <- list(cw$claim_id)

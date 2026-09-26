@@ -88,11 +88,20 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims 
   if (!is.null(extraction)) {
     t <- extraction$table
     dup <- sum(!is.na(t$duplicate_of))
+    # Each row below counts distinct documents only, and no document twice, so
+    # none can come to more than "extracted from".
+    own <- is.na(t$duplicate_of %||% rep(NA, nrow(t)))
     add("extracted from", nrow(t) - dup)
     add("  reported nothing", sum(t$status %in% c("ok", "restored") & !is.na(t$n_filled) &
-                                    t$n_filled == 0L & is.na(t$duplicate_of)),
+                                    t$n_filled == 0L & own),
         "read successfully; none of the fields are in the document")
-    add("  failed to read", sum(!t$status %in% c("ok", "restored", "duplicate")),
+    # "incomplete" has values, so it is not a failed read: counted there, it
+    # was described as having none and a table of real values looked empty.
+    # Its empty cells are the part that is outstanding.
+    add("  read in part", sum(t$status %in% "incomplete" & own),
+        "a request failed; the values are real, but an empty cell is unknown, not unreported")
+    add("  failed to read", sum(!t$status %in% c("ok", "restored", "duplicate", "incomplete") &
+                                  own),
         "no values; these are outstanding")
     add("values unsupported", sum(t$n_unverified, na.rm = TRUE),
         "no verbatim span in the chunk cited")
@@ -501,6 +510,20 @@ audit_synthesis <- function(synthesis) {
       if (s$n_unknown[i] > 0L)
         sprintf("<p class='flag'>%d citation(s) point at a row that does not exist.</p>",
                 s$n_unknown[i]),
+      # A real row the section was never shown: the model cannot have read it
+      # there, so the citation is as unsupported as one to no row at all. The
+      # section is already partial for it; without this the report said nothing.
+      # `is.null()` for a synthesis saved before the column existed.
+      if (!is.null(s$n_unsupplied) && isTRUE(s$n_unsupplied[i] > 0L))
+        sprintf("<p class='flag'>%d citation(s) point at a study this section was not given.</p>",
+                s$n_unsupplied[i]),
+      # A bracket the citation check could not read names studies nobody checked.
+      if (!is.null(s$n_unparsed) && isTRUE(s$n_unparsed[i] > 0L))
+        sprintf(paste0("<p class='flag'>%d citation(s) could not be read, so the studies they ",
+                       "name were not checked.</p>"), s$n_unparsed[i]),
+      if (!is.null(s$n_truncated) && isTRUE(s$n_truncated[i] > 0L))
+        sprintf(paste0("<p class='flag'>%d response(s) for this section were cut off at the ",
+                       "output cap, so the section may be incomplete.</p>"), s$n_truncated[i]),
       if (s$n_cited[i] == 0L)
         "<p class='flag'>This section cites nothing.</p>",
       if (!is.null(s$claims_missed) && s$claims_missed[i] > 0L)
@@ -514,7 +537,8 @@ audit_synthesis <- function(synthesis) {
     unlist(lapply(seq_len(nrow(s)), per), use.names = FALSE),
     if (isTRUE(synthesis$skipped > 0L))
       sprintf(paste0("<p class='sub'>%d row(s) were left out of the write-up: a duplicate, a ",
-                     "document that could not be read, or one with nothing extracted.</p>"),
+                     "document that could not be read in full, or one with nothing ",
+                     "extracted.</p>"),
               synthesis$skipped))
 }
 

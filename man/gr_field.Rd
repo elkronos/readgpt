@@ -18,7 +18,9 @@ whole double, so that column is a double whenever one such value is
 present. A value that carries more than one number, such as "120 (60 per
 arm)", is recorded as missing rather than run together.}
 
-\item{values}{For \code{type = "enum"}, the permitted values.}
+\item{values}{For \code{type = "enum"}, the permitted values. A declared value
+is kept as written, including one such as \code{"null"} or \code{"none"} that would
+otherwise read as missing.}
 }
 \value{
 A \code{gr_field}.

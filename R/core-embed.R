@@ -29,8 +29,11 @@
 #' @param trace Optional trace. With the built-in `"api"` embedder, each
 #'   request to the embeddings endpoint is checked against `max_calls` and
 #'   `max_cost_usd` (see [gr_options()]) before it is sent and recorded in the
-#'   trace, priced, once it is made. A request the limits refuse is a failure,
-#'   handled by `fallback`.
+#'   trace, priced, once it is made; its tokens are counted in the trace's
+#'   `embed_tokens`, not `tokens_in`. A request the limits refuse is a failure,
+#'   handled by `fallback`. A failed request that the lexical fallback replaces
+#'   is marked `recovered = TRUE` in the trace's `errors`: the text was still
+#'   embedded, on word overlap, so nothing was left unread.
 #' @param embedder A registered embedder name (see [gr_embedders()]), or a
 #'   function of `(texts, params)`. Defaults to the embed function supplied with
 #'   the client, if any, and otherwise to `gr_options("embedder")`.
@@ -74,11 +77,20 @@ gr_embed <- function(client, texts, model = NULL, batch_size = 64L, cache = NULL
   cache <- isTRUE(cache %||% gr_options("cache_embeddings"))
   model <- as_chr1(model %||% client$embedding_model)
   emb <- resolve_embedder(client, embedder)
+  # Where this call's failed requests start in the trace, so the ones the
+  # lexical fallback recovers from can be marked as such.
+  first_error <- if (inherits(trace, "gr_trace")) length(trace$errors) + 1L else 1L
 
   degrade <- function(msg, class) {
     if (identical(fallback, "error")) gr_abort(msg, class = "gr_embed_error")
     if (identical(fallback, "none")) return(matrix(numeric(0), nrow = 0, ncol = 0))
     gr_warn(msg, class = class)
+    # Recovered: every text is still embedded, on word overlap, and the reader
+    # marks its answer partial. Left as a plain failure, a request the old code
+    # never recorded made gr_read_many() call the document "failed ... not read
+    # in full" and keep it out of the store, on every run, on any endpoint
+    # without embeddings (a gateway, a local server with no embedding model).
+    trace_mark_recovered(trace, first_error)
     # Marked as a FALLBACK, not merely as lexical. Choosing
     # gr_options(embedder = "lexical") is a decision; being dropped onto it
     # because the real embedder failed is a degradation, and the readers OR that
@@ -88,10 +100,10 @@ gr_embed <- function(client, texts, model = NULL, batch_size = 64L, cache = NULL
     out
   }
 
-  # A trace records model calls, not embedding vectors. So a replay can only
-  # reproduce a run's ranking if the embedder is a pure function of the text --
-  # in which case the vectors are simply computed again and the replay is exact.
-  # Anything else has to degrade, and say so.
+  # A trace records each embeddings request, but not the vectors it returned.
+  # So a replay can only reproduce a run's ranking if the embedder is a pure
+  # function of the text -- in which case the vectors are simply computed again
+  # and the replay is exact. Anything else has to degrade, and say so.
   if (inherits(client, "gr_replay_client")) {
     recorded <- as_chr1(client$embed_source, NA_character_)
     # Two conditions, not one. The embedder must be deterministic AND it must be
@@ -107,10 +119,10 @@ gr_embed <- function(client, texts, model = NULL, batch_size = 64L, cache = NULL
       else sprintf("'%s' is not deterministic, so re-running it need not give the same vectors",
                    emb$name)
       return(degrade(paste0(
-        "Replaying a run cannot reproduce its embeddings: ", why, ". A trace records model ",
-        "calls, not embedding vectors. Falling back to hashed lexical vectors, so chunk ",
-        "ranking may differ from the original run even though every recorded answer is ",
-        "reproduced exactly. Record the run with a deterministic embedder ",
+        "Replaying a run cannot reproduce its embeddings: ", why, ". A trace records ",
+        "embeddings requests, not the vectors they returned. Falling back to hashed lexical ",
+        "vectors, so chunk ranking may differ from the original run even though every ",
+        "recorded answer is reproduced exactly. Record the run with a deterministic embedder ",
         "(gr_options(embedder = 'lexical'), or one registered with ",
         "gr_register_embedder(deterministic = TRUE)) and replay it with the same one, ",
         "and the replay is exact."),
@@ -244,8 +256,9 @@ embed_api <- function(texts, params) {
 #' record vectors; see gr_embed()), while gr_trace_cost(), `spent_usd` and
 #' `as.data.frame()` count it like any other request. Tokens are the provider's
 #' `usage.prompt_tokens`, or a local count when it reports none (see
-#' settle_usage()). A failed request is recorded as failed with no tokens, as
-#' http_call() records one.
+#' settle_usage()), and go to the trace's `embed_tokens`. A failed request is
+#' recorded as failed with no tokens, as http_call() records one; gr_embed()
+#' marks it recovered when its fallback replaces it.
 #' @noRd
 embed_record <- function(trace, model, texts, resp, parsed, seconds = NA_real_) {
   if (!inherits(trace, "gr_trace")) return(invisible(NULL))
@@ -264,7 +277,8 @@ embed_record <- function(trace, model, texts, resp, parsed, seconds = NA_real_) 
       else "the response held no embeddings"))
   }
   trace_record(trace, "embed.request", list(), res,
-               params = list(model = model, texts = length(texts)), seconds = seconds)
+               params = list(model = model, texts = length(texts)), seconds = seconds,
+               embedding = TRUE)
 }
 
 #' Why an embeddings request was not sent, naming the limit and its setting.

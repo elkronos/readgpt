@@ -45,17 +45,28 @@ running_key <- function(x, numbers = TRUE) {
 #' every page but the first (a title page is often styled apart), or on every
 #' even or every odd page after the first (a two-sided layout alternates its
 #' heads), is running on two pages. Otherwise a paper of three to six pages kept
-#' its heads, since no one of them reaches three pages.
+#' its heads, since no one of them reaches three pages. Content recurs at the
+#' edge of two pages by chance too (the same note under two tables), so a line
+#' held to the pattern must be the outermost line of each page it is on, and
+#' read as a head does: not the end of a sentence, and not a row of figures.
 #'
 #' A line recurs when it is the same text, or the same text once its numbers
 #' are ignored, and then only when the numbers behave as a page number does:
-#' each one is the same on every page or goes up with the page, one for one.
-#' The rows of a table continued across pages read the same with their numbers
-#' ignored ("1971 33.8 4.2 5120") and were dropped from the edge of every page;
-#' their numbers do neither. For a line of more than `max_words` words the
-#' number that changes must also stand at its start or end, as a page number
-#' set in a running head does ("IEEE TRANSACTIONS ON ..., AUGUST 2026   3"),
-#' and not inside a sentence that happens to name the page.
+#' one of them goes up with the page. The rows of a table continued across
+#' pages read the same with their numbers ignored ("1971 33.8 4.2 5120") and
+#' were dropped from the edge of every page; none of their numbers does that.
+#' Where a page has such a line twice at one edge (a page number with an axis
+#' label above it), the outer one is taken, since that is where a page number
+#' is set. For a line of more than `max_words` words every other number that
+#' changes must only go up, as a chapter or section number does, and the one
+#' that follows the page must stand where a page number is set: at the line's
+#' start or end, or in a short cell of its own ("IEEE TRANSACTIONS ON ...,
+#' AUGUST 2026   3", "...   Page 3 of 12"), and not inside a sentence that
+#' happens to name the page.
+#'
+#' The header of a table continued across pages is the same text at the top
+#' of each page too. It is kept where it stands above a row of figures laid
+#' out in as many cells: the figures have no labels without it.
 #' @noRd
 drop_running_lines <- function(pages, depth = 2L, share = 0.4, min_pages = 3L,
                                max_chars = 200L, max_words = 5L) {
@@ -65,51 +76,97 @@ drop_running_lines <- function(pages, depth = 2L, share = 0.4, min_pages = 3L,
     txt <- which(nzchar(trimws(l)) & nchar(trimws(l)) <= max_chars)
     all_txt <- which(nzchar(trimws(l)))
     list(top = intersect(utils::head(all_txt, depth), txt),
-         bottom = intersect(utils::tail(all_txt, depth), txt))
+         bottom = intersect(utils::tail(all_txt, depth), txt),
+         outer = c(utils::head(all_txt, 1L), utils::tail(all_txt, 1L)))
   })
   need <- max(min_pages, ceiling(share * n))
   pattern <- list(setdiff(seq_len(n), 1L), seq(2L, n, by = 2L),
                   setdiff(seq(1L, n, by = 2L), 1L))
   pattern <- pattern[lengths(pattern) >= 2L]
-  enough <- function(on) {
-    length(on) >= need || any(vapply(pattern, function(p) all(p %in% on), logical(1)))
+  words_of <- function(x) strsplit(trimws(x), "[[:space:]]+")[[1]]
+  cells_of <- function(x) strsplit(trimws(x), "[[:space:]]{2,}")[[1]]
+  figure <- function(x) grepl("[0-9]", x) & !grepl("[[:alpha:]]{2,}", x)
+  head_like <- function(x) {
+    !grepl("([[:lower:]]{3,}|[0-9])[.!?]$|[[:lower:]]{3,}[.!?] ", trimws(x)) &&
+      mean(figure(words_of(x))) <= 0.5
   }
-  # Whether the numbers of one line on each page (rows, in page order) behave
-  # as a running line's do. Most steps must move with the page, not all, so a
-  # page left unnumbered or a restart does not undo it.
-  page_like <- function(nums, on, key) {
-    if (anyDuplicated(on)) return(FALSE) # twice at one edge of a page: rows of a table
+  # `at`: rows of `rec`, one per page at most. A line whose numbers follow the
+  # page has that evidence already, and need not read as a head too.
+  enough <- function(rec, at, numbered = FALSE) {
+    length(unique(rec$page[at])) >= need ||
+      (all(rec$outer[at]) && (numbered || all(vapply(rec$text[at], head_like, logical(1)))) &&
+         any(vapply(pattern, function(p) all(p %in% rec$page[at]), logical(1))))
+  }
+  # Whether each number in line x stands where a page number is set: as the
+  # first or last word, or in a cell (text set apart by runs of spaces) of a
+  # few words at most.
+  placed <- function(x) {
+    x <- trimws(x)
+    num <- gregexpr("[0-9]+", x)[[1]]
+    cell <- gregexpr("[^ ]+( [^ ]+)*", x)[[1]]
+    w <- words_of(x)
+    vapply(seq_along(num), function(k) {
+      s <- num[k]
+      e <- s + attr(num, "match.length")[k] - 1L
+      at <- max(which(cell <= s))
+      short <- length(words_of(substr(x, cell[at], cell[at] + attr(cell, "match.length")[at] - 1L))) <= 4L
+      short || (s == 1L && nchar(w[1]) == e) ||
+        (e == nchar(x) && nchar(w[length(w)]) == e - s + 1L)
+    }, logical(1))
+  }
+  # Whether the numbers of one line on each page (rows, in page order, one per
+  # page) behave as a running line's do. Most steps must move with the page,
+  # not all, so a page left unnumbered or a restart does not undo it.
+  page_like <- function(nums, on, key, text) {
     v <- do.call(rbind, nums)
     changes <- apply(v, 2, function(x) length(unique(x)) > 1L)
-    follows <- apply(v, 2, function(x) mean(diff(x) == diff(on)) >= 0.5)
-    if (!all(follows[changes])) return(FALSE)
-    words <- strsplit(key, " ", fixed = TRUE)[[1]]
-    if (length(words) <= max_words) return(TRUE)
-    ends <- logical(ncol(v))
-    ends[1] <- words[1] == "#"
-    ends[ncol(v)] <- ends[ncol(v)] || words[length(words)] == "#"
-    all(ends[changes])
+    # Numbers that never change make it the same text, already weighed as such.
+    if (!any(changes)) return(FALSE)
+    follows <- apply(v, 2, function(x) mean(diff(x) == diff(on)) >= 0.5) & changes
+    if (!any(follows)) return(FALSE)
+    if (length(strsplit(key, " ", fixed = TRUE)[[1]]) <= max_words) return(TRUE)
+    rises <- apply(v, 2, function(x) all(diff(x) >= 0))
+    where <- colMeans(do.call(rbind, lapply(text, placed))) >= 0.5
+    all((follows | rises)[changes]) && all(where[follows])
+  }
+  # Whether line j of page i heads a table: the next line down is a row of
+  # figures in as many cells as line j has cells, or words.
+  heads_table <- function(i, j) {
+    l <- pages[[i]]
+    below <- which(nzchar(trimws(l)) & seq_along(l) > j)
+    if (!length(below)) return(FALSE)
+    row <- cells_of(l[below[1]])
+    length(row) >= 2L && mean(figure(row)) > 0.5 &&
+      length(row) %in% c(length(cells_of(l[j])), length(words_of(l[j])))
   }
   drop_side <- function(side) {
     rec <- do.call(rbind, lapply(seq_len(n), function(i) {
       idx <- edges[[i]][[side]]
       if (!length(idx)) return(NULL)
-      data.frame(page = i, line = idx, same = running_key(pages[[i]][idx]),
-                 loose = running_key(pages[[i]][idx], FALSE), stringsAsFactors = FALSE)
+      data.frame(page = i, line = idx, text = pages[[i]][idx],
+                 same = running_key(pages[[i]][idx]),
+                 loose = running_key(pages[[i]][idx], FALSE),
+                 outer = idx %in% edges[[i]]$outer, stringsAsFactors = FALSE)
     }))
     if (is.null(rec)) return(rec)
     hit <- logical(nrow(rec))
     for (k in unique(rec$same)) {
-      at <- rec$same == k
-      if (enough(unique(rec$page[at]))) hit[at] <- TRUE
+      at <- which(rec$same == k)
+      if (!enough(rec, at[!duplicated(rec$page[at])])) next
+      if (side == "top") {
+        at <- at[!vapply(at, function(r) heads_table(rec$page[r], rec$line[r]), logical(1))]
+      }
+      hit[at] <- TRUE
     }
     for (k in unique(rec$loose[!hit & grepl("#", rec$loose, fixed = TRUE)])) {
-      at <- which(rec$loose == k)
-      at <- at[order(rec$page[at])]
-      if (!enough(unique(rec$page[at]))) next
+      at <- which(rec$loose == k & !hit)
+      # One line a page, the outer one where a page has two.
+      at <- at[order(rec$page[at], if (side == "top") rec$line[at] else -rec$line[at])]
+      at <- at[!duplicated(rec$page[at])]
+      if (!enough(rec, at, numbered = TRUE)) next
       nums <- lapply(rec$same[at], function(x)
         as.numeric(regmatches(x, gregexpr("[0-9]+", x))[[1]]))
-      if (page_like(nums, rec$page[at], k)) hit[at] <- TRUE
+      if (page_like(nums, rec$page[at], k, rec$text[at])) hit[at] <- TRUE
     }
     rec[hit, c("page", "line"), drop = FALSE]
   }
@@ -200,7 +257,11 @@ column_gutter <- function(lines, min_lines = 5L, min_share = 0.3, min_side = 20L
 #' there after a run of spaces. Both columns must read as prose, as in
 #' `column_gutter()`, and the left one must be a column of `min_left` lines at
 #' least, so that a few rows of a two-column table on a page of prose are not
-#' taken for one. Returns the position just left of the right column, or NA.
+#' taken for one. Neither may be cells lined up in runs of spaces: a
+#' single-column table whose last cell wraps, or a figure's labels, has lines
+#' that start at one place too, and read one side after the other, every
+#' value was parted from its label. Returns the position just left of the
+#' right column, or NA.
 #' @noRd
 one_sided_gutter <- function(chars, lo, hi, min_lines = 3L, min_share = 0.5,
                              min_side = 20L, min_left = 5L) {
@@ -232,6 +293,24 @@ one_sided_gutter <- function(chars, lo, hi, min_lines = 3L, min_share = 0.5,
       sum(wide) / (sum(wide) + sum(through)) < min_share) {
     return(NA_integer_)
   }
+  # The rows of a table whose last cell wraps onto lines of its own start
+  # there too. Those lines run on below a row of the table, where a column's
+  # lines alternate with the other column's, and the rows' other cells line
+  # up in runs of spaces, as the lines of a column of prose do not.
+  left_text <- vapply(chars, function(ch) any(ch[seq_len(min(length(ch), r - 2L))] != " "), logical(1))
+  alone <- which((wide | tight) & !left_text)
+  runs_on <- vapply(alone, function(i) i > 1L && (wide | tight)[i - 1L], logical(1))
+  cells <- unlist(lapply(chars[!through], function(ch) line_part(ch, 1L, r - 2L)$runs))
+  if (length(alone) && mean(runs_on) >= 0.75 && length(cells) &&
+      max(tabulate(cells)) >= min_lines) {
+    return(NA_integer_)
+  }
+  # Nor is a column of cells a column of prose: the labels of a figure, or
+  # the last columns of a table, set right of a page of prose.
+  cellular <- vapply(chars[wide | tight], function(ch) {
+    length(line_part(ch, r - 1L, length(ch))$runs) > 0L
+  }, logical(1))
+  if (mean(cellular) >= 0.5) return(NA_integer_)
   count <- function(ch, from, to) {
     to <- min(to, length(ch))
     if (from > to) 0L else sum(ch[from:to] != " ")
@@ -310,8 +389,9 @@ reorder_columns <- function(lines, gutter, min_side = 20L) {
 }
 
 #' Where the text of `ch[from:to]` starts and ends, how many characters it
-#' has, and its widest run of spaces. A run after a section number ("2    Methods")
-#' is not counted: pdftotext sets the number apart, and the line is still a
+#' has, its widest run of spaces, and the positions inside its runs of three
+#' spaces or more (`runs`). A run after a section number ("2    Methods") is
+#' not counted: pdftotext sets the number apart, and the line is still a
 #' heading in a column, not a row of cells.
 #' @noRd
 line_part <- function(ch, from, to) {
@@ -322,12 +402,15 @@ line_part <- function(ch, from, to) {
   s <- from + min(t) - 1L
   e <- from + max(t) - 1L
   r <- rle(ch[s:e] == " ")
-  inner <- r$lengths[r$values]
+  ends <- s + cumsum(r$lengths) - 1L
+  inner <- which(r$values)
   first_word <- paste(ch[s:(s + r$lengths[1] - 1L)], collapse = "")
   if (length(inner) && grepl("^([0-9]+(\\.[0-9]+)*\\.?|[IVX]+\\.?|[A-Z]\\.)$", first_word)) {
     inner <- inner[-1L]
   }
-  list(start = s, end = e, chars = length(t), gap = max(0L, inner))
+  wide <- inner[r$lengths[inner] >= 3L]
+  list(start = s, end = e, chars = length(t), gap = max(0L, r$lengths[inner]),
+       runs = unlist(Map(seq, ends[wide] - r$lengths[wide] + 1L, ends[wide]), use.names = FALSE))
 }
 
 #' How each line of a two-column page is read: whether it spans the page
@@ -339,11 +422,13 @@ line_part <- function(ch, from, to) {
 #'
 #'   - A row of a full-width table can have a blank at the gutter by chance.
 #'     Split there, its label stayed in the left column and its values went to
-#'     the foot of the right one, into another section. So a line with a blank
-#'     at the gutter is read as two columns only when one side reads as a line
-#'     of its column: it starts at that column's usual left edge and has no
-#'     wide gap inside, as a row of cells does. When that side is too short to
-#'     tell (the end of a paragraph), the lines around it decide.
+#'     the foot of the right one, into another section. So a row with a blank
+#'     at the gutter spans the page when its cells line up with those of the
+#'     rows near it, on both sides of the gutter. It takes that: a reference
+#'     with a hanging indent, code set in a column, a formula or a heading
+#'     beside a line of the other column does not start where the column's
+#'     lines start either, and read as spanning, each was glued to the other
+#'     column's line and the rest of the page was read out of order.
 #'   - A left line and a right line set on one row can have a single space
 #'     between them, or run a character into the gutter. Read as spanning, the
 #'     two were spliced into one line and the band was broken in two, putting
@@ -354,10 +439,14 @@ line_part <- function(ch, from, to) {
 #'     left column's right margin. It is only looked for between lines that
 #'     are plainly in two columns, since a line of full-width prose has a word
 #'     boundary near the gutter too.
-#'   - The first and last lines of a page must read as a line of each column
-#'     on both sides. A running head that survived `drop_running_lines()` spans
-#'     the page, and split, its right half was put where the left column ends,
-#'     inside a sentence.
+#'   - A running head that survived `drop_running_lines()` spans the page,
+#'     and split, its right half was put where the left column ends, inside a
+#'     sentence. So a page's first or last row that is set apart from the text
+#'     by a blank row, as a head or foot is, spans unless both its halves read
+#'     as lines of their columns. The first or last line of a column is not
+#'     set apart, and is read with its column whatever it holds.
+#'   - The authors of a first page, set side by side above the columns, span
+#'     it too.
 #' @noRd
 column_plan <- function(lines, gutter, min_side = 20L) {
   gutter <- as.integer(gutter)
@@ -404,13 +493,14 @@ column_plan <- function(lines, gutter, min_side = 20L) {
   }
   long <- function(p) !is.null(p) && p$chars >= min_side
   # A long left line can run into the gutter and still stop short of the right
-  # column, and a right line can start a character or two before the gutter:
-  # neither holds anything of the other column.
+  # column, and a right line can start a character or two before the gutter,
+  # or anywhere right of where the left column's lines end: neither holds
+  # anything of the other column.
   for (i in which(kind == "cross")) {
     whole <- line_part(chars[[i]], 1L, length(chars[[i]]))
     if (last[i] < R - 1L && column_like(whole, L)) {
       kind[i] <- "left"
-    } else if (first[i] >= R - 2L) {
+    } else if (first[i] >= R - 2L || first[i] > E + 1L) {
       kind[i] <- "right"
       rpart[[i]] <- whole
     }
@@ -433,6 +523,9 @@ column_plan <- function(lines, gutter, min_side = 20L) {
       s <- cand[which.min(abs(cand - 1L - E))]
       rp <- line_part(ch, s + 1L, n)
       if (column_like(line_part(ch, 1L, s - 1L), L) && !is.null(rp) && rp$gap < 3L) {
+        # A pulled right line is a full line of its column. A word or two
+        # there is the end of a left line that ran long, and stays on it.
+        if (way == "pulled" && !long(rp)) return(list(at = n + 1L, how = "ran"))
         return(list(at = s, how = way))
       }
     }
@@ -440,6 +533,74 @@ column_plan <- function(lines, gutter, min_side = 20L) {
   }
   body <- which(kind != "blank")
   edge <- seq_len(nl) %in% c(utils::head(body, 1L), utils::tail(body, 1L))
+  # A running head or foot is set apart from the text by a blank row; the
+  # first or last line of a column is not.
+  apart <- logical(nl)
+  if (length(body)) {
+    top <- body[1L]
+    bottom <- body[length(body)]
+    apart[top] <- top == nl || kind[top + 1L] == "blank"
+    apart[bottom] <- apart[bottom] || bottom == 1L || kind[bottom - 1L] == "blank"
+  }
+  # The cells of a table: the runs of two or more spaces inside a line, the
+  # one at the gutter left out. A row is a table's when its cells line up
+  # with those of a row near it (two rows away at most, as a cell that wraps
+  # puts a row between) on both sides of the gutter, or on one side with a
+  # row that is a table's already. Columns of prose, a hanging indent, code
+  # or a formula beside prose do not line up so on both sides.
+  cells <- lapply(seq_len(nl), function(i) {
+    if (is.na(first[i])) return(integer(0))
+    ch <- chars[[i]]
+    r <- rle(ch[first[i]:last[i]] == " ")
+    ends <- cumsum(r$lengths) + first[i] - 1L
+    starts <- ends - r$lengths + 1L
+    w <- which(r$values & r$lengths >= 2L & !(starts <= gutter & ends >= gutter))
+    unlist(Map(seq, starts[w], ends[w]), use.names = FALSE)
+  })
+  near <- function(i) {
+    j <- c(i - 2L, i - 1L, i + 1L, i + 2L)
+    j <- j[j >= 1L & j <= nl]
+    j[vapply(j, function(k) all(kind[k:i] != "blank"), logical(1))]
+  }
+  lines_up <- function(i, j, side) {
+    mine <- cells[[i]][if (side == "left") cells[[i]] < gutter else cells[[i]] > gutter]
+    any(mine %in% cells[[j]])
+  }
+  table <- vapply(seq_len(nl), function(i) {
+    kind[i] == "split" && any(vapply(near(i), function(j) {
+      lines_up(i, j, "left") && lines_up(i, j, "right")
+    }, logical(1)))
+  }, logical(1))
+  table <- table | vapply(seq_len(nl), function(i) {
+    kind[i] == "split" && any(vapply(near(i), function(j) {
+      table[j] && (lines_up(i, j, "left") || lines_up(i, j, "right"))
+    }, logical(1)))
+  }, logical(1))
+  # The title block of a first page (authors side by side, affiliations) is
+  # set above the columns, with a blank row between. A row there of two short
+  # parts that do not both start where the columns do spans the page: split,
+  # the second author went to the head of the right column, below the
+  # abstract. The columns start at the first row that holds a full line of a
+  # column, and end at the last.
+  lo <- vapply(seq_len(nl), function(i) kind[i] == "split" && column_like(lpart[[i]], L), logical(1))
+  ro <- vapply(seq_len(nl), function(i) kind[i] == "split" && column_like(rpart[[i]], R), logical(1))
+  in_column <- vapply(seq_len(nl), function(i) {
+    whole <- line_part(chars[[i]], 1L, length(chars[[i]]))
+    switch(kind[i],
+           split = (lo[i] && ro[i]) || (lo[i] && long(lpart[[i]])) || (ro[i] && long(rpart[[i]])),
+           left = column_like(whole, L) && long(whole),
+           right = column_like(whole, R) && long(whole),
+           FALSE)
+  }, logical(1))
+  outside <- logical(nl)
+  if (any(in_column)) {
+    from <- min(which(in_column))
+    to <- max(which(in_column))
+    for (i in seq_len(nl)) {
+      outside[i] <- (i < from && any(kind[i:from] == "blank")) ||
+        (i > to && any(kind[to:i] == "blank"))
+    }
+  }
   cls <- ifelse(kind == "blank", "blank", "two")
   split <- rep(gutter, nl)
   how <- character(nl)
@@ -448,18 +609,11 @@ column_plan <- function(lines, gutter, min_side = 20L) {
       split[i] <- max(gutter, last[i] + 1L)
     } else if (kind[i] == "right") {
       split[i] <- min(gutter, first[i] - 1L)
-      if (edge[i] && !column_like(rpart[[i]], R)) cls[i] <- "span"
+      if (apart[i] && !column_like(rpart[[i]], R)) cls[i] <- "span"
     } else if (kind[i] == "split") {
-      lo <- column_like(lpart[[i]], L)
-      ro <- column_like(rpart[[i]], R)
-      cls[i] <- if (lo && ro) {
-        "two"
-      } else if (edge[i] || (!lo && !ro)) {
-        "span"
-      } else if ((lo && long(lpart[[i]])) || (ro && long(rpart[[i]]))) {
-        "two"
-      } else {
-        "unsure"
+      title <- outside[i] && !(lo[i] && ro[i]) && !long(lpart[[i]]) && !long(rpart[[i]])
+      if (table[i] || title || (apart[i] && !(lo[i] && ro[i]))) {
+        cls[i] <- "span"
       }
     } else if (kind[i] == "cross") {
       m <- merge_point(chars[[i]])
@@ -472,8 +626,8 @@ column_plan <- function(lines, gutter, min_side = 20L) {
       }
     }
   }
-  # An undecided line is read in two columns only between lines that are, on
-  # both sides, with no blank row and no more than two other undecided lines
+  # A merged line is read in two columns only between lines that are, on
+  # both sides, with no blank row and no more than two other merged lines
   # between. A word broken with a hyphen is plain enough evidence to reach
   # across blank rows (a footnote beside the column keeps its own line spacing)
   # and to stand at the foot of the page, below which there may be only a page
@@ -488,7 +642,7 @@ column_plan <- function(lines, gutter, min_side = 20L) {
     while (j >= 1L && j <= nl) {
       if (cls[j] == "blank") {
         if (how[i] != "hyphen") return("blank")
-      } else if (cls[j] %in% c("unsure", "merge")) {
+      } else if (cls[j] == "merge") {
         passed <- passed + 1L
         if (passed > 2L) return("run")
       } else if (cls[j] == "span") {
@@ -500,7 +654,7 @@ column_plan <- function(lines, gutter, min_side = 20L) {
     }
     "end"
   }
-  pending <- which(cls %in% c("unsure", "merge"))
+  pending <- which(cls == "merge")
   ok <- vapply(pending, function(i) {
     fits <- if (how[i] == "pulled") "two" else c("two", "left")
     down <- bound(i, 1L)

@@ -52,8 +52,12 @@
     m("gpt-4",            8192,  8192,  30.00, 60.00),
     m("gpt-3.5-turbo",   16385,  4096,   0.50,  1.50),
     # ---- Embeddings -------------------------------------------------------
+    # Every embedding model OpenAI still lists. Embedding requests are priced
+    # trace steps, so one missing here makes a run's cost unknown, and that
+    # switches off gr_read_many(max_total_usd =) for the whole corpus.
     m("text-embedding-3-small", 8191, 0, 0.02, 0, kind = "embedding", dims = 1536L),
-    m("text-embedding-3-large", 8191, 0, 0.13, 0, kind = "embedding", dims = 3072L)
+    m("text-embedding-3-large", 8191, 0, 0.13, 0, kind = "embedding", dims = 3072L),
+    m("text-embedding-ada-002", 8191, 0, 0.10, 0, kind = "embedding", dims = 1536L)
   )
 }
 

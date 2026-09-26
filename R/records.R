@@ -213,10 +213,12 @@ bib_entries <- function(txt) {
 #' its comma, and "year = 1999" in an abstract replaced the real year.
 #'
 #' A separator counts only at brace depth zero and outside a quoted value; a
-#' quote inside braces (`{\"u}`) does not end one. Values joined with `#` are
-#' concatenated. The first occurrence of a field wins, as it does in BibTeX. A
-#' value ends where its braces or quotes close, so a hand-edited file that
-#' left out the comma before the next field still reads that field.
+#' quote inside braces (`{\"u}`) does not end one, and neither does one written
+#' `\"`, which is not valid BibTeX but is how a hand-typed umlaut looks. Values
+#' joined with `#` are concatenated. The first occurrence of a field wins, as it
+#' does in BibTeX. A value ends where its braces or quotes close, so a
+#' hand-edited file that left out the comma before the next field still reads
+#' that field.
 #' @noRd
 bib_fields <- function(body) {
   ch <- strsplit(body, "", fixed = TRUE)[[1]]
@@ -224,7 +226,10 @@ bib_fields <- function(body) {
   if (!n) return(list())
   step <- (ch == "{") - (ch == "}")
   depth <- cumsum(step) - step                  # depth before each character
-  q <- ch == "\"" & depth == 0L                 # quotes that open or close a value
+  # Quotes that open or close a value. A backslash before one makes it text:
+  # counting `author="M\"uller, J."` as three quotes flipped the parity for the
+  # rest of the entry, and its title and year were lost.
+  q <- ch == "\"" & depth == 0L & c("", ch[-n]) != "\\"
   inq <- (cumsum(q) - q) %% 2L == 1L
   top <- depth == 0L & !inq & !q
   ws <- grepl("^[[:space:]]$", ch)
@@ -236,7 +241,11 @@ bib_fields <- function(body) {
   eq_or_comma <- which(top & (ch == "=" | ch == ","))
   closes <- which(ch == "}" & depth == 1L)       # a brace that returns to depth zero
   quotes <- which(q)
-  stops <- which(ws | (top & (ch == "," | ch == "#")))
+  # A bare (unbraced, unquoted) value runs to the next comma, `#` or line end,
+  # as the regex this replaced read it: `journal = Nature Medicine,` is two
+  # words, not "Nature". It stops early only where the next word is the name of
+  # a field (`year = 2022 month = jan`, a missing comma).
+  stops <- which(ch == "\n" | ch == "\r" | (top & (ch == "," | ch == "#")))
   solid <- which(!ws)
   text <- function(a, b) if (a > b) "" else paste(ch[a:b], collapse = "")
   tags <- list()
@@ -260,6 +269,9 @@ bib_fields <- function(body) {
         e <- v - 1L                             # "name = ," is an empty value
       } else {
         e <- after(stops, v); e <- if (is.na(e)) n else e - 1L
+        nxt <- regexpr("[[:space:]]+[[:alnum:]_:.+-]+[[:space:]]*=", text(v, e))
+        if (nxt > 0L) e <- v + nxt - 2L
+        while (e > v && ws[e]) e <- e - 1L
         parts <- c(parts, text(v, e))
       }
       nx <- after(solid, e)
@@ -274,18 +286,121 @@ bib_fields <- function(body) {
   tags
 }
 
+#' LaTeX accent commands, each with the letters it composes with.
+#'
+#' `from` and `to` are the plain letters and what each becomes under that
+#' accent, from Unicode's canonical compositions. An accent on a letter that
+#' has no composed form keeps the combining mark after it.
+#' @noRd
+.gr_tex_accents <- local({
+  acc <- list(
+    list(cmd = "'", mark = "\u0301", from = "acegiklmnoprsuwyzACEGIKLMNOPRSUWYZ",
+         to = paste0("\u00e1\u0107\u00e9\u01f5\u00ed\u1e31\u013a\u1e3f\u0144\u00f3\u1e55\u0155",
+                     "\u015b\u00fa\u1e83\u00fd\u017a\u00c1\u0106\u00c9\u01f4\u00cd\u1e30\u0139",
+                     "\u1e3e\u0143\u00d3\u1e54\u0154\u015a\u00da\u1e82\u00dd\u0179")),
+    list(cmd = "`", mark = "\u0300", from = "aeinouwyAEINOUWY",
+         to = paste0("\u00e0\u00e8\u00ec\u01f9\u00f2\u00f9\u1e81\u1ef3\u00c0\u00c8\u00cc\u01f8",
+                     "\u00d2\u00d9\u1e80\u1ef2")),
+    list(cmd = "^", mark = "\u0302", from = "aceghijosuwyzACEGHIJOSUWYZ",
+         to = paste0("\u00e2\u0109\u00ea\u011d\u0125\u00ee\u0135\u00f4\u015d\u00fb\u0175\u0177",
+                     "\u1e91\u00c2\u0108\u00ca\u011c\u0124\u00ce\u0134\u00d4\u015c\u00db\u0174",
+                     "\u0176\u1e90")),
+    list(cmd = "\"", mark = "\u0308", from = "aehiotuwxyAEHIOUWXY",
+         to = paste0("\u00e4\u00eb\u1e27\u00ef\u00f6\u1e97\u00fc\u1e85\u1e8d\u00ff\u00c4\u00cb",
+                     "\u1e26\u00cf\u00d6\u00dc\u1e84\u1e8c\u0178")),
+    list(cmd = "~", mark = "\u0303", from = "aeinouvyAEINOUVY",
+         to = paste0("\u00e3\u1ebd\u0129\u00f1\u00f5\u0169\u1e7d\u1ef9\u00c3\u1ebc\u0128\u00d1",
+                     "\u00d5\u0168\u1e7c\u1ef8")),
+    list(cmd = "=", mark = "\u0304", from = "aegiouyAEGIOUY",
+         to = paste0("\u0101\u0113\u1e21\u012b\u014d\u016b\u0233\u0100\u0112\u1e20\u012a\u014c",
+                     "\u016a\u0232")),
+    list(cmd = ".", mark = "\u0307", from = "cegzCEGIZ",
+         to = "\u010b\u0117\u0121\u017c\u010a\u0116\u0120\u0130\u017b"),
+    list(cmd = "u", mark = "\u0306", from = "aegiouAEGIOU",
+         to = "\u0103\u0115\u011f\u012d\u014f\u016d\u0102\u0114\u011e\u012c\u014e\u016c"),
+    list(cmd = "v", mark = "\u030c", from = "acdeghijklnorstuzACDEGHIKLNORSTUZ",
+         to = paste0("\u01ce\u010d\u010f\u011b\u01e7\u021f\u01d0\u01f0\u01e9\u013e\u0148\u01d2",
+                     "\u0159\u0161\u0165\u01d4\u017e\u01cd\u010c\u010e\u011a\u01e6\u021e\u01cf",
+                     "\u01e8\u013d\u0147\u01d1\u0158\u0160\u0164\u01d3\u017d")),
+    list(cmd = "H", mark = "\u030b", from = "ouOU", to = "\u0151\u0171\u0150\u0170"),
+    list(cmd = "c", mark = "\u0327", from = "cegklnrstCEGKLNRST",
+         to = paste0("\u00e7\u0229\u0123\u0137\u013c\u0146\u0157\u015f\u0163\u00c7\u0228\u0122",
+                     "\u0136\u013b\u0145\u0156\u015e\u0162")),
+    list(cmd = "k", mark = "\u0328", from = "aeiouAEIOU",
+         to = "\u0105\u0119\u012f\u01eb\u0173\u0104\u0118\u012e\u01ea\u0172"),
+    list(cmd = "r", mark = "\u030a", from = "auAU", to = "\u00e5\u016f\u00c5\u016e"),
+    list(cmd = "d", mark = "\u0323", from = "adehiklmnorstuyzADEHIKLMNORSTUYZ",
+         to = paste0("\u1ea1\u1e0d\u1eb9\u1e25\u1ecb\u1e33\u1e37\u1e43\u1e47\u1ecd\u1e5b\u1e63",
+                     "\u1e6d\u1ee5\u1ef5\u1e93\u1ea0\u1e0c\u1eb8\u1e24\u1eca\u1e32\u1e36\u1e42",
+                     "\u1e46\u1ecc\u1e5a\u1e62\u1e6c\u1ee4\u1ef4\u1e92"))
+  )
+  base <- "(\\\\[ij](?![A-Za-z])|[A-Za-z])"
+  lapply(acc, function(a) {
+    cmd <- a$cmd
+    # A symbol accent may be followed by its letter directly (\'a); a letter
+    # accent needs a brace or a space, or it is a different command (\vspace).
+    re <- if (grepl("^[A-Za-z]$", cmd)) {
+      sprintf("\\\\%s(?:[[:space:]]*\\{[[:space:]]*%s[[:space:]]*\\}|[[:space:]]+%s)", cmd, base, base)
+    } else {
+      sprintf("\\\\\\%s[[:space:]]*(?:\\{[[:space:]]*%s[[:space:]]*\\}|%s)", cmd, base, base)
+    }
+    list(re = re, mark = a$mark, from = strsplit(a$from, "")[[1]],
+         to = strsplit(a$to, "")[[1]])
+  })
+})
+
+#' LaTeX commands that are letters in their own right.
+#' @noRd
+.gr_tex_letters <- list(
+  cmd = c("ss", "ae", "AE", "oe", "OE", "aa", "AA", "o", "O", "l", "L", "i", "j"),
+  to = c("\u00df", "\u00e6", "\u00c6", "\u0153", "\u0152", "\u00e5", "\u00c5", "\u00f8",
+         "\u00d8", "\u0142", "\u0141", "\u0131", "\u0237"))
+
+#' Turn LaTeX accents in a BibTeX value into the letters they spell.
+#'
+#' Scholar, JabRef and BibDesk write "Dvo{\\v{r}}{\\'a}k"; a database writes
+#' "Dvo\u0159\u00e1k". Stripping the braces and keeping the rest gave
+#' "Dvo\\vr\\'ak", which is nobody's name: it went into citations as that, and
+#' its key "dvovrak" matched neither the database's record nor a filename. The
+#' symbol accents (\\" and \\') vanished from keys by luck; the letter ones
+#' (\\v, \\c, \\H, \\k, \\u) left a stray letter inside the surname.
+#' @noRd
+bib_unlatex <- function(v) {
+  if (is.na(v) || !grepl("\\", v, fixed = TRUE)) return(v)
+  for (a in .gr_tex_accents) {
+    m <- gregexpr(a$re, v, perl = TRUE)
+    if (m[[1]][1] == -1L) next
+    regmatches(v, m) <- list(vapply(regmatches(v, m)[[1]], function(s) {
+      b <- sub(a$re, "\\1\\2", s, perl = TRUE)
+      b <- sub("^\\\\", "", b)                  # \i and \j are the dotless letters
+      k <- match(b, a$from)
+      if (is.na(k)) paste0(b, a$mark) else a$to[k]
+    }, character(1), USE.NAMES = FALSE))
+  }
+  for (k in seq_along(.gr_tex_letters$cmd)) {
+    v <- gsub(sprintf("\\\\%s(?![A-Za-z])(?:\\{\\})?[[:space:]]*", .gr_tex_letters$cmd[k]),
+              .gr_tex_letters$to[k], v, perl = TRUE)
+  }
+  mark_utf8(v)
+}
+
 #' @noRd
 records_from_bib <- function(txt, source_file) {
   entries <- bib_entries(txt)
   if (!length(entries)) return(empty_records())
   rows <- lapply(entries, function(body) {
-    tags <- lapply(bib_fields(body), function(v) {
+    fields <- bib_fields(body)
+    tags <- lapply(names(fields), function(nm) {
+      v <- trimws(fields[[nm]])
+      # Not in a path or a link, where "\o" is a folder, not a letter.
+      if (!nm %in% c("file", "url", "doi")) v <- bib_unlatex(v)
       # Capitalisation-protecting braces are not part of the value, and the
       # characters BibTeX makes you escape are not meant to keep their
       # backslash: "Memory {\\&} Cognition" is "Memory & Cognition".
-      v <- gsub("\\\\([&%$#_{}])", "\\1", trimws(v), perl = TRUE)
+      v <- gsub("\\\\([&%$#_{}])", "\\1", v, perl = TRUE)
       trimws(gsub("[{}]", "", v))
     })
+    names(tags) <- names(fields)
     vals <- lapply(names(.gr_bib_map), function(f) tag_value(tags, .gr_bib_map[[f]]))
     names(vals) <- names(.gr_bib_map)
     # BibTeX joins authors with " and "; RIS gives one per line. Normalise to
@@ -361,14 +476,71 @@ finish_records <- function(df) {
     w = "\u0175", W = "\u0174",
     y = "\u00fd\u00ff\u0177", Y = "\u00dd\u0178\u0176",
     z = "\u017a\u017c\u017e", Z = "\u0179\u017b\u017d")
-  list(from = paste(one, collapse = ""),
-       to = paste(rep(names(one), nchar(one)), collapse = ""),
+  # Every other letter in Latin Extended-B and Latin Extended Additional whose
+  # canonical decomposition is one plain letter and marks: Vietnamese above all
+  # ("Nguy\u1ec5n" was a different surname from "Nguyen", where the old iconv step
+  # made them one), and what a BibTeX accent command composes to.
+  ext <- c(
+    a = paste0("\u01ce\u01df\u01e1\u01fb\u0201\u0203\u0227\u1e01\u1ea1\u1ea3\u1ea5\u1ea7",
+               "\u1ea9\u1eab\u1ead\u1eaf\u1eb1\u1eb3\u1eb5\u1eb7"),
+    A = paste0("\u01cd\u01de\u01e0\u01fa\u0200\u0202\u0226\u1e00\u1ea0\u1ea2\u1ea4\u1ea6",
+               "\u1ea8\u1eaa\u1eac\u1eae\u1eb0\u1eb2\u1eb4\u1eb6"),
+    b = "\u1e03\u1e05\u1e07", B = "\u1e02\u1e04\u1e06", c = "\u1e09", C = "\u1e08",
+    d = "\u1e0b\u1e0d\u1e0f\u1e11\u1e13", D = "\u1e0a\u1e0c\u1e0e\u1e10\u1e12",
+    e = paste0("\u0205\u0207\u0229\u1e15\u1e17\u1e19\u1e1b\u1e1d\u1eb9\u1ebb\u1ebd\u1ebf",
+               "\u1ec1\u1ec3\u1ec5\u1ec7"),
+    E = paste0("\u0204\u0206\u0228\u1e14\u1e16\u1e18\u1e1a\u1e1c\u1eb8\u1eba\u1ebc\u1ebe",
+               "\u1ec0\u1ec2\u1ec4\u1ec6"),
+    f = "\u1e1f", F = "\u1e1e", g = "\u01e7\u01f5\u1e21", G = "\u01e6\u01f4\u1e20",
+    h = "\u021f\u1e23\u1e25\u1e27\u1e29\u1e2b\u1e96", H = "\u021e\u1e22\u1e24\u1e26\u1e28\u1e2a",
+    i = "\u01d0\u0209\u020b\u1e2d\u1e2f\u1ec9\u1ecb", I = "\u01cf\u0208\u020a\u1e2c\u1e2e\u1ec8\u1eca",
+    j = "\u01f0\u0237", k = "\u01e9\u1e31\u1e33\u1e35", K = "\u01e8\u1e30\u1e32\u1e34",
+    l = "\u1e37\u1e39\u1e3b\u1e3d", L = "\u1e36\u1e38\u1e3a\u1e3c",
+    m = "\u1e3f\u1e41\u1e43", M = "\u1e3e\u1e40\u1e42",
+    n = "\u01f9\u1e45\u1e47\u1e49\u1e4b", N = "\u01f8\u1e44\u1e46\u1e48\u1e4a",
+    o = paste0("\u01a1\u01d2\u01eb\u01ed\u020d\u020f\u022b\u022d\u022f\u0231\u1e4d\u1e4f",
+               "\u1e51\u1e53\u1ecd\u1ecf\u1ed1\u1ed3\u1ed5\u1ed7\u1ed9\u1edb\u1edd\u1edf",
+               "\u1ee1\u1ee3"),
+    O = paste0("\u01a0\u01d1\u01ea\u01ec\u020c\u020e\u022a\u022c\u022e\u0230\u1e4c\u1e4e",
+               "\u1e50\u1e52\u1ecc\u1ece\u1ed0\u1ed2\u1ed4\u1ed6\u1ed8\u1eda\u1edc\u1ede",
+               "\u1ee0\u1ee2"),
+    p = "\u1e55\u1e57", P = "\u1e54\u1e56",
+    r = "\u0211\u0213\u1e59\u1e5b\u1e5d\u1e5f", R = "\u0210\u0212\u1e58\u1e5a\u1e5c\u1e5e",
+    s = "\u1e61\u1e63\u1e65\u1e67\u1e69\u017f", S = "\u1e60\u1e62\u1e64\u1e66\u1e68",
+    t = "\u1e6b\u1e6d\u1e6f\u1e71\u1e97", T = "\u1e6a\u1e6c\u1e6e\u1e70",
+    u = paste0("\u01b0\u01d4\u01d6\u01d8\u01da\u01dc\u0215\u0217\u1e73\u1e75\u1e77\u1e79",
+               "\u1e7b\u1ee5\u1ee7\u1ee9\u1eeb\u1eed\u1eef\u1ef1"),
+    U = paste0("\u01af\u01d3\u01d5\u01d7\u01d9\u01db\u0214\u0216\u1e72\u1e74\u1e76\u1e78",
+               "\u1e7a\u1ee4\u1ee6\u1ee8\u1eea\u1eec\u1eee\u1ef0"),
+    v = "\u1e7d\u1e7f", V = "\u1e7c\u1e7e",
+    w = "\u1e81\u1e83\u1e85\u1e87\u1e89\u1e98", W = "\u1e80\u1e82\u1e84\u1e86\u1e88",
+    x = "\u1e8b\u1e8d", X = "\u1e8a\u1e8c",
+    y = "\u0233\u1e8f\u1e99\u1ef3\u1ef5\u1ef7\u1ef9", Y = "\u0232\u1e8e\u1ef2\u1ef4\u1ef6\u1ef8",
+    z = "\u1e91\u1e93\u1e95", Z = "\u1e90\u1e92\u1e94")
+  # Compatibility characters, which are one character spelled another way: a
+  # superscript or subscript digit, a full-width letter from a CJK input
+  # method, the micro sign (which NFKC makes the Greek letter). The iconv step
+  # folded most of these, so "m\u00b2" and "m2" were one title; the table has to
+  # say so itself. (No "-" anywhere in these strings: chartr() reads it as a range.)
+  compat_from <- paste0("\u2070\u00b9\u00b2\u00b3\u2074\u2075\u2076\u2077\u2078\u2079",
+                        "\u2080\u2081\u2082\u2083\u2084\u2085\u2086\u2087\u2088\u2089",
+                        intToUtf8(c(0xFF10:0xFF19, 0xFF21:0xFF3A, 0xFF41:0xFF5A)), "\u00b5")
+  compat_to <- paste0("0123456789", "0123456789", "0123456789",
+                      paste(LETTERS, collapse = ""), paste(letters, collapse = ""), "\u03bc")
+  list(from = paste0(paste(one, collapse = ""), paste(ext, collapse = ""), compat_from),
+       to = paste0(paste(rep(names(one), nchar(one)), collapse = ""),
+                   paste(rep(names(ext), nchar(ext)), collapse = ""), compat_to),
        # Two vectors, not a named one: a name is a symbol, and a symbol is
        # translated to the native encoding, which in the C locale turned "\u00df"
-       # into "<U+00DF>" and folded nothing.
-       multi_from = c("\u00df", "\u00e6", "\u00c6", "\u0153", "\u0152",
-                      "\u00fe", "\u00de", "\u0133", "\u0132"),
-       multi_to = c("ss", "ae", "AE", "oe", "OE", "th", "TH", "ij", "IJ"))
+       # into "<U+00DF>" and folded nothing. Ligatures come from PDF metadata
+       # ("E\ufb03cacy"), and a vulgar fraction was "1/2" to the iconv step.
+       multi_from = c("\u00df", "\u1e9e", "\u00e6", "\u00c6", "\u0153", "\u0152",
+                      "\u00fe", "\u00de", "\u0133", "\u0132",
+                      "\ufb00", "\ufb01", "\ufb02", "\ufb03", "\ufb04", "\ufb05", "\ufb06",
+                      "\u00bc", "\u00bd", "\u00be", "\u2153", "\u2154", "\u2155", "\u215b"),
+       multi_to = c("ss", "SS", "ae", "AE", "oe", "OE", "th", "TH", "ij", "IJ",
+                    "ff", "fi", "fl", "ffi", "ffl", "st", "st",
+                    "1/4", "1/2", "3/4", "1/3", "2/3", "1/5", "1/8"))
 })
 
 #' Fold Latin diacritics to plain letters, leaving every other letter alone.
@@ -394,7 +566,9 @@ fold_latin <- function(x) {
 #' the title, and deleting it made different studies one key.
 #' @noRd
 title_key <- function(x) {
-  v <- fold_latin(tolower(mark_utf8(as.character(x))))
+  # Lower-cased again after folding: tolower() may leave a capital it has no
+  # table for in the C locale, and the fold turns it into an ASCII one.
+  v <- tolower(fold_latin(tolower(mark_utf8(as.character(x)))))
   v <- gsub("[^\\p{L}\\p{N}]+", "", v, perl = TRUE)
   v[is.na(v) | !nzchar(v)] <- NA_character_
   v
@@ -434,16 +608,24 @@ title_key <- function(x) {
 #' @param dedupe `"doi"` matches on DOI alone; `"doi+title"` (the default) falls
 #'   back to normalised title and year when a DOI cannot settle it, which is
 #'   what catches the same conference paper indexed twice, or indexed once with
-#'   its DOI and once without. The title fallback also needs the first author to
-#'   agree (or, when a record has no authors, the venue), ignores titles shorter
-#'   than 12 letters ("Reply", "Editorial"), and never merges records carrying
-#'   two different DOIs; `"none"` keeps everything.
+#'   its DOI and once without. The title fallback also needs the first author's
+#'   surname to agree as a whole name ("Smith, J." and "Smith JA" agree, "Li" and
+#'   "Lin" do not), or, when a record has no authors, the venue. It ignores
+#'   titles shorter than 12 letters ("Reply", "Editorial") and never merges
+#'   records carrying two different DOIs. A record without a DOI is merged with
+#'   one that has a DOI, and a title with fewer than 12 Latin letters or digits
+#'   is merged at all, only when the venues do not disagree, the first authors'
+#'   initials do not differ, and the author or the venue confirms it. The kept row takes
+#'   any field it lacks (the DOI, the journal) from the rows merged into it.
+#'   `"none"` keeps everything.
 #' @return An object of class `gr_records`:
 #'   \describe{
 #'     \item{`records`}{One row per distinct work, with `duplicate_of` naming the
 #'       row a dropped record repeats, `file` the document matched to it, and
 #'       `retrieved` whether one was found. A duplicate's file path counts
-#'       towards the row it repeats, which is where the match is reported.}
+#'       towards the row it repeats, which is where the match is reported; a
+#'       second copy the duplicate's own path points to is shown on the
+#'       duplicate's row.}
 #'     \item{`counts`}{Identified, per database, duplicates removed, distinct
 #'       records, reports sought, reports retrieved, reports not retrieved.}
 #'     \item{`search`}{The `gr_search()`, or `NULL`.}
@@ -478,10 +660,14 @@ gr_records <- function(exports, files = NULL, search = NULL,
   if (!nrow(recs)) gr_abort("Those exports contain no records.", class = "gr_no_exports")
 
   identified <- nrow(recs)
-  by_db <- table(ifelse(is.na(recs$database), basename(recs$source_file), recs$database))
+  # `source_file` is already a basename. basename() again translated it to the
+  # native encoding, and in a C locale an export named "\u00c9vora.ris" aborted
+  # the whole call.
+  by_db <- table(ifelse(is.na(recs$database), recs$source_file, recs$database))
 
   recs$duplicate_of <- dedupe_records(recs, dedupe)
   distinct <- is.na(recs$duplicate_of)
+  recs <- merge_duplicate_fields(recs)
 
   matched <- match_files(recs, files)
   recs$file <- matched$file
@@ -515,7 +701,10 @@ export_paths <- function(exports) {
     # "Baker" on a laptop and after it under cron or R CMD check. The export
     # order decides record_id and which copy of a duplicated work is the one
     # kept, and a record set should not depend on the machine that read it.
-    return(f[order(enc2utf8(f), method = "radix")])
+    # mark_utf8(), not enc2utf8(): in a C locale enc2utf8() rewrites the
+    # unlabelled UTF-8 bytes of "\u00c9vora.ris" as the text "<c3><89>vora.ris",
+    # which sorts before "Baker".
+    return(f[order(mark_utf8(f), method = "radix")])
   }
   p <- as.character(unlist(exports, use.names = FALSE))
   p <- p[!is.na(p)]
@@ -552,6 +741,161 @@ read_export <- function(path) {
   empty_records()
 }
 
+#' Words that make an author an organisation rather than a person.
+#'
+#' This file's own list, not the citation code's: which records are one work
+#' and which file is whose must not change when the rules for rendering a
+#' citation do.
+#' @noRd
+.gr_rec_corporate <- paste0(
+  "\\b(group|collaborat\\w*|consortium|investigators?|committee|organi[sz]ations?|",
+  "associations?|institutes?|society|council|agency|department|ministry|foundation|",
+  "universit(y|ies)|cent(re|er)s?|commission|federation|bureau|administration|network|",
+  "academy|alliance|coalition|initiative|task ?force|working party|trialists|panel)\\b")
+
+#' Particles that are part of a surname but not what identifies it.
+#' @noRd
+.gr_rec_particles <- c("van", "von", "der", "den", "de", "del", "della", "di", "da", "dos",
+                       "das", "du", "la", "le", "ten", "ter", "bin", "ibn", "al", "el", "st",
+                       "zu", "af", "av")
+
+#' The first author of each record: surname, first initial, and whether it is
+#' an organisation.
+#'
+#' Only the first author, read on its own. Reading the whole list and giving up
+#' when any entry was doubtful -- which is right for a rendered citation --
+#' lost the first author whenever a later one was a group ("Horby P; Lim WS;
+#' RECOVERY Collaborative Group") or an acronym, and with it the author check
+#' on duplicates and the author-year route to a file.
+#'
+#' The shapes: "Smith, J." and "van der Berg, P." (surname before the comma);
+#' "Smith JA" and "SMITH J" (Vancouver: surname, then initials); "John Smith"
+#' (the last word); "WHO" (one word is the name); and an organisation, kept
+#' whole.
+#' @noRd
+record_first_author <- function(authors) {
+  a <- mark_utf8(as.character(authors))
+  n <- length(a)
+  out <- list(surname = rep(NA_character_, n), initial = rep(NA_character_, n),
+              corporate = rep(FALSE, n), entry = rep(NA_character_, n))
+  is_ini <- function(w) grepl("^(?:\\p{Lu}[.\\-]*){1,4}$", w, perl = TRUE)
+  for (k in seq_len(n)) {
+    e <- a[k]
+    if (is.na(e)) next
+    e <- trimws(gsub("[{}\"]", "", sub(";.*$", "", e)))
+    e <- trimws(sub("[,[:space:]]*(et[[:space:]]+al\\.?|and others)[.]?$", "", e,
+                    ignore.case = TRUE, perl = TRUE))
+    # One author per slot is the norm; a single field holding the whole list
+    # ("Smith, J., Okafor, A. and Lee, K.") gives up its first name here.
+    e <- trimws(strsplit(e, "[[:space:]]*(?:\\band\\b|&)[[:space:]]*", perl = TRUE)[[1]][1])
+    if (is.na(e) || !grepl("\\p{L}", e, perl = TRUE)) next
+    out$entry[k] <- e
+    if (!grepl(",", e, fixed = TRUE) && grepl("[[:space:]]", e) &&
+        grepl(.gr_rec_corporate, e, ignore.case = TRUE, perl = TRUE)) {
+      out$surname[k] <- e
+      out$corporate[k] <- TRUE
+      next
+    }
+    comma <- grepl(",", e, fixed = TRUE)
+    head <- if (comma) trimws(sub(",.*$", "", e)) else e
+    rest <- if (comma) trimws(sub("^[^,]*,", "", e)) else ""
+    w <- strsplit(head, "[[:space:]]+")[[1]]
+    w <- w[nzchar(w) & !grepl("^(Jr|Sr|II|III|IV)\\.?$", w)]
+    if (!length(w)) next
+    ini <- is_ini(w)
+    if (length(w) == 1L) {
+      s <- w; g <- rest
+    } else if (all(ini)) {
+      # "LI WS", "KIM S": all capitals, so every word looks like initials. The
+      # longest is the surname, and the first on a tie, as Vancouver writes it.
+      len <- nchar(gsub("[^[:alpha:]]", "", w))
+      s <- w[which.max(len)]; g <- paste(w[-which.max(len)], collapse = " ")
+    } else if (ini[length(w)]) {
+      last <- max(which(!ini))
+      s <- paste(w[seq_len(last)], collapse = " ")
+      g <- paste(w[-seq_len(last)], collapse = " ")
+    } else if (comma) {
+      s <- paste(w, collapse = " "); g <- rest
+    } else {
+      s <- w[length(w)]; g <- w[1]
+    }
+    s <- gsub("^[^\\p{L}\\p{N}]+|[^\\p{L}\\p{N}]+$", "", s, perl = TRUE)
+    if (!grepl("\\p{L}", s, perl = TRUE)) next
+    out$surname[k] <- s
+    g1 <- regmatches(g, regexpr("\\p{L}", g, perl = TRUE))
+    if (length(g1)) out$initial[k] <- g1
+  }
+  # Folded once for the whole vector: the fold table is long, and chartr()
+  # builds it afresh on every call.
+  out$initial <- toupper(fold_latin(out$initial))
+  out
+}
+
+#' A name reduced to the ways two exports can spell it.
+#'
+#' The folded key, and a looser one that also reads "ue" as "u", "oe" as "o",
+#' "ae" as "a" and "aa" as "a" -- the German and Scandinavian transliterations,
+#' so "M\u00fcller", "Mueller" and "Muller" are one name, and "S\u00f8rensen" and
+#' "Soerensen".
+#' @noRd
+record_name_forms <- function(x) {
+  lapply(title_key(x), function(k) {
+    if (is.na(k)) character(0) else unique(c(k, gsub("aa", "a", gsub("([aou])e", "\\1", k))))
+  })
+}
+
+#' The words of each name, less its particles, in both spellings.
+#' @noRd
+record_name_words <- function(x) {
+  lapply(tolower(fold_latin(x)), function(v) {
+    if (is.na(v)) return(character(0))
+    w <- strsplit(v, "[^\\p{L}\\p{N}]+", perl = TRUE)[[1]]
+    w <- w[nchar(w) >= 2L]
+    core <- w[!w %in% .gr_rec_particles]
+    if (length(core)) w <- core
+    unique(c(w, gsub("aa", "a", gsub("([aou])e", "\\1", w))))
+  })
+}
+
+#' The significant words of each venue name, for record_venue_match().
+#' @noRd
+record_venue_words <- function(v) {
+  v <- gsub("\\([^)]*\\)", " ", mark_utf8(as.character(v)))
+  lapply(tolower(fold_latin(v)), function(x) {
+    if (is.na(x)) return(character(0))
+    w <- strsplit(x, "[^\\p{L}\\p{N}]+", perl = TRUE)[[1]]
+    w[nzchar(w) & !w %in% c("the", "of", "and", "for", "in", "on", "an", "de", "la", "le",
+                            "der", "und", "des", "du", "et", "y", "e", "at", "to")]
+  })
+}
+
+#' Whether two venue names, as record_venue_words() gives them, are one journal.
+#'
+#' `loose` is the test for records that have no authors to compare: one name
+#' contained in the other, as before, or one an abbreviation of the other. The
+#' strict test, for a merge the title key alone never made (see
+#' dedupe_records()), drops containment -- "BMJ" is in "BMJ Open", and "Sleep"
+#' in "Sleep Medicine", and neither is the same journal -- and keeps the same
+#' spelling, a word-for-word abbreviation ("J Educ Psychol" of "Journal of
+#' Educational Psychology"), or an acronym ("BMJ", "JAMA").
+#' @noRd
+record_venue_match <- function(wa, wb, loose = TRUE) {
+  if (!length(wa) || !length(wb)) return(NA)
+  ka <- paste(wa, collapse = ""); kb <- paste(wb, collapse = "")
+  if (identical(ka, kb)) return(TRUE)
+  if (loose && (grepl(ka, kb, fixed = TRUE) || grepl(kb, ka, fixed = TRUE))) return(TRUE)
+  # "educ" abbreviates "educational": same first letter, then its letters in order.
+  abbrev <- function(s, l) {
+    substr(s, 1, 1) == substr(l, 1, 1) &&
+      grepl(paste0("^", paste(strsplit(s, "")[[1]], collapse = ".*")), l)
+  }
+  if (length(wa) == length(wb) &&
+      all(mapply(function(x, y) abbrev(x, y) || abbrev(y, x), wa, wb))) return(TRUE)
+  acronym <- function(s, l) length(s) == 1L && length(l) >= 2L &&
+    identical(s, paste(substr(l, 1, 1), collapse = ""))
+  acronym(wa, wb) || acronym(wb, wa)
+}
+
 #' Which rows repeat an earlier one.
 #'
 #' Returns the `record_id` of the first row a duplicate repeats, or NA. A DOI is
@@ -562,15 +906,13 @@ dedupe_records <- function(recs, how) {
   n <- nrow(recs)
   out <- rep(NA_integer_, n)
   if (identical(how, "none") || n < 2L) return(out)
+  # The first earlier row with the same key, or NA. match(), not an environment
+  # keyed on the value: an environment's names are symbols, translated to the
+  # native encoding, so in the C locale every non-Latin title warned.
   first_of <- function(key) {
-    idx <- rep(NA_integer_, length(key))
-    seen <- new.env(parent = emptyenv())
-    for (i in seq_along(key)) {
-      if (is.na(key[i])) next
-      prev <- seen[[key[i]]]
-      if (is.null(prev)) seen[[key[i]]] <- i else idx[i] <- prev
-    }
-    idx
+    m <- match(key, key)
+    m[is.na(key) | m == seq_along(key)] <- NA_integer_
+    m
   }
   doi_hit <- first_of(recs$doi)
   by_title <- identical(how, "doi+title")
@@ -589,52 +931,136 @@ dedupe_records <- function(recs, how) {
     # A title and year that rows with two different DOIs share is two papers
     # with one title -- which happens, and merging them would lose a study. A
     # DOI-less row with that title could be either, so it is merged with
-    # neither rather than with whichever came first.
+    # neither rather than with whichever came first. Two DOI-less rows of it
+    # can still be one another's copy, as they always could: blanking the key
+    # for them too kept the same Scholar letter twice whenever two other
+    # letters of that title had DOIs.
     ok <- !is.na(key) & !is.na(recs$doi)
+    kid <- match(key, key)
+    multi_doi <- rep(FALSE, n)
     if (any(ok)) {
-      n_doi <- tapply(recs$doi[ok], key[ok], function(d) length(unique(d)))
-      key[key %in% names(n_doi)[n_doi > 1L]] <- NA_character_
+      n_doi <- vapply(split(recs$doi[ok], kid[ok]), function(d) length(unique(d)), integer(1))
+      multi_doi <- !is.na(key) & kid %in% as.integer(names(n_doi)[n_doi > 1L])
     }
     # A title and year is not enough on its own either: two letters titled
     # "Response to the commentary on ..." in one year are not one letter. The
-    # first author has to agree as well, loosely -- "Smith, J." and "Smith JA"
-    # are one person -- or, when a record has no authors, the venue.
-    first_au <- title_key(sub("[[:space:]]*;.*$", "", recs$authors))
-    surname <- vapply(recs$authors, function(a) {
-      s <- bib_surnames(a)
-      if (length(s)) title_key(s[1]) else NA_character_
-    }, character(1), USE.NAMES = FALSE)
-    venue <- title_key(recs$venue)
-    either_in <- function(a, b) grepl(a, b, fixed = TRUE) || grepl(b, a, fixed = TRUE)
-    agree <- function(i, j) {
-      if (!is.na(surname[i]) && !is.na(surname[j])) {
-        return(grepl(surname[i], first_au[j], fixed = TRUE) ||
-                 grepl(surname[j], first_au[i], fixed = TRUE))
+    # first author's surname has to agree as a whole name -- "Smith, J." and
+    # "Smith JA" are one person, "Li" and "Lin" are not -- or, when a record has
+    # no authors, the venue.
+    fa <- record_first_author(recs$authors)
+    forms <- record_name_forms(fa$surname)
+    words <- record_name_words(fa$surname)
+    entry_words <- record_name_words(fa$entry)
+    all_key <- title_key(recs$authors)
+    all_words <- record_name_words(recs$authors)
+    # Merges the old title key could never make are held to more: a DOI-less
+    # record with one that has a DOI (it used to blank the key of any row with
+    # a DOI), and a title with fewer than 12 Latin letters or digits (its key
+    # was the digits and nothing else, so a Chinese title could never match).
+    # Identical generic titles are common in both, and there a surname alone is
+    # thin: "Wang, L." and "Wang, H." wrote different papers, and so did two
+    # authors of one name in two journals.
+    latin <- !is.na(tk) & nchar(gsub("[^a-z0-9]", "", tk)) >= 12L
+    authors_agree <- function(i, j, strict) {
+      if (is.na(fa$surname[i]) || is.na(fa$surname[j])) return(NA)
+      if (fa$corporate[i] || fa$corporate[j]) {
+        if (fa$corporate[i] && fa$corporate[j]) {
+          a <- forms[[i]][1]; b <- forms[[j]][1]
+          return(if (grepl(a, b, fixed = TRUE) || grepl(b, a, fixed = TRUE)) "yes" else "no")
+        }
+        # A group first in one export and a person first in the other is one
+        # work when either names the other somewhere in its author list.
+        g <- if (fa$corporate[i]) i else j
+        p <- if (fa$corporate[i]) j else i
+        hit <- (!is.na(all_key[p]) && grepl(forms[[g]][1], all_key[p], fixed = TRUE)) ||
+          any(words[[p]] %in% all_words[[g]])
+        return(if (hit) "yes" else "no")
       }
-      if (!is.na(venue[i]) && !is.na(venue[j])) return(either_in(venue[i], venue[j]))
-      TRUE
+      if (any(forms[[i]] %in% forms[[j]]) || any(words[[i]] %in% words[[j]])) {
+        if (strict && !is.na(fa$initial[i]) && !is.na(fa$initial[j]) &&
+            fa$initial[i] != fa$initial[j]) return("no")
+        return("yes")
+      }
+      # "Li Wei" in one export and "Li, W." in the other: a given name first.
+      if (any(words[[i]] %in% entry_words[[j]]) || any(words[[j]] %in% entry_words[[i]])) {
+        return("order")
+      }
+      "no"
+    }
+    venue_words <- record_venue_words(recs$venue)
+    same_work <- function(i, j, strict) {
+      a <- authors_agree(i, j, strict)
+      if (identical(a, "no")) return(FALSE)
+      if (!strict && !is.na(a)) return(TRUE)
+      v <- record_venue_match(venue_words[[i]], venue_words[[j]], loose = !strict)
+      if (!strict) return(!isFALSE(v))
+      # Nothing may contradict it, and something beyond the title must confirm it.
+      !isFALSE(v) && (identical(a, "yes") || isTRUE(v))
     }
   }
   # `root` is the kept row each row belongs to. Every row is resolved to a KEPT
   # row as it is reached, so `duplicate_of` never points at another duplicate.
   root <- seq_len(n)
-  holders <- new.env(parent = emptyenv())
+  has_doi <- !is.na(recs$doi)
+  group_doi <- has_doi
+  kid <- match(key, key)
+  holders <- vector("list", n)
   for (i in seq_len(n)) {
     if (!is.na(doi_hit[i])) {
       root[i] <- root[doi_hit[i]]
     } else if (by_title && !is.na(key[i])) {
-      h <- holders[[key[i]]]
+      h <- holders[[kid[i]]]
       if (length(h)) {
-        g <- unique(root[h[vapply(h, function(j) agree(i, j), logical(1))]])
+        # Every row of a work that carries this title has to agree, not just
+        # one: a group holding Smith's record and an authorless one is still
+        # Smith's paper, and Jones's letter in the same journal is not it.
+        gs <- unique(root[h])
+        fits <- vapply(gs, function(g) {
+          # A DOI of its own and one in the group are two DOIs (the same one
+          # would have matched above).
+          if (has_doi[i] && group_doi[g]) return(FALSE)
+          if (multi_doi[i] && (has_doi[i] || group_doi[g])) return(FALSE)
+          strict <- has_doi[i] || group_doi[g] || !latin[i]
+          all(vapply(h[root[h] == g], function(j) same_work(i, j, strict), logical(1)))
+        }, logical(1))
         # Two different works it could equally be is no match at all.
-        if (length(g) == 1L) root[i] <- g
+        if (sum(fits) == 1L) root[i] <- gs[fits]
       }
     }
-    if (by_title && !is.na(key[i])) holders[[key[i]]] <- c(holders[[key[i]]], i)
+    group_doi[root[i]] <- group_doi[root[i]] || has_doi[i]
+    if (by_title && !is.na(key[i])) holders[[kid[i]]] <- c(holders[[kid[i]]], i)
   }
   dup <- root != seq_len(n)
   out[dup] <- recs$record_id[root[dup]]
   out
+}
+
+#' Fill the kept row's empty fields from the rows it absorbed.
+#'
+#' The kept row is the one that came first, which is often the export with the
+#' least in it: "scholar.bib" sorts before "scopus.ris", and Scholar gives no
+#' DOI. Its duplicate had the DOI and the journal, the file was found through
+#' that DOI, and then the extraction table and every citation built from it
+#' said DOI NA and venue NA -- the document identified by a DOI the record set
+#' then denied it had. Only empty fields are filled, in record order; where the
+#' search came from (database, accession, source file) and the file path stay
+#' each row's own.
+#' @noRd
+merge_duplicate_fields <- function(recs) {
+  dup <- recs$duplicate_of
+  if (is.null(dup) || all(is.na(dup))) return(recs)
+  fill <- c("type", "authors", "year", "title", "venue", "volume", "issue", "pages", "doi",
+            "abstract", "keywords")
+  kept <- match(dup, recs$record_id)
+  for (f in fill) {
+    v <- recs[[f]]
+    src <- which(!is.na(kept) & !is.na(v))       # duplicates that have it, in record order
+    src <- src[!duplicated(kept[src])]            # the first of them for each kept row
+    gap <- is.na(v[kept[src]])
+    v[kept[src][gap]] <- v[src[gap]]
+    recs[[f]] <- v
+  }
+  recs
 }
 
 #' Match records to documents on disk.
@@ -667,9 +1093,11 @@ match_files <- function(recs, files) {
   # Scopus one, or one library holding the item twice), the kept record was
   # "not retrieved", the file was taken so it was not unmatched either, and the
   # full text never reached screening or the flow counts. So each kept row
-  # matches with everything its duplicates know, and duplicates claim nothing.
+  # matches with everything its duplicates know, the kept row's own evidence
+  # first and then each duplicate's in record order.
   dup <- recs$duplicate_of %||% rep(NA_integer_, n)
   owner <- ifelse(is.na(dup), seq_len(n), match(dup, recs$record_id))
+  kept <- is.na(dup)
   members <- split(which(!is.na(owner)), owner[!is.na(owner)])
 
   # Route 4 below matches on first-author surname plus year, which is ambiguous
@@ -687,37 +1115,50 @@ match_files <- function(recs, files) {
   # on the 2019 record, both marked retrieved. That is one paper's findings
   # published under another paper's authors, year and DOI. A key the rows of
   # ONE work share (a record and its duplicate) is not ambiguous.
-  settle <- function(k) {
+  #
+  # The author-year key is the exception (`own_first`). There a kept row is
+  # settled against kept rows only, and a duplicate's key is extra evidence
+  # for its work, used only when no other work has it at all: the same paper
+  # routinely carries its e-pub year in one database and its print year in
+  # another, and its PubMed copy's "jones|2019" made a different Jones's 2019
+  # paper unmatchable even after the first Jones had claimed its own file.
+  settle <- function(k, own_first = FALSE) {
     k[is.na(owner)] <- NA_character_
-    ok <- !is.na(k)
-    if (any(ok)) {
-      works <- tapply(owner[ok], k[ok], function(g) length(unique(g)))
-      k[k %in% names(works)[works > 1L]] <- NA_character_
+    kid <- match(k, k)
+    shared <- function(rows) {
+      cnt <- vapply(split(owner[rows], kid[rows]), function(g) length(unique(g)), integer(1))
+      as.integer(names(cnt)[cnt > 1L])
     }
+    ok <- !is.na(k)
+    if (!own_first) {
+      if (any(ok)) k[kid %in% shared(which(ok))] <- NA_character_
+      return(k)
+    }
+    if (any(ok & kept)) k[kept & kid %in% shared(which(ok & kept))] <- NA_character_
+    if (any(ok & !kept)) k[!kept & kid %in% shared(which(ok))] <- NA_character_
     k
   }
-  sur <- vapply(seq_len(n), function(i) as_chr1(bib_surnames(recs$authors[i])[1], NA_character_),
-                character(1))
-  ay <- vapply(seq_len(n), function(i) {
-    if (is.na(sur[i]) || is.na(recs$year[i])) return(NA_character_)
-    k <- title_key(sur[i])
-    if (is.na(k) || nchar(k) < 3L) NA_character_ else paste0(k, "|", recs$year[i])
-  }, character(1))
-  ay <- settle(ay)
+  sur <- record_first_author(recs$authors)$surname
+  sur_k <- title_key(sur)
+  ay <- ifelse(is.na(sur_k) | nchar(sur_k) < 3L | is.na(recs$year), NA_character_,
+               paste0(sur_k, "|", recs$year))
+  ay <- settle(ay, own_first = TRUE)
   # The surname as a whole word of the filename, not as any substring of it.
   # `grepl("chen", "cheng2020")` gave Chen's record Cheng's paper, "park" found
   # "Parkinson disease and exercise", and "lee" found "Sleep quality". A word
-  # ends where letters stop, or where a lower-case letter meets a capital, so
-  # "SmithEtAl2019" and "SmithJ_2019" still name Smith; an all-lower
-  # "smithj2019" does not, and is left unmatched rather than guessed at.
+  # starts where letters start, and ends where they stop or where a lower-case
+  # letter meets a capital, so "SmithEtAl2019" and "SmithJ_2019" still name
+  # Smith, and so does "smithetal2019". A capital inside a word does not start
+  # one: "McKay2019" is not Kay's, "DeWitt" not Witt's. An all-lower
+  # "smithj2019" is left unmatched rather than guessed at, since "chenl" cannot
+  # be told from "cheng".
+  sur_f <- fold_latin(sur)
   sur_re <- vapply(seq_len(n), function(i) {
     if (is.na(ay[i])) return(NA_character_)
-    w <- tolower(regmatches(fold_latin(sur[i]),
-                            gregexpr("[\\p{L}\\p{N}]+", fold_latin(sur[i]), perl = TRUE))[[1]])
+    w <- tolower(regmatches(sur_f[i], gregexpr("[\\p{L}\\p{N}]+", sur_f[i], perl = TRUE))[[1]])
     if (!length(w)) return(NA_character_)
-    edge <- "(?:(?<!\\p{L})|(?<=\\p{Ll})(?=\\p{Lu}))"
-    after <- "(?:(?!\\p{L})|(?<=\\p{Ll})(?=\\p{Lu}))"
-    paste0(edge, "(?i:", paste(w, collapse = "[^\\p{L}\\p{N}]*"), ")", after)
+    after <- "(?:(?i:et[^\\p{L}\\p{N}]*al)?(?!\\p{L})|(?<=\\p{Ll})(?=\\p{Lu}))"
+    paste0("(?<!\\p{L})(?i:", paste(w, collapse = "[^\\p{L}\\p{N}]*"), ")", after)
   }, character(1))
 
   cand_all <- ifelse(is.na(recs$file), NA_character_,
@@ -732,37 +1173,65 @@ match_files <- function(recs, files) {
   ttl_key <- settle(ifelse(is.na(tk_all) | nchar(tk_all) < 12L, NA_character_,
                            substr(tk_all, 1, 24)))
 
-  # Each route returns the untaken files one work's rows point to.
-  any_hit <- function(rows, test) {
-    hit <- rep(FALSE, length(paths))
-    for (i in rows) hit <- hit | test(i)
-    which(!taken & hit)
-  }
-  routes <- list(
+  # Each route gives, for one row, the untaken files it points to, or NULL when
+  # the row has nothing to offer that route.
+  hits <- list(
     # 1. The export said where the file is. Mendeley writes ":path:pdf";
     # EndNote writes "internal-pdf://...". The full path first, and the
     # basename only when no full path matches.
-    function(rows) {
-      j <- which(!taken & paths %in% cand_all[rows][!is.na(cand_all[rows])])
-      if (!length(j)) j <- which(!taken & base %in% base_key[rows][!is.na(base_key[rows])])
+    function(i) {
+      if (is.na(cand_all[i])) return(NULL)
+      j <- which(!taken & paths == cand_all[i])
+      if (!length(j) && !is.na(base_key[i])) j <- which(!taken & base == base_key[i])
       j
     },
     # 2. The DOI suffix appears in the filename -- how most managers name files.
-    function(rows) any_hit(rows[!is.na(doi_key[rows])],
-                           function(i) grepl(doi_key[i], stem, fixed = TRUE)),
+    function(i) {
+      if (is.na(doi_key[i])) return(NULL)
+      which(!taken & grepl(doi_key[i], stem, fixed = TRUE))
+    },
     # 3. The title, reduced to letters, is a prefix of the filename or contains
     # it. Requires a long enough overlap that a coincidence is implausible.
-    function(rows) any_hit(rows[!is.na(ttl_key[rows])], function(i)
-      !is.na(stem) & (startsWith(stem, ttl_key[i]) | startsWith(tk_all[i], substr(stem, 1, 24)))),
+    function(i) {
+      if (is.na(ttl_key[i])) return(NULL)
+      which(!taken & !is.na(stem) &
+              (startsWith(stem, ttl_key[i]) | startsWith(tk_all[i], substr(stem, 1, 24))))
+    },
     # 4. First author's surname and the year both appear in the filename. This
     # is how people actually name downloaded PDFs -- "smith2019.pdf",
     # "Smith 2019 - Cognitive Load.pdf" -- and without it the routes above match
     # almost nothing in a real folder. Both parts are required and the match
     # must be unique, so two Smith papers from 2019 match neither rather than
-    # attributing one paper's findings to the other.
-    function(rows) any_hit(rows[!is.na(sur_re[rows])], function(i)
-      grepl(sur_re[i], fstem, perl = TRUE) & grepl(recs$year[i], base, fixed = TRUE))
+    # attributing one paper's findings to the other. `pos` is where the surname
+    # starts in the filename, which says whose file "Kim and Lee 2020" is.
+    function(i) {
+      if (is.na(sur_re[i])) return(NULL)
+      at <- regexpr(sur_re[i], fstem, perl = TRUE)
+      j <- which(!taken & at > 0L & grepl(recs$year[i], base, fixed = TRUE))
+      structure(j, pos = as.integer(at[j]))
+    }
   )
+  # What one work offers a route: `pick`, the files of the first of its rows
+  # that points anywhere (the kept row's own recorded path beats a duplicate's,
+  # so two copies of one paper, each with its own PDF, are not an ambiguity);
+  # `want`, everything any of its rows points to, which is what it contests;
+  # and each row's own files, for the copies a route-1 claim also accounts for.
+  offer <- function(g, route) {
+    pick <- integer(0); want <- integer(0); pos <- integer(0); by_row <- list()
+    for (i in members[[as.character(g)]]) {
+      j <- hits[[route]](i)
+      if (is.null(j)) next
+      by_row[[as.character(i)]] <- as.integer(j)
+      if (!length(pick)) pick <- as.integer(j)
+      p <- attr(j, "pos") %||% rep(0L, length(j))
+      for (k in seq_along(j)) {
+        m <- match(j[k], want)
+        if (is.na(m)) { want <- c(want, j[k]); pos <- c(pos, p[k]) }
+        else pos[m] <- min(pos[m], p[k])
+      }
+    }
+    list(pick = pick, want = want, pos = pos, by_row = by_row)
+  }
 
   # One route at a time across ALL records, strongest first -- not every route
   # for one record before the next record is looked at. Record by record, a
@@ -771,20 +1240,53 @@ match_files <- function(recs, files) {
   # order. A claim needs the file to be the work's only candidate at that route
   # (two files of one name on disk is the same ambiguity as two records
   # claiming one file, seen from the other end) and the work to be the file's
-  # only claimant. A file two works both want goes to neither at that route; it
-  # stays on the table, as a key two works share does, for a later route that
-  # only one work passes -- or for nobody, and then unmatched_files says so.
-  pending <- which(is.na(dup))
-  for (route in routes) {
-    if (!length(pending) || all(taken)) break
-    cands <- lapply(pending, function(g) route(members[[as.character(g)]]))
-    wanted <- tabulate(unlist(cands), nbins = length(paths))
-    win <- vapply(cands, function(j) length(j) == 1L && wanted[j] == 1L, logical(1))
-    for (w in which(win)) {
-      out[pending[w]] <- paths[cands[[w]]]
-      taken[cands[[w]]] <- TRUE
+  # only claimant. A file two works both want goes to neither; it stays on the
+  # table, as a key two works share does, for a later route that only one work
+  # passes -- or for nobody, and then unmatched_files says so.
+  #
+  # A route is run again while it still settles something: once a work has
+  # claimed its file, a work that wanted that file and one other now wants only
+  # the other. And at route 4 a file naming two surnames is claimed by the one
+  # it names first, as a filename names its first author first: "Kim and Lee
+  # 2020" is Kim's, and it no longer stops Lee's record taking "Lee 2020".
+  pending <- which(kept & !is.na(owner))
+  for (route in seq_along(hits)) {
+    repeat {
+      if (!length(pending) || all(taken)) break
+      offers <- lapply(pending, offer, route = route)
+      who <- rep(seq_along(offers), vapply(offers, function(o) length(o$want), integer(1)))
+      what <- unlist(lapply(offers, `[[`, "want"))
+      if (!length(what)) break
+      pos <- unlist(lapply(offers, `[[`, "pos"))
+      front <- pos == ave(pos, what, FUN = min)
+      wanted <- tabulate(what[front], nbins = length(paths))
+      win <- vapply(seq_along(offers), function(w) {
+        p <- offers[[w]]$pick
+        length(p) == 1L && wanted[p] == 1L && any(who == w & what == p & front)
+      }, logical(1))
+      if (!any(win)) break
+      for (w in which(win)) {
+        g <- pending[w]
+        f <- offers[[w]]$pick
+        out[g] <- paths[f]
+        taken[f] <- TRUE
+        if (route == 1L) {
+          # The other rows' own recorded files are that work's other copies --
+          # one library holding the item twice, each with its PDF attached --
+          # and each is reported on the row that recorded it, as it was before
+          # duplicates were pooled. Only a file no other work points to.
+          for (nm in names(offers[[w]]$by_row)) {
+            i <- as.integer(nm)
+            j <- offers[[w]]$by_row[[nm]]
+            if (i != g && length(j) == 1L && !taken[j] && wanted[j] == 1L) {
+              out[i] <- paths[j]
+              taken[j] <- TRUE
+            }
+          }
+        }
+      }
+      pending <- pending[!win]
     }
-    pending <- pending[!win]
   }
   list(file = out, unmatched = paths[!taken])
 }

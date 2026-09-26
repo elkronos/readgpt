@@ -100,6 +100,12 @@ gr_lapply <- function(x, fn, parallel = NULL, workers = NULL, key = NULL, label 
   }
 
   workers <- as.integer(clamp(workers %||% gr_options("workers"), 1, 32))
+  # One worker is this process by another route: future evaluates the futures
+  # of a one-worker multisession plan here, so each item updated the client's
+  # own log and cache counters in place, and the merge below then added what
+  # the item reported a second time. $calls() and gr_cache_stats() counted
+  # every call twice. One worker gains nothing, so the batch runs here.
+  if (workers <= 1L) return(sequential())
   # Workers are separate processes: the API key lives in this process's
   # environment and must be carried across explicitly.
   key <- as_chr1(key %||% tryCatch(gr_api_key(), error = function(e) ""))
@@ -114,18 +120,21 @@ gr_lapply <- function(x, fn, parallel = NULL, workers = NULL, key = NULL, label 
   # there, and the parallel run aborted where the sequential one succeeded.
   regs <- mget(.gr_worker_state, envir = gr_state, ifnotfound = list(NULL))
   # The user's own functions travel inside those, and inside the client: a mock
-  # or backend handler, a tokenizer, a registered reader. One written at the
-  # top level of a script is serialised by reference to the global environment,
-  # which is empty in a fresh worker, so a handler that called a helper from
-  # the same script failed on every chunk ("could not find function") and the
-  # read came back NOT_IN_DOCUMENT, and a tokenizer that did aborted the run.
-  # What they refer to in the global environment is found here and sent with
-  # the batch, which future assigns into the worker's global environment.
-  user <- tryCatch(user_globals(list(client, regs)), error = function(e) e)
+  # or backend handler, a tokenizer. One written at the top level of a script
+  # is serialised by reference to the global environment, which is empty in a
+  # fresh worker, so a handler that called a helper from the same script failed
+  # on every chunk ("could not find function") and the read came back
+  # NOT_IN_DOCUMENT, and a tokenizer that did aborted the run. What they refer
+  # to in the global environment is found here and sent with the batch, which
+  # future assigns into the worker's global environment. Only for the functions
+  # a worker runs (see worker_functions()): a registered embedder over a 320 MB
+  # matrix, which no batch calls, went to every worker too, and past a
+  # future.globals.maxSize of 500 MiB aborted a run that used to work.
+  user <- tryCatch(user_globals(worker_functions(client, opts)), error = function(e) e)
   if (inherits(user, "error")) {
     gr_warn(sprintf(paste0("parallel = TRUE could not work out what your own functions (a client ",
-                           "handler, a tokenizer, a registered strategy) need from your workspace ",
-                           "(%s); running sequentially instead."), conditionMessage(user)),
+                           "handler, a tokenizer) need from your workspace (%s); running ",
+                           "sequentially instead."), conditionMessage(user)),
             class = "gr_parallel_unavailable")
     return(sequential())
   }
@@ -151,9 +160,10 @@ gr_lapply <- function(x, fn, parallel = NULL, workers = NULL, key = NULL, label 
   # worker's copy recorded them and was thrown away, so $calls() came back
   # empty after a parallel run and gr_cache_stats() counted one call in seven.
   # Each item reports what it added, and the parent adds it back in the order
-  # of `x`, as it does the traces. Written out here rather than as package
-  # helpers, because a worker resolves package functions in the readgpt it
-  # loads, which is not always the one that sent the batch.
+  # of `x`, as it does the traces. Written out here and in worker_item()'s
+  # closure rather than as package helpers, because a worker resolves package
+  # functions in the readgpt it loads, which is not always the one that sent
+  # the batch.
   client_state <- function(cl) {
     if (!is.list(cl)) return(NULL)
     log <- cl[[".log", exact = TRUE]]
@@ -162,27 +172,54 @@ gr_lapply <- function(x, fn, parallel = NULL, workers = NULL, key = NULL, label 
          stats = if (inherits(cache, "gr_cache") && is.environment(cache$.stats)) cache$.stats)
   }
   state <- client_state(client)
-  wrapped <- function(item) {
-    if (nzchar(key)) Sys.setenv(OPENAI_API_KEY = key)
-    gr_state$options <- opts
-    for (nm in names(regs)) if (!is.null(regs[[nm]])) assign(nm, regs[[nm]], envir = gr_state)
-    sub <- gr_trace(meta = parent_meta)
-    n_calls <- length(state$log$calls)
-    n_embeds <- length(state$log$embeds)
-    counts <- function() c(state$stats$hits %||% 0L, state$stats$misses %||% 0L,
-                           state$stats$writes %||% 0L)
-    before <- counts()
-    value <- fn(item, sub)
-    list(value = value, trace = sub,
-         calls = state$log$calls[seq_along(state$log$calls) > n_calls],
-         embeds = state$log$embeds[seq_along(state$log$embeds) > n_embeds],
-         cache = counts() - before)
+  wrapped <- worker_item(fn, key, opts, regs, parent_meta, state)
+  # A limit on what a future may carry (future.globals.maxSize) is checked as
+  # each future is made and launched: a FutureError from the plan, or a plain
+  # error from measuring the globals, as future versions differ. Every future
+  # carries the same globals, and besides them only its share of `x` (indices,
+  # or a few findings), so the first is refused before any item has run, and
+  # the batch can run here instead of the whole run aborting. future.apply
+  # warns that it is cancelling first; that warning is held back, and passed
+  # on only when the error is.
+  too_big <- function(e) {
+    grepl("size of the globals|exceeds the maximum allowed size", conditionMessage(e))
   }
-  out <- future.apply::future_lapply(x, wrapped, future.seed = TRUE,
-                                     future.globals = user$globals,
-                                     future.packages = unique(c("readgpt", user$packages)))
+  cancelled <- NULL
+  out <- tryCatch(withCallingHandlers(
+    future.apply::future_lapply(x, wrapped, future.seed = TRUE,
+                                future.globals = user$globals,
+                                future.packages = unique(c("readgpt", user$packages))),
+    warning = function(w) {
+      if (grepl("Canceling all iterations", conditionMessage(w), fixed = TRUE)) {
+        cancelled <<- w
+        invokeRestart("muffleWarning")
+      }
+    }),
+    error = function(e) {
+      if (!too_big(e)) {
+        if (!is.null(cancelled)) warning(cancelled)
+        stop(e)
+      }
+      e
+    })
+  if (inherits(out, "error")) {
+    # future's message names the total and the limit first, then every global.
+    sizes <- regmatches(conditionMessage(out),
+                        gregexpr("[0-9.]+ (bytes|[KMGTP]iB)", conditionMessage(out)))[[1]]
+    over <- if (length(sizes) >= 2L) sprintf(" (%s, against %s)", sizes[1], sizes[2]) else ""
+    gr_warn(sprintf(paste0("parallel = TRUE could not send the batch to workers: what it carries%s ",
+                           "is more than options(future.globals.maxSize =) allows. Raise the limit ",
+                           "to run it in parallel; running sequentially instead."), over),
+            class = "gr_parallel_unavailable")
+    return(sequential())
+  }
+  me <- Sys.getpid()
   for (r in out) {
     trace_absorb(trace, r$trace)
+    # An item run in this process has already updated the client's own log and
+    # counters; only a worker's are added. (A one-worker batch no longer comes
+    # here, but future decides where a future runs, not this function.)
+    if (identical(r$pid, me)) next
     if (!is.null(state$log)) {
       state$log$calls <- c(state$log$calls, r$calls)
       state$log$embeds <- c(state$log$embeds, r$embeds)
@@ -208,6 +245,50 @@ gr_lapply <- function(x, fn, parallel = NULL, workers = NULL, key = NULL, label 
     }
   }
   lapply(out, `[[`, "value")
+}
+
+#' The function a worker runs for each item of a batch.
+#'
+#' Made by this function rather than inside gr_lapply(), because a closure
+#' goes to a worker with every variable of the frame it was made in. Made
+#' there, it carried the whole input list and the workspace globals gathered
+#' for the batch, which future_lapply() sends as globals as well, so each of
+#' them reached every worker twice. This frame holds only what an item needs.
+#' @noRd
+worker_item <- function(fn, key, opts, regs, parent_meta, state) {
+  force(fn); force(key); force(opts); force(regs); force(parent_meta); force(state)
+  function(item) {
+    if (nzchar(key)) Sys.setenv(OPENAI_API_KEY = key)
+    gr_state$options <- opts
+    for (nm in names(regs)) if (!is.null(regs[[nm]])) assign(nm, regs[[nm]], envir = gr_state)
+    sub <- gr_trace(meta = parent_meta)
+    n_calls <- length(state$log$calls)
+    n_embeds <- length(state$log$embeds)
+    counts <- function() c(state$stats$hits %||% 0L, state$stats$misses %||% 0L,
+                           state$stats$writes %||% 0L)
+    before <- counts()
+    value <- fn(item, sub)
+    # The process it ran in: gr_lapply() adds back only what a worker did.
+    list(value = value, trace = sub, pid = Sys.getpid(),
+         calls = state$log$calls[seq_along(state$log$calls) > n_calls],
+         embeds = state$log$embeds[seq_along(state$log$embeds) > n_embeds],
+         cache = counts() - before)
+  }
+}
+
+#' The user's own functions a batch runs in its workers.
+#'
+#' Every item of every batch makes its one request through gr_call(), which
+#' calls the client's handler (a mock's or a backend's) and counts tokens with
+#' the tokenizer in use. Nothing else of the user's runs there: readers,
+#' segmenters, embedders, cleaners and extractors, and the client's embedding
+#' handler, run in the process that builds the batch. What those refer to in
+#' the workspace stays there, as it always did.
+#' @noRd
+worker_functions <- function(client, opts) {
+  tok <- opts$tokenizer
+  list(handler = if (is.list(client)) client[["handler", exact = TRUE]],
+       tokenizer = if (is_nonblank(tok)) (gr_state$tokenizers %||% list())[[tok]])
 }
 
 #' Which limit a batch of `n` items could pass, or NULL when it fits.
@@ -279,7 +360,11 @@ user_globals <- function(x) {
   for (f in fns) {
     probe <- new.env(parent = environment(f))
     assign(".gr_fn", f, envir = probe)
-    gp <- future::getGlobalsAndPackages(quote(.gr_fn()), envir = probe, globals = TRUE)
+    # No size limit here: this only gathers. Whether the batch is too big to
+    # send is for the plan to say when it is sent, where gr_lapply() runs it
+    # here instead and says why.
+    gp <- future::getGlobalsAndPackages(quote(.gr_fn()), envir = probe, globals = TRUE,
+                                        maxSize = +Inf)
     packages <- c(packages, gp$packages)
     for (nm in setdiff(names(gp$globals), c(".gr_fn", names(globals)))) {
       # `[<-` with a list, so a global that is NULL is sent rather than dropped.

@@ -349,9 +349,9 @@ print(ans$trace)
 as.data.frame(ans$trace)   # one row per request: stage, tokens, usd, seconds, prompt, reply
 gr_trace_summary(ans$trace)
 #>                          run_id calls cached steps tokens_in tokens_out errors
-#> 1 run_20260904035101.469_68d50e     1      0     8       669         13      0
-#>   elapsed_s
-#> 1       0.3
+#> 1 run_20260926192818.570_430322     1      0     4       595         13      0
+#>   elapsed_s embed_calls embed_tokens
+#> 1      0.07           0            0
 
 gr_estimate_cost("gpt-4o", ans$trace$tokens_in, ans$trace$tokens_out)
 as_json(ans)    # answer plus every prompt and response, from the same single run

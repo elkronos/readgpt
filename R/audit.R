@@ -108,6 +108,12 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims 
   }
   if (inherits(claims, "gr_claims")) {
     cw <- claims$claims
+    # Studies whose claims batch came back with nothing. Without this row a
+    # claims table missing most of the corpus read as complete here, although
+    # gr_claims() had warned and recorded them. `%||%` for a claims table saved
+    # before the field existed.
+    add("studies lost to a claims batch", length(claims$lost %||% integer(0)),
+        "their claims batch was cut off at the reply limit, failed or not sent; see $lost")
     add("claims drawn", nrow(cw), "statements about the literature, each attached to studies")
     add("  contested", sum(cw$n_contradict > 0L), "studies on both sides")
     add("  unexplained", sum(cw$n_contradict > 0L & is.na(cw$moderator)),
@@ -465,7 +471,21 @@ audit_evidence <- function(extraction) {
 #' @noRd
 audit_claims <- function(synthesis, claims = NULL) {
   cm <- claims %||% synthesis$claims
-  if (!inherits(cm, "gr_claims") || !nrow(cm$claims)) return(NULL)
+  if (!inherits(cm, "gr_claims")) return(NULL)
+  lost <- cm$lost %||% integer(0)
+  # The studies whose claims batch came back with nothing, counted against the
+  # corpus: "over 90 studies" of a table drawn from 30 of them flattered the run.
+  lost_note <- if (length(lost)) sprintf(paste0(
+    "<p class='flag'>%d of the %d studies contributed nothing: their claims batch was cut off ",
+    "at the reply limit, failed or was not sent, so no claim, and no part of the review ",
+    "written from these claims, rests on them (study %s).</p>"),
+    length(lost), nrow(cm$studies),
+    paste(c(utils::head(lost, 20L), if (length(lost) > 20L) "..."), collapse = ", "))
+  if (!nrow(cm$claims)) {
+    if (!length(lost)) return(NULL)
+    return(c("<h2>What the review claims, and what each claim rests on</h2>",
+             "<p class='flag'>No claims were drawn.</p>", lost_note))
+  }
   sec <- attr(synthesis$outline, "claims")
   tab <- cm$claims[, c("claim_id", "claim", "kind", "moderator", "scope",
                        "n_support", "n_contradict"), drop = FALSE]
@@ -479,12 +499,16 @@ audit_claims <- function(synthesis, claims = NULL) {
   open <- sum(tab$n_contradict > 0L & is.na(tab$moderator))
   lone <- sum(tab$n_support == 1L)
   c("<h2>What the review claims, and what each claim rests on</h2>",
-    sprintf(paste0("<p class='sub'>%d claim(s) over %d study/studies. %d contested, %s. ",
+    sprintf(paste0("<p class='sub'>%d claim(s) over %s study/studies. %d contested, %s. ",
                    "%d resting on a single study.</p>"),
-            nrow(tab), nrow(cm$studies), contested,
+            nrow(tab),
+            if (length(lost)) sprintf("%d of %d", nrow(cm$studies) - length(lost), nrow(cm$studies))
+            else nrow(cm$studies),
+            contested,
             if (open) sprintf("<span class='flag'>%d of those with nothing in the table to explain the disagreement</span>", open)
             else "<span class='ok'>each with a distinguishing field named</span>",
             lone),
+    lost_note,
     html_table(tab, numeric_cols = c("claim_id", "n_support", "n_contradict"),
                flag = list(n_support = function(v) suppressWarnings(as.numeric(v)) <= 1)),
     "<h3>Every claim, study by study</h3>",
@@ -533,7 +557,14 @@ audit_synthesis <- function(synthesis) {
         html_table(ci[, intersect(c("study", "document"), names(ci)), drop = FALSE],
                    numeric_cols = "study"))
   }
+  lost <- synthesis$claims$lost %||% integer(0)
   c("<h2>What was written, and what each section rests on</h2>",
+    # Every section can be complete against claims that are not: claims drawn
+    # from a third of the corpus give a review of a third of the corpus.
+    if (length(lost))
+      sprintf(paste0("<p class='flag'>Written from claims that %d of the %d studies contributed ",
+                     "nothing to: their claims batch was cut off, failed or was not sent.</p>"),
+              length(lost), nrow(synthesis$studies)),
     unlist(lapply(seq_len(nrow(s)), per), use.names = FALSE),
     if (isTRUE(synthesis$skipped > 0L))
       sprintf(paste0("<p class='sub'>%d row(s) were left out of the write-up: a duplicate, a ",

@@ -192,6 +192,8 @@ print.gr_backend_client <- function(x, ...) {
 #' chat's own limit applies and this is warned about once
 #' (`gr_ellmer_max_output`). Either way the provider's stop reason is reported,
 #' so a reply cut off at the limit comes back with `finish_reason = "length"`.
+#' For a schema-bearing call it also comes back failed (`ok = FALSE`), because
+#' ellmer raises an error for a truncated structured reply and keeps none of it.
 #'
 #' A JSON schema ellmer cannot express is sent as an instruction in the prompt
 #' instead of as structured output, and warned about once (`gr_ellmer_schema`).
@@ -299,10 +301,10 @@ gr_ellmer_client <- function(chat, embed = NULL, model = NULL) {
     hard(one$set_turns(list()), "have its turns cleared")
     if (nzchar(sys)) hard(one$set_system_prompt(sys), "accept a system prompt")
 
-    txt <- if (is.null(params$schema)) {
+    ask <- function() if (is.null(params$schema)) {
       one$chat(user, echo = "none")
     } else {
-      type <- ellmer_type(params$schema)
+      type <- ellmer_type(params$schema, null_in_enum = ellmer_strict_nullable(one))
       if (is.null(type)) {
         # Not convertible: take the documented degraded path rather than sending
         # a schema ellmer cannot express. Readers that need JSON already handle
@@ -320,12 +322,34 @@ gr_ellmer_client <- function(chat, embed = NULL, model = NULL) {
         }
         one$chat(paste0(user, "\n\nReply with only a JSON object matching this JSON Schema, ",
                         "and nothing else:\n",
-                        jsonlite::toJSON(params$schema, auto_unbox = TRUE, null = "null")),
+                        jsonlite::toJSON(params$schema, auto_unbox = TRUE, null = "null",
+                                         digits = NA)),
                  echo = "none")
       } else {
-        as.character(jsonlite::toJSON(one$chat_structured(user, type = type, echo = "none"),
-                                      auto_unbox = TRUE, null = "null"))
+        ellmer_structured_text(one, user, type)
       }
+    }
+    txt <- tryCatch(ask(), error = function(e) e)
+    if (inherits(txt, "condition")) {
+      # ellmer raises, rather than returns, a structured reply that stopped at
+      # the output cap, so ellmer_finish_reason() below was never reached and
+      # the cut-off read as an ordinary failure (finish_reason NA): claims,
+      # the reconcile, the outline and the iterative step told the caller the
+      # call "failed" instead of to raise the reply limit. Nothing of the reply
+      # survives, so it stays a failure, but one that says why. Any other error
+      # is re-raised and handled exactly as before.
+      fr <- ellmer_error_finish_reason(one, txt)
+      if (!identical(normalise_finish_reason(fr), "length")) stop(txt)
+      usage <- ellmer_usage(one, params, "")
+      # A reply cut at the cap was billed for the whole cap: the limit this
+      # chat sent, which is this call's cap unless the chat could not take
+      # one. ellmer keeps no turn for it, so the local count would say free.
+      if (identical(fr, "max_tokens") && !isTRUE(usage$output > 0L)) {
+        sent <- as_int1(ellmer_model_config(one)$params$max_tokens)
+        usage$output <- if (is.na(sent)) as_int1(params$max_output, 0L) else sent
+      }
+      return(gr_result(FALSE, error = conditionMessage(txt), model = model, usage = usage,
+                       finish_reason = fr))
     }
     ellmer_result(txt, model, ellmer_usage(one, params, txt), ellmer_finish_reason(one))
   }
@@ -440,6 +464,77 @@ ellmer_finish_reason <- function(chat) {
             fld(first(fld(js, "candidates")), "finishReason") %||% # Gemini
             status,                                             # Responses API
           NA_character_)
+}
+
+#' The stop reason behind an error ellmer raised for a reply, or NA.
+#'
+#' ellmer 0.5.0 checks the provider's stop reason before it keeps the turn, and
+#' for a structured call a truncated reply is an error, so the chat holds no
+#' turn to read it from. The chat is still asked first, in case a later ellmer
+#' keeps the turn; otherwise the reason is read from ellmer's own message for
+#' the two truncations it names. A message that says neither gives NA, which
+#' the caller treats as the plain failure it always was.
+#' @noRd
+ellmer_error_finish_reason <- function(chat, e) {
+  fr <- ellmer_finish_reason(chat)
+  if (!is.na(fr)) return(fr)
+  msg <- gsub("\033\\[[0-9;]*m", "", as_chr1(tryCatch(conditionMessage(e), error = function(x) "")))
+  if (grepl("truncated because it hit the \\W*max_tokens\\W* limit", msg, perl = TRUE)) {
+    return("max_tokens")
+  }
+  if (grepl("truncated because it exceeded the model's context window", msg, fixed = TRUE)) {
+    return("context_window")
+  }
+  NA_character_
+}
+
+#' One structured ellmer reply as JSON text, with nothing lost on the way.
+#'
+#' Asked for UNCONVERTED where the chat allows it. ellmer's conversion turns an
+#' array of one-element arrays into a list of scalars, which `auto_unbox` then
+#' wrote as one flat array: a claims reconcile answering that every claim is
+#' distinct, `[[1],[2],[3]]`, came back as `[1,2,3]`, was read as a single
+#' group, and merged every claim into one. Unconverted, the value is the
+#' provider's JSON parsed as lists, where an array stays a list and so stays an
+#' array. `digits = NA` because jsonlite's default of four decimals wrote a
+#' p-value of 0.00003 into the extraction table as 0. A chat whose
+#' `$chat_structured()` takes no `convert` (not ellmer's) is called as before.
+#' @noRd
+ellmer_structured_text <- function(one, user, type) {
+  f <- one$chat_structured
+  takes_convert <- "convert" %in% names(tryCatch(formals(f), error = function(e) NULL))
+  value <- if (takes_convert) {
+    f(user, type = type, echo = "none", convert = FALSE)
+  } else {
+    f(user, type = type, echo = "none")
+  }
+  as.character(jsonlite::toJSON(value, auto_unbox = TRUE, null = "null", digits = NA))
+}
+
+#' Does this chat's provider send an optional field as a required, nullable one?
+#'
+#' ellmer renders an object for the OpenAI family (OpenAI's strict mode) with
+#' every field required and an optional one's type widened with "null". For an
+#' enum that leaves null out of the values, so the model has to pick one and
+#' cannot say the excerpt does not state it: fields_schema() makes every field
+#' nullable precisely so that no chunk is pushed into inventing a value. Those
+#' fields are then built with null among the values (see ellmer_type()).
+#'
+#' Decided as S7 dispatch would decide it: by the most specific of the provider
+#' classes that render objects their own way. Ollama, Cloudflare and Snowflake
+#' descend from the OpenAI-compatible provider but list only required fields,
+#' so an optional enum there is simply left out, which already allows "none".
+#' @noRd
+.gr_ellmer_object_renderers <- c("ellmer::ProviderCloudflare", "ellmer::ProviderGoogleGemini",
+                                 "ellmer::ProviderOllama", "ellmer::ProviderSnowflakeCortex",
+                                 "ellmer::ProviderOpenAICompatible")
+
+#' @noRd
+ellmer_strict_nullable <- function(chat) {
+  provider <- tryCatch(chat$get_provider(), error = function(e) NULL)
+  cls <- class(provider)
+  identical(cls[cls %in% .gr_ellmer_object_renderers][1], "ellmer::ProviderOpenAICompatible") &&
+    is.function(tryCatch(ellmer::TypeJsonSchema, error = function(e) NULL))
 }
 
 #' The methods this adapter actually calls, and the check that they are there.
@@ -572,8 +667,14 @@ ellmer_usage <- function(chat, params, txt) {
 #' are carried, because in this package they are instructions ("copied
 #' verbatim, or null if none does"). A null among an enum's values is the
 #' nullable marker, not a value.
+#'
+#' `null_in_enum = TRUE` is for providers that send an optional field as a
+#' required, nullable one (ellmer_strict_nullable()). ellmer widens such an
+#' enum's type with "null" but not its values, which under strict decoding
+#' forces a choice; so an optional enum is sent as the JSON Schema the built-in
+#' client sends, `{"type": ["string", "null"], "enum": [..., null]}`.
 #' @noRd
-ellmer_type <- function(schema) {
+ellmer_type <- function(schema, null_in_enum = FALSE) {
   convert <- function(p, required = TRUE) {
     if (!is.list(p)) return(NULL)
     types <- as.character(unlist(p$type, use.names = FALSE))
@@ -587,6 +688,12 @@ ellmer_type <- function(schema) {
           vals <- as.character(unlist(p$enum, use.names = FALSE))
           vals <- vals[!is.na(vals)]
           if (!length(vals)) return(NULL)
+          if (!req && isTRUE(null_in_enum)) {
+            json <- list(type = list("string", "null"), enum = c(as.list(vals), list(NULL)))
+            if (!is.null(desc)) json$description <- desc
+            # required = TRUE: already nullable, so ellmer must not widen it again.
+            return(ellmer::TypeJsonSchema(description = desc, required = TRUE, json = json))
+          }
           ellmer::type_enum(values = vals, description = desc, required = req)
         } else {
           ellmer::type_string(description = desc, required = req)

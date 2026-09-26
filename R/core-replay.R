@@ -81,17 +81,20 @@ gr_trace_save <- function(trace, path) {
 #' one repeats.
 #'
 #' @section Embeddings:
-#' Embeddings are not model calls and are not recorded in a trace, so whether a
-#' replay reproduces a run's chunk *ranking* depends on how the run embedded,
-#' and that is checked rather than assumed. The ranking reproduces exactly when
-#' the recording used a **deterministic** embedder and the replay uses the
-#' **same** one; both conditions, because replaying an API-embedded run with a
-#' deterministic local embedder would compute vectors the original never saw
-#' while looking exact. Anything else falls back to hashed lexical vectors and
-#' warns with class `gr_replay_no_embeddings`; every recorded answer is still
-#' reproduced, but the ranking may differ. Record a run you intend to publish
-#' with `gr_options(embedder = "lexical")`, or with your own embedder registered
-#' as `deterministic = TRUE`.
+#' A trace records each request to an embeddings endpoint (a step labelled
+#' `"embed.request"`, counted in `calls` and priced like any other request),
+#' but not the vectors that came back, so a replay has nothing to answer those
+#' requests with. Whether a replay reproduces a run's chunk *ranking* therefore
+#' depends on how the run embedded, and that is checked rather than assumed.
+#' The ranking reproduces exactly when the recording used a **deterministic**
+#' embedder and the replay uses the **same** one; both conditions, because
+#' replaying an API-embedded run with a deterministic local embedder would
+#' compute vectors the original never saw while looking exact. Anything else
+#' falls back to hashed lexical vectors and warns with class
+#' `gr_replay_no_embeddings`; every recorded answer is still reproduced, but the
+#' ranking may differ. Record a run you intend to publish with
+#' `gr_options(embedder = "lexical")`, or with your own embedder registered as
+#' `deterministic = TRUE`.
 #'
 #' @section The recipe "auto" chose:
 #' A recording of [answer_document()] with `recipe = "auto"` holds the recipe
@@ -269,10 +272,10 @@ replay_steps <- function(source) {
 
 #' Which embedder produced the vectors in the recorded run, if any.
 #'
-#' Embeddings are not model calls, so they are not in the transcript -- but
-#' `gr_embed()` writes a local note saying which embedder it used, and that is
-#' enough. A replay can reproduce a run's ranking only when it uses the SAME
-#' embedder and that embedder is deterministic. Without this the check was
+#' The transcript holds each embeddings request but not the vectors it
+#' returned -- but `gr_embed()` writes a local note saying which embedder it
+#' used, and that is enough. A replay can reproduce a run's ranking only when
+#' it uses the SAME embedder and that embedder is deterministic. Without this the check was
 #' "is the current embedder deterministic", which is not the same question: a
 #' run recorded through an API and replayed with a deterministic local embedder
 #' would have claimed to be exact while ranking chunks by different vectors.

@@ -109,6 +109,13 @@ limit_note <- function(ans) {
 #' notes also count replies that arrived and could not be read, such as prose
 #' where JSON was asked for, which the trace records as successful requests. The
 #' two overlap, so the larger count is taken, not the sum.
+#'
+#' A trace error marked `recovered = TRUE` is left out: the pipeline got round
+#' it without losing input, as gr_embed() does when an embeddings request fails
+#' and it ranks on lexical vectors instead. The document was read in full, and
+#' the answer already says it is partial where the fallback degrades it. Counted,
+#' it made every document "failed" and kept it out of the store on any endpoint
+#' with no embeddings, run after run.
 #' @noRd
 failed_note <- function(ans, trace = NULL) {
   n <- as.list(ans$notes %||% list())
@@ -117,6 +124,7 @@ failed_note <- function(ans, trace = NULL) {
     if (length(v) == 1L && !is.na(v)) v else 0
   }
   errs <- if (inherits(trace, "gr_trace")) trace$errors else list()
+  errs <- Filter(function(e) !(is.list(e) && isTRUE(e[["recovered", exact = TRUE]])), errs)
   failed <- max(num("failed_calls") + num("scoring_failures") + num("failed_summaries") +
                   isTRUE(n[["failed_call", exact = TRUE]]),
                 length(errs))
@@ -126,6 +134,43 @@ failed_note <- function(ans, trace = NULL) {
   sprintf("%s request(s) failed, so the document was not read in full%s",
           format(failed, scientific = FALSE),
           if (nzchar(first)) sprintf(" (first error: %s)", substr(first, 1, 200)) else "")
+}
+
+#' What one document's read cost, for its row and for the corpus ceiling.
+#'
+#' `usd` is the row's `cost_usd`: NA when any model in the read has no
+#' registered price, because a total that silently omits one is what
+#' gr_trace_cost() exists to prevent. `priced` is what the priced models cost, a
+#' floor under `usd`. The unpriced models are split into those that made only
+#' embeddings requests (`unpriced_embed`) and the rest (`unpriced`).
+#'
+#' The split is for `max_total_usd`. Embeddings requests are recorded and priced
+#' like any other, and the registry does not price every embedding model, so an
+#' unregistered one (text-embedding-ada-002, a gateway's own) made every
+#' document's cost unknown and switched off a ceiling that had held on the chat
+#' spend before embeddings were counted at all. An embeddings request costs a
+#' small fraction of the chat requests that read the same chunks, so the ceiling
+#' is held to the priced spend and the run says once what that leaves out. An
+#' unpriced chat model still makes the ceiling unenforceable, as it always has:
+#' without the model doing the reading, a floor bounds almost nothing.
+#' @noRd
+corpus_cost <- function(trace) {
+  cost <- gr_trace_cost(trace)
+  unpriced <- cost$model[is.na(cost$usd)]
+  # The steps gr_trace_cost() prices, so the models line up with its rows.
+  steps <- Filter(function(s) !identical(s$kind, "local") && !is.null(s$tokens), trace$steps)
+  model <- vapply(steps, function(s) as_chr1(s$model, "unknown"), character(1))
+  embed <- vapply(steps, function(s) identical(s$label, "embed.request"), logical(1))
+  only_embed <- unpriced[vapply(unpriced, function(m) all(embed[model == m]), logical(1))]
+  list(usd = sum(cost$usd), priced = sum(cost$usd, na.rm = TRUE),
+       unpriced_embed = only_embed, unpriced = setdiff(unpriced, only_embed))
+}
+
+#' "model 'a' has" or "models 'a', 'b' have", for the ceiling warnings.
+#' @noRd
+corpus_models_have <- function(models) {
+  if (length(models) == 1L) sprintf("model '%s' has", models)
+  else sprintf("models %s have", paste0("'", models, "'", collapse = ", "))
 }
 
 #' A trace's cost in words, for the print methods.
@@ -183,7 +228,12 @@ format_trace_cost <- function(trace) {
 #'   from `gr_options(max_cost_usd =)`, which is a limit per document.
 #'   It needs a model with a registered price: against one without, cost is
 #'   *unknown* rather than zero, the ceiling cannot be enforced, and you get a
-#'   `gr_corpus_cost_unknown` warning instead of a silent free pass.
+#'   `gr_corpus_cost_unknown` warning instead of a silent free pass. The one
+#'   exception is an embedding model with no price (the chat model priced):
+#'   the ceiling is then checked against the priced spend, which leaves out
+#'   only the embeddings requests, and a `gr_corpus_cost_floor` warning names
+#'   the model and says how to register it. `cost_usd` stays `NA` either way,
+#'   since what those documents cost in full is not known.
 #' @param max_total_calls Stop *before* a document once the run has made this
 #'   many model calls, marking the rest `"skipped"`. The counterpart to
 #'   `max_total_usd` for runs whose model has no registered price, and the only
@@ -237,10 +287,15 @@ format_trace_cost <- function(trace) {
 #' failed (a network error, a 5xx or 429 after the retries, a refusal, a reply
 #' that was not the JSON asked for): `error` says how many and gives the first
 #' error, the partial answer is in `answers`, and a resumed run reads it again
-#' rather than restoring what the failure left. A restored row keeps the
-#' numbers from when that document was first read, so its `cost_usd` is what it
-#' cost then, not what this run spent. That is why the run's own spend comes
-#' from `gr_trace_cost(x$trace)` and not from summing the column.
+#' rather than restoring what the failure left. A request the pipeline recovered
+#' from does not count: an embeddings request that failed and was replaced by
+#' lexical vectors leaves the document `"ok"`, with `partial` set. A row that a
+#' limit or a failed request stopped keeps `document_id`, `reader` and the chunk
+#' counts, since the text was read; only `answer` and `not_found` are left `NA`.
+#' A restored row keeps the numbers from when that document was first read, so
+#' its `cost_usd` is what it cost then, not what this run spent. That is why the
+#' run's own spend comes from `gr_trace_cost(x$trace)` and not from summing the
+#' column.
 #'
 #' @section Documents that are the same document:
 #' The same paper reaches you from three databases under three filenames. Each
@@ -396,8 +451,15 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
   rows <- vector("list", length(sources))
   answers <- list()
   spent <- 0
+  # The priced part of `spent`, and the models left out of it: what
+  # `max_total_usd` is held to when the only models without a price made
+  # embeddings requests. See corpus_cost().
+  spent_priced <- 0
+  unpriced_embed <- character(0)
+  unpriced_chat <- character(0)
   stopped <- FALSE
   warned_unpriced <- NULL
+  warned_floor <- NULL
   # Cleaned-text hash -> index of the first source that had it.
   seen <- new.env(parent = emptyenv())
 
@@ -467,6 +529,8 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
     # registered price makes the figure unknown.
     gr_msg(sprintf("[%d/%d] %s%s", i, length(sources), lab,
                    if (!is.na(spent) && spent > 0) sprintf(" ($%.4f spent so far)", spent)
+                   else if (!length(unpriced_chat) && spent_priced > 0)
+                     sprintf(" (at least $%.4f spent so far)", spent_priced)
                    else ""))
     started <- Sys.time()
     # One trace per document, folded into the parent afterwards. Sharing the
@@ -525,8 +589,12 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
     # price precisely so that a total cannot quietly omit it; dropping the NA here
     # turned "we do not know what this cost" into "$0.0000", which then made
     # `max_total_usd` unenforceable while the run reported itself free.
-    cost <- sum(gr_trace_cost(sub)$usd)
+    doc_cost <- corpus_cost(sub)
+    cost <- doc_cost$usd
     spent <- spent + cost
+    spent_priced <- spent_priced + doc_cost$priced
+    unpriced_chat <- union(unpriced_chat, doc_cost$unpriced)
+    unpriced_embed <- setdiff(union(unpriced_embed, doc_cost$unpriced_embed), unpriced_chat)
 
     if (inherits(out, "condition")) {
       raised <- doc_rec$get()
@@ -567,8 +635,7 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
       why <- sprintf("stopped at the %s before the document was read in full; raise %s",
                      stopped_by$limit, stopped_by$option)
       gr_warn(sprintf("Document '%s' failed: %s.", lab, why), class = "gr_document_failed")
-      rows[[i]] <- corpus_row(lab, status = "failed", error = why, trace = sub,
-                              seconds = secs, cost = cost, warnings = out$warnings)
+      rows[[i]] <- corpus_unfinished_row(lab, out, why, sub, secs, cost)
       if (keep_answers) answers[[lab]] <- out
     } else if (!is.null(why <- failed_note(out, sub))) {
       # The same treatment, for the same reason. A request that failed is a
@@ -578,8 +645,7 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
       # and saved, it came back "restored" on every later run with no call
       # made, long after the provider had recovered.
       gr_warn(sprintf("Document '%s' failed: %s.", lab, why), class = "gr_document_failed")
-      rows[[i]] <- corpus_row(lab, status = "failed", error = why, trace = sub,
-                              seconds = secs, cost = cost, warnings = out$warnings)
+      rows[[i]] <- corpus_unfinished_row(lab, out, why, sub, secs, cost)
       if (keep_answers) answers[[lab]] <- out
     } else {
       rows[[i]] <- corpus_row(lab, status = "ok", answer = out, trace = sub,
@@ -592,21 +658,36 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
 
     # A ceiling on a cost nobody can compute is not a ceiling. Say so once,
     # rather than letting an unpriced model run past a limit the user set.
-    if (!is.null(max_total_usd) && is.na(spent) && is.null(warned_unpriced)) {
+    if (!is.null(max_total_usd) && length(unpriced_chat) && is.null(warned_unpriced)) {
       warned_unpriced <- TRUE
-      gr_warn(paste0("`max_total_usd` cannot be enforced: at least one model in this run has no ",
-                     "registered price, so what it costs is unknown rather than zero. Register ",
-                     "the price with gr_register_model(input_usd =, output_usd =), or drop the ",
-                     "ceiling. The run continues, uncapped."),
+      gr_warn(sprintf(paste0("`max_total_usd` cannot be enforced: %s no registered price, so ",
+                             "what it costs is unknown rather than zero. Register the price with ",
+                             "gr_register_model(input_usd =, output_usd =), or drop the ceiling. ",
+                             "The run continues, uncapped."), corpus_models_have(unpriced_chat)),
               class = "gr_corpus_cost_unknown")
     }
-    if (!is.null(max_total_usd) && !is.na(spent) && spent >= max_total_usd) {
+    enforced <- !is.null(max_total_usd) && !length(unpriced_chat)
+    # Held to the priced spend, and said once, when only an embedding model has
+    # no price. See corpus_cost() for why that is not the case above.
+    if (enforced && length(unpriced_embed) && is.null(warned_floor)) {
+      warned_floor <- TRUE
+      gr_warn(sprintf(paste0("`max_total_usd` is checked against the spend that has a price: ",
+                             "embedding %s no registered price, so %s requests are not counted ",
+                             "and the run can pass the ceiling by what they cost. Register it with ",
+                             "gr_register_model('%s', context_window =, max_output = 0, ",
+                             "input_usd =, kind = \"embedding\") to count them."),
+                      corpus_models_have(unpriced_embed),
+                      if (length(unpriced_embed) == 1L) "its" else "their", unpriced_embed[[1]]),
+              class = "gr_corpus_cost_floor")
+    }
+    if (enforced && spent_priced >= max_total_usd) {
       stopped <- TRUE
       if (i < length(sources)) {
-        gr_warn(sprintf(paste0("Stopped after %d of %d documents: the run has spent about ",
+        gr_warn(sprintf(paste0("Stopped after %d of %d documents: the run has spent %s ",
                                "$%.4f, at or above the $%.4f `max_total_usd` ceiling. The ",
                                "remaining documents are marked 'skipped'."),
-                        i, length(sources), spent, max_total_usd),
+                        i, length(sources), if (length(unpriced_embed)) "at least" else "about",
+                        spent_priced, max_total_usd),
                 class = "gr_corpus_cost_cap")
       }
     }
@@ -708,8 +789,14 @@ known_extensions <- function() {
 #' its studies by row: `[study 4]` named a different paper on the reader's
 #' machine, and a shipped trace no longer replayed. Radix order compares UTF-8
 #' bytes, whatever the locale.
+#'
+#' Labelled with mark_utf8(), not converted with enc2utf8(). `list.files()`
+#' returns names marked "unknown", and in a C or POSIX locale (cron, a minimal
+#' container) enc2utf8() rewrites their non-ASCII bytes as the text
+#' "<c3><89>", so Evora with an accent sorted before "B" there and after "z"
+#' everywhere else.
 #' @noRd
-corpus_sort_paths <- function(x) x[order(enc2utf8(x), method = "radix")]
+corpus_sort_paths <- function(x) x[order(mark_utf8(x), method = "radix")]
 
 #' A run-level call ceiling, or nothing.
 #'
@@ -893,6 +980,26 @@ corpus_row <- function(document, status, answer = NULL, trace = NULL, error = NA
   )
 }
 
+#' The row for a document that was read but not in full: a limit stopped it, or
+#' a request failed.
+#'
+#' Its answer is not a result, so `answer` and `not_found` stay NA and the
+#' partial answer lives in `answers` alone. Everything else the read did
+#' establish is kept: the text was ingested and hashed, so `document_id` is as
+#' much a fact as for a finished read, and gr_extract() and gr_screen() cite and
+#' join these rows by it. The reader and chunk counts say how far it got. Left
+#' out of `seen` and the store by the caller, not here.
+#' @noRd
+corpus_unfinished_row <- function(document, ans, why, trace, seconds, cost) {
+  row <- corpus_row(document, status = "failed", answer = ans, trace = trace, error = why,
+                    seconds = seconds, cost = cost,
+                    document_id = attr(ans, "doc_hash") %||% NA_character_,
+                    warnings = ans$warnings)
+  row$answer <- NA_character_
+  row$not_found <- NA
+  row
+}
+
 #' One document's warnings as one summary cell, or NA when there were none.
 #' @noRd
 corpus_warnings <- function(w) {
@@ -1000,8 +1107,11 @@ corpus_entry <- function(entry) {
     if (!identical(typeof(ans), "list") || isS4(ans) || !inherits(ans, "gr_answer")) return(NULL)
     ans <- unclass(ans)
     # Format 1 saved the answer's trace as the environment it is in memory.
-    # Those entries are still good answers, so the trace is read binding by
-    # binding in a way that cannot run anything, and refused otherwise.
+    # Such an entry is read binding by binding in a way that cannot run
+    # anything, and refused otherwise. 0.5.0 wrote format 1 under the older
+    # store key, which corpus_key() no longer produces, so its entries are read
+    # again once rather than reaching this; the path serves entries at the
+    # current key, a planted one included.
     if (identical(fmt, 1L) && is.environment(.subset2(ans, "trace"))) {
       tr <- corpus_trace_bindings(.subset2(ans, "trace"))
       if (is.null(tr)) return(NULL)

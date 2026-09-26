@@ -337,7 +337,11 @@ test_that("each embeddings request is recorded in the trace and priced", {
   expect_identical(attr(e, "embedding_source"), "api")
   expect_identical(seen$n, 2L)
   expect_identical(tr$calls, 2L)
-  expect_identical(tr$tokens_in, 300L)
+  # Counted apart from the model calls' prompts (review3 cache-4), so
+  # gr_estimate_cost(model, tokens_in, tokens_out) does not price them at a
+  # chat model's rate.
+  expect_identical(tr$tokens_in, 0L)
+  expect_identical(tr$embed_tokens, 300L)
   expect_equal(tr$spent_usd, 300 / 1e6)
   cost <- gr_trace_cost(tr)
   expect_identical(cost$model, "priced-embed")

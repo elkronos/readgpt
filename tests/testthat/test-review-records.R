@@ -212,9 +212,10 @@ test_that("BibTeX fields are read by brace depth, and the first occurrence wins"
                "}"), f)
   r <- gr_records(f)$records
   # Both co-authors survive the nested accent, the title its comma, and the
-  # year is not taken from inside the abstract.
-  expect_identical(r$authors, "M\\\"uller, J\\\"org; Smith, Anna")
-  expect_identical(readgpt:::bib_surnames(r$authors), c("M\\\"uller", "Smith"))
+  # year is not taken from inside the abstract. The accent itself is decoded
+  # (review 3, records-6): the backslash form was nobody's name in a citation.
+  expect_identical(r$authors, "M\u00fcller, J\u00f6rg; Smith, Anna")
+  expect_identical(readgpt:::record_first_author(r$authors)$surname, "M\u00fcller")
   expect_identical(r$title, "Spacing DNA effects, revisited")
   expect_identical(r$year, "2019")
   expect_identical(r$venue, "Memory & Cognition")
@@ -230,7 +231,7 @@ test_that("BibTeX fields are read by brace depth, and the first occurrence wins"
                "}"), g)
   q <- gr_records(g)$records
   # A quote inside braces does not end a quoted value; `#` concatenates.
-  expect_identical(q$authors, "M\\\"uller, Hans; Okafor, Ada")
+  expect_identical(q$authors, "M\u00fcller, Hans; Okafor, Ada")
   expect_identical(q$title, "Part one, and part two")
   expect_identical(q$year, "2020")
 

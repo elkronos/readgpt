@@ -43,7 +43,8 @@
 gr_register_extractor <- function(name, extensions, fn, description = "") {
   if (!is.function(fn)) gr_abort("`fn` must be a function of (path, opts).")
   registry_set("extractors", name, list(name = name, extensions = tolower(extensions),
-                                        fn = fn, description = description))
+                                        fn = fn, description = description,
+                                        registered = registration_stamp()))
 }
 
 #' List registered extractors
@@ -191,6 +192,8 @@ extract_html <- function(path, opts) {
 #' `heading` block and the `section` of what follows it. A table is one block
 #' per row, `table`, its cells joined with " | ", with a table inside a cell read
 #' as rows of its own after the row that holds it, as the Word extractor does.
+#' A table that lays out the page rather than holding data is read as the rest
+#' of the page is; see `is_layout` below.
 #' @noRd
 html_blocks <- function(doc) {
   blocks <- .gr_html_block_tags
@@ -223,62 +226,121 @@ html_blocks <- function(doc) {
 
   # All the text under a node on one line, block boundaries and line breaks
   # read as spaces: for a heading, a caption, or a table cell. A table inside
-  # a cell is left to read_table(), which reads it after the row.
+  # a cell is left to read_table(), which reads it after the row. A <pre> keeps
+  # its line breaks, as it does outside a table: they are part of the code.
   flat_text <- function(node) {
-    parts <- character(0)
+    segs <- text_pieces(); run <- text_pieces()
+    close_run <- function() {
+      s <- run$take()
+      if (nzchar(s)) s <- squish(s)
+      if (nzchar(s)) segs$add(s)
+    }
     rec <- function(nd) {
       for (ch in xml2::xml_contents(nd)) {
         ty <- xml2::xml_type(ch)
         if (identical(ty, "text")) {
-          parts <<- c(parts, source_text(ch))
+          run$add(source_text(ch))
         } else if (identical(ty, "element")) {
           nm <- tolower(xml2::xml_name(ch))
           if (identical(nm, "table")) next
-          if (identical(nm, "br") || nm %in% blocks) parts <<- c(parts, " ")
+          if (identical(nm, "pre")) {
+            close_run()
+            code <- trimws(xml2::xml_text(ch))
+            if (nzchar(code)) segs$add(code)
+            next
+          }
+          if (identical(nm, "br") || nm %in% blocks) run$add(" ")
           rec(ch)
-          if (nm %in% blocks) parts <<- c(parts, " ")
+          if (nm %in% blocks) run$add(" ")
         }
       }
     }
     rec(node)
-    squish(gsub("\n", " ", paste(parts, collapse = ""), fixed = TRUE))
+    close_run()
+    segs$take(" ")
   }
+
+  # A table that lays out a page rather than holding data: a heading in it
+  # (outside a header cell or the caption), or a single row or column holding
+  # headings, paragraphs, lists, divs or other tables. Pages built on a layout
+  # table -- older sites, HTML e-mail, generated reports -- put the whole
+  # article in one cell, and reading that row by row made it one "table" block
+  # with no headings, no sections and no paragraph breaks. A data table's cells
+  # hold values, and keep the row format even when a value is written as a <p>
+  # or two.
+  heading_xpath <- paste0(".//*[self::h1 or self::h2 or self::h3 or self::h4 or self::h5 ",
+                          "or self::h6][not(ancestor::th) and not(ancestor::caption)]")
+  block_xpath <- paste0(".//*[self::p or self::div or self::ul or self::ol or self::dl or ",
+                        "self::blockquote or self::pre or self::table or self::section or ",
+                        "self::article or self::h1 or self::h2 or self::h3 or self::h4 or ",
+                        "self::h5 or self::h6][not(ancestor::caption)]")
+  is_layout <- function(tbl, cells) {
+    if (length(find(tbl, heading_xpath))) return(TRUE)
+    one_line <- length(cells) == 1L || all(lengths(cells) <= 1L)
+    one_line && length(find(tbl, block_xpath)) > 0L
+  }
+
+  stray_xpath <- paste0(
+    "(./node()[not(self::tr or self::thead or self::tbody or self::tfoot or self::caption ",
+    "or self::colgroup or self::col)] | ",
+    "./*[self::thead or self::tbody or self::tfoot]/node()[not(self::tr)] | ",
+    ".//tr[count(ancestor::table) = %d]/node()[not(self::td or self::th or .//table or ",
+    "self::table)])",
+    "[not(self::text()) or normalize-space(.) != '']",
+    "[not(.//*[(self::tr or self::td or self::th) and count(ancestor::table) = %d])]")
 
   read_table <- function(tbl) {
     # Rows and cells of THIS table, however thead/tbody wrap them, and not
     # those of a table nested in one of its cells.
     level <- length(find(tbl, "ancestor-or-self::table"))
-    for (cap in find(tbl, "./caption")) emit(flat_text(cap), "body")
     rows <- find(tbl, sprintf(".//tr[count(ancestor::table) = %d]", level))
+    cell_xpath <- sprintf(".//*[self::th or self::td][count(ancestor::table) = %d]", level)
+    cells <- lapply(rows, function(row) {
+      # Cells are the row's own children in all but broken markup, and asking
+      # for those is much cheaper than a query per row.
+      kids <- xml2::xml_children(row)
+      if (all(tolower(xml2::xml_name(kids)) %in% c("td", "th"))) kids else find(row, cell_xpath)
+    })
+    if (is_layout(tbl, cells)) return(walk(tbl))
+    # Markup that is in the table but in none of its rows or cells -- a <p>
+    # before the first row, a div after the last -- is not dropped: a browser
+    # shows it before the table, and so it is read there. (A table in a row
+    # outside its cells is read after the row, with the ones inside them.)
+    stray <- find(tbl, sprintf(stray_xpath, level, level))
+    if (length(stray)) {
+      visit(stray)
+      flush()
+    }
+    for (cap in find(tbl, "./caption")) emit(flat_text(cap), "body")
     has_nested <- length(find(tbl, ".//table")) > 0L
-    for (row in rows) {
-      cells <- find(row, sprintf(".//*[self::th or self::td][count(ancestor::table) = %d]", level))
-      vals <- vapply(cells, flat_text, character(1))
+    for (r in seq_along(rows)) {
+      vals <- vapply(cells[[r]], flat_text, character(1))
       if (any(nzchar(vals))) emit(paste(vals, collapse = " | "), "table")
       if (!has_nested) next
-      for (inner in find(row, sprintf(".//table[count(ancestor::table) = %d]", level))) {
+      for (inner in find(rows[[r]], sprintf(".//table[count(ancestor::table) = %d]", level))) {
         read_table(inner)
       }
     }
   }
 
   # The run of inline text since the last block boundary.
-  run <- character(0)
+  run <- text_pieces()
   flush <- function() {
-    if (length(run)) emit(squish(paste(run, collapse = "")), "body")
-    run <<- character(0)
+    s <- run$take()
+    if (nzchar(s)) emit(squish(s), "body")
   }
-  walk <- function(node) {
-    for (ch in xml2::xml_contents(node)) {
+  walk <- function(node) visit(xml2::xml_contents(node))
+  visit <- function(nodes) {
+    for (ch in nodes) {
       ty <- xml2::xml_type(ch)
       if (identical(ty, "text")) {
-        run <<- c(run, source_text(ch))
+        run$add(source_text(ch))
         next
       }
       if (!identical(ty, "element")) next            # comments and the like
       nm <- tolower(xml2::xml_name(ch))
       if (identical(nm, "br")) {
-        run <<- c(run, "\n")
+        run$add("\n")
       } else if (!nm %in% blocks) {
         walk(ch)                                       # inline: part of the run
       } else {
@@ -299,6 +361,30 @@ html_blocks <- function(doc) {
   keep <- seq_len(n)
   data.frame(text = text[keep], section = section[keep], kind = kind[keep],
              stringsAsFactors = FALSE)
+}
+
+#' A string built from many pieces, appended one at a time.
+#'
+#' `x <- c(x, piece)` copies `x` on every append, so a run of n pieces cost
+#' O(n^2): a paragraph of 80,000 spans took 35 seconds to read, and a page of
+#' 30,000 <br> lines 5. The pieces go in a vector grown by doubling instead,
+#' and `take()` pastes them once, returns the string and starts over.
+#' @noRd
+text_pieces <- function() {
+  buf <- character(16L); len <- 0L
+  list(
+    add = function(s) {
+      if (len == length(buf)) length(buf) <<- 2L * length(buf)
+      len <<- len + 1L
+      buf[len] <<- s
+      invisible(NULL)
+    },
+    take = function(collapse = "") {
+      if (!len) return("")
+      s <- paste(buf[seq_len(len)], collapse = collapse)
+      len <<- 0L
+      s
+    })
 }
 
 #' @noRd

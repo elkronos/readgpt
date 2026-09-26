@@ -15,8 +15,9 @@
 #
 # EVERY CLAIM CITES A ROW. Sections are written with `[study 3]` markers, the
 # markers are parsed back out, and any pointing at a row that does not exist --
-# or, with claims, at a row the section was not shown -- is reported and marks
-# the section partial. This is the same check `new_answer()`
+# or at a row the call that wrote it was not shown (with claims, or a section
+# drafted in batches) -- is reported and marks the section partial. This is the
+# same check `new_answer()`
 # runs on `[chunk 3]`, for the same reason: a citation to something that was
 # never supplied is a fabrication, and the most convincing kind there is.
 #
@@ -113,11 +114,15 @@
 #'       `reason` for anything discarded.}
 #'     \item{`sections`}{One row per section: `section`, `brief`, `text`,
 #'       `n_cited`, `n_unknown` (citations to a row that does not exist),
-#'       `n_unsupplied` (with `claims`, citations to a study that exists but
-#'       was not given to that section; they are left as markers and kept out
-#'       of the reference list), `n_unparsed` (brackets that open like a
-#'       citation, such as `[studies 1 to 7]`, but cannot be read as one, so
-#'       the studies they name were not checked), `n_truncated` (replies,
+#'       `n_unsupplied` (citations to a study that exists but was not given to
+#'       the call that wrote them: with `claims`, a study not behind that
+#'       section's claims; for a section written in batches, a study outside
+#'       that batch. They are left as markers and kept out of the reference
+#'       list, with one exception: once batch drafts are merged, a study that
+#'       another batch of the same section was given and cited cannot be told
+#'       apart, so it is rendered, and still counted), `n_unparsed` (brackets
+#'       that open like a citation, such as `[studies 1 to 7]`, but cannot be
+#'       read as one, so the studies they name were not checked), `n_truncated` (replies,
 #'       including batch drafts and merges, that stopped at the reply limit),
 #'       `partial`. A section is partial when any of those counts is non-zero
 #'       (`n_cited` aside), when it came back empty, when a batch of studies
@@ -127,6 +132,10 @@
 #'       long form: `section`, `study`, `document`, `document_id`.}
 #'     \item{`studies`}{The rows that were written from, with the `study` number
 #'       each was cited by.}
+#'     \item{`claims`}{The [gr_claims()] result written from, or `NULL`. When
+#'       its `$lost` names studies whose claims batch contributed nothing, the
+#'       run warns (`gr_claims_partial`), and print() and the audit report say
+#'       the review was written without them.}
 #'     \item{`trace`}{As [gr_extract()].}
 #'   }
 #'
@@ -230,6 +239,19 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
                       "claim_id = )."),
                class = "gr_no_claim_assignment")
     }
+    # gr_claims() warned when a batch came back with nothing, but that warning
+    # is long gone by the time the review is written, and every section is
+    # complete against claims that are not. Said again here, and by print()
+    # and the audit report, because the review covers only the rest.
+    lost <- claims$lost %||% integer(0)
+    if (length(lost)) {
+      gr_warn(sprintf(paste0("These claims were drawn with %d of %d studies contributing nothing: ",
+                             "their batch was cut off, failed or was not sent (see `claims$lost`). ",
+                             "The review is written from the rest. Run gr_claims() again to ",
+                             "include them."),
+                      length(lost), nrow(claims$studies)),
+              class = "gr_claims_partial")
+    }
   }
 
   client <- client %||% gr_client(model = model %||% gr_options("model"))
@@ -316,18 +338,9 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
   # A study a section cited without being shown it stays a visible marker, as a
   # row that does not exist does: rendering it would print the fabrication as a
   # fact about the extraction. Per section, because the same study may be cited
-  # honestly by another section that WAS shown it. `never_shown` is the
-  # document-wide set, for a revised text that no longer splits by section.
+  # honestly by another section that WAS shown it.
   unsupplied <- lapply(rows, `[[`, "unsupplied")
-  never_shown <- setdiff(unlist(unsupplied), citations$study)
-
-  # The reference list follows what the FINISHED text cites, not what the
-  # sections cited before revision. A reference list carrying a study the final
-  # prose never mentions claims a breadth the review does not have.
-  cited <- setdiff(cited_ids(final_marked, "study"), never_shown)
-  refs <- if (isTRUE(references)) reference_list(used, keys, cited, cols, resolved) else NULL
-
-  render <- function(x, leave = never_shown) render_citations(x, used, keys, resolved, leave = leave)
+  render <- function(x, leave) render_citations(x, used, keys, resolved, leave = leave)
   # Kept because it is what the citation check ran on, so the check can be
   # re-run on the published prose at any point.
   sections$text_marked <- sections$text
@@ -335,9 +348,28 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
   # The draft is its sections, so it is rendered from them, each with its own
   # exceptions; rendering the joined document is the same text otherwise.
   drafted <- synth_document(sections)
+  # A kept revision is one text rather than sections, so the markers to leave
+  # are found in it again by heading (see render_revised()). `left` is the
+  # studies no marker was rendered for anywhere.
+  if (is.null(revised$text)) {
+    published <- drafted
+    left <- setdiff(unlist(unsupplied), citations$study)
+  } else {
+    rr <- render_revised(final_marked, sections$section, sections$text_marked, unsupplied, render)
+    published <- rr$text
+    left <- rr$left
+  }
+
+  # The reference list follows what the FINISHED text cites, not what the
+  # sections cited before revision. A reference list carrying a study the final
+  # prose never mentions claims a breadth the review does not have. Nor does it
+  # carry a study the text cites only by a marker left as written: that marker
+  # is a fault the check reported, not a citation to follow up.
+  cited <- setdiff(cited_ids(final_marked, "study"), left)
+  refs <- if (isTRUE(references)) reference_list(used, keys, cited, cols, resolved) else NULL
 
   structure(list(
-    text = append_references(if (is.null(revised$text)) drafted else render(final_marked), refs),
+    text = append_references(published, refs),
     text_marked = final_marked,
     draft = append_references(drafted, refs),
     sections = sections,
@@ -398,8 +430,12 @@ print.gr_synthesis <- function(x, ...) {
     cat("  a citation to a row that does not exist is a fabrication; those sections are partial\n")
   }
   if (any(unsup > 0L)) {
+    # "wherever it can be told apart": a merged batch draft citing a study that
+    # another batch of the same section cited honestly is rendered; see
+    # synth_section().
     cat(paste0("  so is a citation to a study the section was not given; those sections are ",
-               "partial, and the markers are left unrendered\n"))
+               "partial, and such a marker is left unrendered wherever it can be told apart ",
+               "from an honest citation\n"))
   }
   if (any(unparsed > 0L)) {
     cat(paste0("  a citation the check cannot read names studies nobody checked; those sections ",
@@ -407,6 +443,12 @@ print.gr_synthesis <- function(x, ...) {
   }
   if (any(cut > 0L)) {
     cat("  a section cut off at the reply limit stops mid-thought; those sections are partial\n")
+  }
+  lost <- x$claims$lost %||% integer(0)
+  if (length(lost)) {
+    cat(sprintf(paste0("  PARTIAL: written from claims that %d of %d studies contributed nothing to, ",
+                       "their batch cut off, failed or not sent; see $claims$lost\n"),
+                length(lost), nrow(x$studies)))
   }
   cost <- gr_trace_cost(x$trace)
   total <- if (nrow(cost)) sum(cost$usd) else 0
@@ -549,6 +591,10 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
   # section ending "However, the trial" came back complete.
   cut_off <- 0L
   merge_failed <- FALSE
+  # Studies a batch draft cited without being in its batch, and studies a batch
+  # cited that it was given. Only written in the batch path without claims.
+  batch_stray <- integer(0)
+  batch_honest <- integer(0)
   text <- if (!trace_can_call(trace)) {
     # Every other stage checks the run's ceiling before it spends -- gr_claims(),
     # gr_outline(), revise_once() and every reader do. Synthesis did not, so a
@@ -609,6 +655,27 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
     # `<-`, not `<<-`: an if/else block shares the enclosing frame, so `<<-`
     # here would have written to the global environment and left this one at 0.
     lost_batches <- sum(!nzchar(parts)) - capped_batches
+    # Each batch draft checked against the studies IT was given, before the
+    # merge makes one text of them. Without claims a batch is shown its own
+    # rows and, as a rule, nothing else that names a study, so one citing a
+    # study outside them cited something it never saw -- and checked against
+    # the whole section, that passed as known, was rendered and went into the
+    # reference list. Not with claims: every batch is shown the claims block,
+    # which lists every study behind every claim, so a citation outside the
+    # batch there is the model doing as it was told.
+    if (!by_claims) {
+      idx <- attr(groups, "index")
+      # A number the brief or the gaps block names was shown to every batch.
+      in_ask <- cited_ids(ask, "study")
+      for (b in seq_along(parts)) {
+        ids <- cited_ids(parts[[b]], "study")
+        # Without claims `rendered` is every study in order, so a position in
+        # it is a row of `used`.
+        given <- union(used$study[idx[[b]]], in_ask)
+        batch_stray <- c(batch_stray, setdiff(intersect(ids, used$study), given))
+        batch_honest <- c(batch_honest, intersect(ids, given))
+      }
+    }
     from <- length(trace$steps) + 1L
     m <- tree_merge(client, ask, parts, spec, trace, label = "synthesise.merge",
                     system_prompt = system_prompt, kind = "draft")
@@ -640,9 +707,17 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
   # apart from `unknown` because the row does exist, and "a row that does not
   # exist" would misdescribe it.
   shown <- if (by_claims) want else used$study
-  known <- cited[cited %in% shown]
   unknown <- setdiff(cited, used$study)
   unsupplied <- setdiff(intersect(cited, used$study), shown)
+  # The same check per batch, for a section drafted in batches (see above),
+  # counting only what survived the merge into the section's text. A study
+  # another batch of this section cited honestly cannot be told apart once the
+  # drafts are merged, so it is rendered, but counted and marked partial; one
+  # no batch was given stays a marker, as `unsupplied` does.
+  stray <- intersect(unique(batch_stray), cited)
+  leave <- union(unsupplied, setdiff(stray, batch_honest))
+  unsupplied <- union(unsupplied, stray)
+  known <- cited[cited %in% shown & !cited %in% leave]
   hits <- match(known, used$study)
   # The check in the other direction, which the citation check cannot make: a
   # section handed four claims and citing none of the studies behind one of them
@@ -711,7 +786,7 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
                        merge_failed,
                      stringsAsFactors = FALSE),
     # Which markers in THIS section must stay markers when the prose is rendered.
-    unsupplied = unsupplied,
+    unsupplied = leave,
     citations = if (!length(known)) NULL else
       data.frame(section = heading, study = known,
                  document = used$document[hits],
@@ -806,6 +881,76 @@ synth_batches <- function(rendered, budget, max_n = Inf) {
 #' @noRd
 synth_document <- function(sections) {
   paste(sprintf("## %s\n\n%s", sections$section, trimws(sections$text)), collapse = "\n\n")
+}
+
+#' Render a kept revision, leaving the markers the sections' checks reported.
+#'
+#' A revision is one text, and the check that caught a section citing a study
+#' it was never given ran on the sections. Leaving only the studies that NO
+#' section was given, as this used to, rendered the fabricated citation as an
+#' author-year fact wherever another section had cited the same study honestly
+#' -- which, with claims, is nearly every study -- while print() said the
+#' marker had been left.
+#'
+#' So the sections are found again by the `## ` headings the draft was
+#' assembled with, and each is rendered with its own exceptions. Where that
+#' cannot be trusted, a study is left as a marker in more places rather than
+#' fewer: text under no heading of the draft (a preamble, a renamed or merged
+#' section) leaves every reported study, and a study whose markers moved --
+#' more of them under a heading that was given it, or fewer under one that was
+#' not -- is left in the whole text, since the reported marker may be among
+#' them. The cost is an honest citation left as a marker, in a section already
+#' marked partial; the alternative is a fabrication printed as a fact.
+#'
+#' `headings`, `marked` and `unsupplied` are per section: its heading, its
+#' marked text, and the studies its check reported. `render(x, leave)` renders
+#' one piece of text. Returns the rendered `text`, and `left`: the reported
+#' studies no marker was rendered for anywhere, which the reference list omits.
+#' @noRd
+render_revised <- function(text, headings, marked, unsupplied, render) {
+  reported <- unique(as.integer(unlist(unsupplied)))
+  if (!length(reported)) return(list(text = render(text, integer(0)), left = integer(0)))
+  # Cut before every heading line; pasting the pieces back gives `text` exactly.
+  at <- gregexpr("(?m)^##[ \t]+[^\n]*", text, perl = TRUE)[[1]]
+  at <- if (at[1] > 0L) as.integer(at) else integer(0)
+  starts <- unique(c(1L, at))
+  pieces <- substring(text, starts, c(starts[-1] - 1L, nchar(text)))
+  first <- sub("(?s)\n.*$", "", pieces, perl = TRUE)
+  head_of <- ifelse(starts %in% at,
+                    trimws(sub("[ \t]+#+[ \t]*$", "", sub("^##[ \t]+", "", first))), NA_character_)
+  # How many markers cite each reported study.
+  counts <- function(x) {
+    m <- regmatches(x, gregexpr(cite_grammar("study")$marker, x, perl = TRUE,
+                                ignore.case = TRUE))[[1]]
+    ids <- unlist(lapply(m, function(k) unique(cite_marker_ids(k, "study"))), use.names = FALSE)
+    vapply(reported, function(s) sum(ids == s), integer(1))
+  }
+  secs <- unique(headings)
+  own <- lapply(secs, function(h) unique(as.integer(unlist(unsupplied[headings == h]))))
+  before <- lapply(secs, function(h) counts(paste(marked[headings == h], collapse = "\n\n")))
+  n_piece <- lapply(pieces, counts)
+  after <- lapply(secs, function(h) {
+    k <- which(head_of %in% trimws(h))
+    if (length(k)) Reduce(`+`, n_piece[k]) else integer(length(reported))
+  })
+  moved <- vapply(seq_along(reported), function(j) {
+    any(vapply(seq_along(secs), function(i) {
+      if (reported[j] %in% own[[i]]) after[[i]][j] < before[[i]][j]
+      else after[[i]][j] > before[[i]][j]
+    }, logical(1)))
+  }, logical(1))
+  everywhere <- reported[moved]
+  leave <- lapply(head_of, function(h) {
+    i <- match(h, trimws(secs))
+    if (is.na(i)) reported else union(own[[i]], everywhere)
+  })
+  rendered_somewhere <- vapply(seq_along(reported), function(j) {
+    any(vapply(seq_along(pieces), function(p) {
+      n_piece[[p]][j] > 0L && !reported[j] %in% leave[[p]]
+    }, logical(1)))
+  }, logical(1))
+  list(text = paste(unlist(Map(render, pieces, leave), use.names = FALSE), collapse = ""),
+       left = reported[!rendered_somewhere])
 }
 
 #' @noRd

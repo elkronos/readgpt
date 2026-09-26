@@ -66,7 +66,12 @@ test_that("with no model named, the write-up sizes for the model the client asks
       return('{"sections":[{"heading":"Findings","brief":"t","claims":[1],"rationale":null}]}')
     }
     if (grepl("<draft>", messages[[length(messages)]]$content, fixed = TRUE)) return("Revised [study 1].")
-    paste(rep("A modest reduction was reported [study 1].", 60), collapse = " ")
+    # A study this call was shown: a batch draft citing [study 1] from a batch
+    # that does not hold it is now reported as citing a study it was not given.
+    last <- messages[[length(messages)]]$content
+    id <- regmatches(last, regexpr("(?<=\\[study )[0-9]+", last, perl = TRUE))
+    one <- sprintf("A modest reduction was reported [study %s].", if (length(id)) id else "1")
+    paste(rep(one, 60), collapse = " ")
   }, model = "tiny-local")
   models <- function() unique(vapply(seen$p, `[[`, "", "model"))
   prompts <- function() vapply(seen$p, function(p) as.numeric(p$prompt_tokens), 0)

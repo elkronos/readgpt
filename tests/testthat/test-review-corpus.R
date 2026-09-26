@@ -356,7 +356,11 @@ test_that("a function or a call anywhere in an entry makes it a miss", {
   }
 })
 
-test_that("a store written before this change still restores, trace and all", {
+test_that("a format-1 entry at the current key is still parsed, trace and all", {
+  # Planted at the CURRENT key, so this guards the format-1 parser (the same one
+  # that refuses the planted entries above), not compatibility: 0.5.0 wrote its
+  # format-1 entries under the older key, and those are read again once rather
+  # than restored (test-review3-corpus.R has that case).
   fx <- store_fixture()
   real <- quiet(gr_read_many(fx$doc, "Q?", "fast", client = fx$client))
   # Format 1 kept the answer's trace as the environment it is in memory.

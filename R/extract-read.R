@@ -252,7 +252,7 @@ placeholder_stated <- function(value, quote) {
   pieces <- quote_pieces(quote)
   if (!length(pieces) || all(vapply(pieces, is_placeholder_value, logical(1)))) return(FALSE)
   v <- normalise_for_match(as_chr1(value, ""))
-  any(vapply(pieces, function(p) on_word_boundaries(v, p), logical(1)))
+  any(vapply(pieces, function(p) found_whole(v, p), logical(1)))
 }
 
 #' Of several hits giving the same value, the one whose quote best backs it.
@@ -611,7 +611,12 @@ value_among <- function(x, got) {
 #' and still prove nothing:
 #'
 #' * It must sit on word boundaries in the chunk. "120 participants" occurs
-#'   inside "1120 participants", and "2" inside almost anything.
+#'   inside "1120 participants", and "2" inside almost anything. The boundary
+#'   test is span_match()'s own (found_at()), run on the chunk as written: a
+#'   separate one here rejected what span_match() rightly accepts -- a sentence
+#'   stopping before a superscript reference PDF text keeps inline
+#'   ("mortality12"), a clause of Thai or Khmer -- and require_quote deleted
+#'   those values although their quotes verified.
 #' * For an integer or a number, the value must be one of the numbers the span
 #'   states, in whatever form it states them (quote_numbers()). A real
 #'   sentence paired with an invented number was the worst case
@@ -637,24 +642,27 @@ quote_backs_value <- function(value, quote, source, field) {
   if (is.null(value) || is.null(field)) return(FALSE)
   q <- quote_passages(quote)
   txt <- as_chr1(source, "")
-  src <- normalise_for_match(txt)
-  if (!length(q$raw) || !nzchar(src)) return(FALSE)
+  # match_source(), as span_match() reads the chunk: its `text` is the
+  # normalised chunk, and the boundary test sees an em dash or a grouping
+  # space as written rather than folded into a minus sign or a word break.
+  src <- match_source(txt)
+  if (!length(q$raw) || !nzchar(src$text)) return(FALSE)
   # Bold is emphasis, in the quotation or the source: try the quotation as
   # written and, failing that, with bold taken out of both sides, as
   # span_match() does -- never out of one side only.
   if (pieces_back_value(value, unlist(q$raw, use.names = FALSE), src, field)) return(TRUE)
   if (is.null(q$plain) && !grepl("**", txt, fixed = TRUE)) return(FALSE)
   pieces_back_value(value, unlist(q$plain %||% q$raw, use.names = FALSE),
-                    normalise_for_match(strip_bold(txt)), field)
+                    match_source(strip_bold(txt)), field)
 }
 
-#' quote_backs_value() for one reading of the quotation: `pieces` in the
-#' order they are quoted and `src`, both normalised.
+#' quote_backs_value() for one reading of the quotation: `pieces`, normalised,
+#' in the order they are quoted, and `src`, a match_source() of the chunk.
 #' @noRd
 pieces_back_value <- function(value, pieces, src, field) {
   if (!length(pieces)) return(FALSE)
-  if (!all(vapply(pieces, on_word_boundaries, logical(1), src = src))) return(FALSE)
-  if (!passage_gaps_ok(pieces, src)) return(FALSE)
+  if (!all(vapply(pieces, found_whole, logical(1), src = src))) return(FALSE)
+  if (!passage_gaps_ok(pieces, src$text)) return(FALSE)
   passage <- any(vapply(pieces, function(p) {
     length(regmatches(p, gregexpr("[\\p{L}\\p{N}]+", p, perl = TRUE))[[1]]) >= 2L ||
       nchar(p) >= 12L
@@ -668,7 +676,7 @@ pieces_back_value <- function(value, pieces, src, field) {
   }
   if (passage) return(TRUE)
   v <- normalise_for_match(as_chr1(value, ""))
-  nzchar(v) && any(vapply(pieces, function(p) on_word_boundaries(v, p), logical(1)))
+  nzchar(v) && any(vapply(pieces, function(p) found_whole(v, p), logical(1)))
 }
 
 #' Do the passages of a quotation leave out only what a faithful elision may?
@@ -722,23 +730,6 @@ passage_gaps_ok <- function(pieces, src) {
 .gr_negation_words <- c("not", "no", "never", "neither", "nor", "none", "nobody", "nothing",
                         "without", "cannot", "non", "failed", "fail", "fails", "unable",
                         "lack", "lacked", "lacking", "absent", "absence")
-
-#' Does `s` occur in `src` without starting or ending inside a word or number?
-#' Both already normalised. Han and kana are not word characters here: those
-#' scripts put no boundary between words, so any cut between two of them is one.
-#' @noRd
-on_word_boundaries <- function(s, src) {
-  at <- gregexpr(s, src, fixed = TRUE)[[1]]
-  if (at[1] < 0L) return(FALSE)
-  len <- nchar(s)
-  alnum <- function(ch) grepl("^[\\p{L}\\p{N}]$", ch, perl = TRUE) &
-                        !grepl("^[\\p{Han}\\p{Hiragana}\\p{Katakana}]$", ch, perl = TRUE)
-  before <- substr(rep(src, length(at)), at - 1L, at - 1L)
-  after <- substr(rep(src, length(at)), at + len, at + len)
-  open_ok <- !alnum(substr(s, 1L, 1L)) | !alnum(before)
-  close_ok <- !alnum(substr(s, len, len)) | !alnum(after)
-  any(open_ok & close_ok)
-}
 
 #' A value as a string that distinguishes every distinct value.
 #'

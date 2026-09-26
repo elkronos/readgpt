@@ -57,11 +57,22 @@ reason not to do it.
 \code{match} is 1 for an exact quotation once whitespace, quote marks, dashes and
 case are folded away. These are the differences a faithful quotation introduces.
 It has to match whole words and whole numbers: "5\%" is not found in "25\%",
-nor "12\%" in "-12\%", nor "20" in "200". A span made of several passages (on
-separate lines, as a list, or joined by "..." or "[...]") is checked passage
-by passage and is verified when every passage is found.
+nor "12\%" in "-12\%", nor "20" in "200", nor "200" in "1 200" written with a
+thin space. Chinese, Japanese and Thai put no spaces between words, so a
+clause quoted from them may start and end anywhere; numbers in them are
+still whole. Markdown bold is not text, in the quotation or the document.
+A span made of several passages (in paragraphs, as a list, in separate
+quote marks, or joined by "..." or "[...]") is checked passage by passage
+and is verified when every passage is found, the parts either side of an
+elision in that order. What an elision leaves out may not be a negation
+("the drug did ... reduce mortality" is not in "the drug did not reduce
+mortality"), and where it leaves out the end of a sentence the part after
+it has to start one ("Revenue ... rose 30\%" is not in "Revenue fell 12\%.
+Costs rose 30\%."). A line break inside a sentence is a line wrap, not a
+new passage: the lines are checked as one.
 Below 1 it is the fraction of the span's words carried by its longest
-consecutive \strong{run} in the source, for the passage that matches worst.
+consecutive \strong{run} in the source, for the passage that matches worst; in
+a script written without spaces, the fraction of its characters.
 
 Read that number with its shape in mind. Because it measures a run, \emph{where}
 the change falls matters as much as how much changed: altering the last word

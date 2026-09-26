@@ -352,3 +352,18 @@ test_that("an extraction's answer text keeps a 16-digit number", {
   expect_identical(back$assets, x$table$assets)
   expect_identical(back$id, x$table$id)
 })
+
+test_that("an absorbed error still names the step that failed", {
+  # trace_absorb() moved the child's steps after the parent's but left each
+  # error's step number as it was, so the error pointed at one of the parent's
+  # own steps, and trace_mark_recovered() marked that one instead.
+  parent <- gr_trace()
+  readgpt:::trace_record(parent, "first", list(list(role = "user", content = "a")),
+                         readgpt:::gr_result(TRUE, text = "ok"))
+  child <- gr_trace()
+  readgpt:::trace_record(child, "fails", list(list(role = "user", content = "b")),
+                         readgpt:::gr_result(FALSE, error = "HTTP 500"))
+  readgpt:::trace_absorb(parent, child)
+  e <- parent$errors[[length(parent$errors)]]
+  expect_identical(parent$steps[[e$step]]$label, "fails")
+})

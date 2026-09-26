@@ -37,7 +37,9 @@
 #' @return A data frame with one row per model: `model`, `calls`, `paid_calls`,
 #'   `paid_in`, `paid_out`, `usd`. `sum(x$usd)` is the run's cost. A model with
 #'   no registered price contributes `NA`, so a total that silently omitted an
-#'   unpriced model is impossible.
+#'   unpriced model is impossible. The exception is a model whose every request
+#'   failed without sending a token (an embeddings request to an endpoint that
+#'   has none, say): that cost nothing, priced or not, so it contributes 0.
 #' @seealso [gr_trace_summary()], [gr_estimate_cost()], [gr_cache()],
 #'   [gr_read_many()]
 #' @export
@@ -46,9 +48,9 @@
 #' ans <- answer_document(readgpt_example(), "What was revenue?", "fast", client = cl)
 #' gr_trace_cost(ans$trace)
 #'
-#' # Priced by the model on the STEP (the recipe's model), not by the mock
-#' # that answered. A cached re-run costs nothing for a different reason:
-#' # paid_calls falls to zero while calls does not.
+#' # Priced by the model each step records: a mock's own model, at no cost.
+#' # A cached re-run costs nothing for a different reason: paid_calls falls
+#' # to zero while calls does not.
 #' cache <- gr_cache(file.path(tempdir(), "readgpt-cost-example"))
 #' again <- answer_document(readgpt_example(), "What was revenue?", "fast",
 #'                          client = gr_cache_client(cl, cache))
@@ -70,6 +72,14 @@ gr_trace_cost <- function(trace) {
   # NA, which the report renders as a dash. Zero would render as free.
   tin  <- vapply(steps, function(s) as_int1(s$tokens$input, NA_integer_), integer(1))
   tout <- vapply(steps, function(s) as_int1(s$tokens$output, NA_integer_), integer(1))
+  # A request that failed and sent no tokens cost nothing whatever its model, as
+  # as.data.frame.gr_trace() prices it. An embeddings request to a gateway
+  # without embeddings fails like that, usually for an embedding model with no
+  # registered price; priced by that model, it made the cost of a run whose
+  # every other request was priced unknown, and a corpus's `max_total_usd` a
+  # floor. A count that is unknown (NA) is not zero, so it is still priced.
+  free <- !vapply(steps, function(s) isTRUE(s$ok), logical(1)) &
+    tin %in% 0L & tout %in% 0L
 
   do.call(rbind, lapply(sort(unique(model)), function(m) {
     i <- model == m
@@ -77,9 +87,12 @@ gr_trace_cost <- function(trace) {
     data.frame(
       model = m, calls = sum(i), paid_calls = sum(i & paid),
       paid_in = as.integer(pin), paid_out = as.integer(pout),
-      usd = tryCatch(as.numeric(gr_estimate_cost(m, pin, pout)),
-                     error = function(e) NA_real_,
-                     warning = function(w) NA_real_),
+      # Priced over the rest, cached requests included, so a cached request of
+      # a model with no price is still NA. Nothing left, nothing to price.
+      usd = if (!any(i & !free)) 0
+            else tryCatch(as.numeric(gr_estimate_cost(m, pin, pout)),
+                          error = function(e) NA_real_,
+                          warning = function(w) NA_real_),
       stringsAsFactors = FALSE)
   }))
 }

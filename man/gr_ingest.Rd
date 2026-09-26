@@ -23,7 +23,8 @@ extractor claims) also raises a \code{gr_path_as_text} warning.}
 
 \item{cache}{Use the session document cache. The cache key includes the file's
 size and mtime plus every ingestion option; for a web address, the address,
-so it is downloaded once a session.}
+so it is downloaded once a session. Registering a cleaner or extractor the
+ingestion uses again (as when fixing it) starts a new cache entry.}
 
 \item{trace}{Optional \code{gr_trace}.}
 }

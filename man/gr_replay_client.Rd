@@ -46,17 +46,20 @@ one repeats.
 
 \section{Embeddings}{
 
-Embeddings are not model calls and are not recorded in a trace, so whether a
-replay reproduces a run's chunk \emph{ranking} depends on how the run embedded,
-and that is checked rather than assumed. The ranking reproduces exactly when
-the recording used a \strong{deterministic} embedder and the replay uses the
-\strong{same} one; both conditions, because replaying an API-embedded run with a
-deterministic local embedder would compute vectors the original never saw
-while looking exact. Anything else falls back to hashed lexical vectors and
-warns with class \code{gr_replay_no_embeddings}; every recorded answer is still
-reproduced, but the ranking may differ. Record a run you intend to publish
-with \code{gr_options(embedder = "lexical")}, or with your own embedder registered
-as \code{deterministic = TRUE}.
+A trace records each request to an embeddings endpoint (a step labelled
+\code{"embed.request"}, counted in \code{calls} and priced like any other request),
+but not the vectors that came back, so a replay has nothing to answer those
+requests with. Whether a replay reproduces a run's chunk \emph{ranking} therefore
+depends on how the run embedded, and that is checked rather than assumed.
+The ranking reproduces exactly when the recording used a \strong{deterministic}
+embedder and the replay uses the \strong{same} one; both conditions, because
+replaying an API-embedded run with a deterministic local embedder would
+compute vectors the original never saw while looking exact. Anything else
+falls back to hashed lexical vectors and warns with class
+\code{gr_replay_no_embeddings}; every recorded answer is still reproduced, but the
+ranking may differ. Record a run you intend to publish with
+\code{gr_options(embedder = "lexical")}, or with your own embedder registered as
+\code{deterministic = TRUE}.
 }
 
 \section{The recipe "auto" chose}{

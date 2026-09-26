@@ -1258,7 +1258,7 @@ match_files <- function(recs, files) {
       what <- unlist(lapply(offers, `[[`, "want"))
       if (!length(what)) break
       pos <- unlist(lapply(offers, `[[`, "pos"))
-      front <- pos == ave(pos, what, FUN = min)
+      front <- pos == stats::ave(pos, what, FUN = min)
       wanted <- tabulate(what[front], nbins = length(paths))
       win <- vapply(seq_along(offers), function(w) {
         p <- offers[[w]]$pick

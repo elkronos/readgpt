@@ -29,8 +29,11 @@ gr_embed(
 \item{trace}{Optional trace. With the built-in \code{"api"} embedder, each
 request to the embeddings endpoint is checked against \code{max_calls} and
 \code{max_cost_usd} (see \code{\link[=gr_options]{gr_options()}}) before it is sent and recorded in the
-trace, priced, once it is made. A request the limits refuse is a failure,
-handled by \code{fallback}.}
+trace, priced, once it is made; its tokens are counted in the trace's
+\code{embed_tokens}, not \code{tokens_in}. A request the limits refuse is a failure,
+handled by \code{fallback}. A failed request that the lexical fallback replaces
+is marked \code{recovered = TRUE} in the trace's \code{errors}: the text was still
+embedded, on word overlap, so nothing was left unread.}
 
 \item{fallback}{What to do when the embedding request fails. \strong{Defaults to
 \code{"lexical"}}: hashed bag-of-words vectors that measure word overlap, not

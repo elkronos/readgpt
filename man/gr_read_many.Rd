@@ -58,7 +58,12 @@ remaining documents \code{"skipped"}. This is a \emph{corpus} ceiling and is sep
 from \code{gr_options(max_cost_usd =)}, which is a limit per document.
 It needs a model with a registered price: against one without, cost is
 \emph{unknown} rather than zero, the ceiling cannot be enforced, and you get a
-\code{gr_corpus_cost_unknown} warning instead of a silent free pass.}
+\code{gr_corpus_cost_unknown} warning instead of a silent free pass. The one
+exception is an embedding model with no price (the chat model priced):
+the ceiling is then checked against the priced spend, which leaves out
+only the embeddings requests, and a \code{gr_corpus_cost_floor} warning names
+the model and says how to register it. \code{cost_usd} stays \code{NA} either way,
+since what those documents cost in full is not known.}
 
 \item{max_total_calls}{Stop \emph{before} a document once the run has made this
 many model calls, marking the rest \code{"skipped"}. The counterpart to
@@ -126,10 +131,15 @@ higher limit reads it again. So is a document one of whose model requests
 failed (a network error, a 5xx or 429 after the retries, a refusal, a reply
 that was not the JSON asked for): \code{error} says how many and gives the first
 error, the partial answer is in \code{answers}, and a resumed run reads it again
-rather than restoring what the failure left. A restored row keeps the
-numbers from when that document was first read, so its \code{cost_usd} is what it
-cost then, not what this run spent. That is why the run's own spend comes
-from \code{gr_trace_cost(x$trace)} and not from summing the column.
+rather than restoring what the failure left. A request the pipeline recovered
+from does not count: an embeddings request that failed and was replaced by
+lexical vectors leaves the document \code{"ok"}, with \code{partial} set. A row that a
+limit or a failed request stopped keeps \code{document_id}, \code{reader} and the chunk
+counts, since the text was read; only \code{answer} and \code{not_found} are left \code{NA}.
+A restored row keeps the numbers from when that document was first read, so
+its \code{cost_usd} is what it cost then, not what this run spent. That is why the
+run's own spend comes from \code{gr_trace_cost(x$trace)} and not from summing the
+column.
 }
 
 \section{Documents that are the same document}{

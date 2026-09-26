@@ -33,11 +33,11 @@ across the whole document (dropping a trailing bibliography, or detecting
 a running head by how often a line recurs). A document-scoped step that was
 applied per block would simply never fire. Its result is matched back to
 the blocks line by line, so such a step should remove whole lines, or cut
-the text at the start of a line, and leave the lines it keeps as they
-were: each block then keeps whichever of its lines survived. A step that
-rewrites text inside lines is matched line for line when it keeps every
-line; otherwise it is applied to each block on its own, with a
-\code{gr_clean_unmapped} warning.}
+the text short (at the start of a line or inside one), and leave the
+lines it keeps as they were: each block then keeps whichever of its lines
+survived. A step that rewrites text inside lines is matched line for line
+when it keeps every line; otherwise it is applied to each block on its
+own, with a \code{gr_clean_unmapped} warning.}
 }
 \value{
 Invisibly, \code{name}.

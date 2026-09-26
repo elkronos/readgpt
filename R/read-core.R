@@ -125,9 +125,19 @@ print.gr_answer <- function(x, ...) {
   cat(sprintf("  Q: %s\n", substr(x$question, 1, 160)))
   if (!is.null(x$trace)) {
     s <- gr_trace_summary(x$trace)
-    cat(sprintf("  %d model call(s)%s, %d in / %d out tokens, %d error(s), %s\n",
-                s$calls, if (s$cached > 0L) sprintf(" (%d cached)", s$cached) else "",
-                s$tokens_in, s$tokens_out, s$errors, format_trace_cost(x$trace)))
+    recovered <- sum(vapply(x$trace$errors, is_recovered_error, logical(1)))
+    # Model calls and embeddings requests apart, as print.gr_trace() counts
+    # them: `calls` has both, so a needle run that made one model call printed
+    # "7 model call(s)". The tokens are the model calls' alone either way.
+    cat(sprintf("  %d model call(s)%s%s, %d in / %d out tokens, %d error(s)%s, %s\n",
+                s$calls - s$embed_calls,
+                if (s$cached > 0L) sprintf(" (%d cached)", s$cached) else "",
+                if (s$embed_calls > 0L)
+                  sprintf(", %d embeddings request(s) (%d tokens)", s$embed_calls, s$embed_tokens)
+                else "",
+                s$tokens_in, s$tokens_out, s$errors,
+                if (recovered > 0L) sprintf(" (%d recovered by a fallback)", recovered) else "",
+                format_trace_cost(x$trace)))
   }
   cat("  ---\n")
   if (is_not_found(x$answer)) cat(not_found_wording(x), "\n", sep = "") else cat(x$answer, "\n")
@@ -180,6 +190,27 @@ evidence_locations <- function(ev, max_rows = 6L) {
   paste0(paste(shown, collapse = ", "), if (more > 0L) sprintf(", and %d more", more) else "")
 }
 
+#' Why an answer's evidence did not verify, in words, for partial_reasons().
+#'
+#' One count covers two different things. A quotation that is not in the
+#' document is one; an extracted value whose quotation IS there, word for word,
+#' but does not state the value is the other, and calling that "not found" sent
+#' a reader looking for a fabrication that was not there. The evidence table
+#' tells them apart (cited_verbatim(): a whole match on a row cited for a field).
+#' @noRd
+unverified_reasons <- function(x, n) {
+  if (!n) return(NULL)
+  ev <- x$evidence
+  if (!is.data.frame(ev) || !nrow(ev) || is.null(ev$verified)) {
+    return(sprintf("%s quotation(s) not found in the document", format(n, scientific = FALSE)))
+  }
+  stated <- min(n, sum(!is.na(ev$verified) & !ev$verified & cited_verbatim(ev)))
+  c(if (n - stated > 0) sprintf("%s quotation(s) not found in the document",
+                                format(n - stated, scientific = FALSE)),
+    if (stated > 0) sprintf("%s quotation(s) found but not stating the value cited",
+                            format(stated, scientific = FALSE)))
+}
+
 #' Why an answer is partial, in words, from the notes its reader left.
 #'
 #' Read with `[[exact = TRUE]]`: `$` would partial-match `degraded` to
@@ -214,7 +245,7 @@ partial_reasons <- function(x) {
     if (length(get("cited_unparsed")))
       sprintf("citation(s) that could not be checked: %s",
               paste(utils::head(get("cited_unparsed"), 5), collapse = ", ")),
-    cnt("unverified_evidence", "%s quotation(s) not found in the document"),
+    unverified_reasons(x, num("unverified_evidence")),
     if (length(get("unread_pages")))
       sprintf("page(s) never read: %s", paste(utils::head(get("unread_pages"), 10), collapse = ", ")),
     if (flag("summaries_truncated")) "summaries cut to fit",
@@ -230,12 +261,22 @@ partial_reasons <- function(x) {
   )
   err <- as_chr1(get("error"), "")
   if (!nzchar(err) && inherits(x$trace, "gr_trace") && length(x$trace$errors)) {
-    err <- as_chr1(x$trace$errors[[1]]$error, "")
+    # The first failure nothing recovered from, when there is one: an
+    # embeddings request the lexical fallback replaced is not why an answer is
+    # partial, and named first it hid the request that was. Failing that, the
+    # first recovered one, which says why the fallback was needed.
+    errs <- x$trace$errors
+    open <- Filter(Negate(is_recovered_error), errs)
+    err <- as_chr1((if (length(open)) open else errs)[[1]]$error, "")
   }
   if (nzchar(err)) why <- c(why, sprintf("first error: %s", substr(err, 1, 120)))
   if (!length(why) && is_nonblank(get("reason"))) why <- get("reason")
   why
 }
+
+#' Is a `trace$errors` entry a failure the pipeline recovered from?
+#' @noRd
+is_recovered_error <- function(e) is.list(e) && isTRUE(e[["recovered", exact = TRUE]])
 
 #' @export
 as_json.gr_answer <- function(x, pretty = TRUE, ...) {

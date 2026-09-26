@@ -63,6 +63,8 @@ onto that copy. With an older ellmer, or a chat that is not ellmer's, the
 chat's own limit applies and this is warned about once
 (\code{gr_ellmer_max_output}). Either way the provider's stop reason is reported,
 so a reply cut off at the limit comes back with \code{finish_reason = "length"}.
+For a schema-bearing call it also comes back failed (\code{ok = FALSE}), because
+ellmer raises an error for a truncated structured reply and keeps none of it.
 
 A JSON schema ellmer cannot express is sent as an instruction in the prompt
 instead of as structured output, and warned about once (\code{gr_ellmer_schema}).

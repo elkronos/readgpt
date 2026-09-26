@@ -237,7 +237,15 @@ trace_absorb <- function(parent, child) {
   parent$tokens_in <- parent$tokens_in + child$tokens_in
   parent$tokens_out <- parent$tokens_out + child$tokens_out
   parent$embed_tokens <- (parent$embed_tokens %||% 0L) + (child$embed_tokens %||% 0L)
-  parent$errors <- c(parent$errors, child$errors)
+  # An error names its step by number, so it moves with the steps: left as it
+  # was, it pointed at one of the parent's own steps, and trace_mark_recovered()
+  # marked that step instead of the one that failed.
+  parent$errors <- c(parent$errors, lapply(child$errors, function(e) {
+    if (is.list(e) && is.numeric(e$step) && length(e$step) == 1L && !is.na(e$step)) {
+      e$step <- e$step + off
+    }
+    e
+  }))
   parent$spent_usd <- (parent$spent_usd %||% 0) + (child$spent_usd %||% 0)
   if (isTRUE(child$budget_stop)) {
     parent$budget_stop <- TRUE

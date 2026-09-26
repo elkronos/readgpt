@@ -120,17 +120,24 @@ relevance scoring; \code{summary_model} by \code{hierarchical}'s summarisation.}
 
 The trace is complete either way: workers keep their own and the parent
 absorbs them, in input order, so a parallel run reports the same calls,
-tokens and cost as the same run made sequentially. Two things do not cross
-the process boundary. The limits in \code{\link[=gr_options]{gr_options()}} are checked before a
-batch is sent and not inside it, since a worker cannot see what the others
-spend. So the pre-flight check, which runs in the parent, holds a parallel
-run to its worst case, every reply at its cap and as many merge or
-summary levels as replies that size need, against both \code{max_calls} and
-\code{max_cost_usd}; and each batch goes to the workers only when it fits what
-the run has left at its own worst case, and otherwise runs one request at
-a time, each checked. And a client that keeps its
-own log in a closure, such as \code{\link[=gr_mock_client]{gr_mock_client()}}, only sees the calls made
-in this process; ask the trace instead.}
+tokens and cost as the same run made sequentially. So is what the client
+keeps: a mock's or backend's \verb{$calls()} and \verb{$embeds()}, and the hit,
+miss and write counts of an attached cache, include the calls made in
+workers, added back in input order. A replay client always runs one
+request at a time, since it hands out its recording in order.
+
+Two things do not cross the process boundary. The limits in
+\code{\link[=gr_options]{gr_options()}} are checked before a batch is sent and not inside it,
+since a worker cannot see what the others spend. So the pre-flight check,
+which runs in the parent, holds a parallel run to its worst case, every
+reply at its cap and as many merge or summary levels as replies that size
+need, against both \code{max_calls} and \code{max_cost_usd}; and each batch goes to
+the workers only when it fits what the run has left at its own worst
+case, and otherwise runs one request at a time, each checked. And a
+handler that records calls in variables of its own (a closure passed to
+\code{\link[=gr_backend_client]{gr_backend_client()}} or \code{\link[=gr_mock_client]{gr_mock_client()}}) records a worker's calls in
+that worker's copy, which this process never sees; ask the trace, or the
+client's \verb{$calls()}, instead.}
 
 \item{delay_between_calls}{Seconds to sleep between sequential calls, for
 rate-limit shaping. Honoured by \code{map_reduce}, \code{refine} and \code{skim}; the

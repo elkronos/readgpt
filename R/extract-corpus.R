@@ -491,7 +491,7 @@ extraction_table <- function(docs, answers, fields, summary) {
 #' `chunks` there since it was introduced, so an absent count is a zero rather
 #' than an unknown. The rest is from the answer's trace, where a request the
 #' pipeline recovered from carries `recovered = TRUE`; the first error named is
-#' the first unrecovered one, when there is one.
+#' the first unrecovered one, and none is named when every one was recovered.
 #' @noRd
 extraction_failed_requests <- function(docs, answers) {
   one <- function(d, key, default) {
@@ -505,9 +505,13 @@ extraction_failed_requests <- function(docs, answers) {
     if (inherits(tr, "gr_trace")) tr$errors else list()
   }
   open <- function(e) Filter(function(x) !isTRUE(x$recovered), e)
+  # Only an unrecovered error, as failed_note() names one. A recovered error
+  # did not cost the read anything, so it is never why a row is incomplete:
+  # falling back to it, a row whose extraction replies came back unreadable
+  # (which the trace records as successful requests) gave a recovered
+  # embeddings 404 from the semantic segmenter as its "first error".
   first_error <- function(d) {
-    e <- errs(d)
-    e <- if (length(open(e))) open(e) else e
+    e <- open(errs(d))
     if (!length(e)) return(NA_character_)
     substr(as_chr1(e[[1]]$error, NA_character_), 1, 120)
   }

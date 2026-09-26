@@ -325,7 +325,7 @@ test_that("several verbatim passages, listed or elided, verify", {
     "1. Overall, 25% of patients had nausea during the trial.\n2. Headache was reported by 12 patients.",
     "**Headache was reported by 12 patients.**",
     "Overall, 25% of patients had nausea ... Headache was reported by 12 patients.",
-    "Overall, 25% of patients had nausea [...] reported by 12 patients.",
+    "Overall, 25% of patients had nausea [...] Headache was reported by 12 patients.",
     "\"Overall, 25% of patients had nausea during the trial.\" \"Headache was reported by 12 patients.\"")
   for (s in good) {
     m <- readgpt:::span_match(s, src)
@@ -335,7 +335,11 @@ test_that("several verbatim passages, listed or elided, verify", {
   # Every passage has to be there: one invented line fails the span.
   bad <- c("Overall, 25% of patients had nausea during the trial.\nMortality fell by 40%.",
            "- Headache was reported by 21 patients.",
-           "Overall, 5% of patients ... reported by 12 patients.")
+           "Overall, 5% of patients ... reported by 12 patients.",
+           # An elision past a sentence end resumes at a sentence start, or
+           # "Revenue ... rose 30%" quotes "Revenue fell 12%. Costs rose 30%."
+           # (read-core-05, part 2; test-review4-verify-print.R).
+           "Overall, 25% of patients had nausea [...] reported by 12 patients.")
   for (s in bad) expect_false(readgpt:::span_match(s, src)$verified, label = s)
   # Nothing to check is still NA.
   expect_true(is.na(readgpt:::span_match("...", src)$verified))

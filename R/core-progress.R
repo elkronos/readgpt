@@ -60,7 +60,12 @@ progress_tick <- function(p, k) {
 
 #' What the run has spent, for the line. A request to a model with no registered
 #' price adds nothing to `spent_usd`, so once one has been made the total is not
-#' known and the line says so rather than show a figure that is too low.
+#' known and the line says so rather than show a figure that is too low. A
+#' request that failed without sending a token cost nothing whatever its model,
+#' as gr_trace_cost() prices it, so it leaves the total known: an embeddings
+#' request to a gateway without embeddings fails like that, usually for an
+#' embedding model with no price, and turned the line to "cost unknown" for a
+#' run whose every paid request was priced.
 #' @noRd
 progress_cost <- function(p) {
   tr <- p$trace
@@ -69,6 +74,9 @@ progress_cost <- function(p) {
   if (n > p$seen) {
     for (st in tr$steps[(p$seen + 1L):n]) {
       if (identical(st$kind, "local") || isTRUE(st$cached)) next
+      tok <- if (is.list(st$tokens)) st$tokens else list()
+      if (!isTRUE(st$ok) && identical(as_int1(tok$input, NA_integer_), 0L) &&
+          identical(as_int1(tok$output, NA_integer_), 0L)) next
       m <- as_chr1(st$model, "unknown")
       known <- unname(p$priced[m])
       if (is.na(known)) {

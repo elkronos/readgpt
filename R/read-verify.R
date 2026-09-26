@@ -280,39 +280,145 @@ found_at <- function(s, src, from = 1L) {
   # Then the first not glued to an ASCII letter or digit, the cheap part of
   # the test, so "in" skips "within" in one search. Then all of those,
   # overlapping ones included, which gregexpr() with `fixed = TRUE` steps over.
-  ends <- char_kind(sc[c(1L, length(sc))])
-  quoted <- paste0("\\Q", gsub("\\E", "\\E\\\\E\\Q", s, fixed = TRUE), "\\E")
-  before <- c("", "(?<![a-z])", "(?<![0-9a-z])")[ends[1L] + 1L]
-  after <- c("", "(?![a-z])", "(?![0-9a-z])")[ends[2L] + 1L]
-  at <- regexpr(paste0(before, quoted, after), src$text, perl = TRUE)
+  pat <- occurrence_patterns(s, sc)
+  at <- regexpr(pat$first, src$text, perl = TRUE)
   if (at < 0L) return(NA_integer_)
   if (at >= from && boundaries_ok(at, sc, src)) return(as.integer(at))
-  at <- gregexpr(paste0(before, "(?=", quoted, after, ")"), src$text, perl = TRUE)[[1]]
+  at <- gregexpr(pat$every, src$text, perl = TRUE)[[1]]
   at <- as.integer(at[at >= from])
   if (!length(at)) return(NA_integer_)
   hit <- at[boundaries_ok(at, sc, src)]
   if (length(hit)) hit[1] else NA_integer_
 }
 
+#' The regular expressions found_at() and found_every() look for `s`, whose
+#' code points are `sc`, with: `first` the first occurrence not glued to an
+#' ASCII letter or digit, `every` each of them, overlapping ones included.
+#' @noRd
+occurrence_patterns <- function(s, sc) {
+  ends <- char_kind(sc[c(1L, length(sc))])
+  quoted <- paste0("\\Q", gsub("\\E", "\\E\\\\E\\Q", s, fixed = TRUE), "\\E")
+  before <- c("", "(?<![a-z])", "(?<![0-9a-z])")[ends[1L] + 1L]
+  after <- c("", "(?![a-z])", "(?![0-9a-z])")[ends[2L] + 1L]
+  list(first = paste0(before, quoted, after),
+       every = paste0(before, "(?=", quoted, after, ")"))
+}
+
+#' Every place `s` occurs in `src`, a match_source(), as whole words and whole
+#' numbers, in order. found_at() is the fast way to the first of them.
+#' @noRd
+found_every <- function(s, src) {
+  if (!nzchar(s)) return(integer(0))
+  sc <- utf8ToInt(s)
+  at <- gregexpr(occurrence_patterns(s, sc)$every, src$text, perl = TRUE)[[1]]
+  if (at[1] < 0L) return(integer(0))
+  at <- as.integer(at)
+  at[boundaries_ok(at, sc, src)]
+}
+
 #' Does `s` occur in `src` as whole words and whole numbers? See found_at().
 #' @noRd
 found_whole <- function(s, src) !is.na(found_at(s, src))
 
-#' Do the passages of one elided quotation all occur, in order?
+#' Do the passages of one elided quotation all occur, in order, and joined
+#' only where an elision may join them?
 #'
 #' "A ... B" says that B follows A in the source, so each passage is looked for
 #' after the end of the one before it. Checked separately, "Costs fell ...
 #' Revenue grew" verified against "Revenue grew by 3%. Costs fell 12%."
+#'
+#' It also says that what the elision leaves out does not change what A and B
+#' say together, and each piece being in the source does not show that: "the
+#' drug did ... reduce mortality" verified against "the drug did not reduce
+#' mortality", and "Revenue ... rose 30%" against "Revenue fell 12%. Costs
+#' rose 30%.". So what lies between them has to pass elision_gap_ok().
+#'
+#' Each piece is taken where it first occurs after the one before, which is
+#' where it is for nearly every quotation and costs one search a piece. Only
+#' when a gap there fails are the other occurrences tried (elided_chain()): a
+#' passage may occur twice, once as it is quoted.
 #' @noRd
 found_in_order <- function(pieces, src) {
   if (!length(pieces)) return(FALSE)
+  if (!is.list(src)) src <- match_source(src)
+  n <- length(pieces)
+  at <- integer(n)
   from <- 1L
-  for (p in pieces) {
-    at <- found_at(p, src, from)
-    if (is.na(at)) return(FALSE)
-    from <- at + nchar(p)
+  for (i in seq_len(n)) {
+    at[i] <- found_at(pieces[i], src, from)
+    # The first occurrence of each after the one before is as early as any
+    # can be, so when one cannot be found no order of them can.
+    if (is.na(at[i])) return(FALSE)
+    from <- at[i] + nchar(pieces[i])
   }
-  TRUE
+  if (n < 2L) return(TRUE)
+  ends <- at + nchar(pieces) - 1L
+  gaps <- vapply(seq_len(n - 1L), function(i) elision_gap_ok(src, ends[i], at[i + 1L]),
+                 logical(1))
+  all(gaps) || elided_chain(pieces, src)
+}
+
+#' found_in_order() over every occurrence of every piece: can the pieces be
+#' placed in order, each gap passing elision_gap_ok()? Remembers, for each
+#' piece and each place the one before it ends, whether the rest can follow,
+#' so no placement is tried twice. A source that repeats the pieces hundreds
+#' of times could still ask for millions of gaps to be read, so the search
+#' reads at most `budget` of them, and a quotation it could not place within
+#' that is not verified: a check that gives up says so, as any other does.
+#' @noRd
+elided_chain <- function(pieces, src, budget = 2000L) {
+  n <- length(pieces)
+  len <- nchar(pieces)
+  occ <- lapply(pieces, found_every, src = src)
+  seen <- new.env(parent = emptyenv())
+  left <- budget
+  rest <- function(i, prev) {
+    key <- paste(i, prev)
+    if (!is.null(seen[[key]])) return(seen[[key]])
+    ok <- FALSE
+    for (a in occ[[i]][occ[[i]] > prev]) {
+      if (i > 1L) {
+        if (left <= 0L) break
+        left <<- left - 1L
+        if (!elision_gap_ok(src, prev, a)) next
+      }
+      if (i == n || rest(i + 1L, a + len[i] - 1L)) {
+        ok <- TRUE
+        break
+      }
+    }
+    assign(key, ok, envir = seen)
+    ok
+  }
+  rest(1L, 0L)
+}
+
+#' Does what an elision leaves out keep what the passages either side of it
+#' say?
+#'
+#' `prev` is where the passage before the elision ends in `src$text` (a
+#' match_source()), and `at` where the one after it starts. The rule
+#' passage_gaps_ok() holds an extracted value's quotation to, with the same
+#' list of negations: within one sentence, the words left out must not include
+#' a negation (.gr_negation_words), or "the drug did ... reduce mortality" is
+#' quoted from "the drug did not reduce mortality"; across a sentence end, the
+#' passage after the elision must start a sentence, or "Revenue ... rose 30%"
+#' is quoted from "Revenue fell 12%. Costs rose 30%.". A sentence ends at a
+#' full stop, question or exclamation mark, colon or semicolon followed by a
+#' space or by the next passage, as passage_gaps_ok() reads one, or at the
+#' full-width marks of Chinese and Japanese, which no space follows.
+#' @noRd
+elision_gap_ok <- function(src, prev, at) {
+  gap <- substr(src$text, prev + 1L, at - 1L)
+  stops <- "[.!?;:\u3002\uff01\uff1f\uff1b\uff1a]"
+  if (!grepl("[.!?;:][\"')\\]]*(?:\\s|$)|[\u3002\uff01\uff1f\uff1b\uff1a]", gap, perl = TRUE)) {
+    w <- regmatches(gap, gregexpr("[\\p{L}']+", gap, perl = TRUE))[[1]]
+    return(!any(w %in% .gr_negation_words | grepl("n't$", w)))
+  }
+  # The passage after the gap starts a sentence when the gap ends with one's
+  # end, past any space, quote mark or opening bracket. The gap alone decides:
+  # it holds a sentence end, so what those leave of it is never empty.
+  grepl(paste0(stops, "[\"')\\]]*[\\s\"'(\\[]*$"), gap, perl = TRUE)
 }
 
 #' The passages a model's quotation is made of.
@@ -468,8 +574,9 @@ longest_quoted_run <- function(span_words, source_norm, sep = " ") {
 
 #' How much of a passage that was not found is still a quotation: the
 #' fraction of its units its longest run carries, for the piece that matches
-#' worst. Pieces each found but out of the order an elision claims are scored
-#' as one run, which they are not.
+#' worst. Pieces each found, but out of the order an elision claims or across
+#' a gap it may not leave out (elision_gap_ok()), are scored as one run, which
+#' they are not.
 #' @noRd
 passage_score <- function(pieces, src) {
   frac <- function(p) {
@@ -716,7 +823,11 @@ cited_chunks <- function(text) cited_ids(text, "chunk")
 #' A span made of several passages (in paragraphs, as a list, in separate
 #' quote marks, or joined by "..." or "\[...\]") is checked passage by passage
 #' and is verified when every passage is found, the parts either side of an
-#' elision in that order. A line break inside a sentence is a line wrap, not a
+#' elision in that order. What an elision leaves out may not be a negation
+#' ("the drug did ... reduce mortality" is not in "the drug did not reduce
+#' mortality"), and where it leaves out the end of a sentence the part after
+#' it has to start one ("Revenue ... rose 30%" is not in "Revenue fell 12%.
+#' Costs rose 30%."). A line break inside a sentence is a line wrap, not a
 #' new passage: the lines are checked as one.
 #' Below 1 it is the fraction of the span's words carried by its longest
 #' consecutive **run** in the source, for the passage that matches worst; in

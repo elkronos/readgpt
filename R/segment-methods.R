@@ -418,6 +418,47 @@ seg_call_usd <- function(client, input_tokens, max_output) {
   as_num1(quiet(gr_estimate_cost(model, input_tokens, out)), NA_real_)
 }
 
+#' Where a trace stands before a segmenter's batch of requests, for
+#' seg_mark_recovered() to mark what the batch recorded after it.
+#' @noRd
+seg_trace_mark <- function(trace) {
+  if (!inherits(trace, "gr_trace")) return(c(errors = 0L, steps = 0L))
+  c(errors = length(trace$errors), steps = length(trace$steps))
+}
+
+#' Mark the `label` requests that failed after `mark` as recovered.
+#'
+#' For a segmenter that loses no text when its request fails: `contextual`
+#' keeps the chunk without its header, and `proposition` keeps the batch as
+#' written (or, when every batch failed, segments the document by sentence).
+#' The shared contract is that such a failure's entry in `trace$errors`
+#' carries `recovered = TRUE`, which failed_note() passes over. Left unmarked,
+#' one failed context call made gr_read_many() call a document it had read in
+#' full "failed ... not read in full", keep it out of the store, and read it
+#' again on every run.
+#'
+#' Matched by label within what the batch added, not by an error's `step`: a
+#' parallel batch's errors arrive from each worker's own trace, numbered from
+#' that trace's first step, so the number does not locate the step here. Each
+#' item makes at most one request, which records one step and, when it fails,
+#' one error, so the failed steps with this label are those requests.
+#' @noRd
+seg_mark_recovered <- function(trace, mark, label) {
+  if (!inherits(trace, "gr_trace")) return(invisible(NULL))
+  errs <- seq_along(trace$errors)
+  for (i in errs[errs > as.integer(mark[["errors"]])]) {
+    if (identical(as_chr1(trace$errors[[i]]$label, ""), label)) trace$errors[[i]]$recovered <- TRUE
+  }
+  steps <- seq_along(trace$steps)
+  for (s in steps[steps > as.integer(mark[["steps"]])]) {
+    st <- trace$steps[[s]]
+    if (identical(as_chr1(st$label, ""), label) && identical(st$ok, FALSE)) {
+      trace$steps[[s]]$recovered <- TRUE
+    }
+  }
+  invisible(NULL)
+}
+
 #' @noRd
 seg_contextual <- function(doc, spec, client, trace) {
   # Contextual retrieval: each chunk keeps a short pointer to
@@ -445,7 +486,8 @@ seg_contextual <- function(doc, spec, client, trace) {
     # The longest excerpt with its reply at the cap: what gr_lapply() holds a
     # parallel batch to, since the workers cannot see what the run spends.
     worst <- seg_call_usd(client, sum(gr_count_tokens(c(sys_prompt, ask("")))) + max(d$tokens), 90L)
-    unlist(gr_lapply(seq_len(nrow(d)), function(i, trace) {
+    mark <- seg_trace_mark(trace)
+    blurbs <- unlist(gr_lapply(seq_len(nrow(d)), function(i, trace) {
       if (!trace_can_call(trace)) return("")
       res <- gr_call(client, list(
         list(role = "system", content = sys_prompt),
@@ -455,6 +497,11 @@ seg_contextual <- function(doc, spec, client, trace) {
     }, parallel = spec$parallel, label = "context blurb", trace = trace,
        client = client, item_usd = worst),
       use.names = FALSE)
+    # A chunk whose context call failed is kept, whole, without its header: the
+    # failure cost the chunk a pointer, not any of the document. Marked after
+    # the batch, which may have run in workers whose traces are absorbed here.
+    seg_mark_recovered(trace, mark, "segment.context")
+    blurbs
   } else {
     vapply(seq_len(nrow(d)), function(i) {
       bits <- c(sprintf("Source: %s", title),
@@ -530,6 +577,7 @@ seg_proposition <- function(doc, spec, client, trace) {
   # parallel batch to, since the workers cannot see what the run spends.
   worst <- seg_call_usd(client, gr_count_tokens(sys_prompt) +
                           max(c(0L, gr_count_tokens(batches$text))), 2000L)
+  mark <- seg_trace_mark(trace)
   res <- gr_lapply(seq_along(batches$text), function(i, trace) {
     if (!trace_can_call(trace)) return(keep(i))
     out <- gr_call_json(client, list(
@@ -546,6 +594,11 @@ seg_proposition <- function(doc, spec, client, trace) {
     if (!length(p)) keep(i) else list(p = p, kept = FALSE)
   }, parallel = spec$parallel, label = "proposition batch", trace = trace,
      client = client, item_usd = worst)
+  # Every batch whose request failed is kept as written, or, when all of them
+  # failed, the document is segmented by sentence below: either way no text is
+  # lost, so the failures are recovered ones. The warnings below still say
+  # which chunks are not propositions.
+  seg_mark_recovered(trace, mark, "segment.proposition")
   kept <- vapply(res, function(r) isTRUE(r$kept), logical(1))
   if (all(kept)) {
     gr_warn("Proposition extraction returned nothing; falling back to 'sentence'.",

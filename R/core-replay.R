@@ -156,9 +156,20 @@ gr_replay_client <- function(source, strict = TRUE) {
     idx$prompt[[kp]] <- unique(c(idx$prompt[[kp]], as_chr1(st$model, "?")))
   }
 
-  models <- vapply(steps, function(s) as_chr1(s$model, NA_character_), character(1))
-  models <- models[!is.na(models)]
-  default_model <- if (length(models)) names(sort(table(models), decreasing = TRUE))[1] else "replay"
+  # The model a replayed read asks for when it names none is this client's, so
+  # it has to be the one the recorded reads asked for. Their pre-flight notes
+  # say which that was. The model most calls asked for is only a guess at it,
+  # and a wrong one when a cheaper skim_model or summary_model made most of
+  # them: the replay then asked for that model on the answer call, found
+  # nothing recorded under it and stopped with gr_replay_miss. A recording
+  # without the notes, or whose reads asked for different models, falls back
+  # to the guess.
+  default_model <- replay_read_model(source)
+  if (is.na(default_model)) {
+    models <- vapply(steps, function(s) as_chr1(s$model, NA_character_), character(1))
+    models <- models[!is.na(models)]
+    default_model <- if (length(models)) names(sort(table(models), decreasing = TRUE))[1] else "replay"
+  }
 
   structure(list(
     model = default_model, api = "replay", base_url = "replay://",
@@ -270,6 +281,43 @@ replay_steps <- function(source) {
   out
 }
 
+#' A recording as a plain list, or NULL when it cannot be read. For the
+#' lookups beside replay_steps() that find a note in the recording: those make
+#' do without it, and replay_steps() is what reports a source it cannot use.
+#' @noRd
+replay_source_list <- function(source) {
+  obj <- source
+  if (inherits(source, "gr_trace")) obj <- trace_as_list(source)
+  else if (is.character(source) && length(source) == 1L && file.exists(source)) {
+    obj <- tryCatch(jsonlite::fromJSON(source, simplifyVector = FALSE),
+                    error = function(e) NULL)
+  }
+  if (is.list(obj)) obj else NULL
+}
+
+#' The model the recorded reads asked for when they named none, or NA.
+#'
+#' gr_read() notes it on every pre-flight (`detail$model`). A read whose
+#' settings name a model asks for that model again when it is replayed, so only
+#' the reads that followed the client say what the replay client's own model
+#' has to be. NA when no note says, or when the notes name more than one model
+#' (a corpus read through several clients), so the caller falls back to the
+#' model most calls asked for.
+#' @noRd
+replay_read_model <- function(source) {
+  obj <- replay_source_list(source)
+  if (is.null(obj)) return(NA_character_)
+  m <- unlist(lapply(obj$steps %||% list(), function(st) {
+    if (!is.list(st) || !identical(as_chr1(st$label, ""), "preflight")) return(NULL)
+    d <- if (is.list(st$detail)) st$detail else list()
+    settings <- if (is.list(d$settings)) d$settings else list()
+    if (!is.null(settings[["model", exact = TRUE]])) return(NULL)
+    as_chr1(d[["model", exact = TRUE]], NA_character_)
+  }), use.names = FALSE)
+  m <- unique(m[!is.na(m) & nzchar(m)])
+  if (length(m) == 1L) m else NA_character_
+}
+
 #' Which embedder produced the vectors in the recorded run, if any.
 #'
 #' The transcript holds each embeddings request but not the vectors it
@@ -284,13 +332,8 @@ replay_steps <- function(source) {
 #' recording used more than one embedder.
 #' @noRd
 replay_embed_source <- function(source) {
-  obj <- source
-  if (inherits(source, "gr_trace")) obj <- trace_as_list(source)
-  else if (is.character(source) && length(source) == 1L && file.exists(source)) {
-    obj <- tryCatch(jsonlite::fromJSON(source, simplifyVector = FALSE),
-                    error = function(e) NULL)
-  }
-  if (!is.list(obj)) return(NA_character_)
+  obj <- replay_source_list(source)
+  if (is.null(obj)) return(NA_character_)
   srcs <- unlist(lapply(obj$steps %||% list(), function(st) {
     if (!is.list(st) || !identical(as_chr1(st$label, ""), "embed")) return(NULL)
     as_chr1((st$detail %||% list())$source, NA_character_)
@@ -304,13 +347,8 @@ replay_embed_source <- function(source) {
 #' @noRd
 replay_auto_choices <- function(source) {
   none <- data.frame(key = character(0), chose = character(0), stringsAsFactors = FALSE)
-  obj <- source
-  if (inherits(source, "gr_trace")) obj <- trace_as_list(source)
-  else if (is.character(source) && length(source) == 1L && file.exists(source)) {
-    obj <- tryCatch(jsonlite::fromJSON(source, simplifyVector = FALSE),
-                    error = function(e) NULL)
-  }
-  if (!is.list(obj)) return(none)
+  obj <- replay_source_list(source)
+  if (is.null(obj)) return(none)
   rows <- lapply(obj$steps %||% list(), function(st) {
     if (!is.list(st) || !identical(as_chr1(st$label, ""), "auto_recipe")) return(NULL)
     d <- st$detail %||% list()

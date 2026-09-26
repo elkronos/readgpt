@@ -103,8 +103,11 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims 
     add("  failed to read", sum(!t$status %in% c("ok", "restored", "duplicate", "incomplete") &
                                   own),
         "no values; these are outstanding")
+    # Not "no verbatim span": a sentence that is in the chunk word for word but
+    # does not state the value is unverified too (verified = FALSE, match = 1).
     add("values unsupported", sum(t$n_unverified, na.rm = TRUE),
-        "no verbatim span in the chunk cited")
+        paste0("not verified: no quote, a quote not found in the chunk cited, or one that ",
+               "does not state the value"))
   }
   if (inherits(claims, "gr_claims")) {
     cw <- claims$claims
@@ -451,14 +454,38 @@ audit_evidence <- function(extraction) {
   if (!is.data.frame(ev) || !nrow(ev)) return(NULL)
   keep <- intersect(c("document", "field", "page", "section", "quote", "verified", "match"),
                     names(ev))
-  bad <- sum(!isTRUE_vec(ev$verified))
+  unver <- !isTRUE_vec(ev$verified)
+  # `verified` asks two things of a quote: that it is in the chunk cited, and
+  # that it states the value. A sentence that is there word for word
+  # (match = 1) and does not state it was reported as not found.
+  there <- sum(unver & cited_verbatim(ev))
+  gone <- sum(unver) - there
   c("<h2>Where every value came from</h2>",
     sprintf("<p class='sub'>%d span(s); %s</p>", nrow(ev),
-            if (bad) sprintf("<span class='flag'>%d could not be found in the chunk cited</span>.", bad)
+            if (gone || there) sprintf("<span class='flag'>%s</span>.", paste(c(
+              if (gone) sprintf("%d could not be found in the chunk cited", gone),
+              if (there) sprintf("%d found in the chunk cited but not stating the value cited",
+                                 there)), collapse = "; "))
             else "<span class='ok'>every one was found in the chunk cited</span>."),
     html_table(ev[, keep, drop = FALSE],
                numeric_cols = intersect(c("page", "match"), keep),
                flag = list(verified = function(v) !isTRUE_vec(v))))
+}
+
+#' Which evidence rows quote their chunk word for word (`match` 1) for the
+#' value of a field.
+#'
+#' `verified` asks more of a quote cited for a field: that it state the value
+#' (quote_backs_value()), so such a row can be `verified = FALSE` and still be
+#' in the chunk. gr_verify_evidence() draws the same line. FALSE where `match`
+#' or `field` is absent or NA. `[[`, not `$`: `$` on a data frame
+#' partial-matches.
+#' @noRd
+cited_verbatim <- function(ev) {
+  n <- nrow(ev)
+  m <- if (is.null(ev[["match"]])) rep(NA_real_, n) else suppressWarnings(as.numeric(ev[["match"]]))
+  f <- if (is.null(ev[["field"]])) rep(NA_character_, n) else as.character(ev[["field"]])
+  !is.na(m) & m >= 1 & !is.na(f) & nzchar(f)
 }
 
 #' The claims, the studies behind them, and where each one ended up.
@@ -829,10 +856,17 @@ answer_passages <- function(x) {
   nums <- answer_numbers(x$answer)
   kind <- as.character(col("kind"))
   quoted <- !is.na(kind) & kind == "extracted"
-  bad <- sum(quoted & !is.na(col("verified")) & !isTRUE_vec(col("verified")))
-  c(sprintf("<p class='sub'>%d passage(s) from %d chunk(s), in the order they appear in the document.%s</p>",
+  unver <- quoted & !is.na(col("verified")) & !isTRUE_vec(col("verified"))
+  # An extracted value's quote can be in the chunk word for word and still not
+  # verify, by not stating the value (cited_verbatim()): not "not found".
+  there <- sum(unver & cited_verbatim(ev))
+  bad <- sum(unver) - there
+  c(sprintf("<p class='sub'>%d passage(s) from %d chunk(s), in the order they appear in the document.%s%s</p>",
             nrow(ev), length(groups),
             if (bad) sprintf(" <span class='flag'>%d quotation(s) could not be found in the chunk they cite.</span>", bad)
+            else "",
+            if (there) sprintf(paste0(" <span class='flag'>%d quotation(s) found in the chunk they ",
+                                      "cite do not state the value they are cited for.</span>"), there)
             else ""),
     unlist(lapply(groups, function(g) {
       rows <- ev[o[key[o] == g], , drop = FALSE]
@@ -876,6 +910,7 @@ evidence_card <- function(rows, cited, nums) {
   if (any(quoted)) {
     verified <- as.logical(get("verified"))
     match <- suppressWarnings(as.numeric(get("match")))
+    unstated <- cited_verbatim(rows)
     folded <- if (!is.na(passage)) normalised_with_map(passage)
     for (i in which(quoted)) {
       # Only a quotation the check found is marked, so the page and
@@ -884,6 +919,11 @@ evidence_card <- function(rows, cited, nums) {
       if (!is.null(sp)) { spans[[length(spans) + 1L]] <- sp; next }
       unplaced <- c(unplaced, if (isTRUE(verified[i]))
         sprintf("<p class='sub'>Quoted, and found in this chunk, but not placed in the text shown: &ldquo;%s&rdquo;</p>",
+                esc(text[i]))
+      # In the chunk word for word, and not verified: an extracted value its
+      # quote does not state. "Not found ... 100%" said the opposite of both.
+      else if (identical(verified[i], FALSE) && unstated[i])
+        sprintf("<p class='flag'>Quoted, and found in this chunk, but it does not state the value it is cited for: &ldquo;%s&rdquo;</p>",
                 esc(text[i]))
       else if (identical(verified[i], FALSE))
         sprintf("<p class='flag'>Quoted, but not found in this chunk%s: &ldquo;%s&rdquo;</p>",

@@ -24,11 +24,20 @@ gr_trace(run_id = NULL, meta = list())
 A \code{gr_trace}. It is an environment, so it accumulates by reference:
 pass the same trace to several calls and they all record into it. Fields:
 \code{run_id}, \code{started}, \code{meta}, \code{steps}, \code{calls}, \code{cached}, \code{tokens_in},
-\code{tokens_out}, \code{errors}, \code{budget_stop}, \code{stop_reason}, \code{spent_usd}.
+\code{tokens_out}, \code{embed_tokens}, \code{errors}, \code{budget_stop}, \code{stop_reason},
+\code{spent_usd}.
 \code{cached} counts the calls answered from a \code{\link[=gr_cache]{gr_cache()}} or a
 \code{\link[=gr_replay_client]{gr_replay_client()}} rather than the network, so \code{calls - cached} is what
 the run paid for. \code{calls} includes requests to an embeddings endpoint,
-recorded as steps labelled \code{"embed.request"}.
+recorded as steps labelled \code{"embed.request"}. Their tokens are counted in
+\code{embed_tokens}, not in \code{tokens_in}, so \code{tokens_in} and \code{tokens_out} stay
+the size of the model calls' prompts and replies.
+
+\code{errors} has one entry per request that failed: its \code{step}, \code{label} and
+\code{error}. A failure the run recovered from without losing any input, such
+as an embeddings request replaced by \code{\link[=gr_embed]{gr_embed()}}'s lexical fallback,
+also carries \code{recovered = TRUE}. The answer still says what the fallback
+cost it (it is marked partial), but the document was read in full.
 
 \code{budget_stop} is \code{TRUE} once a limit stopped the run, and \code{stop_reason}
 says which: \code{"calls"} for \code{max_calls}, \code{"cost"} for \code{max_cost_usd} (see
@@ -55,9 +64,9 @@ recorded one: the file name, web address or \code{"<inline text>"}.}
 \item{\code{model}, \code{ok}, \code{cached}}{The model, whether a usable reply came
 back, and whether it came from a \code{\link[=gr_cache]{gr_cache()}} or a \code{\link[=gr_replay_client]{gr_replay_client()}}.}
 \item{\code{tokens_in}, \code{tokens_out}}{The size of the prompt and the reply.}
-\item{\code{usd}}{What the request cost, 0 when it came from a cache. \code{NA}
-when the model has no registered price, as in \code{\link[=gr_trace_cost]{gr_trace_cost()}}, whose
-total the column adds up to.}
+\item{\code{usd}}{What the request cost, 0 when it came from a cache or failed
+without sending any tokens. \code{NA} when the model has no registered price,
+as in \code{\link[=gr_trace_cost]{gr_trace_cost()}}, whose total the column adds up to.}
 \item{\code{seconds}}{How long the request took, retries included. \code{NA} for a
 trace written by a version of readgpt that did not time requests.}
 \item{\code{error}}{The error, or \code{NA}.}

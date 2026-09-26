@@ -649,11 +649,14 @@ the id is the same string for the same document in every run and on every
 machine.
 
 **You can see what it cost.** `gr_trace_cost()` prices a run using each step's
-own model and counts only the calls that were issued:
+own model and counts only the calls that were issued. A read uses the client's
+model unless you name one; here the mock client is free, so a priced model is
+named to show a bill:
 
 ```r
 cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
-run <- answer_document(readgpt_example(), "What was revenue?", "fast", client = cl)
+run <- answer_document(readgpt_example(), "What was revenue?", "fast", client = cl,
+                       model = "gpt-5.6-terra")
 gr_trace_cost(run$trace)
 #>           model calls paid_calls paid_in paid_out      usd
 #> 1 gpt-5.6-terra     1          1     595       13 0.001346

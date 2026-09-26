@@ -78,17 +78,40 @@ read_screen <- function(chunks, question, client, spec, trace) {
      temperature = spec$temperature, trace = trace, label = "screen.decide")
 
   v <- if (isTRUE(out$ok)) out$value else list()
+  failed <- !isTRUE(out$ok) && !capped
+  # No reply that could be read, no decision: NA, not "unclear". "Unclear" is a
+  # judgement the model made about an excerpt it read, and gr_flow() and
+  # gr_calibrate() count it as one. A provider outage recorded that way showed
+  # every document as a model deferral and none as unread.
   # json_field(): `$` partial-matches, so a reply carrying `decisions` satisfied
   # a read of `decision` and a real "include" was recorded from a key the schema
   # never defined.
-  decision <- screen_decision(json_field(v, "decision"))
+  decision <- if (isTRUE(out$ok)) screen_decision(json_field(v, "decision")) else NA_character_
+  # Said in the notes, where partial_reasons() and gr_read_many() look. A reply
+  # that arrived but was not the JSON asked for has no transport error of its own.
+  error <- if (!failed) NA_character_ else {
+    res <- out$result
+    if (!is.null(res) && !isTRUE(res$ok)) as_chr1(res$error, "the request failed")
+    else "the reply was not the JSON object the screening schema asks for"
+  }
   quote <- as_chr1(json_text(v, "quote"), "")
+  # Checked against the document's words, not a model's. A segmenter that puts
+  # model-written text into `text` (a contextual header, propositions it
+  # rewrote) keeps the original in `source_text`; NA, or no such column, means
+  # `text` is itself the source. A quote copied out of a header would otherwise
+  # verify as a sentence of the paper.
+  said <- sub$text
+  if ("source_text" %in% names(sub)) {
+    orig <- as.character(sub[["source_text"]])
+    said <- ifelse(is.na(orig), said, orig)
+  }
   ev <- if (nzchar(trimws(quote))) {
     evidence_table(sub$chunk_id[1], quote, sub$page[1], sub$section[1],
-                   source_text = paste(sub$text, collapse = "\n\n"), kind = "extracted")
+                   source_text = paste(said, collapse = "\n\n"), kind = "extracted")
   } else NULL
 
-  new_answer(decision, "screen", question, if (is.null(ev)) integer(0) else ev$chunk_id,
+  new_answer(if (is.na(decision)) "" else decision, "screen", question,
+             if (is.null(ev)) integer(0) else ev$chunk_id,
              trace, chunks_sent = if (capped) integer(0) else sub$chunk_id, evidence = ev,
              # A failed call is partial. "unclear" is NOT: it is a correct answer
              # meaning a person has to look, and marking it partial would put a
@@ -102,7 +125,7 @@ read_screen <- function(chunks, question, client, spec, trace) {
                           seen_tokens = seen_tokens,
                           document_tokens = as.integer(sum(d$tokens)),
                           truncated = truncated,
-                          failed_call = !isTRUE(out$ok) && !capped))
+                          failed_call = failed, error = error))
 }
 
 #' Decide which documents a review should read
@@ -154,7 +177,10 @@ read_screen <- function(chunks, question, client, spec, trace) {
 #'
 #' A document that could not be read at all gets `status = "failed"` and no
 #' decision. It is not excluded, and it is not silently absent: it is an
-#' outstanding job. A review whose denominator is unknown is not a review.
+#' outstanding job. A review whose denominator is unknown is not a review. The
+#' same goes for a document whose screening request failed, or whose reply was
+#' not the JSON asked for: no model judged it, so it is not "unclear" either.
+#' `error` says what happened, and with a `store` the next run screens it again.
 #'
 #' @section Reporting it:
 #' `table(x$table$decision)` is the screening result and
@@ -310,11 +336,13 @@ criteria_prompt <- function(include, exclude) {
 
 #' Read a decision back, defaulting to the one that is never wrong.
 #'
-#' Anything unrecognised -- a failed call, a model that answered in prose, a new
-#' label -- becomes "unclear", which routes the document to a person. The two
-#' alternatives are both worse: defaulting to "exclude" loses studies silently,
-#' and defaulting to "include" quietly buys a full extraction for every document
-#' the screener could not read.
+#' For a reply that was read: anything unrecognised in it -- a missing field, a
+#' new label -- becomes "unclear", which routes the document to a person. The
+#' two alternatives are both worse: defaulting to "exclude" loses studies
+#' silently, and defaulting to "include" quietly buys a full extraction for
+#' every document the screener could not read. A call that failed, or a reply
+#' that was not JSON at all, never reaches this: `read_screen()` records no
+#' decision for it, and the corpus marks the document "failed".
 #' @noRd
 screen_decision <- function(x) {
   v <- tolower(trimws(as_chr1(x, "")))

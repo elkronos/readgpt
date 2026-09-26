@@ -62,52 +62,147 @@ bib_columns <- function(tab, bib = NULL) {
 
 #' Surnames from a free-text author list, or NULL when it cannot be done safely.
 #'
-#' Handles the three shapes that actually turn up. Anything else returns the
-#' string whole, which renders as one "author" and is visibly odd rather than
-#' quietly wrong.
+#' Reads the shapes that actually turn up: "Smith, J., Okafor, A., & Lee, K."
+#' and its relatives, "Smith JA, Okafor AB" (Vancouver, which is how PubMed
+#' exports), "John Smith and Aisha Okafor", any of those separated by
+#' semicolons, and a corporate author such as "World Health Organization", which
+#' is one name and is kept whole.
+#'
+#' Anything it cannot read confidently comes back NULL, never as a best guess:
+#' bib_key() then has no key and the whole run falls back to markers. The best
+#' guesses were the fault. "Smith JA, Okafor AB" gave the surnames "JA" and
+#' "AB"; the ", &" before an APA list's last author left an empty slot that
+#' swallowed that author; "John Smith, Mary Jones" was read as surname-comma-
+#' initials because "Mary" is four letters. Each came out as a rendered
+#' citation, which this file promises is a fact about the extraction.
 #' @noRd
 bib_surnames <- function(x) {
   s <- trimws(as_chr1(x))
   if (!nzchar(s)) return(character(0))
   s <- sub("[,;[:space:]]*(et al\\.?|and others)[.]?$", "", s, ignore.case = TRUE)
-  parts <- if (grepl(";", s, fixed = TRUE)) {
-    strsplit(s, "[[:space:]]*;[[:space:]]*")[[1]]
-  } else if (grepl("^[^,]+,[[:space:]]*[[:alpha:].]{1,4}\\b", s)) {
-    # "Smith, J., Okafor, A." -- surname-comma-initials, repeated. Split before
-    # each surname rather than on every comma, which would separate the initials
-    # from the name they belong to.
-    #
-    # The lookahead allows a lowercase particle and a multi-word surname, so
-    # "van der Berg" and "de la Cruz" survive. Requiring an initial capital
-    # dropped them silently, which is the worst way to get a citation wrong:
-    # the reference list is short by one author and nothing says so.
-    # "Smith, J. and Okafor, A." mixes separators: the last author is joined with
-    # "and" rather than a comma, so a comma-only split found one author and
-    # dropped the rest. Normalise first, then split once.
-    s2 <- gsub("[[:space:]]+(and|&)[[:space:]]+", ", ", s, ignore.case = TRUE, perl = TRUE)
-    trimws(strsplit(s2,
-      "(?<=[.[:alpha:]]),[[:space:]]+(?=[[:alpha:]][[:alpha:]'\u2019-]*(?:[[:space:]]+[[:alpha:]'\u2019-]+)*,)",
-      perl = TRUE)[[1]])
-  } else {
-    trimws(strsplit(s, "[[:space:]]*(,|&|[[:space:]]and[[:space:]])[[:space:]]*",
-                    perl = TRUE)[[1]])
+  s <- sub("[,;&[:space:]]+$", "", s)
+  # A string of punctuation has nobody in it, and an empty surname renders as
+  # "( , 2019)". With no surnames the caller gets no key, and the run falls back
+  # to markers.
+  if (!grepl("[[:alpha:]]", s)) return(character(0))
+  # One organisation is one author, and the "and" in "Centers for Disease
+  # Control and Prevention" is not a separator. Mixed into a list of people it
+  # cannot be told apart from them, so that is left unread.
+  if (grepl(.gr_bib_corporate, s, perl = TRUE)) return(if (grepl("[,;]", s)) NULL else s)
+
+  # ", &" and ", and" are ONE separator. Turning "&" into ", " and then
+  # splitting on commas left an empty slot before the last author, and the
+  # surname-comma-initials split then lost that author.
+  and_sep <- "[[:space:]]*,?[[:space:]]*(?:&|\\band\\b)[[:space:]]*"
+  pieces <- function(v) {
+    v <- trimws(v)
+    v[grepl("[[:alpha:]]", v) & !grepl(.gr_bib_suffix_re, v)]
   }
-  parts <- trimws(parts)
-  parts <- parts[nzchar(parts)]
-  if (!length(parts)) return(character(0))
-  out <- vapply(parts, function(p) {
-    p <- trimws(p)
-    if (grepl(",", p, fixed = TRUE)) return(trimws(sub(",.*$", "", p)))   # "Smith, J."
-    # "John Smith" -- the surname is the last word that is not an initial.
-    w <- strsplit(p, "[[:space:]]+")[[1]]
-    w <- w[!grepl("^[[:upper:]]\\.?$", w)]
-    if (!length(w)) p else w[length(w)]
-  }, character(1), USE.NAMES = FALSE)
-  # A string of punctuation parses to an empty "surname", and an empty surname
-  # renders as a citation with nobody in it -- "( , 2019)". Nothing is better
-  # than that: with no surnames the caller gets no key, and the whole run falls
-  # back to markers.
-  out[nzchar(trimws(out))]
+  sur <- if (grepl(";", s, fixed = TRUE)) {
+    entries <- pieces(unlist(strsplit(strsplit(s, ";", fixed = TRUE)[[1]], and_sep, perl = TRUE)))
+    vapply(entries, function(e) {
+      bits <- pieces(strsplit(e, ",", fixed = TRUE)[[1]])
+      if (length(bits) == 1L) return(bib_one_name(bits))
+      # "Smith, J." is one surname and its given names. More commas than that
+      # is more than one author in one slot, which is not a list anyone meant.
+      if (length(bits) == 2L && !bib_has_initial(bits[1])) bits[1] else NA_character_
+    }, character(1), USE.NAMES = FALSE)
+  } else {
+    chunks <- pieces(strsplit(s, and_sep, perl = TRUE)[[1]])
+    per <- lapply(chunks, function(ch) pieces(strsplit(ch, ",", fixed = TRUE)[[1]]))
+    toks <- unlist(per, use.names = FALSE)
+    n <- length(toks)
+    if (!n) return(character(0))
+    ini <- vapply(toks, bib_is_initials, logical(1), USE.NAMES = FALSE)
+    odd <- toks[seq(1L, n, by = 2L)]
+    even <- if (n > 1L) toks[seq(2L, n, by = 2L)] else character(0)
+    # Surname, given names, surname, given names. Two things make that reading
+    # safe: the surnames carry no initials of their own ("Smith J" is a whole
+    # Vancouver name, not a surname), and either some given name is plainly
+    # initials or every author sits alone between the "and"s, as in "Smith,
+    # John and Okafor, Aisha". "Smith, Jones, Lee" has neither.
+    paired <- n >= 2L && n %% 2L == 0L &&
+      !any(vapply(odd, bib_has_initial, logical(1))) &&
+      all(vapply(even, bib_is_given, logical(1))) &&
+      (any(ini) || all(lengths(per) == 2L))
+    if (paired) {
+      odd
+    } else if (any(ini) || (n > length(chunks) && any(!grepl("[[:space:]]", toks)))) {
+      # Initials that do not pair with a surname mean the separators and the
+      # authors disagree. Bare single words between commas are either surnames
+      # or surname-and-given-name pairs, and nothing here says which.
+      NA_character_
+    } else {
+      vapply(toks, bib_one_name, character(1), USE.NAMES = FALSE)
+    }
+  }
+  if (!length(sur) || anyNA(sur)) return(NULL)
+  sur <- trimws(sur)
+  # A surname that is itself initials, or still carries one, was read from the
+  # wrong end of a name -- the "JA" of "Smith JA", the "Lee K" of a list split
+  # in the wrong places.
+  if (any(vapply(sur, function(w) bib_is_initials(w) || bib_has_initial(w), logical(1)))) {
+    return(NULL)
+  }
+  unname(sur)
+}
+
+#' Words that make an author field an organisation rather than a person.
+#' @noRd
+.gr_bib_corporate <- paste0(
+  "\\b(Organi[sz]ations?|Associations?|Institutes?|Society|Committee|Council|Agency|",
+  "Department|Ministry|Foundation|Collaborat(ion|ive)|Consortium|University|",
+  "Cent(re|er)s?|Commission|Federation|Bureau|Administration|Investigators|Group|",
+  "Network|Academy|Alliance|Coalition|Initiative|Task Force|Taskforce)\\b")
+
+#' A generational suffix, which is part of no surname and names no author.
+#' @noRd
+.gr_bib_suffix_re <- "^(Jr|Sr|II|III|IV)\\.?$"
+
+#' "J.", "JA", "J. A.", "M.-C.": initials and nothing else.
+#'
+#' Up to four letters, all capitals. A capitalised surname always has a
+#' lowercase letter in it, so this is what tells "Smith JA" from "Wu Li".
+#' @noRd
+bib_is_initials <- function(w) {
+  w <- trimws(w)
+  grepl("^[[:upper:].[:space:]-]+$", w) &&
+    nchar(gsub("[^[:upper:]]", "", w)) %in% 1:4
+}
+
+#' Whether a name has an initial among its words.
+#' @noRd
+bib_has_initial <- function(x) {
+  any(vapply(strsplit(trimws(x), "[[:space:]]+")[[1]], bib_is_initials, logical(1)))
+}
+
+#' Given names in "Surname, Given" -- initials, or one capitalised name that
+#' may be followed by initials ("John", "John A.", "Mary-Kate").
+#' @noRd
+bib_is_given <- function(x) {
+  bib_is_initials(x) ||
+    grepl("^[[:upper:]][[:alpha:]'\u2019-]*([[:space:]]+[[:upper:]]{1,3}\\.?)*$", trimws(x))
+}
+
+#' The surname in one author's name written without a comma.
+#'
+#' Vancouver puts the initials after the surname ("Smith JA", "van der Berg P"),
+#' and everything before them is the surname. Otherwise the given names and
+#' initials come first ("John Smith", "J. A. Smith") and the surname is the last
+#' word. Initials on both sides is neither, and gives NA.
+#' @noRd
+bib_one_name <- function(e) {
+  w <- strsplit(trimws(e), "[[:space:]]+")[[1]]
+  w <- w[nzchar(w) & !grepl(.gr_bib_suffix_re, w)]
+  if (!length(w)) return(NA_character_)
+  ini <- vapply(w, bib_is_initials, logical(1), USE.NAMES = FALSE)
+  if (all(ini)) return(NA_character_)
+  if (length(w) > 1L && ini[length(w)]) {
+    k <- max(which(!ini))
+    if (any(ini[seq_len(k)])) return(NA_character_)
+    return(paste(w[seq_len(k)], collapse = " "))
+  }
+  w[length(w)]
 }
 
 #' The citation key for one row.
@@ -156,6 +251,12 @@ bib_keys <- function(used, cols, form = "parenthetical") {
   if (any(dup)) {
     for (k in unique(keys[dup])) {
       i <- which(keys == k)
+      # Lettered in title order, as the convention has it, and row order only
+      # between equal titles. By row alone, the letter a paper got followed
+      # whatever order its table's rows arrived in -- which was the locale's
+      # collation of the file names -- so "2019a" named a different paper on
+      # another machine.
+      if (!is.null(cols$title)) i <- i[bib_order(as.character(used[[cols$title]][i]))]
       # `sub()` is not vectorised over `replacement` -- it takes the first and
       # warns -- so the obvious one-liner gave every duplicate the suffix "a"
       # and left them identical, which is the fault the suffix exists to fix.
@@ -171,14 +272,20 @@ bib_keys <- function(used, cols, form = "parenthetical") {
 #'
 #' Runs AFTER the citation check, so a marker pointing at a row that does not
 #' exist has already been reported and is left as it is -- rendering it would
-#' hide the fault this pipeline exists to surface.
+#' hide the fault this pipeline exists to surface. `leave` names rows that do
+#' exist but that the check reported all the same (a study the section was not
+#' given), and their markers are left for the same reason.
 #' @noRd
-render_citations <- function(text, used, keys, style) {
+render_citations <- function(text, used, keys, style, leave = integer(0)) {
   if (identical(style, "marker") || !nzchar(trimws(as_chr1(text)))) return(text)
-  # cite_pattern(), not a second copy: the checker and the renderer disagreeing
+  # cite_grammar(), not a second copy: the checker and the renderer disagreeing
   # about what a citation looks like is how a marker got rendered into published
-  # prose that the check had reported as citing nothing.
-  one <- cite_pattern("study")
+  # prose that the check had reported as citing nothing. Lists and ranges, read
+  # marker by marker with cite_marker_ids(), so "[studies 1-3]" renders as the
+  # three studies the check counted rather than staying a bare marker beside
+  # rendered prose. Not a marker with a locator ("[study 3 p. 4]"): rendering
+  # it would drop the page. It stays as written, and is checked all the same.
+  one <- paste0(cite_grammar("study")$ids, "\\]")
   # Runs of ADJACENT markers collapse into one citation. A model asked for three
   # supporting studies writes "[study 1] [study 2] [study 3]", and rendering each
   # separately gives "(Garcia, 2022) (Lee & Petrov, 2021) (Smith & Okafor, 2019)"
@@ -189,14 +296,19 @@ render_citations <- function(text, used, keys, style) {
   toks <- regmatches(text, m)[[1]]
   if (!length(toks)) return(text)
   regmatches(text, m) <- list(vapply(toks, function(tok) {
-    ids <- as.integer(regmatches(tok, gregexpr("[0-9]+", tok))[[1]])
+    # Per marker, never every number in the run: read that way "[studies 1-7]"
+    # was studies 1 and 7.
+    markers <- regmatches(tok, gregexpr(one, tok, perl = TRUE, ignore.case = TRUE))[[1]]
+    ids <- unlist(lapply(markers, cite_marker_ids, word = "study"), use.names = FALSE)
     hit <- match(ids, used$study)
     # An unknown row was already reported by the citation check. Leaving the
     # marker visible is the point: rendering it would hide the fault.
-    if (anyNA(hit)) return(tok)
+    if (!length(ids) || anyNA(hit) || any(ids %in% leave)) return(tok)
     if (identical(style, "numeric")) return(paste0("(", paste(ids, collapse = ", "), ")"))
-    # Ordered as a reference list is, not as the model happened to write them.
-    paste0("(", paste(sort(unique(keys[hit])), collapse = "; "), ")")
+    # Ordered as a reference list is, not as the model happened to write them,
+    # and by the same key, so the two agree on every machine.
+    k <- unique(keys[hit])
+    paste0("(", paste(k[bib_order(k)], collapse = "; "), ")")
   }, character(1), USE.NAMES = FALSE))
   text
 }
@@ -250,13 +362,72 @@ reference_list <- function(used, keys, cited, cols, style) {
   # list numbered by study, or the reader has no way to get from the citation to
   # the entry and the list is decoration.
   if (identical(style, "author-year")) {
-    entries <- sprintf("- %s", entries[order(tolower(entries))])
+    entries <- sprintf("- %s", entries[bib_order(entries)])
   } else {
     entries <- sprintf("%d. %s", used$study[hit], entries)
   }
   entries
 }
 
+
+#' Accented Latin letters, by the letters they sort as.
+#'
+#' Code points, turned into text by intToUtf8(), rather than literals or
+#' "\\u" escapes: an escape parsed in a non-UTF-8 locale is left unlabelled,
+#' and a pattern built from it then fails to match, or fails to compile.
+#' Latin-1 and Latin Extended-A, which cover the names this list meets, plus
+#' the comma-below S and T of Romanian. `drop` is what the key ignores: an
+#' accent typed as a separate combining mark, and the typographic apostrophe.
+#' @noRd
+.gr_bib_fold <- list(
+  a = c(0xC0:0xC5, 0xE0:0xE5, 0x100:0x105), ae = c(0xC6, 0xE6),
+  c = c(0xC7, 0xE7, 0x106:0x10D), d = c(0xD0, 0xF0, 0x10E:0x111),
+  e = c(0xC8:0xCB, 0xE8:0xEB, 0x112:0x11B), g = 0x11C:0x123, h = 0x124:0x127,
+  i = c(0xCC:0xCF, 0xEC:0xEF, 0x128:0x131), ij = 0x132:0x133, j = 0x134:0x135,
+  k = 0x136:0x138, l = 0x139:0x142, n = c(0xD1, 0xF1, 0x143:0x14B),
+  o = c(0xD2:0xD6, 0xD8, 0xF2:0xF6, 0xF8, 0x14C:0x151), oe = 0x152:0x153,
+  r = 0x154:0x159, s = c(0x15A:0x161, 0x17F, 0x218:0x219), ss = 0xDF,
+  t = c(0x162:0x167, 0x21A:0x21B), th = c(0xDE, 0xFE),
+  u = c(0xD9:0xDC, 0xF9:0xFC, 0x168:0x173), w = 0x174:0x175,
+  y = c(0xDD, 0xFD, 0xFF, 0x176:0x178), z = 0x179:0x17E,
+  drop = c(0x300:0x36F, 0x27, 0x2019))
+
+#' The key a reference list is alphabetised by.
+#'
+#' The same on every machine. order(tolower()) and sort() collate by the
+#' session's locale, so one table printed its references in one order under
+#' en_US and another under C -- where an accented name went to one end of the
+#' list and "de la Cruz" came after "Zhou" -- and its in-text citations too.
+#'
+#' The choice made here: an accented letter files with its base letter
+#' (Ozturk with an umlaut under O, Lukasz with a stroke under L), case is
+#' ignored ("de la Cruz" under D), and an apostrophe is ignored ("O'Brien" as
+#' "OBrien"), which is how a reader looking a name up expects to find it and
+#' how en_US collation files it. Only ASCII letters are case-folded, by rule
+#' rather than by the locale; anything left after the folding (another
+#' script) sorts after the Latin letters, by its UTF-8 bytes.
+#' @noRd
+bib_sort_key <- function(x) {
+  # to_utf8() first: the regexes below run in UTF-8, and an unlabelled string
+  # in a non-UTF-8 locale would make them throw rather than match.
+  k <- to_utf8(x)
+  for (to in names(.gr_bib_fold)) {
+    k <- gsub(sprintf("[%s]", intToUtf8(.gr_bib_fold[[to]])),
+              if (identical(to, "drop")) "" else to, k, perl = TRUE)
+  }
+  gsub("([A-Z]+)", "\\L\\1", k, perl = TRUE)
+}
+
+#' A locale-independent order for bibliographic strings.
+#'
+#' By bib_sort_key(), then by the strings' own UTF-8 bytes so that two names
+#' equal under the key ("Muller" and the umlauted one) still come out in one
+#' fixed order. Radix, because it is the one method that does not collate by
+#' the locale.
+#' @noRd
+bib_order <- function(x) {
+  order(bib_sort_key(x), to_utf8(x), method = "radix")
+}
 
 #' a, b, ... z, aa, ab -- so a twenty-seventh same-year study still gets a label.
 #' @noRd

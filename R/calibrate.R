@@ -283,7 +283,8 @@ gr_calibrate <- function(screening, reference, positive = "include", min_positiv
     # that really missed 14% of eligible studies, this reported sensitivity
     # 100% with a 95% interval that excluded the truth.
     gr_abort(paste0("This reference stacks more than one sampling frame (",
-                    paste(sort(unique(as.character(ref$sampled_from))), collapse = " and "),
+                    paste(attr(ref, "frames") %||% sort(unique(as.character(ref$sampled_from))),
+                          collapse = " and "),
                     "). An unweighted figure over stratified samples is wrong, not just ",
                     "imprecise. Calibrate each frame separately (one gr_calibrate() call ",
                     "per file), or pass `of =` if the rows are one frame."),
@@ -296,6 +297,29 @@ gr_calibrate <- function(screening, reference, positive = "include", min_positiv
                    "and specificity are artifacts of that frame rather than facts about ",
                    "the screener. Pass `of = \"excluded\"`, `\"kept\"` or `\"all\"` to say which."),
             class = "gr_unknown_frame")
+  }
+  # A frame is a claim about the model's decisions, so check it against them.
+  # The per-frame rates count every row as belonging to the frame: "eligible
+  # among the excluded" is eligible rows over ALL rows, and the projection
+  # multiplies that by the number of exclusions. A kept row in an exclusions
+  # sample -- stacked frames with `of =` given, or a reference drawn from an
+  # earlier run whose decisions have since changed -- was therefore scored as a
+  # study thrown away, and "projected lost" reported studies the screener kept
+  # while `missed` listed none of them.
+  fits <- switch(of, excluded = model == "exclude",
+                 kept = model %in% c("include", "unclear"), rep(TRUE, length(model)))
+  if (!all(fits)) {
+    gr_abort(sprintf(paste0("%d of %d reference row(s) are said to come from the %s records, but ",
+                            "this screening run did not %s them, starting with '%s' (now '%s'). ",
+                            "Either the reference was drawn from a different run, or it stacks ",
+                            "frames; scoring those rows as %s would misstate what was %s. ",
+                            "Calibrate against the run the sample was drawn from, one frame at ",
+                            "a time."),
+                     sum(!fits), length(fits), of, if (of == "excluded") "exclude" else "keep",
+                     rows$document[which(!fits)[1]], model[which(!fits)[1]],
+                     if (of == "excluded") "exclusions" else "kept records",
+                     if (of == "excluded") "lost" else "kept"),
+             class = "gr_reference_mismatch")
   }
   metrics <- switch(
     of,
@@ -377,25 +401,36 @@ read_reference <- function(reference) {
     gr_abort(paste0("`reference` needs `document` and `human_decision` columns. ",
                     "gr_reference() writes a file with both."), class = "gr_bad_reference")
   }
-  # Recover what the attributes cannot carry through a CSV.
-  if (is.null(attr(ref, "of")) && !is.null(ref$sampled_from)) {
+  # The COLUMNS say where each row came from; the attributes only say where the
+  # first row did. rbind() keeps its first argument's attributes, so a sample
+  # of the kept records stacked under a sample of the exclusions -- the design
+  # gr_reference() recommends, combined the obvious way -- still claimed to be
+  # one sample of exclusions, and was scored as one: every kept eligible study
+  # counted as an eligible study thrown away, projected across the whole
+  # discarded pile. The same rows read back from a CSV were refused. So the
+  # columns are read whenever they are there, and the attributes are what is
+  # left when they are not.
+  if (!is.null(ref$sampled_from)) {
     v <- unique(as.character(ref$sampled_from))
-    v <- v[!is.na(v)]
+    v <- v[!is.na(v) & nzchar(v)]
+    a <- attr(ref, "of")
+    frames <- unique(c(v, a))
     # More than one stratum in one file is reported as such rather than left to
     # fall through to "unknown", which took the corpus-wide branch and computed
     # sensitivity and specificity from a stratified sample without a word.
-    if (length(v) > 1L) attr(ref, "of") <- "mixed"
-    else if (length(v) == 1L && v %in% c("excluded", "kept", "all")) attr(ref, "of") <- v
+    if (length(frames) > 1L && length(v)) {
+      attr(ref, "of") <- "mixed"
+      attr(ref, "frames") <- sort(frames)
+    } else if (length(v) == 1L && v %in% c("excluded", "kept", "all")) attr(ref, "of") <- v
   }
-  if (is.null(attr(ref, "frame_n")) && !is.null(ref$frame_n)) {
-    v <- unique(suppressWarnings(as.integer(ref$frame_n)))
+  for (col in c("frame_n", "screened_n")) {
+    if (is.null(ref[[col]])) next
+    v <- unique(suppressWarnings(as.integer(ref[[col]])))
     v <- v[!is.na(v)]
-    if (length(v) == 1L) attr(ref, "frame_n") <- v
-  }
-  if (is.null(attr(ref, "screened_n")) && !is.null(ref$screened_n)) {
-    v <- unique(suppressWarnings(as.integer(ref$screened_n)))
-    v <- v[!is.na(v)]
-    if (length(v) == 1L) attr(ref, "screened_n") <- v
+    # Two sizes means rows from two frames or two runs, and there is no one
+    # frame to project onto; nothing is better than the first argument's.
+    if (length(v) == 1L) attr(ref, col) <- v
+    else if (length(v) > 1L) attr(ref, col) <- NULL
   }
   ref
 }

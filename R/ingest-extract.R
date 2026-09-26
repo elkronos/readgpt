@@ -159,21 +159,146 @@ extract_html <- function(path, opts) {
     gr_abort("Reading HTML needs the 'xml2' package.", class = "gr_missing_dep")
   }
   doc <- xml2::read_html(path)
-  xml2::xml_remove(xml2::xml_find_all(doc, "//script|//style|//nav|//footer"))
-  nodes <- xml2::xml_find_all(doc, "//h1|//h2|//h3|//h4|//p|//li|//pre|//td|//blockquote")
-  txt <- trimws(xml2::xml_text(nodes))
-  tag <- xml2::xml_name(nodes)
-  keep <- nzchar(txt)
-  txt <- txt[keep]; tag <- tag[keep]
-  if (!length(txt)) return(as_blocks(data.frame(text = character(0))))
-  section <- NA_character_; secs <- character(length(txt))
-  for (i in seq_along(txt)) {
-    if (grepl("^h[1-6]$", tag[i])) section <- txt[i]
-    secs[i] <- section
+  # Not content: code, styling, page chrome by the package's long-standing
+  # choice, what shows only without scripts, and the choices of a drop-down.
+  xml2::xml_remove(xml2::xml_find_all(doc, paste0(
+    "//script|//style|//nav|//footer|//noscript|//template|//svg|//select")))
+  as_blocks(html_blocks(doc))
+}
+
+#' Elements a browser starts on a line of their own. Text anywhere else -- in a
+#' span, a link, or straight inside a div -- runs on with the text around it.
+#' @noRd
+.gr_html_block_tags <- c(
+  "address", "article", "aside", "blockquote", "body", "caption", "center", "dd", "details",
+  "dialog", "dir", "div", "dl", "dt", "fieldset", "figcaption", "figure", "form", "h1", "h2",
+  "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "legend", "li", "main", "menu", "ol", "p",
+  "pre", "section", "summary", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul")
+
+#' The blocks of a parsed HTML page, in reading order.
+#'
+#' Reading a fixed list of tags (h1-h4, p, li, pre, td, blockquote) and the
+#' whole text of each lost text that sat straight in a div, span or section --
+#' how most pages are built -- and every th and h5/h6; read a p inside an li,
+#' blockquote or td twice, once through its parent; ran words either side of a
+#' <br> together; and made each table cell a block of its own, a value apart
+#' from its label.
+#'
+#' So the page is walked in document order instead. Each block-level element
+#' ends the run of text before it and starts a new one, so nothing is read
+#' twice and nothing between block tags is lost. Whitespace in the source is
+#' layout and collapses to one space; a <br> is a line break. A heading is a
+#' `heading` block and the `section` of what follows it. A table is one block
+#' per row, `table`, its cells joined with " | ", with a table inside a cell read
+#' as rows of its own after the row that holds it, as the Word extractor does.
+#' @noRd
+html_blocks <- function(doc) {
+  blocks <- .gr_html_block_tags
+  # Looked up once: xml_find_all() otherwise collects the namespaces by walking
+  # the whole page on every call, once per table row.
+  ns <- xml2::xml_ns(doc)
+  find <- function(x, xpath) xml2::xml_find_all(x, xpath, ns)
+  # Grown by doubling, as in docx_blocks(): appending one block at a time copies
+  # the vectors every time.
+  size <- 64L; n <- 0L
+  text <- character(size); section <- character(size); kind <- character(size)
+  current <- NA_character_
+  emit <- function(t, k) {
+    if (!nzchar(t)) return(invisible(NULL))
+    if (n == size) {
+      size <<- size * 2L
+      length(text) <<- size; length(section) <<- size; length(kind) <<- size
+    }
+    n <<- n + 1L
+    text[n] <<- t
+    if (identical(k, "heading")) current <<- t
+    section[n] <<- current
+    kind[n] <<- k
   }
-  kinds <- ifelse(grepl("^h[1-6]$", tag), "heading",
-                  ifelse(tag == "pre", "code", ifelse(tag == "td", "table", "body")))
-  as_blocks(data.frame(text = txt, section = secs, kind = kinds, stringsAsFactors = FALSE))
+  squish <- function(s) {
+    s <- gsub(" *\n *", "\n", gsub(" {2,}", " ", s, perl = TRUE), perl = TRUE)
+    trimws(s)
+  }
+  source_text <- function(node) gsub("[ \t\r\n\f]+", " ", xml2::xml_text(node), perl = TRUE)
+
+  # All the text under a node on one line, block boundaries and line breaks
+  # read as spaces: for a heading, a caption, or a table cell. A table inside
+  # a cell is left to read_table(), which reads it after the row.
+  flat_text <- function(node) {
+    parts <- character(0)
+    rec <- function(nd) {
+      for (ch in xml2::xml_contents(nd)) {
+        ty <- xml2::xml_type(ch)
+        if (identical(ty, "text")) {
+          parts <<- c(parts, source_text(ch))
+        } else if (identical(ty, "element")) {
+          nm <- tolower(xml2::xml_name(ch))
+          if (identical(nm, "table")) next
+          if (identical(nm, "br") || nm %in% blocks) parts <<- c(parts, " ")
+          rec(ch)
+          if (nm %in% blocks) parts <<- c(parts, " ")
+        }
+      }
+    }
+    rec(node)
+    squish(gsub("\n", " ", paste(parts, collapse = ""), fixed = TRUE))
+  }
+
+  read_table <- function(tbl) {
+    # Rows and cells of THIS table, however thead/tbody wrap them, and not
+    # those of a table nested in one of its cells.
+    level <- length(find(tbl, "ancestor-or-self::table"))
+    for (cap in find(tbl, "./caption")) emit(flat_text(cap), "body")
+    rows <- find(tbl, sprintf(".//tr[count(ancestor::table) = %d]", level))
+    has_nested <- length(find(tbl, ".//table")) > 0L
+    for (row in rows) {
+      cells <- find(row, sprintf(".//*[self::th or self::td][count(ancestor::table) = %d]", level))
+      vals <- vapply(cells, flat_text, character(1))
+      if (any(nzchar(vals))) emit(paste(vals, collapse = " | "), "table")
+      if (!has_nested) next
+      for (inner in find(row, sprintf(".//table[count(ancestor::table) = %d]", level))) {
+        read_table(inner)
+      }
+    }
+  }
+
+  # The run of inline text since the last block boundary.
+  run <- character(0)
+  flush <- function() {
+    if (length(run)) emit(squish(paste(run, collapse = "")), "body")
+    run <<- character(0)
+  }
+  walk <- function(node) {
+    for (ch in xml2::xml_contents(node)) {
+      ty <- xml2::xml_type(ch)
+      if (identical(ty, "text")) {
+        run <<- c(run, source_text(ch))
+        next
+      }
+      if (!identical(ty, "element")) next            # comments and the like
+      nm <- tolower(xml2::xml_name(ch))
+      if (identical(nm, "br")) {
+        run <<- c(run, "\n")
+      } else if (!nm %in% blocks) {
+        walk(ch)                                       # inline: part of the run
+      } else {
+        flush()
+        if (grepl("^h[1-6]$", nm)) emit(flat_text(ch), "heading")
+        else if (identical(nm, "pre")) emit(trimws(xml2::xml_text(ch)), "code")
+        else if (identical(nm, "table")) read_table(ch)
+        else walk(ch)
+        flush()
+      }
+    }
+  }
+  root <- xml2::xml_find_first(doc, "//body", ns)
+  if (inherits(root, "xml_missing")) root <- xml2::xml_root(doc)
+  if (!inherits(root, "xml_missing")) walk(root)
+  flush()
+
+  keep <- seq_len(n)
+  data.frame(text = text[keep], section = section[keep], kind = kind[keep],
+             stringsAsFactors = FALSE)
 }
 
 #' @noRd
@@ -216,22 +341,10 @@ extract_pdf <- function(path, opts) {
       unread <- which(needs & !nzchar(trimws(pages)))
     } else {
       gr_msg(sprintf("OCR-ing %d of %d PDF page(s).", sum(needs), length(pages)))
-      eng <- tesseract::tesseract(as_chr1(opts$ocr_lang %||% "eng"))
-      ocr_res <- gr_lapply(which(needs), function(i, trace) {
-        tryCatch({
-          img <- magick::image_read_pdf(path, pages = i, density = as.numeric(opts$ocr_dpi %||% 300))
-          list(text = as_chr1(tesseract::ocr(img, engine = eng)), failed = FALSE)
-        }, error = function(e) {
-          gr_warn(sprintf("OCR failed on page %d: %s", i, conditionMessage(e)),
-                  class = "gr_ocr_failed")
-          list(text = "", failed = TRUE)
-        })
-      }, parallel = opts$parallel, label = "OCR page")
-      pages[needs] <- vapply(ocr_res, function(r) as_chr1(r$text), character(1),
-                             USE.NAMES = FALSE)
-      unread <- which(needs)[vapply(ocr_res, function(r) isTRUE(r$failed), logical(1))]
-      ocr_done <- needs
-      ocr_done[unread] <- FALSE
+      res <- ocr_pdf_pages(path, pages, needs, opts)
+      pages <- res$pages
+      unread <- res$unread
+      ocr_done <- res$ocr_done
     }
   }
 
@@ -259,6 +372,59 @@ extract_pdf <- function(path, opts) {
   out <- as_blocks(out %||% data.frame(text = character(0)))
   attr(out, "gr_unread_pages") <- unread
   out
+}
+
+#' OCR the pages of a PDF marked in `needs`.
+#'
+#' Returns `pages` with the OCR text in place, `unread` (pages that never
+#' became text) and `ocr_done` (pages whose text came from OCR). `engine`,
+#' `read_page` and `ocr` are tesseract and magick; they are arguments so the
+#' mechanism can be exercised without them.
+#'
+#' The engine is an external pointer, and a pointer does not survive being
+#' copied into another process. Built once in the caller and captured by the
+#' page function, it reached every parallel worker dead, so under
+#' `parallel = TRUE` every page "failed" OCR. It is still built here first, so
+#' a bad `ocr_lang` stops the read as it always did, and rebuilt in any other
+#' process that reads a page, once per process.
+#'
+#' A page whose OCR fails keeps the text layer it had. Replacing it with ""
+#' threw away good text: under `ocr = "always"` a born-digital PDF whose OCR
+#' failed lost every page. As when OCR is not installed, a page counts as
+#' unread only when nothing of it became text.
+#' @noRd
+ocr_pdf_pages <- function(path, pages, needs, opts,
+                          engine = function(lang) tesseract::tesseract(lang),
+                          read_page = function(path, i, dpi) {
+                            magick::image_read_pdf(path, pages = i, density = dpi)
+                          },
+                          ocr = function(img, eng) tesseract::ocr(img, engine = eng),
+                          workers = NULL) {
+  force(engine); force(read_page); force(ocr)
+  lang <- as_chr1(opts$ocr_lang %||% "eng")
+  dpi <- as.numeric(opts$ocr_dpi %||% 300)
+  eng <- engine(lang)
+  eng_pid <- Sys.getpid()
+  idx <- which(needs)
+  res <- gr_lapply(idx, function(i, trace) {
+    tryCatch({
+      if (!identical(eng_pid, Sys.getpid())) {
+        eng <<- engine(lang)
+        eng_pid <<- Sys.getpid()
+      }
+      list(text = as_chr1(ocr(read_page(path, i, dpi), eng)), failed = FALSE)
+    }, error = function(e) {
+      gr_warn(sprintf("OCR failed on page %d: %s", i, conditionMessage(e)),
+              class = "gr_ocr_failed")
+      list(text = "", failed = TRUE)
+    })
+  }, parallel = opts$parallel, workers = workers, label = "OCR page")
+  failed <- vapply(res, function(r) isTRUE(r$failed), logical(1))
+  pages[idx[!failed]] <- vapply(res[!failed], function(r) as_chr1(r$text), character(1))
+  ocr_done <- rep(FALSE, length(pages))
+  ocr_done[idx[!failed]] <- TRUE
+  list(pages = pages, ocr_done = ocr_done,
+       unread = idx[failed & !nzchar(trimws(pages[idx]))])
 }
 
 #' @noRd

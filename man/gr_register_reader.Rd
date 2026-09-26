@@ -44,7 +44,8 @@ Your function receives:
 \item{\code{question}}{The question, already validated as non-blank.}
 \item{\code{client}}{Pass it to \code{\link[=gr_call]{gr_call()}}; never construct your own.}
 \item{\code{spec}}{A \code{\link[=gr_read_spec]{gr_read_spec()}}. Honour at least \code{model},
-\code{max_answer_tokens} and \code{temperature}.}
+\code{max_answer_tokens} and \code{temperature}. \code{\link[=gr_read]{gr_read()}} has already filled
+\code{model} from the client when the spec named none.}
 \item{\code{trace}}{Pass it to every \code{\link[=gr_call]{gr_call()}} so your calls are counted and
 priced, and check \code{readgpt:::trace_can_call(trace)} before each one so
 the run's call and spending limits are respected.}

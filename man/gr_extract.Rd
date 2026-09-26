@@ -71,7 +71,10 @@ An object of class \code{gr_extraction}:
 \describe{
 \item{\code{table}}{One row per document: \code{document}, one column per field in
 the schema and of that field's type, then \code{n_filled}, \code{n_unverified},
-\code{conflicts}, \code{status}, \code{duplicate_of}, \code{error}. A document whose cleaned
+\code{conflicts}, \code{status}, \code{duplicate_of}, \code{error}. \code{status} is the run
+status from \code{summary}, except that a document some of whose extraction
+requests failed is \code{"incomplete"} (or \code{"failed"} if all did); see the
+section on \code{NA} below. A document whose cleaned
 text repeats one already read is not read again (see
 \code{\link[=gr_read_many]{gr_read_many()}}), so \code{subset(x$table, is.na(duplicate_of))} is the
 set of distinct documents.}
@@ -97,6 +100,11 @@ that field, or because the document was never successfully read. The \code{statu
 column tells them apart, and it matters: "not reported" is a finding you can
 publish, and "failed" is a job you have to redo. Filtering an extraction table
 without checking \code{status} silently turns the second into the first.
+
+A document where some of the extraction requests failed is \code{"incomplete"},
+with the count in \code{error}: the values it has are real, but an \code{NA} there may
+sit in a part of the document that was never read, so it is unknown rather
+than not reported. A document where every request failed is \code{"failed"}.
 }
 
 \section{What it costs}{
@@ -111,13 +119,21 @@ unless a document contradicts itself. Cut the cost by segmenting more coarsely
 \section{Verifying it}{
 
 Every filled cell is asked for the sentence it came from, and that sentence is
-checked against the text of the chunk it was attributed to. Nothing is ever
-discarded for failing: a paraphrase stays in \verb{$evidence} with
-\code{verified = FALSE} and the fraction of it that did match in \code{match}.
+checked against the text of the chunk it was attributed to (the document's
+own text, never a header or rewrite a model added to the chunk). It must
+also carry the value: a number must be one of the numbers the sentence
+states, the sentence must not start or end inside a word, and a one-word
+fragment supports only a value it spells. Nothing is ever discarded for
+failing: a paraphrase stays in \verb{$evidence} with \code{verified = FALSE} and the
+fraction of it that did match in \code{match}, and a real sentence that does not
+carry the value shows \code{verified = FALSE} with \code{match = 1}. When several
+parts of a document give the same value, it is cited with the best quote
+any of them gave.
 
 \code{n_unverified} counts the cells in that row whose value could not be tied to a
 verbatim span, either because no quote was given, or because the quote is
-not in the chunk. That column is the one to look at before believing a table:
+not in the chunk or does not carry the value. That column is the one to look
+at before believing a table:
 \code{n_unverified} of zero means every value in the row can be pointed at in the
 document. A row where it is not zero is not wrong, but it is unaudited, and
 the answer is marked \code{partial} to say so. \code{require_quote = TRUE} turns the

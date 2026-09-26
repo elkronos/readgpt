@@ -17,7 +17,9 @@ as_json(x, pretty = TRUE, ...)
 }
 \value{
 A \code{json}-classed character string. \code{NULL} fields are written as
-\code{null} rather than dropped.
+\code{null} rather than dropped, and numbers are written at full precision
+(\code{jsonlite::toJSON()} on its own rounds to four decimal places); pass
+\code{digits} to round them.
 }
 \description{
 A generic so traces, answers, chunk sets and documents all serialise

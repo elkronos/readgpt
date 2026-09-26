@@ -21,7 +21,8 @@
 #'   `tokens_out`, `errors`, `budget_stop`, `stop_reason`, `spent_usd`.
 #'   `cached` counts the calls answered from a [gr_cache()] or a
 #'   [gr_replay_client()] rather than the network, so `calls - cached` is what
-#'   the run paid for.
+#'   the run paid for. `calls` includes requests to an embeddings endpoint,
+#'   recorded as steps labelled `"embed.request"`.
 #'
 #'   `budget_stop` is `TRUE` once a limit stopped the run, and `stop_reason`
 #'   says which: `"calls"` for `max_calls`, `"cost"` for `max_cost_usd` (see
@@ -419,7 +420,9 @@ print.gr_trace <- function(x, ...) {
 #' @param pretty Whether to indent.
 #' @param ... Passed to `jsonlite::toJSON()`.
 #' @return A `json`-classed character string. `NULL` fields are written as
-#'   `null` rather than dropped.
+#'   `null` rather than dropped, and numbers are written at full precision
+#'   (`jsonlite::toJSON()` on its own rounds to four decimal places); pass
+#'   `digits` to round them.
 #' @seealso [gr_trace_summary()], [gr_answer]
 #' @export
 #' @examples
@@ -432,9 +435,14 @@ print.gr_trace <- function(x, ...) {
 as_json <- function(x, pretty = TRUE, ...) UseMethod("as_json")
 
 #' @export
-as_json.default <- function(x, pretty = TRUE, ...) {
+as_json.default <- function(x, pretty = TRUE, ..., digits = NA) {
+  # `digits = NA` is full precision. jsonlite's own default rounds every number
+  # to four decimal places, so a p-value of 0.00003 was written as 0 and an
+  # effect of 0.84321 as 0.8432 -- in an extraction's answer text, in the
+  # corpus summary built from it, in the audit report and in every export --
+  # while the typed table, read from the record itself, kept the real values.
   jsonlite::toJSON(x, pretty = pretty, auto_unbox = TRUE, null = "null",
-                   na = "null", force = TRUE, ...)
+                   na = "null", force = TRUE, digits = digits, ...)
 }
 
 #' A trace as a plain, serialisable list.

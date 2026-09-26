@@ -318,8 +318,11 @@ test_that("gr_ellmer_client drives a chat and never mutates the caller's", {
   expect_identical(probe$turns, list("CLONE-ONLY"))
 
   cl <- gr_ellmer_client(stub)
-  res <- gr_call(cl, list(list(role = "system", content = "be terse"),
-                          list(role = "user", content = "q")))
+  # The stub has no way to take a per-call output cap, and the adapter says so.
+  expect_warning(
+    res <- gr_call(cl, list(list(role = "system", content = "be terse"),
+                            list(role = "user", content = "q"))),
+    class = "gr_ellmer_max_output")
   expect_true(res$ok)
   expect_identical(res$text, "an answer")
   expect_identical(res$usage$input, 5L)

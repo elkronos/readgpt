@@ -10,7 +10,19 @@ Returned by \code{\link[=gr_segment]{gr_segment()}}. Summarise with \code{\link[
 
 \describe{
 \item{\code{chunks}}{Data frame, one row per chunk, with columns \code{chunk_id},
-\code{text}, \code{tokens}, \code{chars}, \code{page}, \code{section}, \code{block_id}.}
+\code{text}, \code{tokens}, \code{chars}, \code{page}, \code{section}, \code{block_id}, and sometimes
+\code{source_text}.}
+\item{\code{chunks$source_text}}{Optional. The document text a chunk was made
+from, for a segmenter that puts text of its own into \code{text}:
+\code{proposition} fills it with the passage the propositions were written
+from, and \code{contextual} with the chunk's body without the bracketed
+context line. \code{NA}, or no such column, means \code{text} is the document's
+own. A quotation from a chunk is checked against \code{source_text} when it
+is there and not \code{NA}, and against \code{text} otherwise, so what the
+segmenter wrote cannot verify a quote. A chunk split to fit the token
+cap keeps the \code{source_text} of the chunk it was cut from. A custom
+segmenter that writes into \code{text} should set it with \code{\link[=new_chunks]{new_chunks()}}'s
+\code{source_text}, or quotes are checked against what it wrote.}
 \item{\code{method}}{The segmenter that ran. \strong{If a segmenter fell back this
 records the fallback}, e.g. \code{"semantic->paragraph"} when no client was
 supplied, or \code{"page->paragraph"} for a source with no page provenance.}
@@ -18,6 +30,13 @@ supplied, or \code{"page->paragraph"} for a source with no page provenance.}
 \item{\code{extra}}{Method-specific detail: \code{boundaries} and
 \code{embedding_source} for \code{semantic}, \code{propositions} for \code{proposition},
 \code{cap_enforced} when oversized chunks had to be split.}
+\item{\code{trace}}{Set only when \code{\link[=gr_segment]{gr_segment()}} was called without a \code{trace}
+and so made its own: the \link{gr_trace} it recorded into, holding the
+requests the segmenter made (embeddings for \code{semantic}, model calls for
+\code{proposition} and for \code{contextual} with \code{context_source = "llm"}),
+which were held to \code{gr_options(max_calls =, max_cost_usd =)}. When a
+\code{trace} is passed they are recorded there instead, and this field is
+absent.}
 }
 }
 

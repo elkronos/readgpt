@@ -73,12 +73,87 @@ trim_quote_edges <- function(x) {
   trimws(strip(x))
 }
 
+#' Does `s` occur in `src` as whole words and whole numbers?
+#'
+#' A raw substring test verified "5% of patients" against "25% of patients",
+#' "12% year on year" against "-12%", and "enrolled 20." against "enrolled 200
+#' patients": the figure changed and the check said exact. So an occurrence
+#' counts only where it starts and ends on a boundary. Where the span starts
+#' with a letter or digit the source must not continue one before it, nor carry
+#' a minus sign or a decimal or thousands separator in front of a digit; where
+#' it ends with one, the source must not carry on the word or the number after
+#' it. Every occurrence is tried, not just the first.
+#' @noRd
+found_whole <- function(s, src) {
+  if (!grepl(s, src, fixed = TRUE)) return(FALSE)
+  n <- nchar(s)
+  first <- substr(s, 1L, 1L)
+  last <- substr(s, n, n)
+  word <- function(ch) nzchar(ch) && grepl("[[:alnum:]]", ch)
+  digit <- function(ch) nzchar(ch) && grepl("[0-9]", ch)
+  check_start <- word(first)
+  check_end <- word(last)
+  if (!check_start && !check_end) return(TRUE)
+  from <- 1L
+  repeat {
+    at <- regexpr(s, substring(src, from), fixed = TRUE)
+    if (at < 0L) return(FALSE)
+    at <- from + as.integer(at) - 1L
+    b1 <- if (at > 1L) substr(src, at - 1L, at - 1L) else ""
+    b2 <- if (at > 2L) substr(src, at - 2L, at - 2L) else ""
+    a1 <- substr(src, at + n, at + n)
+    a2 <- substr(src, at + n + 1L, at + n + 1L)
+    ok_start <- !check_start ||
+      !(word(b1) || (digit(first) && (b1 == "-" || (b1 %in% c(".", ",") && digit(b2)))))
+    ok_end <- !check_end ||
+      !(word(a1) || (digit(last) && a1 %in% c(".", ",") && digit(a2)))
+    if (ok_start && ok_end) return(TRUE)
+    from <- at + 1L
+  }
+}
+
+#' The passages a model's quotation is made of, each normalised and trimmed.
+#'
+#' The extraction prompt asks for "the passages" verbatim, and models give
+#' several: on separate lines, as a bulleted or numbered list, in separate
+#' quote marks, or joined with an elision ("...", "[...]"). Checked as one
+#' string, two verbatim passages that are not adjacent in the source failed,
+#' and so did any bullet or bold marker, marking an entirely faithful
+#' extraction partial and dropping correct values under `require_quote`. Each
+#' passage is checked on its own instead; a passage with no letter or digit in
+#' it carries nothing to check.
+#' @noRd
+quote_passages <- function(span) {
+  x <- to_utf8(as_chr1(span, ""))
+  if (!nzchar(x)) return(character(0))
+  lines <- strsplit(x, "[\r\n]+", perl = TRUE)[[1]]
+  # List markers: a bullet glyph, or a dash, star, plus or short number
+  # followed by a space. "-5%" keeps its sign: a dash needs a space after it.
+  lines <- sub("^[[:space:]]*[\u2022\u2023\u2043\u2219\u25aa\u25cf\u25e6][[:space:]]*", "",
+               lines, perl = TRUE)
+  lines <- sub("^[[:space:]]*(?:[-*+]|[0-9]{1,2}[.)]|\\([0-9a-z]\\))[[:space:]]+", "",
+               lines, perl = TRUE)
+  # Markdown bold is emphasis, not text.
+  lines <- gsub("**", "", lines, fixed = TRUE)
+  elision <- paste0("\\[[[:space:]]*(?:\\.{2,}|\u2026)[[:space:]]*\\]|",
+                    "\\([[:space:]]*(?:\\.{2,}|\u2026)[[:space:]]*\\)|",
+                    "\\.{3,}|\u2026|(?:\\.[[:space:]]){2,}\\.|",
+                    # One quoted passage closing and the next opening.
+                    "[\"\u201d][[:space:]]*[,;]?[[:space:]]+[\"\u201c]")
+  pieces <- unlist(strsplit(lines, elision, perl = TRUE), use.names = FALSE)
+  pieces <- vapply(pieces, function(p) trim_quote_edges(normalise_for_match(p)), character(1),
+                   USE.NAMES = FALSE)
+  pieces[nzchar(pieces) & grepl("[[:alnum:]]", pieces)]
+}
+
 #' The longest run of consecutive words from `span` that appears in `source`.
 #'
-#' Only reached when the span is not an exact substring, so the runs found here
+#' Only reached when the span is not an exact quotation, so the runs found here
 #' are short and the loop is cheap. A run measure rather than a word-overlap one
 #' because overlap cannot tell a quotation from a paraphrase built out of the
 #' same vocabulary, and that is the distinction the whole check exists to make.
+#' A run counts only as whole words (found_whole()), so "5% of patients"
+#' against "25% of patients" scores the run it really shares and not 1.
 #' @noRd
 longest_quoted_run <- function(span_words, source_norm) {
   n <- length(span_words)
@@ -89,7 +164,7 @@ longest_quoted_run <- function(span_words, source_norm) {
     if (n - i + 1L <= best) break                 # cannot beat `best` from here
     j <- i
     while (j <= n) {
-      if (!grepl(paste(span_words[i:j], collapse = " "), source_norm, fixed = TRUE)) break
+      if (!found_whole(paste(span_words[i:j], collapse = " "), source_norm)) break
       best <- max(best, j - i + 1L)
       j <- j + 1L
     }
@@ -99,22 +174,29 @@ longest_quoted_run <- function(span_words, source_norm) {
 
 #' Does one span appear in one source?
 #'
+#' The span is split into the passages it is made of (quote_passages()), and it
+#' is verified when every passage appears in the source as whole words and
+#' whole numbers (found_whole()).
+#'
 #' @return `list(verified, match)`. `match` is 1 for an exact quotation and
-#'   otherwise the fraction of the span's words carried by its longest
-#'   consecutive run in the source -- so 0.9 is a quotation with a word changed,
-#'   and 0.1 is a sentence that shares some vocabulary and nothing else.
+#'   otherwise, for the weakest passage, the fraction of its words carried by
+#'   its longest consecutive run in the source -- so 0.9 is a quotation with a
+#'   word changed, and 0.1 is a sentence that shares some vocabulary and
+#'   nothing else.
 #' @noRd
 span_match <- function(span, source) {
-  s <- trim_quote_edges(normalise_for_match(span))
+  pieces <- quote_passages(span)
   src <- normalise_for_match(source)
-  if (!nzchar(s)) return(list(verified = NA, match = NA_real_))
+  if (!length(pieces)) return(list(verified = NA, match = NA_real_))
   if (!nzchar(src)) return(list(verified = NA, match = NA_real_))
-  if (grepl(s, src, fixed = TRUE)) return(list(verified = TRUE, match = 1))
-  words <- strsplit(s, " ", fixed = TRUE)[[1]]
-  words <- words[nzchar(words)]
-  if (!length(words)) return(list(verified = NA, match = NA_real_))
-  list(verified = FALSE,
-       match = round(longest_quoted_run(words, src) / length(words), 3))
+  found <- vapply(pieces, found_whole, logical(1), src = src, USE.NAMES = FALSE)
+  if (all(found)) return(list(verified = TRUE, match = 1))
+  score <- vapply(pieces[!found], function(s) {
+    words <- strsplit(s, " ", fixed = TRUE)[[1]]
+    words <- words[nzchar(words)]
+    longest_quoted_run(words, src) / length(words)
+  }, numeric(1), USE.NAMES = FALSE)
+  list(verified = FALSE, match = round(min(score), 3))
 }
 
 #' @noRd
@@ -146,29 +228,100 @@ verify_spans <- function(spans, sources) {
 #' citation slipping through the fabrication check is the exact failure this
 #' pipeline exists to prevent, and the two regexes drifting apart is how it got
 #' there. They cannot drift now.
+#'
+#' Models write more than the prompt shows: numbers joined by commas,
+#' semicolons, "and" or "&" (the Oxford comma included), the word repeated
+#' ("[study 1; study 7]"), any kind of space. Each of those used to match
+#' nothing, so a fabricated id written that way was never looked at. This is
+#' the listed form, which render_citations() turns into references by reading
+#' every number in it as an id -- right for every list it accepts. The check
+#' reads two forms more; see cite_grammar().
 #' @noRd
 cite_pattern <- function(word) {
+  cite_grammar(word)$listed
+}
+
+#' The citation grammar: the listed form, and the full form the check reads.
+#'
+#' The full form adds a range ("1-7", with a hyphen or any dash), every id of
+#' which is cited, and a trailing locator such as the page and section
+#' render_chunks() prints ("[chunk 3 p.2, <section sign> Methods]"), none of
+#' whose numbers is an id. Read as a list of numbers, "[studies 1-7]" would
+#' render as studies 1 and 7, so the renderer leaves those two forms as they
+#' were written, and the check reads them properly: whatever is rendered has
+#' been checked, and nothing a model cites escapes the check.
+#' @noRd
+cite_grammar <- function(word) {
   w <- .gr_cite_plural[[word]] %||% sprintf("%ss?", word)
-  sprintf("\\[%s[[:space:]]+[0-9]+(?:[[:space:]]*(?:,|and|&)[[:space:]]*[0-9]+)*\\]", w)
+  sp <- "[[:space:]\u00a0\u2007\u2009\u202f]"
+  range <- sprintf("[0-9]+(?:%s*[-\u2010\u2011\u2012\u2013\u2014\u2015\u2212]%s*[0-9]+)?", sp, sp)
+  sep <- sprintf("%s*(?:[,;&]|and)(?:%s*(?:and|&))?%s*", sp, sp, sp)
+  # The word may be repeated before any id after the first: "[study 1, study 7]".
+  ids_of <- function(num) sprintf("%s%s+%s(?:%s(?:%s%s+)?%s)*", w, sp, num, sep, w, sp, num)
+  # A page or section after the ids. It may name anything, "Study population"
+  # included, but not another id: "[chunk 1 p.7, chunk 9]" must not hide 9.
+  locator <- sprintf(paste0("(?:%s*[,;:]?%s*(?:pp?\\.|pages?\\b|paras?\\.|paragraphs?\\b|",
+                            "sec(?:tion)?s?\\b\\.?|lines?\\b|\u00a7)(?:(?!%s%s+[0-9])[^\\]])*)?"),
+                     sp, sp, w, sp)
+  list(word = w, space = sp, number = range,
+       listed = sprintf("\\[%s\\]", ids_of("[0-9]+")),
+       ids = sprintf("\\[%s", ids_of(range)),
+       marker = sprintf("\\[%s%s\\]", ids_of(range), locator))
+}
+
+#' The ids one matched marker names, ranges expanded.
+#'
+#' Read from the list alone, never the locator, so "[chunk 3 p.12]" cites 3 and
+#' not 12. A range is every id in it: "[studies 1-7]" over two studies cites
+#' five that do not exist. A range too long to be a citation is kept as its two
+#' ends, which is enough to report it.
+#' @noRd
+cite_marker_ids <- function(marker, word) {
+  g <- cite_grammar(word)
+  head <- regmatches(marker, regexpr(g$ids, marker, perl = TRUE, ignore.case = TRUE))
+  if (!length(head)) return(integer(0))
+  toks <- regmatches(head, gregexpr(g$number, head, perl = TRUE))[[1]]
+  unlist(lapply(toks, function(t) {
+    ends <- as.integer(regmatches(t, gregexpr("[0-9]+", t))[[1]])
+    if (length(ends) < 2L) return(ends)
+    lo <- min(ends); hi <- max(ends)
+    if (hi - lo > 1000L) c(lo, hi) else seq.int(lo, hi)
+  }), use.names = FALSE) %||% integer(0)
 }
 
 #' Numbered ids a piece of generated text claims to cite.
 #'
-#' One regex, two callers: `[chunk 3]` in a cited answer and `[study 7]` in a
+#' One grammar, two callers: `[chunk 3]` in a cited answer and `[study 7]` in a
 #' synthesised section. They are the same check for the same reason -- a citation
 #' pointing at something that was never supplied is a fabrication, and the most
 #' convincing kind, because it looks like the thing that would let you check.
+#' Read with the full grammar, ranges and locators included.
 #' @noRd
 cited_ids <- function(text, word) {
   txt <- as_chr1(text)
-  m <- gregexpr(cite_pattern(word), txt, perl = TRUE, ignore.case = TRUE)
+  m <- gregexpr(cite_grammar(word)$marker, txt, perl = TRUE, ignore.case = TRUE)
   hits <- regmatches(txt, m)[[1]]
   if (!length(hits)) return(integer(0))
-  ids <- unlist(regmatches(hits, gregexpr("[0-9]+", hits)), use.names = FALSE)
-  # as.character(): `unlist()` on an empty list is NULL, not character(0), and
-  # as.integer(NULL) is integer(0) only by luck of the coercion.
+  ids <- unlist(lapply(hits, cite_marker_ids, word = word), use.names = FALSE)
   if (!length(ids)) return(integer(0))
-  unique(as.integer(as.character(ids)))
+  unique(as.integer(ids))
+}
+
+#' Brackets that open like a citation and do not parse as one.
+#'
+#' `[chunk nine]`, `[studies 1 to 7]`: whatever the model meant, the ids in it
+#' cannot be checked, and a check that silently skips what it cannot read is
+#' how a fabricated citation passed as clean. Callers report these and mark the
+#' result partial rather than treat them as citing nothing.
+#' @noRd
+unparsed_citations <- function(text, word) {
+  txt <- as_chr1(text, "")
+  g <- cite_grammar(word)
+  loose <- regmatches(txt, gregexpr(sprintf("\\[%s%s[^\\]\\[]*\\]", g$word, g$space), txt,
+                                    perl = TRUE, ignore.case = TRUE))[[1]]
+  if (!length(loose)) return(character(0))
+  ok <- grepl(sprintf("^%s$", g$marker), loose, perl = TRUE, ignore.case = TRUE)
+  unique(loose[!ok])
 }
 
 #' @noRd
@@ -199,8 +352,11 @@ cited_chunks <- function(text) cited_ids(text, "chunk")
 #' @param answer A [gr_answer].
 #' @param chunks The [gr_chunks] the answer was read from. Needed for readers
 #'   whose evidence is verbatim, where the comparison is against the chunk the
-#'   span claims to come from. `skim` answers already carry their sources, so
-#'   they can be checked without it; an `ensemble` needs it for the rows
+#'   span claims to come from: its `source_text` where the segmenter recorded
+#'   one (the document text behind a chunk whose `text` carries model-written
+#'   context or propositions), and its `text` otherwise. `skim` answers
+#'   already carry their sources, so they can be checked without it; an
+#'   `ensemble` needs it for the rows
 #'   its verbatim members contributed, even though its `skim` rows do not.
 #'
 #'   Pass the chunks the answer was actually read from. Chunk ids are positional,
@@ -217,11 +373,21 @@ cited_chunks <- function(text) cited_ids(text, "chunk")
 #'   *answer*, not a quotation, and asking whether it appears in the chunk is a
 #'   category error.
 #'
+#'   For an `extract` answer, a quote has to carry the value it is cited for as
+#'   well as appear in the chunk, and only the reader can check the first: it
+#'   knows the value. A row the reader marked `verified = FALSE` for that
+#'   reason stays `FALSE` here, with a `match` of 1 when the sentence itself is
+#'   in the document. It is there, and it does not say this.
+#'
 #' @section What the numbers mean:
 #' `match` is 1 for an exact quotation once whitespace, quote marks, dashes and
 #' case are folded away. These are the differences a faithful quotation introduces.
+#' It has to match whole words and whole numbers: "5%" is not found in "25%",
+#' nor "12%" in "-12%", nor "20" in "200". A span made of several passages (on
+#' separate lines, as a list, or joined by "..." or "\[...\]") is checked passage
+#' by passage and is verified when every passage is found.
 #' Below 1 it is the fraction of the span's words carried by its longest
-#' consecutive **run** in the source.
+#' consecutive **run** in the source, for the passage that matches worst.
 #'
 #' Read that number with its shape in mind. Because it measures a run, *where*
 #' the change falls matters as much as how much changed: altering the last word
@@ -236,7 +402,10 @@ cited_chunks <- function(text) cited_ids(text, "chunk")
 #' With `cite = TRUE` a reader asks the model to mark its sources as
 #' `[chunk 3]`. Every answer is checked for citations pointing at chunks that
 #' were never sent, whatever this function is called with; the result is
-#' `ans$notes$cited_unknown`, and an answer carrying one is `partial`.
+#' `ans$notes$cited_unknown`, and an answer carrying one is `partial`. Lists
+#' and ranges are read (`[chunks 1, 2, and 9]`, `[chunks 1-9]`), and a bracket
+#' that opens like a citation but cannot be read, such as `[chunk nine]`, is
+#' listed in `ans$notes$cited_unparsed` and makes the answer `partial` too.
 #'
 #' @seealso [gr_answer], [gr_read()], [is_not_found()]
 #' @export
@@ -289,7 +458,11 @@ gr_verify_evidence <- function(answer, chunks = NULL) {
   sources <- if (!is.null(ev$source_text)) as.character(ev$source_text) else rep(NA_character_, nrow(ev))
   if (inherits(chunks, "gr_chunks")) {
     gap <- is.na(sources)
-    sources[gap] <- chunks$chunks$text[match(ev$chunk_id[gap], chunks$chunks$chunk_id)]
+    # The document text a chunk came from, not its `text` where a segmenter
+    # wrote into that: a contextual header or rewritten propositions are the
+    # segmenting model's words, and a quotation of them is not in the document.
+    sources[gap] <- reader_source_text(chunks$chunks)[
+      match(ev$chunk_id[gap], chunks$chunks$chunk_id)]
   }
   if (all(is.na(sources))) sources <- NULL
 
@@ -305,6 +478,17 @@ gr_verify_evidence <- function(answer, chunks = NULL) {
     got <- verify_spans(ev$text[checkable], sources[checkable])
     res$verified[checkable] <- got$verified
     res$match[checkable] <- got$match
+  }
+  # A quote cited for an extracted value has to carry that value as well as
+  # occur in the chunk. The extract reader checks both (quote_backs_value())
+  # and a span check can only check the second, so recomputed from the span
+  # alone "We enrolled 120 people." cited for n = 5000 came back TRUE here and
+  # FALSE on the answer. The reader's FALSE stands, beside the span's match.
+  stored <- ev[["verified"]]
+  field <- ev[["field"]]
+  if (!is.null(stored) && !is.null(field)) {
+    refused <- kind == "extracted" & !is.na(field) & !is.na(stored) & !as.logical(stored)
+    res$verified[refused] <- FALSE
   }
 
   data.frame(chunk_id = ev$chunk_id, kind = kind,

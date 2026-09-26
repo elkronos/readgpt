@@ -175,7 +175,19 @@ NULL
 #' @section Fields:
 #' \describe{
 #'   \item{`chunks`}{Data frame, one row per chunk, with columns `chunk_id`,
-#'     `text`, `tokens`, `chars`, `page`, `section`, `block_id`.}
+#'     `text`, `tokens`, `chars`, `page`, `section`, `block_id`, and sometimes
+#'     `source_text`.}
+#'   \item{`chunks$source_text`}{Optional. The document text a chunk was made
+#'     from, for a segmenter that puts text of its own into `text`:
+#'     `proposition` fills it with the passage the propositions were written
+#'     from, and `contextual` with the chunk's body without the bracketed
+#'     context line. `NA`, or no such column, means `text` is the document's
+#'     own. A quotation from a chunk is checked against `source_text` when it
+#'     is there and not `NA`, and against `text` otherwise, so what the
+#'     segmenter wrote cannot verify a quote. A chunk split to fit the token
+#'     cap keeps the `source_text` of the chunk it was cut from. A custom
+#'     segmenter that writes into `text` should set it with [new_chunks()]'s
+#'     `source_text`, or quotes are checked against what it wrote.}
 #'   \item{`method`}{The segmenter that ran. **If a segmenter fell back this
 #'     records the fallback**, e.g. `"semantic->paragraph"` when no client was
 #'     supplied, or `"page->paragraph"` for a source with no page provenance.}
@@ -183,6 +195,13 @@ NULL
 #'   \item{`extra`}{Method-specific detail: `boundaries` and
 #'     `embedding_source` for `semantic`, `propositions` for `proposition`,
 #'     `cap_enforced` when oversized chunks had to be split.}
+#'   \item{`trace`}{Set only when [gr_segment()] was called without a `trace`
+#'     and so made its own: the [gr_trace] it recorded into, holding the
+#'     requests the segmenter made (embeddings for `semantic`, model calls for
+#'     `proposition` and for `contextual` with `context_source = "llm"`),
+#'     which were held to `gr_options(max_calls =, max_cost_usd =)`. When a
+#'     `trace` is passed they are recorded there instead, and this field is
+#'     absent.}
 #' }
 #'
 #' @section Methods:

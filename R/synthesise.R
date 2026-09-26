@@ -14,8 +14,9 @@
 # happened to be found.
 #
 # EVERY CLAIM CITES A ROW. Sections are written with `[study 3]` markers, the
-# markers are parsed back out, and any pointing at a row that does not exist is
-# reported and marks the section partial. This is the same check `new_answer()`
+# markers are parsed back out, and any pointing at a row that does not exist --
+# or, with claims, at a row the section was not shown -- is reported and marks
+# the section partial. This is the same check `new_answer()`
 # runs on `[chunk 3]`, for the same reason: a citation to something that was
 # never supplied is a fabrication, and the most convincing kind there is.
 #
@@ -90,7 +91,11 @@
 #' @param references Append a `## References` section built from the studies the
 #'   finished text actually cites. Alphabetical under `"author-year"`, numbered
 #'   by study otherwise: the list is labelled by whatever the prose uses to
-#'   point into it.
+#'   point into it. The alphabetical order follows a fixed rule rather than the
+#'   session's locale, so it is the same on every machine: it ignores case,
+#'   accents and apostrophes, filing an accented name with its base letter.
+#'   Two papers by the same authors in the same year are lettered (2019a,
+#'   2019b) in title order.
 #'
 #' @return An object of class `gr_synthesis`:
 #'   \describe{
@@ -107,7 +112,17 @@
 #'       `lost` and `added` (citations, if the revision changed them), and
 #'       `reason` for anything discarded.}
 #'     \item{`sections`}{One row per section: `section`, `brief`, `text`,
-#'       `n_cited`, `n_unknown`, `partial`.}
+#'       `n_cited`, `n_unknown` (citations to a row that does not exist),
+#'       `n_unsupplied` (with `claims`, citations to a study that exists but
+#'       was not given to that section; they are left as markers and kept out
+#'       of the reference list), `n_unparsed` (brackets that open like a
+#'       citation, such as `[studies 1 to 7]`, but cannot be read as one, so
+#'       the studies they name were not checked), `n_truncated` (replies,
+#'       including batch drafts and merges, that stopped at the reply limit),
+#'       `partial`. A section is partial when any of those counts is non-zero
+#'       (`n_cited` aside), when it came back empty, when a batch of studies
+#'       was lost or not read, when its batch drafts could not be merged, or,
+#'       with `claims`, when it did not write up a claim it was given.}
 #'     \item{`citations`}{Every citation, resolved to the row it points at, in
 #'       long form: `section`, `study`, `document`, `document_id`.}
 #'     \item{`studies`}{The rows that were written from, with the `study` number
@@ -225,6 +240,12 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
                                    16, 1e6, "max_section_tokens")
   spec <- gr_read_spec("stuff", model = model, temperature = temperature,
                        max_answer_tokens = max_section_tokens)
+  # gr_read_spec() leaves the model NULL when none is named, and gr_budget() and
+  # gr_call() fall back to different models on NULL: sections were sized for
+  # gr_options("model") and sent to the client's, so a small model got a prompt
+  # sized for a large one. Settled once here, so the sections, the merges and
+  # the revision passes all size for, and ask, the same model.
+  spec <- resolve_read_model(spec, client)
   # The parent, not the counter -- see as_parent_trace(). Running the write-up on
   # a trace that screening had already spent meant `trace_can_call()` refused
   # every section and the review came back as a list of empty headings.
@@ -292,22 +313,33 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
   } else NULL
   final_marked <- revised$text %||% marked
 
+  # A study a section cited without being shown it stays a visible marker, as a
+  # row that does not exist does: rendering it would print the fabrication as a
+  # fact about the extraction. Per section, because the same study may be cited
+  # honestly by another section that WAS shown it. `never_shown` is the
+  # document-wide set, for a revised text that no longer splits by section.
+  unsupplied <- lapply(rows, `[[`, "unsupplied")
+  never_shown <- setdiff(unlist(unsupplied), citations$study)
+
   # The reference list follows what the FINISHED text cites, not what the
   # sections cited before revision. A reference list carrying a study the final
   # prose never mentions claims a breadth the review does not have.
-  cited <- cited_ids(final_marked, "study")
+  cited <- setdiff(cited_ids(final_marked, "study"), never_shown)
   refs <- if (isTRUE(references)) reference_list(used, keys, cited, cols, resolved) else NULL
 
-  render <- function(x) render_citations(x, used, keys, resolved)
+  render <- function(x, leave = never_shown) render_citations(x, used, keys, resolved, leave = leave)
   # Kept because it is what the citation check ran on, so the check can be
   # re-run on the published prose at any point.
   sections$text_marked <- sections$text
-  sections$text <- vapply(sections$text, render, character(1), USE.NAMES = FALSE)
+  sections$text <- unlist(Map(render, sections$text, unsupplied), use.names = FALSE)
+  # The draft is its sections, so it is rendered from them, each with its own
+  # exceptions; rendering the joined document is the same text otherwise.
+  drafted <- synth_document(sections)
 
   structure(list(
-    text = append_references(render(final_marked), refs),
+    text = append_references(if (is.null(revised$text)) drafted else render(final_marked), refs),
     text_marked = final_marked,
-    draft = append_references(render(marked), refs),
+    draft = append_references(drafted, refs),
     sections = sections,
     references = refs,
     citations = citations %||% synth_empty_citations(),
@@ -344,18 +376,37 @@ print.gr_synthesis <- function(x, ...) {
   cat(sprintf("<gr_synthesis> %d section(s) from %d stud%s\n", nrow(s), nrow(x$studies),
               if (nrow(x$studies) == 1L) "y" else "ies"))
   if (x$skipped) {
-    cat(sprintf("  %d row(s) left out: failed, duplicate, or nothing extracted\n", x$skipped))
+    cat(sprintf("  %d row(s) left out: failed or read in part, duplicate, or nothing extracted\n", x$skipped))
   }
+  # `%||%` for a synthesis saved before the column existed.
+  unsup <- s$n_unsupplied %||% integer(nrow(s))
+  unparsed <- s$n_unparsed %||% integer(nrow(s))
+  cut <- s$n_truncated %||% integer(nrow(s))
   for (i in seq_len(nrow(s))) {
+    flags <- c(if (s$n_unknown[i]) sprintf("%d TO A ROW THAT DOES NOT EXIST", s$n_unknown[i]),
+               if (unsup[i]) sprintf("%d TO A STUDY IT WAS NOT GIVEN", unsup[i]),
+               if (unparsed[i]) sprintf("%d THE CHECK CANNOT READ", unparsed[i]),
+               if (cut[i]) "CUT OFF AT THE REPLY LIMIT")
     cat(sprintf("  %-22s %5d words, %d citation(s)%s\n",
                 substr(s$section[i], 1, 22),
                 lengths(strsplit(trimws(s$text[i]), "\\s+"))[1],
                 s$n_cited[i],
-                if (s$n_unknown[i]) sprintf(", %d TO A ROW THAT DOES NOT EXIST", s$n_unknown[i])
+                if (length(flags)) paste0(", ", paste(flags, collapse = ", "))
                 else if (!s$n_cited[i]) ", NONE" else ""))
   }
   if (any(s$n_unknown > 0L)) {
     cat("  a citation to a row that does not exist is a fabrication; those sections are partial\n")
+  }
+  if (any(unsup > 0L)) {
+    cat(paste0("  so is a citation to a study the section was not given; those sections are ",
+               "partial, and the markers are left unrendered\n"))
+  }
+  if (any(unparsed > 0L)) {
+    cat(paste0("  a citation the check cannot read names studies nobody checked; those sections ",
+               "are partial\n"))
+  }
+  if (any(cut > 0L)) {
+    cat("  a section cut off at the reply limit stops mid-thought; those sections are partial\n")
   }
   cost <- gr_trace_cost(x$trace)
   total <- if (nrow(cost)) sum(cost$usd) else 0
@@ -381,8 +432,9 @@ synth_studies <- function(tab, include_unclear = FALSE) {
   keep <- synth_usable(tab, include_unclear)
   used <- tab[keep, , drop = FALSE]
   if (!nrow(used)) {
-    gr_abort(paste0("No usable rows: every document either failed, was a duplicate of another, ",
-                    "or had nothing extracted. There is nothing to write from."),
+    gr_abort(paste0("No usable rows: every document either failed or was read only in part, ",
+                    "was a duplicate of another, or had nothing extracted. There is nothing to ",
+                    "write from."),
              class = "gr_no_studies")
   }
   used$study <- seq_len(nrow(used))
@@ -492,6 +544,11 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
   capped <- capped %||% new.env(parent = emptyenv())
   first_stop <- !isTRUE(capped$warned)
   capped_batches <- 0L
+  # Replies that stopped at the reply limit. gr_call() keeps them ok = TRUE --
+  # the text is what the model wrote -- so usable_text() accepts them, and a
+  # section ending "However, the trial" came back complete.
+  cut_off <- 0L
+  merge_failed <- FALSE
   text <- if (!trace_can_call(trace)) {
     # Every other stage checks the run's ceiling before it spends -- gr_claims(),
     # gr_outline(), revise_once() and every reader do. Synthesis did not, so a
@@ -518,6 +575,7 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
                                            restate_tail(body, again, spec$restate)))
     ), model = spec$model, max_output = spec$max_answer_tokens,
        temperature = spec$temperature, trace = trace, label = "synthesise.section")
+    if (usable_text(res) && reply_cut_off(res)) cut_off <- cut_off + 1L
     if (usable_text(res)) res$text else ""
   } else {
     # Too many studies for one prompt: draft the section from batches and merge.
@@ -538,6 +596,9 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
                                              "\n</studies>"))
       ), model = spec$model, max_output = spec$max_answer_tokens,
          temperature = spec$temperature, trace = trace, label = "synthesise.batch")
+      # Kept for the merge, as the one-call section keeps its text: part of a
+      # batch's draft beats none of it. Counted, so the section says it.
+      if (usable_text(res) && reply_cut_off(res)) cut_off <<- cut_off + 1L
       if (usable_text(res)) res$text else ""
     }, character(1), USE.NAMES = FALSE)
     # tree_merge() strips empty pieces, so a merge over the survivors reads
@@ -548,8 +609,18 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
     # `<-`, not `<<-`: an if/else block shares the enclosing frame, so `<<-`
     # here would have written to the global environment and left this one at 0.
     lost_batches <- sum(!nzchar(parts)) - capped_batches
+    from <- length(trace$steps) + 1L
     m <- tree_merge(client, ask, parts, spec, trace, label = "synthesise.merge",
                     system_prompt = system_prompt, kind = "draft")
+    # tree_merge() accepts a merge reply cut off at the limit as it accepts any
+    # other, and returns only the text, so the steps it recorded are the one
+    # place that says whether a merge -- the last one, or one at a level below
+    # it that the last one merged from -- stopped short.
+    cut_off <- cut_off + trace_cut_off(trace, from, "synthesise.merge")
+    # A merge that failed hands back the batch drafts joined and capped. The
+    # section is not the merged draft it stands in for, whether or not every
+    # batch was read; when none was, the lost batches already say so.
+    merge_failed <- !isTRUE(m$ok) && lost_batches + capped_batches < length(parts)
     # m$text on failure carries tree_merge()'s own "[merge failed; findings
     # above are truncated]" marker. Throwing it away for a raw paste() of the
     # parts discarded the one thing that said the section was incomplete.
@@ -557,8 +628,21 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
   }
 
   cited <- cited_ids(text, "study")
-  known <- cited[cited %in% used$study]
+  # A bracket that opens like a citation and does not parse as one --
+  # "[studies 1 to 7]", "[study one]" -- names ids nothing here can check.
+  # Counting it as citing nothing is how a fabricated study passed as clean.
+  unparsed <- unparsed_citations(text, "study")
+  # Checked against what this section was SHOWN. With claims it sees only the
+  # studies behind its claims, and a number it could not have seen is, by this
+  # file's own definition, a citation to something never supplied. Checked
+  # against the whole table it passed: it counted as known, was rendered as an
+  # author-year citation and went into the reference list. `unsupplied` is kept
+  # apart from `unknown` because the row does exist, and "a row that does not
+  # exist" would misdescribe it.
+  shown <- if (by_claims) want else used$study
+  known <- cited[cited %in% shown]
   unknown <- setdiff(cited, used$study)
+  unsupplied <- setdiff(intersect(cited, used$study), shown)
   hits <- match(known, used$study)
   # The check in the other direction, which the citation check cannot make: a
   # section handed four claims and citing none of the studies behind one of them
@@ -587,9 +671,31 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
                            "They are marked partial."),
                     heading, capped_batches), class = "gr_synth_capped")
   }
+  if (cut_off > 0L) {
+    gr_warn(sprintf(paste0("Section '%s': %d repl%s stopped at the %d-token reply limit before ",
+                           "finishing, so the section is incomplete. It is marked partial; raise ",
+                           "`max_section_tokens`."),
+                    heading, cut_off, if (cut_off == 1L) "y" else "ies", spec$max_answer_tokens),
+            class = "gr_synth_truncated")
+  }
+  if (merge_failed) {
+    gr_warn(sprintf(paste0("Section '%s': the batches of studies were drafted but not merged (%s), ",
+                           "so the section is those drafts joined end to end, capped in length, ",
+                           "rather than one account. It is marked partial."),
+                    heading, as_chr1(m$error, "the merge failed")),
+            class = "gr_synth_merge_failed")
+  }
+  if (length(unparsed)) {
+    gr_warn(sprintf(paste0("Section '%s' has %d citation(s) the check cannot read (%s), so the ",
+                           "studies they name were not checked. The section is marked partial."),
+                    heading, length(unparsed), paste(unparsed, collapse = ", ")),
+            class = "gr_synth_unparsed")
+  }
   list(
     row = data.frame(section = heading, brief = as_chr1(brief), text = as_chr1(text),
                      n_cited = length(known), n_unknown = length(unknown),
+                     n_unsupplied = length(unsupplied),
+                     n_unparsed = length(unparsed), n_truncated = cut_off,
                      # A section citing a row that is not in the table, or citing
                      # nothing at all, is not a section anyone should paste into a
                      # manuscript unread.
@@ -599,9 +705,13 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
                      # that marked the section partial, so a section that
                      # silently dropped a quarter of the corpus read as complete
                      # while the warning said it had been marked partial.
-                     partial = length(unknown) > 0L || !nzchar(trimws(text)) ||
-                       lost_batches > 0L || capped_batches > 0L || length(missed) > 0L,
+                     partial = length(unknown) > 0L || length(unsupplied) > 0L ||
+                       !nzchar(trimws(text)) || lost_batches > 0L || capped_batches > 0L ||
+                       length(missed) > 0L || length(unparsed) > 0L || cut_off > 0L ||
+                       merge_failed,
                      stringsAsFactors = FALSE),
+    # Which markers in THIS section must stay markers when the prose is rendered.
+    unsupplied = unsupplied,
     citations = if (!length(known)) NULL else
       data.frame(section = heading, study = known,
                  document = used$document[hits],
@@ -611,6 +721,22 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
                  document_id = if (is.null(used$document_id)) NA_character_ else
                    as.character(used$document_id[hits]),
                  stringsAsFactors = FALSE))
+}
+
+#' How many replies recorded from step `from` on, under a label starting with
+#' `prefix`, stopped at the reply limit.
+#'
+#' For calls made inside a helper that returns only text, such as tree_merge():
+#' the trace records every reply's finish reason, normalised by gr_result(), and
+#' worker traces are folded in, so this counts the same with or without
+#' parallel merge levels.
+#' @noRd
+trace_cut_off <- function(trace, from, prefix) {
+  if (!inherits(trace, "gr_trace") || from > length(trace$steps)) return(0L)
+  steps <- trace$steps[seq.int(from, length(trace$steps))]
+  sum(vapply(steps, function(st) {
+    startsWith(as_chr1(st$label), prefix) && identical(as_chr1(st$finish_reason, ""), "length")
+  }, logical(1)))
 }
 
 #' The claims a section must argue, in the order they earned.
@@ -652,17 +778,28 @@ render_claims <- function(cw, support, weights) {
   paste(blocks, collapse = "\n\n")
 }
 
+#' Pack rendered studies into batches that fit `budget` input tokens.
+#'
+#' `max_n` caps the studies per batch, for a caller whose REPLY grows with the
+#' batch (gr_claims()). `attr(, "index")` gives each batch's positions in
+#' `rendered`, so a caller can say which studies a batch held -- which is what a
+#' claim drawn from it may cite.
 #' @noRd
-synth_batches <- function(rendered, budget) {
-  groups <- list(); buf <- character(0); tks <- 0L
-  for (p in rendered) {
+synth_batches <- function(rendered, budget, max_n = Inf) {
+  groups <- list(); index <- list(); buf <- character(0); at <- integer(0); tks <- 0L
+  for (i in seq_along(rendered)) {
+    p <- rendered[[i]]
     pt <- gr_count_tokens(p)
-    if (length(buf) && tks + pt > budget) {
-      groups[[length(groups) + 1L]] <- buf; buf <- character(0); tks <- 0L
+    if (length(buf) && (tks + pt > budget || length(buf) >= max_n)) {
+      groups[[length(groups) + 1L]] <- buf; index[[length(index) + 1L]] <- at
+      buf <- character(0); at <- integer(0); tks <- 0L
     }
-    buf <- c(buf, p); tks <- tks + pt
+    buf <- c(buf, p); at <- c(at, i); tks <- tks + pt
   }
-  if (length(buf)) groups[[length(groups) + 1L]] <- buf
+  if (length(buf)) {
+    groups[[length(groups) + 1L]] <- buf; index[[length(index) + 1L]] <- at
+  }
+  attr(groups, "index") <- index
   groups
 }
 

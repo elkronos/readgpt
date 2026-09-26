@@ -48,6 +48,11 @@ A \link{gr_result}. \strong{Never} \code{NULL}; \verb{$text} is always a single 
 content filter) is reported as \code{ok = FALSE}, so an empty completion is never
 passed downstream as evidence. \verb{$cached} is \code{TRUE} when the response came
 from a \code{\link[=gr_cache]{gr_cache()}} or a \code{\link[=gr_replay_client]{gr_replay_client()}} instead of the network.
+A reply cut off at the output cap keeps \code{ok = TRUE}, since its text is what
+the model wrote, but always carries \code{finish_reason = "length"}, whatever the
+provider called it (\code{"max_tokens"}, \code{"MAX_TOKENS"}, a Responses API status
+of \code{"incomplete"}); check for it wherever a complete reply matters. Such a
+reply is not written to a \code{\link[=gr_cache]{gr_cache()}}.
 }
 \description{
 Call a model

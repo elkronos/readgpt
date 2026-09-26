@@ -26,7 +26,11 @@ gr_embed(
 
 \item{cache}{Use the session embedding cache.}
 
-\item{trace}{Optional trace.}
+\item{trace}{Optional trace. With the built-in \code{"api"} embedder, each
+request to the embeddings endpoint is checked against \code{max_calls} and
+\code{max_cost_usd} (see \code{\link[=gr_options]{gr_options()}}) before it is sent and recorded in the
+trace, priced, once it is made. A request the limits refuse is a failure,
+handled by \code{fallback}.}
 
 \item{fallback}{What to do when the embedding request fails. \strong{Defaults to
 \code{"lexical"}}: hashed bag-of-words vectors that measure word overlap, not

@@ -24,15 +24,20 @@ been downloaded.}
 required, and the reason to supply it is that a review has to report it.}
 
 \item{dedupe}{\code{"doi"} matches on DOI alone; \code{"doi+title"} (the default) falls
-back to normalised title and year when a DOI is missing, which is what
-catches the same conference paper indexed twice; \code{"none"} keeps everything.}
+back to normalised title and year when a DOI cannot settle it, which is
+what catches the same conference paper indexed twice, or indexed once with
+its DOI and once without. The title fallback also needs the first author to
+agree (or, when a record has no authors, the venue), ignores titles shorter
+than 12 letters ("Reply", "Editorial"), and never merges records carrying
+two different DOIs; \code{"none"} keeps everything.}
 }
 \value{
 An object of class \code{gr_records}:
 \describe{
 \item{\code{records}}{One row per distinct work, with \code{duplicate_of} naming the
 row a dropped record repeats, \code{file} the document matched to it, and
-\code{retrieved} whether one was found.}
+\code{retrieved} whether one was found. A duplicate's file path counts
+towards the row it repeats, which is where the match is reported.}
 \item{\code{counts}}{Identified, per database, duplicates removed, distinct
 records, reports sought, reports retrieved, reports not retrieved.}
 \item{\code{search}}{The \code{gr_search()}, or \code{NULL}.}

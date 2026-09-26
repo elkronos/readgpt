@@ -27,7 +27,8 @@ pass the same trace to several calls and they all record into it. Fields:
 \code{tokens_out}, \code{errors}, \code{budget_stop}, \code{stop_reason}, \code{spent_usd}.
 \code{cached} counts the calls answered from a \code{\link[=gr_cache]{gr_cache()}} or a
 \code{\link[=gr_replay_client]{gr_replay_client()}} rather than the network, so \code{calls - cached} is what
-the run paid for.
+the run paid for. \code{calls} includes requests to an embeddings endpoint,
+recorded as steps labelled \code{"embed.request"}.
 
 \code{budget_stop} is \code{TRUE} once a limit stopped the run, and \code{stop_reason}
 says which: \code{"calls"} for \code{max_calls}, \code{"cost"} for \code{max_cost_usd} (see

@@ -85,7 +85,11 @@ chance for a model to touch finished prose.}
 \item{references}{Append a \verb{## References} section built from the studies the
 finished text actually cites. Alphabetical under \code{"author-year"}, numbered
 by study otherwise: the list is labelled by whatever the prose uses to
-point into it.}
+point into it. The alphabetical order follows a fixed rule rather than the
+session's locale, so it is the same on every machine: it ignores case,
+accents and apostrophes, filing an accented name with its base letter.
+Two papers by the same authors in the same year are lettered (2019a,
+2019b) in title order.}
 
 \item{claims}{A \code{\link[=gr_claims]{gr_claims()}} result. With it each section argues that
 section's claims and sees only the studies those claims rest on, rather
@@ -117,7 +121,17 @@ asked for.}
 \code{lost} and \code{added} (citations, if the revision changed them), and
 \code{reason} for anything discarded.}
 \item{\code{sections}}{One row per section: \code{section}, \code{brief}, \code{text},
-\code{n_cited}, \code{n_unknown}, \code{partial}.}
+\code{n_cited}, \code{n_unknown} (citations to a row that does not exist),
+\code{n_unsupplied} (with \code{claims}, citations to a study that exists but
+was not given to that section; they are left as markers and kept out
+of the reference list), \code{n_unparsed} (brackets that open like a
+citation, such as \verb{[studies 1 to 7]}, but cannot be read as one, so
+the studies they name were not checked), \code{n_truncated} (replies,
+including batch drafts and merges, that stopped at the reply limit),
+\code{partial}. A section is partial when any of those counts is non-zero
+(\code{n_cited} aside), when it came back empty, when a batch of studies
+was lost or not read, when its batch drafts could not be merged, or,
+with \code{claims}, when it did not write up a claim it was given.}
 \item{\code{citations}}{Every citation, resolved to the row it points at, in
 long form: \code{section}, \code{study}, \code{document}, \code{document_id}.}
 \item{\code{studies}}{The rows that were written from, with the \code{study} number

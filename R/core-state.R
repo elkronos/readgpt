@@ -232,8 +232,10 @@ check_option <- function(name, value) {
 #'     Under a limit of 0 a model registered at no cost runs and one with a
 #'     price is refused. `NULL` removes the limit.}
 #'   \item{`max_calls` (400)}{Hard cap on model calls per run, checked before
-#'     the first call and again before every subsequent one. `NULL` removes the
-#'     cap.}
+#'     the first call and again before every subsequent one. A request to an
+#'     embeddings endpoint (the built-in `"api"` embedder) counts as one, and
+#'     is checked and priced against `max_cost_usd` the same way; an embedding
+#'     served from the session cache is free. `NULL` removes the cap.}
 #'   \item{`unknown_model_action` ("warn")}{`"warn"` or `"error"` when a model id
 #'     is not in the registry.}
 #' }

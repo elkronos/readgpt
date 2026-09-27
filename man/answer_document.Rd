@@ -55,11 +55,10 @@ a model with a small context window. Anything longer is read with
 answers. Both send every chunk, so the choice changes the number of requests
 and the cost, not how much of the document is read.
 
-The room is measured for the recipe's model and, unless \code{model} is passed in
-\code{...}, for the client's model as well, since a client built for another
-model may be what answers. A model whose limits readgpt has to guess (see
-\code{\link[=gr_model_info]{gr_model_info()}}) always gets \code{"thorough"}; register its real limits with
-\code{\link[=gr_register_model]{gr_register_model()}}.
+The room is measured for the model that answers: the one passed as \code{model}
+in \code{...}, or else the client's. A model whose limits readgpt has to guess
+(see \code{\link[=gr_model_info]{gr_model_info()}}) always gets \code{"thorough"}; register its real limits
+with \code{\link[=gr_register_model]{gr_register_model()}}.
 
 The answer's \code{recipe} names the recipe used, \code{notes$auto_recipe} records that
 \code{"auto"} chose it, and the trace has an \code{auto_recipe} step with the token

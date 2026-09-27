@@ -11,7 +11,8 @@ new_chunks(
   page = NA_integer_,
   section = NA_character_,
   block_id = NA_integer_,
-  extra = list()
+  extra = list(),
+  source_text = NULL
 )
 }
 \arguments{
@@ -27,6 +28,13 @@ value. Leave as \code{NA} rather than guessing: wrong provenance sends a reader
 to the wrong page with full confidence.}
 
 \item{extra}{Named list of segmenter-specific detail, kept on \verb{$extra}.}
+
+\item{source_text}{For a segmenter that puts text a model wrote into a
+chunk (a context line, a rewrite): the document text each chunk was made
+from, one value per chunk or one recycled value. It becomes the
+\code{source_text} column, which is what quotes from the chunk are checked
+against. \code{NA}, or leaving it out, says the chunk's \code{text} is the
+document's own.}
 }
 \value{
 A \link{gr_chunks}.

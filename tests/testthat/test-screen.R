@@ -79,14 +79,18 @@ test_that("an unreadable answer is 'unclear', never a guess in either direction"
   expect_identical(dec(NULL), "unclear")
   expect_identical(dec(NA), "unclear")
 
-  # And end to end: a client that returns nothing usable.
+  # And end to end: a client that returns nothing usable. That is a failed
+  # call, not a judgement, so it is not "unclear" either: no decision, status
+  # "failed", and the error says why. "Unclear" counted in gr_flow() and
+  # gr_calibrate() as the model deferring to a person, which it never did.
   cl <- gr_mock_client(function(messages, params) "not json at all")
   a <- txt_file(trial_txt)
   s <- quiet(gr_screen(a, question = "Q?", include = "Reports a randomised comparison",
                        client = cl, keep_answers = TRUE))
-  expect_identical(s$table$decision, "unclear")
-  expect_identical(s$table$status, "ok")            # the run worked
-  expect_true(s$answers[[1]]$partial)               # the call did not
+  expect_true(is.na(s$table$decision))
+  expect_identical(s$table$status, "failed")
+  expect_match(s$table$error, "not the JSON")
+  expect_true(s$answers[[1]]$partial)               # the call did not work
 })
 
 test_that("'unclear' is an answer, not a partial one", {

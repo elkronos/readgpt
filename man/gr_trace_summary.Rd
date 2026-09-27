@@ -11,8 +11,17 @@ gr_trace_summary(trace)
 }
 \value{
 A one-row data frame: \code{run_id}, \code{calls}, \code{cached}, \code{steps},
-\code{tokens_in}, \code{tokens_out}, \code{errors}, \code{elapsed_s}. There is no cost column;
-combine \code{tokens_in}/\code{tokens_out} with \code{\link[=gr_estimate_cost]{gr_estimate_cost()}} for that.
+\code{tokens_in}, \code{tokens_out}, \code{errors}, \code{elapsed_s}, \code{embed_calls},
+\code{embed_tokens}.
+
+\code{calls} counts every request, including the \code{embed_calls} of them made to
+an embeddings endpoint. \code{tokens_in} and \code{tokens_out} are the size of the
+model calls' prompts and replies; the text sent to be embedded is counted
+in \code{embed_tokens} instead, because an embedding model is priced at a small
+fraction of a chat model's rate. There is no cost column: \code{\link[=gr_trace_cost]{gr_trace_cost()}}
+prices every request at its own model, embeddings included, and is what the
+run cost. Combining \code{tokens_in}/\code{tokens_out} with \code{\link[=gr_estimate_cost]{gr_estimate_cost()}}
+estimates the model calls alone at one model's prices.
 
 \code{cached} is how many of those calls were answered from a \code{\link[=gr_cache]{gr_cache()}} or a
 \code{\link[=gr_replay_client]{gr_replay_client()}}. Their tokens are still counted in \code{tokens_in} and
@@ -20,6 +29,9 @@ combine \code{tokens_in}/\code{tokens_out} with \code{\link[=gr_estimate_cost]{g
 were simply not paid for again. A run with \code{cached == calls} cost nothing,
 so feeding its token counts to \code{\link[=gr_estimate_cost]{gr_estimate_cost()}} gives you what the run
 \emph{would} have cost, not what it did.
+
+\code{errors} counts every failed request, including any the run recovered
+from (see \code{errors} in \code{\link[=gr_trace]{gr_trace()}}).
 }
 \description{
 Summarise a trace
@@ -28,8 +40,13 @@ Summarise a trace
 cl <- gr_mock_client(function(m, p) "45.2 million dollars")
 ans <- answer_document(readgpt_example(), "What was revenue?", "thorough", client = cl)
 gr_trace_summary(ans$trace)
+
+# What the run cost, each request priced at its own model (nothing, for a
+# mock), and what its model calls would cost at another model's prices.
+gr_trace_cost(ans$trace)
 gr_estimate_cost("gpt-4o", ans$trace$tokens_in, ans$trace$tokens_out)
 }
 \seealso{
-\code{\link[=gr_trace]{gr_trace()}}, \code{\link[=as_json]{as_json()}}, \code{\link[=gr_estimate_cost]{gr_estimate_cost()}}, \code{\link[=gr_cache]{gr_cache()}}
+\code{\link[=gr_trace]{gr_trace()}}, \code{\link[=as_json]{as_json()}}, \code{\link[=gr_trace_cost]{gr_trace_cost()}}, \code{\link[=gr_estimate_cost]{gr_estimate_cost()}},
+\code{\link[=gr_cache]{gr_cache()}}
 }

@@ -33,7 +33,9 @@
 #'   whole double, so that column is a double whenever one such value is
 #'   present. A value that carries more than one number, such as "120 (60 per
 #'   arm)", is recorded as missing rather than run together.
-#' @param values For `type = "enum"`, the permitted values.
+#' @param values For `type = "enum"`, the permitted values. A declared value
+#'   is kept as written, including one such as `"null"` or `"none"` that would
+#'   otherwise read as missing.
 #' @return A `gr_field`.
 #' @seealso [gr_fields()], [gr_extract()]
 #' @export
@@ -203,6 +205,18 @@ empty_record <- function(fields) {
   stats::setNames(vector("list", length(fields)), names(fields))
 }
 
+#' Words a model writes in place of a value when it has none.
+#'
+#' "not reported" is not among them because it is never a value, whatever
+#' quote comes with it; coerce_field() drops it for every type.
+#' @noRd
+.gr_placeholder_words <- c("null", "na", "n/a", "none")
+
+#' @noRd
+is_placeholder_value <- function(v) {
+  is.character(v) && length(v) == 1L && tolower(trimws(v)) %in% .gr_placeholder_words
+}
+
 #' Coerce one extracted value to the type its field declares.
 #'
 #' A model asked for an integer will sometimes return "1,204" or "about 1200".
@@ -214,14 +228,27 @@ coerce_field <- function(value, field) {
   if (is.null(value) || (length(value) == 1L && is.na(value))) return(NULL)
   v <- value[[1]]
   if (is.character(v) && !nzchar(trimws(v))) return(NULL)
-  if (is.character(v) && tolower(trimws(v)) %in% c("null", "na", "n/a", "none", "not reported")) {
-    return(NULL)
+  # A declared enum value is a value, whatever it spells, so membership is
+  # decided before any word is read as "missing". The documented schemas use
+  # values = c("positive", "null", "mixed"), and the null-word filter running
+  # first recorded every null result as not reported -- dropping exactly the
+  # studies a synthesis most needs to count. Anything undeclared is still NULL.
+  if (identical(field$type, "enum")) {
+    s <- as_chr1(v)
+    return(if (s %in% field$values) s else NULL)
   }
+  if (is.character(v) && identical(tolower(trimws(v)), "not reported")) return(NULL)
+  # For a number or a boolean these words cannot be the value, and a boolean
+  # would otherwise read "none" as FALSE. For a string they can be: "None" is
+  # the answer for declared conflicts of interest or serious adverse events.
+  # Whether a string "None" is that answer or the model's way of saying it
+  # found nothing depends on the sentence behind it, which only
+  # reconcile_fields() can see, so it decides there.
+  if (!identical(field$type, "string") && is_placeholder_value(v)) return(NULL)
   switch(field$type,
     string  = as_chr1(v),
     boolean = { b <- if (is.logical(v)) v else tolower(trimws(as_chr1(v))) %in% c("true", "yes", "y", "1")
                 if (is.na(b)) NULL else b },
-    enum    = { s <- as_chr1(v); if (s %in% field$values) s else NULL },
     # Already the right type: take it as it is. Round-tripping a double through
     # as.character() to strip punctuation it does not contain costs precision
     # (as.character(1/3) is fifteen digits), and coercion runs again on values

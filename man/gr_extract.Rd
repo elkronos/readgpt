@@ -48,13 +48,15 @@ interrupted extraction resumes instead of restarting.}
 \item{resolve}{What to do when two parts of one document give different values
 for the same field. \code{"first"} (default) takes the earlier one and records
 the disagreement in the \code{conflicts} column, costing nothing. \code{"model"}
-spends one extra call per disagreeing field to adjudicate.}
+spends one extra call per disagreeing field to adjudicate; if that call
+fails, the first value is kept, as with \code{"first"}.}
 
-\item{require_quote}{Discard any value the model could not tie to a verbatim
-span in the chunk it cited. Off by default: an extracted value is never
-thrown away without being asked for, and \code{n_unverified} makes the same
-problem visible without destroying anything. Turn it on for a protocol that
-says no quote, no datum.}
+\item{require_quote}{Discard any value that is not verified: one with no
+quote, a quote that is not verbatim in the chunk it cited, or a quote that
+does not state the value (see "Verifying it" below). Off by default: an
+extracted value is never thrown away without being asked for, and
+\code{n_unverified} makes the same problem visible without destroying anything.
+Turn it on for a protocol that says no quote, no datum.}
 
 \item{max_total_calls, trace}{As \code{\link[=gr_read_many]{gr_read_many()}}.}
 
@@ -71,7 +73,11 @@ An object of class \code{gr_extraction}:
 \describe{
 \item{\code{table}}{One row per document: \code{document}, one column per field in
 the schema and of that field's type, then \code{n_filled}, \code{n_unverified},
-\code{conflicts}, \code{status}, \code{duplicate_of}, \code{error}. A document whose cleaned
+\code{conflicts}, \code{status}, \code{duplicate_of}, \code{error}. \code{status} is the run
+status from \code{summary}, except that a document some of whose extraction
+requests failed is \code{"incomplete"} (or \code{"failed"} if all did), and one
+whose extraction requests all succeeded is not \code{"failed"} for another
+request's failure; see the section on \code{NA} below. A document whose cleaned
 text repeats one already read is not read again (see
 \code{\link[=gr_read_many]{gr_read_many()}}), so \code{subset(x$table, is.na(duplicate_of))} is the
 set of distinct documents.}
@@ -97,6 +103,16 @@ that field, or because the document was never successfully read. The \code{statu
 column tells them apart, and it matters: "not reported" is a finding you can
 publish, and "failed" is a job you have to redo. Filtering an extraction table
 without checking \code{status} silently turns the second into the first.
+
+A document where some of the extraction requests failed is \code{"incomplete"},
+with the count in \code{error}: the values it has are real, but an \code{NA} there may
+sit in a part of the document that was never read, so it is unknown rather
+than not reported. A document where every request failed is \code{"failed"}.
+A failed request outside extraction, such as the adjudication
+\code{resolve = "model"} asks for (the first value is then kept) or a
+\code{contextual} header (the excerpt is read without it), leaves the document
+\code{"ok"}: every excerpt was read. \code{error} names such a failure unless the
+pipeline recorded it as recovered.
 }
 
 \section{What it costs}{
@@ -111,13 +127,29 @@ unless a document contradicts itself. Cut the cost by segmenting more coarsely
 \section{Verifying it}{
 
 Every filled cell is asked for the sentence it came from, and that sentence is
-checked against the text of the chunk it was attributed to. Nothing is ever
-discarded for failing: a paraphrase stays in \verb{$evidence} with
-\code{verified = FALSE} and the fraction of it that did match in \code{match}.
+checked against the text of the chunk it was attributed to (the document's
+own text, never a header or rewrite a model added to the chunk). It must
+also carry the value: a number must be one of the numbers the sentence
+states, the sentence must not start or end inside a word, and a one-word
+fragment supports only a value it spells. A number counts however the
+sentence writes it: "1,204", "1 204", "0,45", a middle-dot decimal point
+(U+00B7, as the Lancet prints "0.84"), "3.2 x 10^-5",
+"1.2 million", "54\%" for 0.54, or English words ("Twenty-four", "three",
+"no" for zero). A quotation made of several passages (separate lines,
+bullets, "\link{...}") is checked passage by passage. Nothing is ever discarded
+for failing: a paraphrase stays in \verb{$evidence} with \code{verified = FALSE} and
+the fraction of it that did match in \code{match}, and a real sentence that does
+not carry the value shows \code{verified = FALSE} with \code{match = 1}. When several
+parts of a document give the same value, it is cited with the best quote
+any of them gave. A string field that comes back "None" or "N/A" is kept
+only when its quote verifies and says so itself ("Conflicts of interest:
+None."); otherwise it is the model reporting nothing, and so is not a
+value, and a real value from another part of the document replaces it.
 
 \code{n_unverified} counts the cells in that row whose value could not be tied to a
 verbatim span, either because no quote was given, or because the quote is
-not in the chunk. That column is the one to look at before believing a table:
+not in the chunk or does not carry the value. That column is the one to look
+at before believing a table:
 \code{n_unverified} of zero means every value in the row can be pointed at in the
 document. A row where it is not zero is not wrong, but it is unaudited, and
 the answer is marked \code{partial} to say so. \code{require_quote = TRUE} turns the

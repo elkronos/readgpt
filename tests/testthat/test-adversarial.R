@@ -976,8 +976,11 @@ test_that("a parent trace keeps what a run spent before it aborted", {
 
   cl <- mock_echo("An answer [chunk 1].")
   tr <- gr_trace()
+  # A priced model, named: a recipe without one reads with the client's, and
+  # the mock's own model costs nothing.
   expect_error(quiet(gr_read_many(sort(list.files(d, full.names = TRUE)), "Q?", client = cl,
-                                  recipe = "fast", trace = tr, on_error = "stop")),
+                                  recipe = "fast", trace = tr, on_error = "stop",
+                                  model = "gpt-5.6-terra")),
                class = "gr_cost_cap")
   expect_gt(length(cl$calls()), 0L)          # the fixture really does spend first
   expect_equal(tr$calls, length(cl$calls()))

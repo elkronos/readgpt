@@ -71,24 +71,30 @@ gr_trace_save <- function(trace, path) {
 #'   [gr_client()] is. It also carries `$stats()` and `$missed()`.
 #'
 #' @section Matching:
-#' A response is matched on the exact prompt messages plus the model id. When a
+#' A response is matched on the exact prompt messages plus the model id the
+#' call asked for. That can differ from the model the trace records as
+#' answering: a [gr_ellmer_client()] answers with its chat's model whatever the
+#' recipe asked for, and its runs replay all the same. When a
 #' run issued the same prompt more than once (which happens at a temperature
 #' above zero, and in readers that revisit a chunk), the recorded responses are
 #' returned in the order they were produced. Once they are exhausted the last
 #' one repeats.
 #'
 #' @section Embeddings:
-#' Embeddings are not model calls and are not recorded in a trace, so whether a
-#' replay reproduces a run's chunk *ranking* depends on how the run embedded,
-#' and that is checked rather than assumed. The ranking reproduces exactly when
-#' the recording used a **deterministic** embedder and the replay uses the
-#' **same** one; both conditions, because replaying an API-embedded run with a
-#' deterministic local embedder would compute vectors the original never saw
-#' while looking exact. Anything else falls back to hashed lexical vectors and
-#' warns with class `gr_replay_no_embeddings`; every recorded answer is still
-#' reproduced, but the ranking may differ. Record a run you intend to publish
-#' with `gr_options(embedder = "lexical")`, or with your own embedder registered
-#' as `deterministic = TRUE`.
+#' A trace records each request to an embeddings endpoint (a step labelled
+#' `"embed.request"`, counted in `calls` and priced like any other request),
+#' but not the vectors that came back, so a replay has nothing to answer those
+#' requests with. Whether a replay reproduces a run's chunk *ranking* therefore
+#' depends on how the run embedded, and that is checked rather than assumed.
+#' The ranking reproduces exactly when the recording used a **deterministic**
+#' embedder and the replay uses the **same** one; both conditions, because
+#' replaying an API-embedded run with a deterministic local embedder would
+#' compute vectors the original never saw while looking exact. Anything else
+#' falls back to hashed lexical vectors and warns with class
+#' `gr_replay_no_embeddings`; every recorded answer is still reproduced, but the
+#' ranking may differ. Record a run you intend to publish with
+#' `gr_options(embedder = "lexical")`, or with your own embedder registered as
+#' `deterministic = TRUE`.
 #'
 #' @section The recipe "auto" chose:
 #' A recording of [answer_document()] with `recipe = "auto"` holds the recipe
@@ -150,9 +156,20 @@ gr_replay_client <- function(source, strict = TRUE) {
     idx$prompt[[kp]] <- unique(c(idx$prompt[[kp]], as_chr1(st$model, "?")))
   }
 
-  models <- vapply(steps, function(s) as_chr1(s$model, NA_character_), character(1))
-  models <- models[!is.na(models)]
-  default_model <- if (length(models)) names(sort(table(models), decreasing = TRUE))[1] else "replay"
+  # The model a replayed read asks for when it names none is this client's, so
+  # it has to be the one the recorded reads asked for. Their pre-flight notes
+  # say which that was. The model most calls asked for is only a guess at it,
+  # and a wrong one when a cheaper skim_model or summary_model made most of
+  # them: the replay then asked for that model on the answer call, found
+  # nothing recorded under it and stopped with gr_replay_miss. A recording
+  # without the notes, or whose reads asked for different models, falls back
+  # to the guess.
+  default_model <- replay_read_model(source)
+  if (is.na(default_model)) {
+    models <- vapply(steps, function(s) as_chr1(s$model, NA_character_), character(1))
+    models <- models[!is.na(models)]
+    default_model <- if (length(models)) names(sort(table(models), decreasing = TRUE))[1] else "replay"
+  }
 
   structure(list(
     model = default_model, api = "replay", base_url = "replay://",
@@ -165,7 +182,7 @@ gr_replay_client <- function(source, strict = TRUE) {
     # recording's answers while replaying another, which is exactly the failure
     # the client identity was introduced to prevent.
     .client_id = paste0("replay-", gr_hash(lapply(steps, function(s)
-      c(s$model, s$response, unlist(lapply(s$prompt, function(m) m$content)))))),
+      c(s$answered_model, s$response, unlist(lapply(s$prompt, function(m) m$content)))))),
     # Which embedder the RECORDING used, so a replay can tell an embedding it
     # can reproduce from one it cannot. See gr_embed().
     embed_source = embed_source,
@@ -231,9 +248,22 @@ replay_steps <- function(source) {
     prompt <- replay_prompt(st$prompt)
     if (!length(prompt)) next
     tok <- st$tokens %||% list()
+    params <- if (is.list(st$params)) st$params else list()
+    requested <- as_chr1(params[["model", exact = TRUE]], NA_character_)
+    answered <- as_chr1(st$model, NA_character_)
     out[[length(out) + 1L]] <- list(
       prompt = prompt,
-      model = as_chr1(st$model %||% (st$params %||% list())$model, NA_character_),
+      # The model the call ASKED for, which is what a replayed gr_call() looks
+      # up. The step's own `model` is the one that answered, and a client that
+      # reports the provider's model (gr_ellmer_client() always does; so can a
+      # backend handler) records a different name there: keyed on that, no
+      # prompt of such a run was ever found, and every replay stopped with
+      # gr_replay_miss on its first call. A trace without `params` (an older
+      # or hand-built one) falls back to the answering model.
+      model = if (!is.na(requested)) requested else answered,
+      # Kept for what the replayed result reports, so pricing and display name
+      # the model the recording says answered.
+      answered_model = if (!is.na(answered)) answered else requested,
       ok = isTRUE(st$ok),
       response = as_chr1(st$response, ""),
       error = if (isTRUE(st$ok)) NULL else as_chr1(st$error, "recorded failure"),
@@ -251,12 +281,49 @@ replay_steps <- function(source) {
   out
 }
 
+#' A recording as a plain list, or NULL when it cannot be read. For the
+#' lookups beside replay_steps() that find a note in the recording: those make
+#' do without it, and replay_steps() is what reports a source it cannot use.
+#' @noRd
+replay_source_list <- function(source) {
+  obj <- source
+  if (inherits(source, "gr_trace")) obj <- trace_as_list(source)
+  else if (is.character(source) && length(source) == 1L && file.exists(source)) {
+    obj <- tryCatch(jsonlite::fromJSON(source, simplifyVector = FALSE),
+                    error = function(e) NULL)
+  }
+  if (is.list(obj)) obj else NULL
+}
+
+#' The model the recorded reads asked for when they named none, or NA.
+#'
+#' gr_read() notes it on every pre-flight (`detail$model`). A read whose
+#' settings name a model asks for that model again when it is replayed, so only
+#' the reads that followed the client say what the replay client's own model
+#' has to be. NA when no note says, or when the notes name more than one model
+#' (a corpus read through several clients), so the caller falls back to the
+#' model most calls asked for.
+#' @noRd
+replay_read_model <- function(source) {
+  obj <- replay_source_list(source)
+  if (is.null(obj)) return(NA_character_)
+  m <- unlist(lapply(obj$steps %||% list(), function(st) {
+    if (!is.list(st) || !identical(as_chr1(st$label, ""), "preflight")) return(NULL)
+    d <- if (is.list(st$detail)) st$detail else list()
+    settings <- if (is.list(d$settings)) d$settings else list()
+    if (!is.null(settings[["model", exact = TRUE]])) return(NULL)
+    as_chr1(d[["model", exact = TRUE]], NA_character_)
+  }), use.names = FALSE)
+  m <- unique(m[!is.na(m) & nzchar(m)])
+  if (length(m) == 1L) m else NA_character_
+}
+
 #' Which embedder produced the vectors in the recorded run, if any.
 #'
-#' Embeddings are not model calls, so they are not in the transcript -- but
-#' `gr_embed()` writes a local note saying which embedder it used, and that is
-#' enough. A replay can reproduce a run's ranking only when it uses the SAME
-#' embedder and that embedder is deterministic. Without this the check was
+#' The transcript holds each embeddings request but not the vectors it
+#' returned -- but `gr_embed()` writes a local note saying which embedder it
+#' used, and that is enough. A replay can reproduce a run's ranking only when
+#' it uses the SAME embedder and that embedder is deterministic. Without this the check was
 #' "is the current embedder deterministic", which is not the same question: a
 #' run recorded through an API and replayed with a deterministic local embedder
 #' would have claimed to be exact while ranking chunks by different vectors.
@@ -265,13 +332,8 @@ replay_steps <- function(source) {
 #' recording used more than one embedder.
 #' @noRd
 replay_embed_source <- function(source) {
-  obj <- source
-  if (inherits(source, "gr_trace")) obj <- trace_as_list(source)
-  else if (is.character(source) && length(source) == 1L && file.exists(source)) {
-    obj <- tryCatch(jsonlite::fromJSON(source, simplifyVector = FALSE),
-                    error = function(e) NULL)
-  }
-  if (!is.list(obj)) return(NA_character_)
+  obj <- replay_source_list(source)
+  if (is.null(obj)) return(NA_character_)
   srcs <- unlist(lapply(obj$steps %||% list(), function(st) {
     if (!is.list(st) || !identical(as_chr1(st$label, ""), "embed")) return(NULL)
     as_chr1((st$detail %||% list())$source, NA_character_)
@@ -285,13 +347,8 @@ replay_embed_source <- function(source) {
 #' @noRd
 replay_auto_choices <- function(source) {
   none <- data.frame(key = character(0), chose = character(0), stringsAsFactors = FALSE)
-  obj <- source
-  if (inherits(source, "gr_trace")) obj <- trace_as_list(source)
-  else if (is.character(source) && length(source) == 1L && file.exists(source)) {
-    obj <- tryCatch(jsonlite::fromJSON(source, simplifyVector = FALSE),
-                    error = function(e) NULL)
-  }
-  if (!is.list(obj)) return(none)
+  obj <- replay_source_list(source)
+  if (is.null(obj)) return(none)
   rows <- lapply(obj$steps %||% list(), function(st) {
     if (!is.list(st) || !identical(as_chr1(st$label, ""), "auto_recipe")) return(NULL)
     d <- st$detail %||% list()
@@ -366,7 +423,7 @@ replay_lookup <- function(client, messages, model, params) {
   gr_result(
     ok = st$ok, text = st$response, error = st$error, status = NA_integer_,
     usage = list(input = st$tokens$input, output = st$tokens$output),
-    model = as_chr1(st$model, model),
+    model = as_chr1(st$answered_model, model),
     # From the recording. Hard-coded NA here made every replayed call look like
     # a clean stop, including the ones the live run rejected for being cut off.
     finish_reason = as_chr1(st$finish_reason, NA_character_),

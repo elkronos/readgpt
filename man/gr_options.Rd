@@ -85,8 +85,10 @@ the limit. Needs a model with a registered price (see \code{\link[=gr_models]{gr
 Under a limit of 0 a model registered at no cost runs and one with a
 price is refused. \code{NULL} removes the limit.}
 \item{\code{max_calls} (400)}{Hard cap on model calls per run, checked before
-the first call and again before every subsequent one. \code{NULL} removes the
-cap.}
+the first call and again before every subsequent one. A request to an
+embeddings endpoint (the built-in \code{"api"} embedder) counts as one, and
+is checked and priced against \code{max_cost_usd} the same way; an embedding
+served from the session cache is free. \code{NULL} removes the cap.}
 \item{\code{unknown_model_action} ("warn")}{\code{"warn"} or \code{"error"} when a model id
 is not in the registry.}
 }

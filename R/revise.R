@@ -88,11 +88,16 @@ split_sentences <- function(txt) {
 #' measured over these only: prose between them is what an editing pass is
 #' supposed to be free to rewrite, so holding it to a hedging rate would make the
 #' guard fire on the work it is meant to permit.
+#'
+#' Any marker the citation check reads, ranges and locators included. With the
+#' listed form alone, a draft citing "[studies 1-3]" had no claim sentences at
+#' all, and "Three small trials may suggest" could come back "All trials
+#' suggest" with neither the hedge nor the universal rule looking at it.
 #' @noRd
 claim_sentences <- function(text, word = "study") {
   parts <- split_sentences(text)
   if (!length(parts)) return(character(0))
-  parts[grepl(cite_pattern(word), parts, perl = TRUE, ignore.case = TRUE)]
+  parts[grepl(cite_grammar(word)$marker, parts, perl = TRUE, ignore.case = TRUE)]
 }
 
 #' Occurrences of each pattern, named, so a revision can be compared to a draft
@@ -124,8 +129,7 @@ count_marks <- function(low, pats, prefix = TRUE) {
 #' @noRd
 claim_strength <- function(text, word = "study") {
   sents <- split_sentences(text)
-  cited <- if (!length(sents)) character(0) else
-    sents[grepl(cite_pattern(word), sents, perl = TRUE, ignore.case = TRUE)]
+  cited <- claim_sentences(text, word)
   low_cited <- tolower(paste(cited, collapse = " "))
   low_all <- tolower(paste(sents, collapse = " "))
   list(sentences = length(cited),
@@ -246,6 +250,24 @@ synth_revise <- function(drafted, question, client, spec, trace, style = NULL,
   list(text = if (identical(text, as_chr1(drafted))) NULL else text, report = rep_df)
 }
 
+#' Every provider's spelling of "stopped at the output limit".
+#'
+#' Chat Completions says "length", Anthropic "max_tokens", Gemini "MAX_TOKENS",
+#' and the Responses API -- this package's default -- reports the reply's
+#' status, "incomplete", with "max_output_tokens" as the reason. Only "length"
+#' was recognised, so on the default path a revision cut off after its last
+#' unique citation passed every other check and replaced the draft, and the
+#' published review ended mid-sentence. Compared case-insensitively, and
+#' whether or not the client has already normalised the value.
+#' @noRd
+.gr_cut_off_reasons <- c("length", "max_tokens", "max_output_tokens", "incomplete")
+
+#' Whether a model reply stopped at its output limit rather than finishing.
+#' @noRd
+reply_cut_off <- function(res) {
+  tolower(as_chr1(res$finish_reason, "")) %in% .gr_cut_off_reasons
+}
+
 #' @noRd
 revise_once <- function(drafted, question, client, spec, trace, style, pass) {
   sys <- .gr_revise_prompts[[pass]]
@@ -290,11 +312,18 @@ revise_once <- function(drafted, question, client, spec, trace, style, pass) {
   ), model = spec$model, max_output = need, temperature = spec$temperature,
      trace = trace, label = paste0("synthesise.revise.", pass))
 
+  # Before usable_text(): a reply cut off at the limit is truncated whether or
+  # not the client counts it as a success, and saying "the call failed" about it
+  # would send the reader looking at the network instead of at the limit.
+  if (reply_cut_off(res)) {
+    gr_warn(sprintf(paste0("The '%s' pass was discarded: the revision arrived cut off before it ",
+                           "finished (finish reason '%s')."),
+                    pass, as_chr1(res$finish_reason)),
+            class = "gr_coherence_truncated")
+    return(list(ran = TRUE, kept = FALSE, reason = "revision truncated"))
+  }
   if (!usable_text(res)) {
     return(list(ran = TRUE, kept = FALSE, reason = "the revision call failed"))
-  }
-  if (identical(as_chr1(res$finish_reason), "length")) {
-    return(list(ran = TRUE, kept = FALSE, reason = "revision truncated"))
   }
   before <- cited_ids(drafted, "study")
   after <- cited_ids(res$text, "study")
@@ -311,6 +340,19 @@ revise_once <- function(drafted, question, client, spec, trace, style, pass) {
     return(list(ran = TRUE, kept = FALSE, reason = reason,
                 lost = if (length(lost)) paste(lost, collapse = ", ") else NA_character_,
                 added = if (length(gained)) paste(gained, collapse = ", ") else NA_character_))
+  }
+  # The comparison above sees only what cited_ids() can read. A revision that
+  # wrote "[studies 2 to 9]" matched the draft's citations exactly and replaced
+  # it, and the published review carried a citation no check had looked at --
+  # while every section's own count of unreadable citations described the
+  # draft, not this.
+  unread <- setdiff(unparsed_citations(res$text, "study"), unparsed_citations(drafted, "study"))
+  if (length(unread)) {
+    reason <- sprintf("the revision wrote citation(s) the check cannot read (%s)",
+                      paste(unread, collapse = ", "))
+    gr_warn(sprintf("The '%s' pass was discarded: %s.", pass, reason),
+            class = "gr_coherence_rejected")
+    return(list(ran = TRUE, kept = FALSE, reason = reason))
   }
   # The guard the citation check cannot make. Same markers, stronger claim.
   st <- strength_guard(drafted, res$text)

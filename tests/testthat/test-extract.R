@@ -139,8 +139,10 @@ test_that("gr_extract() returns one typed row per document with traceable cells"
          value = "randomised controlled trial"),
     list(where = "1,204 participants", field = "n", value = "1,204"),
     list(where = "favoured treatment", field = "outcome", value = "positive"),
+    # A quote of its own, which has to carry the number: "favoured treatment"
+    # was used here, and a span that does not state 0.78 is not evidence for it.
     list(where = "hazard ratio of 0.78", field = "hr", value = 0.78,
-         quote = "favoured treatment"),
+         quote = "with a hazard ratio of 0.78"),
     list(where = "funded by the manufacturer", field = "funded", value = TRUE)))
 
   a <- two_para_file("We ran a randomised controlled trial and enrolled 1,204 participants.",
@@ -218,12 +220,14 @@ test_that("an excerpt that fills nothing is an answer, not a failed call", {
   expect_identical(x$answers[[1]]$notes$failed_calls, 0L)
   expect_true(is.na(x$table$design))
 
-  # A genuinely broken reply is still a failure.
+  # A genuinely broken reply is still a failure: the document is "failed", to
+  # be read again, and its partial answer says why.
   dead <- gr_mock_client(function(messages, params) "this is not json")
   y <- quiet(gr_extract(a, f, client = dead, recipe = "thorough", max_tokens = 40,
                         keep_answers = TRUE))
   expect_gt(y$answers[[1]]$notes$failed_calls, 0L)
-  expect_true(y$summary$partial)
+  expect_true(y$answers[[1]]$partial)
+  expect_identical(y$table$status, "failed")
 })
 
 test_that("the record keeps one entry per field, even when a value is discarded", {
@@ -472,10 +476,12 @@ test_that("a value with no quote is counted, not hidden", {
                  design = "The study design")
   cl <- gr_mock_client(function(messages, params) {
     # `n` is quoted and the quote is real; `design` is asserted with no quote.
-    '{"n":1204,"n__quote":"A trial was run here.",
+    # (The quote states the number: a real sentence that does not is not
+    # evidence for it, which test-review-extract.R covers.)
+    '{"n":1204,"n__quote":"A trial of 1,204 adults was run here.",
       "design":"randomised trial","design__quote":null}'
   })
-  a <- two_para_file("A trial was run here.", "It then ended here.")
+  a <- two_para_file("A trial of 1,204 adults was run here.", "It then ended here.")
   x <- quiet(gr_extract(a, f, client = cl, recipe = "thorough", max_tokens = 40,
                         keep_answers = TRUE))
 
@@ -504,10 +510,10 @@ test_that("require_quote discards what it cannot verify, and says how much", {
   f <- gr_fields(n = gr_field("Participants randomised", type = "integer"),
                  design = "The study design")
   cl <- gr_mock_client(function(messages, params) {
-    '{"n":1204,"n__quote":"A trial was run here.",
+    '{"n":1204,"n__quote":"A trial of 1,204 adults was run here.",
       "design":"randomised trial","design__quote":"Invented sentence, not present."}'
   })
-  a <- two_para_file("A trial was run here.", "It then ended here.")
+  a <- two_para_file("A trial of 1,204 adults was run here.", "It then ended here.")
 
   lax <- quiet(gr_extract(a, f, client = cl, recipe = "thorough", max_tokens = 40))
   expect_identical(lax$table$design, "randomised trial")

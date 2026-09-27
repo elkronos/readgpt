@@ -92,10 +92,16 @@ gr_segment_spec <- function(method = "paragraph", max_tokens = 1200L,
 #' @param spec A `gr_segment_spec`, a segmenter name, or a named list.
 #' @param client A `gr_client`, needed only by `semantic`, `proposition` and
 #'   `contextual(context_source = "llm")`.
-#' @param trace Optional `gr_trace`.
+#' @param trace Optional `gr_trace`. When none is given one is made, so the
+#'   model calls a segmenter makes are held to `gr_options(max_calls =,
+#'   max_cost_usd =)` and recorded, and it is returned as `$trace`.
 #' @return A [gr_chunks] object. If the requested segmenter could not run it
 #'   falls back and records the fallback in `$method`, e.g.
-#'   `"semantic->paragraph"` when no `client` was supplied.
+#'   `"semantic->paragraph"` when no `client` was supplied. `proposition` and
+#'   `contextual` chunks carry a `source_text` column: the document text each
+#'   chunk was made from, without the rewrite or the context line, which is
+#'   what a quote from the chunk is checked against. When no `trace` was
+#'   passed, `$trace` is the one this call recorded into.
 #' @seealso [gr_segmenters()], [gr_segment_spec()], [gr_chunk_stats()], [gr_chunks]
 #' @family segmentation functions
 #' @export
@@ -106,6 +112,13 @@ gr_segment_spec <- function(method = "paragraph", max_tokens = 1200L,
 #' do.call(rbind, lapply(c("fixed", "paragraph", "sentence", "structural"),
 #'   function(m) gr_chunk_stats(gr_segment(doc, list(method = m, max_tokens = 120)))))
 gr_segment <- function(doc, spec = NULL, client = NULL, trace = NULL) {
+  # The run's limits are counted on a trace. With none, trace_can_call() had
+  # nothing to count against and let every request through, and nothing was
+  # recorded: a proposition segmentation under max_calls = 2 made nine calls
+  # and left no account of them, and the Shiny preview did exactly that.
+  # gr_read() makes its own for the same reason.
+  own_trace <- is.null(trace)
+  trace <- trace %||% gr_trace(meta = list(stage = "segment"))
   if (!inherits(doc, "gr_document")) doc <- gr_ingest(doc, trace = trace)
   spec <- as_segment_spec(spec)
   seg <- registry_get("segmenters", spec$method, "segmenters")
@@ -150,10 +163,15 @@ gr_segment <- function(doc, spec = NULL, client = NULL, trace = NULL) {
     # and block of the chunk it came from. Rebuilding without this silently
     # turned page/section into NA and broke citations for the whole run.
     rep_n <- vapply(pieces, length, integer(1))
+    # And the source text, which is what a quote from a piece is checked
+    # against: losing it here would put the model's words back in its place.
+    # A piece cut from text that was the document's own is still its own.
+    src_text <- src[["source_text", exact = TRUE]]
     out2 <- new_chunks(unlist(pieces, use.names = FALSE), out$method, spec,
                        page = rep(src$page, rep_n),
                        section = rep(src$section, rep_n),
-                       block_id = rep(src$block_id, rep_n))
+                       block_id = rep(src$block_id, rep_n),
+                       source_text = if (!is.null(src_text)) rep(src_text, rep_n))
     out2$extra <- c(out$extra, list(cap_enforced = length(over)))
     out <- out2
   }
@@ -169,6 +187,9 @@ gr_segment <- function(doc, spec = NULL, client = NULL, trace = NULL) {
   # became text. gr_read() puts both on the answer.
   out$warnings <- c(doc$warnings %||% character(0), rec$get())
   out$unread_pages <- doc$stats$unread_pages %||% integer(0)
+  # A trace the caller passed is theirs already, and a pipeline's trace would
+  # only bloat every chunk set it touched.
+  if (own_trace) out$trace <- trace
   out
 }
 

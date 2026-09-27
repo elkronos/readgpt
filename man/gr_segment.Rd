@@ -15,12 +15,17 @@ accepts.}
 \item{client}{A \code{gr_client}, needed only by \code{semantic}, \code{proposition} and
 \code{contextual(context_source = "llm")}.}
 
-\item{trace}{Optional \code{gr_trace}.}
+\item{trace}{Optional \code{gr_trace}. When none is given one is made, so the
+model calls a segmenter makes are held to \code{gr_options(max_calls =, max_cost_usd =)} and recorded, and it is returned as \verb{$trace}.}
 }
 \value{
 A \link{gr_chunks} object. If the requested segmenter could not run it
 falls back and records the fallback in \verb{$method}, e.g.
-\code{"semantic->paragraph"} when no \code{client} was supplied.
+\code{"semantic->paragraph"} when no \code{client} was supplied. \code{proposition} and
+\code{contextual} chunks carry a \code{source_text} column: the document text each
+chunk was made from, without the rewrite or the context line, which is
+what a quote from the chunk is checked against. When no \code{trace} was
+passed, \verb{$trace} is the one this call recorded into.
 }
 \description{
 Segmentation is deliberately separate from ingestion: one extraction can feed

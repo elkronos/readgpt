@@ -136,7 +136,12 @@ gr_inventory <- function(sources, recursive = TRUE, model = NULL,
     paths <- as.character(unlist(sources, use.names = FALSE))
     paths <- paths[!is.na(paths)]
   }
-  paths <- sort(paths)
+  # Byte order, not sort(), which follows LC_COLLATE: the survey listed "adams"
+  # before "Baker" on one machine and after it under cron or R CMD check, so the
+  # same folder gave two different inventories.
+  # mark_utf8(), not enc2utf8(), which in a C locale turns the unlabelled
+  # UTF-8 bytes of a name into "<c3><89>" text and sorts it first.
+  paths <- paths[order(mark_utf8(paths), method = "radix")]
   # A symlinked directory -- a `latest -> v3` beside the versions it points at,
   # or an outright loop -- makes `list.files(recursive = TRUE)` return the same
   # file many times over. One real file became 42 rows. Deduplicate on the

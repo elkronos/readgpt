@@ -138,8 +138,7 @@ ui <- fluidPage(
       tabsetPanel(
         tabPanel("Answers", br(), div(class = "chat", uiOutput("chat"))),
         tabPanel("Chunking", br(),
-                 helpText("Free preview: how your ingest + segment settings break the document up. ",
-                          "No model calls are made."),
+                 helpText(textOutput("chunk_help", inline = TRUE)),
                  tableOutput("chunk_stats"), hr(), verbatimTextOutput("chunk_preview")),
         tabPanel("Comparison", br(), tableOutput("cmp_table")),
         tabPanel("Trace", br(),
@@ -202,15 +201,63 @@ server <- function(input, output, session) {
                     parallel = isTRUE(input$parallel))
   })
 
+  # Whether the chosen segmenter spends anything, read from the registry so a
+  # registered segmenter is judged the same way. The preview was labelled free
+  # and said no model calls were made while the menu offered `proposition` and
+  # `semantic`, and it ran them with no cost cap and no trace: one paid request
+  # per 900 tokens of the document, unbounded and unrecorded.
+  seg_paid <- reactive({
+    d <- gr_segmenters()
+    cost <- as.character(d$cost[d$name %in% input$segmenter])
+    length(cost) > 0 && !identical(cost[1], "free")
+  })
+  observe({
+    updateActionButton(session, "preview", label = if (seg_paid())
+      "Preview chunking (makes model calls)" else "Preview chunking (free)")
+  })
+  output$chunk_help <- renderText({
+    if (seg_paid()) {
+      paste("How your ingest + segment settings break the document up. This segmenter makes",
+            "model calls, held to the cost cap in the Model panel; the preview says what they cost.")
+    } else {
+      paste("Free preview: how your ingest + segment settings break the document up.",
+            "No model calls are made.")
+    }
+  })
+
+  # The cost field, checked. NULL is no cap; NA means the field was refused and
+  # the user told why. gr_options() refuses a cap it cannot compare, and a
+  # refusal raised outside any tryCatch would end the handler with R's error
+  # text instead of a message about the field the user just typed in.
+  cost_cap <- function() {
+    cap <- if (isTruthy(input$max_cost)) as.numeric(input$max_cost)[1] else NULL
+    if (!is.null(cap) && (is.na(cap) || cap < 0)) {
+      showNotification("The cost cap must be zero or more, or left blank for none.",
+                       type = "error")
+      return(NA)
+    }
+    cap
+  }
+
   observeEvent(input$preview, {
     path <- safe_path(input$file)
     if (is.null(path)) {
       showNotification("Pick a document from the list.", type = "error"); return()
     }
-    withProgress(message = "Segmenting (no model calls)", value = 0.4, {
+    paid <- seg_paid()
+    if (paid) {
+      cap <- cost_cap()
+      if (identical(cap, NA)) return()
+      old <- gr_options(max_cost_usd = cap)
+      on.exit(gr_options(old), add = TRUE)
+    }
+    # Its own trace, so the run's limits hold and what it spent can be reported.
+    tr <- gr_trace(meta = list(stage = "preview"))
+    withProgress(message = if (paid) "Segmenting (makes model calls)" else "Segmenting (no model calls)",
+                 value = 0.4, {
       out <- tryCatch({
         doc <- gr_ingest(path, ingest_spec())
-        gr_segment(doc, segment_spec(), client = client())
+        gr_segment(doc, segment_spec(), client = client(), trace = tr)
       }, error = function(e) e)
     })
     if (inherits(out, "error")) {
@@ -225,8 +272,17 @@ server <- function(input, output, session) {
               ifelse(is.na(out$chunks$section), "", paste0(", ", out$chunks$section)),
               substr(out$chunks$text, 1, 700)),
       collapse = "\n\n"))
-    showNotification(sprintf("%d chunks, %d tokens total.", nrow(out$chunks),
-                             sum(out$chunks$tokens)), type = "message")
+    spent <- if (tr$calls > 0) {
+      sprintf(" Segmenting made %d model call(s), about $%s%s.", tr$calls,
+              format(signif(tr$spent_usd, 2), scientific = FALSE),
+              if (isTRUE(tr$budget_stop)) paste0(", and stopped at the ",
+                                                 if (identical(tr$stop_reason, "cost")) "cost cap"
+                                                 else "call cap")
+              else "")
+    } else ""
+    showNotification(sprintf("%d chunks, %d tokens total (%s).%s", nrow(out$chunks),
+                             sum(out$chunks$tokens), out$method, spent),
+                     type = if (isTRUE(tr$budget_stop)) "warning" else "message")
   })
 
   observeEvent(input$go, {
@@ -238,14 +294,8 @@ server <- function(input, output, session) {
     if (is.null(client())) {
       showNotification("Enter an API key first.", type = "error"); return()
     }
-    # gr_options() refuses a cost cap it cannot compare, and a refusal raised
-    # here -- outside any tryCatch -- would end the handler with R's error text
-    # instead of a message about the field the user just typed in.
-    cap <- if (isTruthy(input$max_cost)) as.numeric(input$max_cost)[1] else NULL
-    if (!is.null(cap) && (is.na(cap) || cap < 0)) {
-      showNotification("The cost cap must be zero or more, or left blank for none.",
-                       type = "error"); return()
-    }
+    cap <- cost_cap()
+    if (identical(cap, NA)) return()
     old <- gr_options(max_cost_usd = cap, parallel = isTRUE(input$parallel))
     on.exit(gr_options(old), add = TRUE)
 

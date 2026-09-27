@@ -37,7 +37,9 @@
 #' @return A data frame with one row per model: `model`, `calls`, `paid_calls`,
 #'   `paid_in`, `paid_out`, `usd`. `sum(x$usd)` is the run's cost. A model with
 #'   no registered price contributes `NA`, so a total that silently omitted an
-#'   unpriced model is impossible.
+#'   unpriced model is impossible. The exception is a model whose every request
+#'   failed without sending a token (an embeddings request to an endpoint that
+#'   has none, say): that cost nothing, priced or not, so it contributes 0.
 #' @seealso [gr_trace_summary()], [gr_estimate_cost()], [gr_cache()],
 #'   [gr_read_many()]
 #' @export
@@ -46,9 +48,9 @@
 #' ans <- answer_document(readgpt_example(), "What was revenue?", "fast", client = cl)
 #' gr_trace_cost(ans$trace)
 #'
-#' # Priced by the model on the STEP (the recipe's model), not by the mock
-#' # that answered. A cached re-run costs nothing for a different reason:
-#' # paid_calls falls to zero while calls does not.
+#' # Priced by the model each step records: a mock's own model, at no cost.
+#' # A cached re-run costs nothing for a different reason: paid_calls falls
+#' # to zero while calls does not.
 #' cache <- gr_cache(file.path(tempdir(), "readgpt-cost-example"))
 #' again <- answer_document(readgpt_example(), "What was revenue?", "fast",
 #'                          client = gr_cache_client(cl, cache))
@@ -70,6 +72,14 @@ gr_trace_cost <- function(trace) {
   # NA, which the report renders as a dash. Zero would render as free.
   tin  <- vapply(steps, function(s) as_int1(s$tokens$input, NA_integer_), integer(1))
   tout <- vapply(steps, function(s) as_int1(s$tokens$output, NA_integer_), integer(1))
+  # A request that failed and sent no tokens cost nothing whatever its model, as
+  # as.data.frame.gr_trace() prices it. An embeddings request to a gateway
+  # without embeddings fails like that, usually for an embedding model with no
+  # registered price; priced by that model, it made the cost of a run whose
+  # every other request was priced unknown, and a corpus's `max_total_usd` a
+  # floor. A count that is unknown (NA) is not zero, so it is still priced.
+  free <- !vapply(steps, function(s) isTRUE(s$ok), logical(1)) &
+    tin %in% 0L & tout %in% 0L
 
   do.call(rbind, lapply(sort(unique(model)), function(m) {
     i <- model == m
@@ -77,9 +87,12 @@ gr_trace_cost <- function(trace) {
     data.frame(
       model = m, calls = sum(i), paid_calls = sum(i & paid),
       paid_in = as.integer(pin), paid_out = as.integer(pout),
-      usd = tryCatch(as.numeric(gr_estimate_cost(m, pin, pout)),
-                     error = function(e) NA_real_,
-                     warning = function(w) NA_real_),
+      # Priced over the rest, cached requests included, so a cached request of
+      # a model with no price is still NA. Nothing left, nothing to price.
+      usd = if (!any(i & !free)) 0
+            else tryCatch(as.numeric(gr_estimate_cost(m, pin, pout)),
+                          error = function(e) NA_real_,
+                          warning = function(w) NA_real_),
       stringsAsFactors = FALSE)
   }))
 }
@@ -99,6 +112,78 @@ limit_note <- function(ans) {
                 option = "gr_options(max_calls =)"))
   }
   NULL
+}
+
+#' Which requests failed in the read behind an answer, in words, or NULL.
+#'
+#' Two records, because neither holds every failure. The trace has each request
+#' that came back failed (a transport error, a 5xx or 429 after its retries, a
+#' refusal, a handler error), wherever in the pipeline it was made. The reader's
+#' notes also count replies that arrived and could not be read, such as prose
+#' where JSON was asked for, which the trace records as successful requests. The
+#' two overlap, so the larger count is taken, not the sum.
+#'
+#' A trace error marked `recovered = TRUE` is left out: the pipeline got round
+#' it without losing input, as gr_embed() does when an embeddings request fails
+#' and it ranks on lexical vectors instead. The document was read in full, and
+#' the answer already says it is partial where the fallback degrades it. Counted,
+#' it made every document "failed" and kept it out of the store on any endpoint
+#' with no embeddings, run after run.
+#' @noRd
+failed_note <- function(ans, trace = NULL) {
+  n <- as.list(ans$notes %||% list())
+  num <- function(k) {
+    v <- suppressWarnings(as.numeric(n[[k, exact = TRUE]]))
+    if (length(v) == 1L && !is.na(v)) v else 0
+  }
+  errs <- if (inherits(trace, "gr_trace")) trace$errors else list()
+  errs <- Filter(function(e) !(is.list(e) && isTRUE(e[["recovered", exact = TRUE]])), errs)
+  failed <- max(num("failed_calls") + num("scoring_failures") + num("failed_summaries") +
+                  isTRUE(n[["failed_call", exact = TRUE]]),
+                length(errs))
+  if (failed <= 0) return(NULL)
+  first <- as_chr1(n[["error", exact = TRUE]], "")
+  if (!nzchar(first) && length(errs)) first <- as_chr1(errs[[1]]$error, "")
+  sprintf("%s request(s) failed, so the document was not read in full%s",
+          format(failed, scientific = FALSE),
+          if (nzchar(first)) sprintf(" (first error: %s)", substr(first, 1, 200)) else "")
+}
+
+#' What one document's read cost, for its row and for the corpus ceiling.
+#'
+#' `usd` is the row's `cost_usd`: NA when any model in the read has no
+#' registered price, because a total that silently omits one is what
+#' gr_trace_cost() exists to prevent. `priced` is what the priced models cost, a
+#' floor under `usd`. The unpriced models are split into those that made only
+#' embeddings requests (`unpriced_embed`) and the rest (`unpriced`).
+#'
+#' The split is for `max_total_usd`. Embeddings requests are recorded and priced
+#' like any other, and the registry does not price every embedding model, so an
+#' unregistered one (text-embedding-ada-002, a gateway's own) made every
+#' document's cost unknown and switched off a ceiling that had held on the chat
+#' spend before embeddings were counted at all. An embeddings request costs a
+#' small fraction of the chat requests that read the same chunks, so the ceiling
+#' is held to the priced spend and the run says once what that leaves out. An
+#' unpriced chat model still makes the ceiling unenforceable, as it always has:
+#' without the model doing the reading, a floor bounds almost nothing.
+#' @noRd
+corpus_cost <- function(trace) {
+  cost <- gr_trace_cost(trace)
+  unpriced <- cost$model[is.na(cost$usd)]
+  # The steps gr_trace_cost() prices, so the models line up with its rows.
+  steps <- Filter(function(s) !identical(s$kind, "local") && !is.null(s$tokens), trace$steps)
+  model <- vapply(steps, function(s) as_chr1(s$model, "unknown"), character(1))
+  embed <- vapply(steps, function(s) identical(s$label, "embed.request"), logical(1))
+  only_embed <- unpriced[vapply(unpriced, function(m) all(embed[model == m]), logical(1))]
+  list(usd = sum(cost$usd), priced = sum(cost$usd, na.rm = TRUE),
+       unpriced_embed = only_embed, unpriced = setdiff(unpriced, only_embed))
+}
+
+#' "model 'a' has" or "models 'a', 'b' have", for the ceiling warnings.
+#' @noRd
+corpus_models_have <- function(models) {
+  if (length(models) == 1L) sprintf("model '%s' has", models)
+  else sprintf("models %s have", paste0("'", models, "'", collapse = ", "))
 }
 
 #' A trace's cost in words, for the print methods.
@@ -141,7 +226,13 @@ format_trace_cost <- function(trace) {
 #'   was given a stable `id`; see [gr_backend_client()] for why.
 #' @param store Optional directory. Each document's result is written there as
 #'   it completes and restored on a later run instead of being read again. This
-#'   is what makes a four-hour run survive being interrupted.
+#'   is what makes a four-hour run survive being interrupted. Only a document
+#'   read in full is written, so one that failed (see `status` below) is read
+#'   again by the next run. An entry is restored only for the same document,
+#'   question, recipe, tokenizer and client configuration: model, endpoint,
+#'   `extra_body`, embedding model and embedder. An entry that is not plain
+#'   data, as a file planted in a shared directory could be, is ignored and the
+#'   document read again.
 #' @param on_error `"continue"` (default) records the failure and moves on;
 #'   `"stop"` aborts. One unreadable file in two hundred should not cost you the
 #'   other hundred and ninety-nine.
@@ -150,7 +241,12 @@ format_trace_cost <- function(trace) {
 #'   from `gr_options(max_cost_usd =)`, which is a limit per document.
 #'   It needs a model with a registered price: against one without, cost is
 #'   *unknown* rather than zero, the ceiling cannot be enforced, and you get a
-#'   `gr_corpus_cost_unknown` warning instead of a silent free pass.
+#'   `gr_corpus_cost_unknown` warning instead of a silent free pass. The one
+#'   exception is an embedding model with no price (the chat model priced):
+#'   the ceiling is then checked against the priced spend, which leaves out
+#'   only the embeddings requests, and a `gr_corpus_cost_floor` warning names
+#'   the model and says how to register it. `cost_usd` stays `NA` either way,
+#'   since what those documents cost in full is not known.
 #' @param max_total_calls Stop *before* a document once the run has made this
 #'   many model calls, marking the rest `"skipped"`. The counterpart to
 #'   `max_total_usd` for runs whose model has no registered price, and the only
@@ -200,10 +296,19 @@ format_trace_cost <- function(trace) {
 #' (see below). A document that `max_calls` or `max_cost_usd` stopped before it
 #' was read in full is `"failed"` too, with the limit in `error` and its partial
 #' answer in `answers`; it is not written to `store`, so a resumed run with a
-#' higher limit reads it again. A restored row keeps the numbers from when that
-#' document was first read, so its `cost_usd` is what it cost then, not what this
-#' run spent. That is why the run's own spend comes from `gr_trace_cost(x$trace)`
-#' and not from summing the column.
+#' higher limit reads it again. So is a document one of whose model requests
+#' failed (a network error, a 5xx or 429 after the retries, a refusal, a reply
+#' that was not the JSON asked for): `error` says how many and gives the first
+#' error, the partial answer is in `answers`, and a resumed run reads it again
+#' rather than restoring what the failure left. A request the pipeline recovered
+#' from does not count: an embeddings request that failed and was replaced by
+#' lexical vectors leaves the document `"ok"`, with `partial` set. A row that a
+#' limit or a failed request stopped keeps `document_id`, `reader` and the chunk
+#' counts, since the text was read; only `answer` and `not_found` are left `NA`.
+#' A restored row keeps the numbers from when that document was first read, so
+#' its `cost_usd` is what it cost then, not what this run spent. That is why the
+#' run's own spend comes from `gr_trace_cost(x$trace)` and not from summing the
+#' column.
 #'
 #' @section Documents that are the same document:
 #' The same paper reaches you from three databases under three filenames. Each
@@ -359,8 +464,15 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
   rows <- vector("list", length(sources))
   answers <- list()
   spent <- 0
+  # The priced part of `spent`, and the models left out of it: what
+  # `max_total_usd` is held to when the only models without a price made
+  # embeddings requests. See corpus_cost().
+  spent_priced <- 0
+  unpriced_embed <- character(0)
+  unpriced_chat <- character(0)
   stopped <- FALSE
   warned_unpriced <- NULL
+  warned_floor <- NULL
   # Cleaned-text hash -> index of the first source that had it.
   seen <- new.env(parent = emptyenv())
 
@@ -430,6 +542,8 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
     # registered price makes the figure unknown.
     gr_msg(sprintf("[%d/%d] %s%s", i, length(sources), lab,
                    if (!is.na(spent) && spent > 0) sprintf(" ($%.4f spent so far)", spent)
+                   else if (!length(unpriced_chat) && spent_priced > 0)
+                     sprintf(" (at least $%.4f spent so far)", spent_priced)
                    else ""))
     started <- Sys.time()
     # One trace per document, folded into the parent afterwards. Sharing the
@@ -488,8 +602,12 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
     # price precisely so that a total cannot quietly omit it; dropping the NA here
     # turned "we do not know what this cost" into "$0.0000", which then made
     # `max_total_usd` unenforceable while the run reported itself free.
-    cost <- sum(gr_trace_cost(sub)$usd)
+    doc_cost <- corpus_cost(sub)
+    cost <- doc_cost$usd
     spent <- spent + cost
+    spent_priced <- spent_priced + doc_cost$priced
+    unpriced_chat <- union(unpriced_chat, doc_cost$unpriced)
+    unpriced_embed <- setdiff(union(unpriced_embed, doc_cost$unpriced_embed), unpriced_chat)
 
     if (inherits(out, "condition")) {
       raised <- doc_rec$get()
@@ -530,8 +648,17 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
       why <- sprintf("stopped at the %s before the document was read in full; raise %s",
                      stopped_by$limit, stopped_by$option)
       gr_warn(sprintf("Document '%s' failed: %s.", lab, why), class = "gr_document_failed")
-      rows[[i]] <- corpus_row(lab, status = "failed", error = why, trace = sub,
-                              seconds = secs, cost = cost, warnings = out$warnings)
+      rows[[i]] <- corpus_unfinished_row(lab, out, why, sub, secs, cost)
+      if (keep_answers) answers[[lab]] <- out
+    } else if (!is.null(why <- failed_note(out, sub))) {
+      # The same treatment, for the same reason. A request that failed is a
+      # property of the moment -- an outage, a rate limit, a key since fixed --
+      # and this answer is what was left without it: NOT_IN_DOCUMENT, an
+      # "unclear" nobody decided, a record with empty fields. Reported as "ok"
+      # and saved, it came back "restored" on every later run with no call
+      # made, long after the provider had recovered.
+      gr_warn(sprintf("Document '%s' failed: %s.", lab, why), class = "gr_document_failed")
+      rows[[i]] <- corpus_unfinished_row(lab, out, why, sub, secs, cost)
       if (keep_answers) answers[[lab]] <- out
     } else {
       rows[[i]] <- corpus_row(lab, status = "ok", answer = out, trace = sub,
@@ -544,21 +671,36 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
 
     # A ceiling on a cost nobody can compute is not a ceiling. Say so once,
     # rather than letting an unpriced model run past a limit the user set.
-    if (!is.null(max_total_usd) && is.na(spent) && is.null(warned_unpriced)) {
+    if (!is.null(max_total_usd) && length(unpriced_chat) && is.null(warned_unpriced)) {
       warned_unpriced <- TRUE
-      gr_warn(paste0("`max_total_usd` cannot be enforced: at least one model in this run has no ",
-                     "registered price, so what it costs is unknown rather than zero. Register ",
-                     "the price with gr_register_model(input_usd =, output_usd =), or drop the ",
-                     "ceiling. The run continues, uncapped."),
+      gr_warn(sprintf(paste0("`max_total_usd` cannot be enforced: %s no registered price, so ",
+                             "what it costs is unknown rather than zero. Register the price with ",
+                             "gr_register_model(input_usd =, output_usd =), or drop the ceiling. ",
+                             "The run continues, uncapped."), corpus_models_have(unpriced_chat)),
               class = "gr_corpus_cost_unknown")
     }
-    if (!is.null(max_total_usd) && !is.na(spent) && spent >= max_total_usd) {
+    enforced <- !is.null(max_total_usd) && !length(unpriced_chat)
+    # Held to the priced spend, and said once, when only an embedding model has
+    # no price. See corpus_cost() for why that is not the case above.
+    if (enforced && length(unpriced_embed) && is.null(warned_floor)) {
+      warned_floor <- TRUE
+      gr_warn(sprintf(paste0("`max_total_usd` is checked against the spend that has a price: ",
+                             "embedding %s no registered price, so %s requests are not counted ",
+                             "and the run can pass the ceiling by what they cost. Register it with ",
+                             "gr_register_model('%s', context_window =, max_output = 0, ",
+                             "input_usd =, kind = \"embedding\") to count them."),
+                      corpus_models_have(unpriced_embed),
+                      if (length(unpriced_embed) == 1L) "its" else "their", unpriced_embed[[1]]),
+              class = "gr_corpus_cost_floor")
+    }
+    if (enforced && spent_priced >= max_total_usd) {
       stopped <- TRUE
       if (i < length(sources)) {
-        gr_warn(sprintf(paste0("Stopped after %d of %d documents: the run has spent about ",
+        gr_warn(sprintf(paste0("Stopped after %d of %d documents: the run has spent %s ",
                                "$%.4f, at or above the $%.4f `max_total_usd` ceiling. The ",
                                "remaining documents are marked 'skipped'."),
-                        i, length(sources), spent, max_total_usd),
+                        i, length(sources), if (length(unpriced_embed)) "at least" else "about",
+                        spent_priced, max_total_usd),
                 class = "gr_corpus_cost_cap")
       }
     }
@@ -652,6 +794,23 @@ known_extensions <- function() {
   tolower(unique(trimws(ext[nzchar(ext)])))
 }
 
+#' File paths in one order on every machine.
+#'
+#' `sort()` follows the locale's collation, so a folder of adams, Baker and
+#' Evora came out in one order under en_US and in another under C (cron, Docker,
+#' R CMD check). That order is the corpus's row order, and a synthesis numbers
+#' its studies by row: `[study 4]` named a different paper on the reader's
+#' machine, and a shipped trace no longer replayed. Radix order compares UTF-8
+#' bytes, whatever the locale.
+#'
+#' Labelled with mark_utf8(), not converted with enc2utf8(). `list.files()`
+#' returns names marked "unknown", and in a C or POSIX locale (cron, a minimal
+#' container) enc2utf8() rewrites their non-ASCII bytes as the text
+#' "<c3><89>", so Evora with an accent sorted before "B" there and after "z"
+#' everywhere else.
+#' @noRd
+corpus_sort_paths <- function(x) x[order(mark_utf8(x), method = "radix")]
+
 #' A run-level call ceiling, or nothing.
 #'
 #' `is.finite()` alone failed OPEN: NA, Inf, and a character value read from a
@@ -731,14 +890,14 @@ corpus_sources <- function(sources, recursive = FALSE, quiet = FALSE) {
     files <- list.files(sources, full.names = TRUE, recursive = recursive, no.. = TRUE)
     files <- files[!dir.exists(files)]
     keep <- tolower(tools::file_ext(files)) %in% ext
-    skipped <- sort(files[!keep])
+    skipped <- corpus_sort_paths(files[!keep])
     # Files sitting further down that a non-recursive scan never looked at. The
     # single most likely reason a directory looks empty.
     below <- if (recursive) character(0) else {
       deep <- list.files(sources, full.names = TRUE, recursive = TRUE, no.. = TRUE)
       deep <- deep[!dir.exists(deep)]
       deep <- setdiff(deep, files)
-      sort(deep[tolower(tools::file_ext(deep)) %in% ext])
+      corpus_sort_paths(deep[tolower(tools::file_ext(deep)) %in% ext])
     }
     if (!quiet && length(skipped)) {
       by_ext <- sort(table(tolower(tools::file_ext(skipped))), decreasing = TRUE)
@@ -750,7 +909,7 @@ corpus_sources <- function(sources, recursive = FALSE, quiet = FALSE) {
                       paste(sprintf("%s (%d)", nm, as.integer(by_ext)), collapse = ", ")),
               class = "gr_sources_skipped")
     }
-    out <- sort(files[keep])
+    out <- corpus_sort_paths(files[keep])
     attr(out, "root") <- sources
     attr(out, "skipped") <- skipped
     attr(out, "below") <- below
@@ -767,7 +926,7 @@ corpus_sources <- function(sources, recursive = FALSE, quiet = FALSE) {
       all(nzchar(sources)) && all(file.exists(sources)) && !any(dir.exists(sources))) {
     ext <- known_extensions()
     keep <- tolower(tools::file_ext(sources)) %in% ext
-    skipped <- sort(sources[!keep])
+    skipped <- corpus_sort_paths(sources[!keep])
     if (!quiet && length(skipped)) {
       by_ext <- sort(table(tolower(tools::file_ext(skipped))), decreasing = TRUE)
       nm <- names(by_ext); nm[!nzchar(nm)] <- "(no extension)"
@@ -834,6 +993,26 @@ corpus_row <- function(document, status, answer = NULL, trace = NULL, error = NA
   )
 }
 
+#' The row for a document that was read but not in full: a limit stopped it, or
+#' a request failed.
+#'
+#' Its answer is not a result, so `answer` and `not_found` stay NA and the
+#' partial answer lives in `answers` alone. Everything else the read did
+#' establish is kept: the text was ingested and hashed, so `document_id` is as
+#' much a fact as for a finished read, and gr_extract() and gr_screen() cite and
+#' join these rows by it. The reader and chunk counts say how far it got. Left
+#' out of `seen` and the store by the caller, not here.
+#' @noRd
+corpus_unfinished_row <- function(document, ans, why, trace, seconds, cost) {
+  row <- corpus_row(document, status = "failed", answer = ans, trace = trace, error = why,
+                    seconds = seconds, cost = cost,
+                    document_id = attr(ans, "doc_hash") %||% NA_character_,
+                    warnings = ans$warnings)
+  row$answer <- NA_character_
+  row$not_found <- NA
+  row
+}
+
 #' One document's warnings as one summary cell, or NA when there were none.
 #' @noRd
 corpus_warnings <- function(w) {
@@ -857,7 +1036,13 @@ corpus_key <- function(src, question, rec, client) {
   } else {
     list("text", key_text(as.character(src)))
   }
-  gr_hash(list("readgpt-corpus-v2", ident, key_text(question),
+  # The embedder the readers and the semantic segmenter would use. They call
+  # gr_embed() without naming one, so it comes from gr_options(embedder =) or the
+  # client. An unregistered name is an error for the run to raise, not the key.
+  embedder <- tryCatch(as_chr1(resolve_embedder(client)$name, "?"),
+                       error = function(e) as_chr1(gr_options("embedder"), "?"))
+  # v3: the client's extra_body and the embedding configuration joined the key.
+  gr_hash(list("readgpt-corpus-v3", ident, key_text(question),
                # The tokenizer, because it is what turns `max_tokens = 300` into
                # an actual chunk boundary: the same document under "chars" and
                # under "words" segments differently and is answered differently.
@@ -870,7 +1055,16 @@ corpus_key <- function(src, question, rec, client) {
                # As in cache_key(): for a closure-backed client the transport
                # fields are identical constants, so without this a store restored
                # one client's answers for a different client's run.
-               as_chr1(client$.client_id, "<url-addressed>")))
+               as_chr1(client$.client_id, "<url-addressed>"),
+               # Also as in cache_key(): extra_body goes into every request
+               # (reasoning effort, seed, provider routing) and changes the reply.
+               # Without it a rerun at a higher effort restored the low-effort
+               # answers, made no calls, and compared a run with itself.
+               gr_hash(client$extra_body %||% list()),
+               # What ranks the chunks for the embedding readers and places the
+               # semantic segmenter's cuts: another model or embedder is another
+               # set of chunks in front of the model.
+               as_chr1(client$embedding_model, "?"), embedder))
 }
 
 #' Give the sources back in the shape they arrived in.
@@ -894,13 +1088,119 @@ simplify_sources <- function(x) {
 #' @noRd
 corpus_store_path <- function(store, key) file.path(store, paste0(key, ".rds"))
 
+#' A store entry, or NULL when there is none that can be trusted.
+#'
+#' A store is a directory, and a directory gets shared, synced, and unpacked
+#' from somebody else's archive. `readRDS()` rebuilds any R object: an
+#' environment whose active bindings run code the moment a field is read, or
+#' anything at all carrying a class attribute, which is all `inherits()` and
+#' `is.data.frame()` look at. Checking the shape and then using the object
+#' therefore ran whatever the file's author chose, in this session. So nothing
+#' in an entry is read until all of it is known to be plain data, and the row
+#' and the answer are rebuilt from it, not used as they came. Anything else is
+#' a miss and the document is read again, which is always safe.
 #' @noRd
 corpus_restore <- function(store, key) {
   path <- corpus_store_path(store, key)
   if (!file.exists(path)) return(NULL)
   entry <- tryCatch(readRDS(path), error = function(e) NULL, warning = function(w) NULL)
-  if (!is.list(entry) || !identical(entry$format, 1L) || !is.data.frame(entry$row)) return(NULL)
-  entry
+  tryCatch(corpus_entry(entry), error = function(e) NULL, warning = function(w) NULL)
+}
+
+#' @noRd
+corpus_entry <- function(entry) {
+  if (!identical(typeof(entry), "list") || isS4(entry)) return(NULL)
+  # .subset2() and unclass() throughout: `$` and `[[` dispatch on the class
+  # attribute, which the file chose.
+  entry <- unclass(entry)
+  fmt <- .subset2(entry, "format")
+  if (!identical(fmt, 1L) && !identical(fmt, 2L)) return(NULL)
+  ans <- .subset2(entry, "answer")
+  if (!is.null(ans)) {
+    if (!identical(typeof(ans), "list") || isS4(ans) || !inherits(ans, "gr_answer")) return(NULL)
+    ans <- unclass(ans)
+    # Format 1 saved the answer's trace as the environment it is in memory.
+    # Such an entry is read binding by binding in a way that cannot run
+    # anything, and refused otherwise. 0.5.0 wrote format 1 under the older
+    # store key, which corpus_key() no longer produces, so its entries are read
+    # again once rather than reaching this; the path serves entries at the
+    # current key, a planted one included.
+    if (identical(fmt, 1L) && is.environment(.subset2(ans, "trace"))) {
+      tr <- corpus_trace_bindings(.subset2(ans, "trace"))
+      if (is.null(tr)) return(NULL)
+      ans[["trace"]] <- tr
+    }
+    entry[["answer"]] <- ans
+  }
+  if (!corpus_is_plain(entry)) return(NULL)
+
+  row <- .subset2(entry, "row")
+  if (!is.data.frame(row)) return(NULL)
+  cols <- unclass(row)
+  nm <- names(cols)
+  if (!length(cols) || is.null(nm) || !all(nzchar(nm)) || anyDuplicated(nm) ||
+      !all(vapply(cols, function(v) is.atomic(v) && length(v) == 1L, logical(1)))) {
+    return(NULL)
+  }
+  row <- structure(lapply(seq_along(cols), function(i) .subset2(cols, i)), names = nm,
+                   row.names = c(NA_integer_, -1L), class = "data.frame")
+  if (!is.null(ans)) {
+    ans <- .subset2(entry, "answer")
+    ans["trace"] <- list(corpus_trace_rebuild(.subset2(ans, "trace")))
+    class(ans) <- "gr_answer"
+  }
+  h <- .subset2(entry, "doc_hash")
+  if (!is.character(h) || length(h) != 1L || is.na(h)) h <- NULL
+  list(format = fmt, key = .subset2(entry, "key"), created = .subset2(entry, "created"),
+       row = row, answer = ans, doc_hash = h)
+}
+
+#' Atomic vectors and lists, all the way down, attributes included.
+#'
+#' What a store entry is made of when this package wrote it. Environments,
+#' functions, calls, symbols, promises, external pointers and S4 objects are
+#' the things that can run code or reach outside the file, and none of them is
+#' ever part of a result.
+#' @noRd
+corpus_is_plain <- function(x) {
+  if (isS4(x)) return(FALSE)
+  if (!typeof(x) %in% c("NULL", "logical", "integer", "double", "complex", "character",
+                        "raw", "list")) return(FALSE)
+  if (is.list(x)) {
+    u <- unclass(x)
+    for (i in seq_along(u)) if (!corpus_is_plain(.subset2(u, i))) return(FALSE)
+  }
+  a <- attributes(x)
+  for (i in seq_along(a)) if (!corpus_is_plain(a[[i]])) return(FALSE)
+  TRUE
+}
+
+#' The bindings of a trace saved as an environment (store format 1), or NULL.
+#'
+#' Read without running anything: an active binding is refused before it is
+#' touched, and `substitute()` returns a promise's code instead of forcing it,
+#' which then fails the plain-data test. A gr_trace() has an empty parent and
+#' only plain values, so a real one always passes.
+#' @noRd
+corpus_trace_bindings <- function(e) {
+  if (isS4(e) || !inherits(e, "gr_trace") || !identical(parent.env(e), emptyenv())) return(NULL)
+  out <- list()
+  for (nm in ls(e, all.names = TRUE, sorted = TRUE)) {
+    if (bindingIsActive(nm, e)) return(NULL)
+    v <- eval(call("substitute", as.name(nm), e))
+    if (!corpus_is_plain(v)) return(NULL)
+    out[nm] <- list(v)
+  }
+  out
+}
+
+#' A gr_trace again, from the plain list a store entry holds.
+#' @noRd
+corpus_trace_rebuild <- function(x) {
+  if (!is.list(x) || !length(x)) return(NULL)
+  e <- list2env(x, envir = new.env(parent = emptyenv()))
+  class(e) <- "gr_trace"
+  e
 }
 
 #' Written to a temporary name and renamed, so an interrupt cannot leave a half
@@ -909,11 +1209,16 @@ corpus_restore <- function(store, key) {
 corpus_save <- function(store, key, row, answer, doc_hash = NULL) {
   path <- corpus_store_path(store, key)
   tmp <- paste0(path, ".tmp-", Sys.getpid())
+  # Format 2: the answer's trace is saved as a plain list rather than as the
+  # environment it is in memory, so the whole entry is plain data and
+  # corpus_restore() can refuse anything that is not. `doc_hash` is additive
+  # and did not move the format: an entry written before it existed is still a
+  # perfectly good answer, it just cannot seed duplicate detection.
+  if (!is.null(answer) && is.environment(answer$trace)) {
+    answer$trace <- as.list.environment(answer$trace, all.names = TRUE)
+  }
   ok <- tryCatch({
-    # `doc_hash` is additive and the format number does not move: an entry
-    # written before it existed is still a perfectly good answer, it just cannot
-    # seed duplicate detection.
-    saveRDS(list(format = 1L, key = key, created = Sys.time(), row = row,
+    saveRDS(list(format = 2L, key = key, created = Sys.time(), row = row,
                  answer = answer, doc_hash = doc_hash),
             tmp, compress = TRUE)
     file.rename(tmp, path)

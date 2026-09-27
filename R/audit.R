@@ -88,17 +88,35 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims 
   if (!is.null(extraction)) {
     t <- extraction$table
     dup <- sum(!is.na(t$duplicate_of))
+    # Each row below counts distinct documents only, and no document twice, so
+    # none can come to more than "extracted from".
+    own <- is.na(t$duplicate_of %||% rep(NA, nrow(t)))
     add("extracted from", nrow(t) - dup)
     add("  reported nothing", sum(t$status %in% c("ok", "restored") & !is.na(t$n_filled) &
-                                    t$n_filled == 0L & is.na(t$duplicate_of)),
+                                    t$n_filled == 0L & own),
         "read successfully; none of the fields are in the document")
-    add("  failed to read", sum(!t$status %in% c("ok", "restored", "duplicate")),
+    # "incomplete" has values, so it is not a failed read: counted there, it
+    # was described as having none and a table of real values looked empty.
+    # Its empty cells are the part that is outstanding.
+    add("  read in part", sum(t$status %in% "incomplete" & own),
+        "a request failed; the values are real, but an empty cell is unknown, not unreported")
+    add("  failed to read", sum(!t$status %in% c("ok", "restored", "duplicate", "incomplete") &
+                                  own),
         "no values; these are outstanding")
+    # Not "no verbatim span": a sentence that is in the chunk word for word but
+    # does not state the value is unverified too (verified = FALSE, match = 1).
     add("values unsupported", sum(t$n_unverified, na.rm = TRUE),
-        "no verbatim span in the chunk cited")
+        paste0("not verified: no quote, a quote not found in the chunk cited, or one that ",
+               "does not state the value"))
   }
   if (inherits(claims, "gr_claims")) {
     cw <- claims$claims
+    # Studies whose claims batch came back with nothing. Without this row a
+    # claims table missing most of the corpus read as complete here, although
+    # gr_claims() had warned and recorded them. `%||%` for a claims table saved
+    # before the field existed.
+    add("studies lost to a claims batch", length(claims$lost %||% integer(0)),
+        "their claims batch was cut off at the reply limit, failed or not sent; see $lost")
     add("claims drawn", nrow(cw), "statements about the literature, each attached to studies")
     add("  contested", sum(cw$n_contradict > 0L), "studies on both sides")
     add("  unexplained", sum(cw$n_contradict > 0L & is.na(cw$moderator)),
@@ -436,14 +454,38 @@ audit_evidence <- function(extraction) {
   if (!is.data.frame(ev) || !nrow(ev)) return(NULL)
   keep <- intersect(c("document", "field", "page", "section", "quote", "verified", "match"),
                     names(ev))
-  bad <- sum(!isTRUE_vec(ev$verified))
+  unver <- !isTRUE_vec(ev$verified)
+  # `verified` asks two things of a quote: that it is in the chunk cited, and
+  # that it states the value. A sentence that is there word for word
+  # (match = 1) and does not state it was reported as not found.
+  there <- sum(unver & cited_verbatim(ev))
+  gone <- sum(unver) - there
   c("<h2>Where every value came from</h2>",
     sprintf("<p class='sub'>%d span(s); %s</p>", nrow(ev),
-            if (bad) sprintf("<span class='flag'>%d could not be found in the chunk cited</span>.", bad)
+            if (gone || there) sprintf("<span class='flag'>%s</span>.", paste(c(
+              if (gone) sprintf("%d could not be found in the chunk cited", gone),
+              if (there) sprintf("%d found in the chunk cited but not stating the value cited",
+                                 there)), collapse = "; "))
             else "<span class='ok'>every one was found in the chunk cited</span>."),
     html_table(ev[, keep, drop = FALSE],
                numeric_cols = intersect(c("page", "match"), keep),
                flag = list(verified = function(v) !isTRUE_vec(v))))
+}
+
+#' Which evidence rows quote their chunk word for word (`match` 1) for the
+#' value of a field.
+#'
+#' `verified` asks more of a quote cited for a field: that it state the value
+#' (quote_backs_value()), so such a row can be `verified = FALSE` and still be
+#' in the chunk. gr_verify_evidence() draws the same line. FALSE where `match`
+#' or `field` is absent or NA. `[[`, not `$`: `$` on a data frame
+#' partial-matches.
+#' @noRd
+cited_verbatim <- function(ev) {
+  n <- nrow(ev)
+  m <- if (is.null(ev[["match"]])) rep(NA_real_, n) else suppressWarnings(as.numeric(ev[["match"]]))
+  f <- if (is.null(ev[["field"]])) rep(NA_character_, n) else as.character(ev[["field"]])
+  !is.na(m) & m >= 1 & !is.na(f) & nzchar(f)
 }
 
 #' The claims, the studies behind them, and where each one ended up.
@@ -456,7 +498,21 @@ audit_evidence <- function(extraction) {
 #' @noRd
 audit_claims <- function(synthesis, claims = NULL) {
   cm <- claims %||% synthesis$claims
-  if (!inherits(cm, "gr_claims") || !nrow(cm$claims)) return(NULL)
+  if (!inherits(cm, "gr_claims")) return(NULL)
+  lost <- cm$lost %||% integer(0)
+  # The studies whose claims batch came back with nothing, counted against the
+  # corpus: "over 90 studies" of a table drawn from 30 of them flattered the run.
+  lost_note <- if (length(lost)) sprintf(paste0(
+    "<p class='flag'>%d of the %d studies contributed nothing: their claims batch was cut off ",
+    "at the reply limit, failed or was not sent, so no claim, and no part of the review ",
+    "written from these claims, rests on them (study %s).</p>"),
+    length(lost), nrow(cm$studies),
+    paste(c(utils::head(lost, 20L), if (length(lost) > 20L) "..."), collapse = ", "))
+  if (!nrow(cm$claims)) {
+    if (!length(lost)) return(NULL)
+    return(c("<h2>What the review claims, and what each claim rests on</h2>",
+             "<p class='flag'>No claims were drawn.</p>", lost_note))
+  }
   sec <- attr(synthesis$outline, "claims")
   tab <- cm$claims[, c("claim_id", "claim", "kind", "moderator", "scope",
                        "n_support", "n_contradict"), drop = FALSE]
@@ -470,12 +526,16 @@ audit_claims <- function(synthesis, claims = NULL) {
   open <- sum(tab$n_contradict > 0L & is.na(tab$moderator))
   lone <- sum(tab$n_support == 1L)
   c("<h2>What the review claims, and what each claim rests on</h2>",
-    sprintf(paste0("<p class='sub'>%d claim(s) over %d study/studies. %d contested, %s. ",
+    sprintf(paste0("<p class='sub'>%d claim(s) over %s study/studies. %d contested, %s. ",
                    "%d resting on a single study.</p>"),
-            nrow(tab), nrow(cm$studies), contested,
+            nrow(tab),
+            if (length(lost)) sprintf("%d of %d", nrow(cm$studies) - length(lost), nrow(cm$studies))
+            else nrow(cm$studies),
+            contested,
             if (open) sprintf("<span class='flag'>%d of those with nothing in the table to explain the disagreement</span>", open)
             else "<span class='ok'>each with a distinguishing field named</span>",
             lone),
+    lost_note,
     html_table(tab, numeric_cols = c("claim_id", "n_support", "n_contradict"),
                flag = list(n_support = function(v) suppressWarnings(as.numeric(v)) <= 1)),
     "<h3>Every claim, study by study</h3>",
@@ -501,6 +561,20 @@ audit_synthesis <- function(synthesis) {
       if (s$n_unknown[i] > 0L)
         sprintf("<p class='flag'>%d citation(s) point at a row that does not exist.</p>",
                 s$n_unknown[i]),
+      # A real row the section was never shown: the model cannot have read it
+      # there, so the citation is as unsupported as one to no row at all. The
+      # section is already partial for it; without this the report said nothing.
+      # `is.null()` for a synthesis saved before the column existed.
+      if (!is.null(s$n_unsupplied) && isTRUE(s$n_unsupplied[i] > 0L))
+        sprintf("<p class='flag'>%d citation(s) point at a study this section was not given.</p>",
+                s$n_unsupplied[i]),
+      # A bracket the citation check could not read names studies nobody checked.
+      if (!is.null(s$n_unparsed) && isTRUE(s$n_unparsed[i] > 0L))
+        sprintf(paste0("<p class='flag'>%d citation(s) could not be read, so the studies they ",
+                       "name were not checked.</p>"), s$n_unparsed[i]),
+      if (!is.null(s$n_truncated) && isTRUE(s$n_truncated[i] > 0L))
+        sprintf(paste0("<p class='flag'>%d response(s) for this section were cut off at the ",
+                       "output cap, so the section may be incomplete.</p>"), s$n_truncated[i]),
       if (s$n_cited[i] == 0L)
         "<p class='flag'>This section cites nothing.</p>",
       if (!is.null(s$claims_missed) && s$claims_missed[i] > 0L)
@@ -510,11 +584,19 @@ audit_synthesis <- function(synthesis) {
         html_table(ci[, intersect(c("study", "document"), names(ci)), drop = FALSE],
                    numeric_cols = "study"))
   }
+  lost <- synthesis$claims$lost %||% integer(0)
   c("<h2>What was written, and what each section rests on</h2>",
+    # Every section can be complete against claims that are not: claims drawn
+    # from a third of the corpus give a review of a third of the corpus.
+    if (length(lost))
+      sprintf(paste0("<p class='flag'>Written from claims that %d of the %d studies contributed ",
+                     "nothing to: their claims batch was cut off, failed or was not sent.</p>"),
+              length(lost), nrow(synthesis$studies)),
     unlist(lapply(seq_len(nrow(s)), per), use.names = FALSE),
     if (isTRUE(synthesis$skipped > 0L))
       sprintf(paste0("<p class='sub'>%d row(s) were left out of the write-up: a duplicate, a ",
-                     "document that could not be read, or one with nothing extracted.</p>"),
+                     "document that could not be read in full, or one with nothing ",
+                     "extracted.</p>"),
               synthesis$skipped))
 }
 
@@ -774,10 +856,17 @@ answer_passages <- function(x) {
   nums <- answer_numbers(x$answer)
   kind <- as.character(col("kind"))
   quoted <- !is.na(kind) & kind == "extracted"
-  bad <- sum(quoted & !is.na(col("verified")) & !isTRUE_vec(col("verified")))
-  c(sprintf("<p class='sub'>%d passage(s) from %d chunk(s), in the order they appear in the document.%s</p>",
+  unver <- quoted & !is.na(col("verified")) & !isTRUE_vec(col("verified"))
+  # An extracted value's quote can be in the chunk word for word and still not
+  # verify, by not stating the value (cited_verbatim()): not "not found".
+  there <- sum(unver & cited_verbatim(ev))
+  bad <- sum(unver) - there
+  c(sprintf("<p class='sub'>%d passage(s) from %d chunk(s), in the order they appear in the document.%s%s</p>",
             nrow(ev), length(groups),
             if (bad) sprintf(" <span class='flag'>%d quotation(s) could not be found in the chunk they cite.</span>", bad)
+            else "",
+            if (there) sprintf(paste0(" <span class='flag'>%d quotation(s) found in the chunk they ",
+                                      "cite do not state the value they are cited for.</span>"), there)
             else ""),
     unlist(lapply(groups, function(g) {
       rows <- ev[o[key[o] == g], , drop = FALSE]
@@ -821,6 +910,7 @@ evidence_card <- function(rows, cited, nums) {
   if (any(quoted)) {
     verified <- as.logical(get("verified"))
     match <- suppressWarnings(as.numeric(get("match")))
+    unstated <- cited_verbatim(rows)
     folded <- if (!is.na(passage)) normalised_with_map(passage)
     for (i in which(quoted)) {
       # Only a quotation the check found is marked, so the page and
@@ -829,6 +919,11 @@ evidence_card <- function(rows, cited, nums) {
       if (!is.null(sp)) { spans[[length(spans) + 1L]] <- sp; next }
       unplaced <- c(unplaced, if (isTRUE(verified[i]))
         sprintf("<p class='sub'>Quoted, and found in this chunk, but not placed in the text shown: &ldquo;%s&rdquo;</p>",
+                esc(text[i]))
+      # In the chunk word for word, and not verified: an extracted value its
+      # quote does not state. "Not found ... 100%" said the opposite of both.
+      else if (identical(verified[i], FALSE) && unstated[i])
+        sprintf("<p class='flag'>Quoted, and found in this chunk, but it does not state the value it is cited for: &ldquo;%s&rdquo;</p>",
                 esc(text[i]))
       else if (identical(verified[i], FALSE))
         sprintf("<p class='flag'>Quoted, but not found in this chunk%s: &ldquo;%s&rdquo;</p>",

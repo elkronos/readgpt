@@ -45,12 +45,14 @@
 #' @param resolve What to do when two parts of one document give different values
 #'   for the same field. `"first"` (default) takes the earlier one and records
 #'   the disagreement in the `conflicts` column, costing nothing. `"model"`
-#'   spends one extra call per disagreeing field to adjudicate.
-#' @param require_quote Discard any value the model could not tie to a verbatim
-#'   span in the chunk it cited. Off by default: an extracted value is never
-#'   thrown away without being asked for, and `n_unverified` makes the same
-#'   problem visible without destroying anything. Turn it on for a protocol that
-#'   says no quote, no datum.
+#'   spends one extra call per disagreeing field to adjudicate; if that call
+#'   fails, the first value is kept, as with `"first"`.
+#' @param require_quote Discard any value that is not verified: one with no
+#'   quote, a quote that is not verbatim in the chunk it cited, or a quote that
+#'   does not state the value (see "Verifying it" below). Off by default: an
+#'   extracted value is never thrown away without being asked for, and
+#'   `n_unverified` makes the same problem visible without destroying anything.
+#'   Turn it on for a protocol that says no quote, no datum.
 #' @param keep_answers Keep the underlying [gr_answer] objects in `$answers`.
 #'   They hold every chunk's source text, so for a large corpus this is what
 #'   runs you out of memory; the tables do not need them.
@@ -62,7 +64,11 @@
 #'   \describe{
 #'     \item{`table`}{One row per document: `document`, one column per field in
 #'       the schema and of that field's type, then `n_filled`, `n_unverified`,
-#'       `conflicts`, `status`, `duplicate_of`, `error`. A document whose cleaned
+#'       `conflicts`, `status`, `duplicate_of`, `error`. `status` is the run
+#'       status from `summary`, except that a document some of whose extraction
+#'       requests failed is `"incomplete"` (or `"failed"` if all did), and one
+#'       whose extraction requests all succeeded is not `"failed"` for another
+#'       request's failure; see the section on `NA` below. A document whose cleaned
 #'       text repeats one already read is not read again (see
 #'       [gr_read_many()]), so `subset(x$table, is.na(duplicate_of))` is the
 #'       set of distinct documents.}
@@ -83,6 +89,16 @@
 #' publish, and "failed" is a job you have to redo. Filtering an extraction table
 #' without checking `status` silently turns the second into the first.
 #'
+#' A document where some of the extraction requests failed is `"incomplete"`,
+#' with the count in `error`: the values it has are real, but an `NA` there may
+#' sit in a part of the document that was never read, so it is unknown rather
+#' than not reported. A document where every request failed is `"failed"`.
+#' A failed request outside extraction, such as the adjudication
+#' `resolve = "model"` asks for (the first value is then kept) or a
+#' `contextual` header (the excerpt is read without it), leaves the document
+#' `"ok"`: every excerpt was read. `error` names such a failure unless the
+#' pipeline recorded it as recovered.
+#'
 #' @section What it costs:
 #' One call per chunk per document: every chunk is read, because a schema field
 #' can be answered by a sentence anywhere in the paper and a retrieval step that
@@ -92,13 +108,29 @@
 #'
 #' @section Verifying it:
 #' Every filled cell is asked for the sentence it came from, and that sentence is
-#' checked against the text of the chunk it was attributed to. Nothing is ever
-#' discarded for failing: a paraphrase stays in `$evidence` with
-#' `verified = FALSE` and the fraction of it that did match in `match`.
+#' checked against the text of the chunk it was attributed to (the document's
+#' own text, never a header or rewrite a model added to the chunk). It must
+#' also carry the value: a number must be one of the numbers the sentence
+#' states, the sentence must not start or end inside a word, and a one-word
+#' fragment supports only a value it spells. A number counts however the
+#' sentence writes it: "1,204", "1 204", "0,45", a middle-dot decimal point
+#' (U+00B7, as the Lancet prints "0.84"), "3.2 x 10^-5",
+#' "1.2 million", "54%" for 0.54, or English words ("Twenty-four", "three",
+#' "no" for zero). A quotation made of several passages (separate lines,
+#' bullets, "[...]") is checked passage by passage. Nothing is ever discarded
+#' for failing: a paraphrase stays in `$evidence` with `verified = FALSE` and
+#' the fraction of it that did match in `match`, and a real sentence that does
+#' not carry the value shows `verified = FALSE` with `match = 1`. When several
+#' parts of a document give the same value, it is cited with the best quote
+#' any of them gave. A string field that comes back "None" or "N/A" is kept
+#' only when its quote verifies and says so itself ("Conflicts of interest:
+#' None."); otherwise it is the model reporting nothing, and so is not a
+#' value, and a real value from another part of the document replaces it.
 #'
 #' `n_unverified` counts the cells in that row whose value could not be tied to a
 #' verbatim span, either because no quote was given, or because the quote is
-#' not in the chunk. That column is the one to look at before believing a table:
+#' not in the chunk or does not carry the value. That column is the one to look
+#' at before believing a table:
 #' `n_unverified` of zero means every value in the row can be pointed at in the
 #' document. A row where it is not zero is not wrong, but it is unaudited, and
 #' the answer is marked `partial` to say so. `require_quote = TRUE` turns the
@@ -238,27 +270,40 @@ print.gr_extraction <- function(x, ...) {
   nf <- length(x$fields)
   cat(sprintf("<gr_extraction> %d document(s) x %d field(s)\n", nrow(tab), nf))
   st <- table(factor(tab$status,
-                     levels = c("ok", "restored", "duplicate", "failed", "skipped")))
+                     levels = c("ok", "restored", "duplicate", "incomplete", "failed",
+                                "skipped")))
   cat(sprintf("  %s\n", paste(sprintf("%d %s", as.integer(st), names(st))[st > 0L],
                               collapse = ", ")))
-  done <- tab$status %in% c("ok", "restored", "duplicate")
+  done <- tab$status %in% c("ok", "restored", "duplicate", "incomplete")
   if (any(done) && nf > 0L) {
     cat(sprintf("  cells filled: %d of %d (%.0f%%)\n",
                 sum(tab$n_filled[done]), sum(done) * nf,
                 100 * sum(tab$n_filled[done]) / (sum(done) * nf)))
   }
+  inc <- sum(tab$status %in% "incomplete")
+  if (inc) {
+    cat(sprintf(paste0("  %d document(s) read only in part: a request failed, so an empty ",
+                       "cell there is unknown, not unreported\n"), inc))
+  }
   unver <- sum(tab$n_unverified, na.rm = TRUE)
+  # Not "no verbatim span": a sentence that is in the chunk word for word but
+  # does not state the value is unverified too (verified = FALSE, match = 1).
   if (unver) {
-    cat(sprintf("  %d value(s) with no verbatim span in the chunk cited\n", unver))
+    cat(sprintf(paste0("  %d value(s) not verified: no quote, a quote not found in the chunk ",
+                       "cited, or one that does not state the value\n"), unver))
   }
   cnf <- sum(!is.na(tab$conflicts))
   if (cnf) cat(sprintf("  %d document(s) contradicted themselves on at least one field\n", cnf))
   ev <- x$evidence
   if (!is.null(ev) && nrow(ev)) {
+    # "Verbatim" is the span score, `match`; `verified` also asks that the span
+    # state the value, so the two are reported apart.
+    m <- ev$match[!is.na(ev$match)]
     v <- ev$verified[!is.na(ev$verified)]
-    cat(sprintf("  evidence: %d span(s)%s\n", nrow(ev),
-                if (length(v)) sprintf(", %.0f%% verbatim in the cited chunk",
-                                       100 * mean(v)) else ""))
+    cat(sprintf("  evidence: %d span(s)%s%s\n", nrow(ev),
+                if (length(m)) sprintf(", %.0f%% verbatim in the cited chunk",
+                                       100 * mean(m >= 1)) else "",
+                if (length(v)) sprintf(", %.0f%% verified", 100 * mean(v)) else ""))
   }
   cost <- gr_trace_cost(x$trace)
   total <- if (nrow(cost)) sum(cost$usd) else 0
@@ -284,7 +329,12 @@ answer_record <- function(answer, fields) {
   if (is.null(answer)) return(empty_record(fields))
   raw <- answer$notes$record
   if (!is.list(raw)) {
-    raw <- tryCatch(jsonlite::fromJSON(as_chr1(answer$answer), simplifyVector = TRUE),
+    # parse_json(), never fromJSON(): given a short string that is not JSON,
+    # fromJSON() treats it as a location -- it downloads an http(s) address and
+    # opens an existing file path -- and returns whatever is there as if it were
+    # this answer. The text here came back from a store and, at its origin,
+    # from a model; it is only ever parsed.
+    raw <- tryCatch(jsonlite::parse_json(as_chr1(answer$answer, ""), simplifyVector = TRUE),
                     error = function(e) NULL)
   }
   if (!is.list(raw)) return(empty_record(fields))
@@ -362,22 +412,115 @@ extraction_table <- function(docs, answers, fields, summary) {
     cf <- if (is.null(a)) NULL else a$notes$conflicts
     if (!length(cf)) NA_character_ else paste(names(cf), collapse = ", ")
   }, character(1), USE.NAMES = FALSE)
+  status <- as.character(summary$status)
+  error <- as.character(summary$error)
+  # A request that failed is an excerpt nobody read, and a field it held comes
+  # back NA exactly like a field the paper does not report. gr_read_many() calls
+  # the document "ok" because the reader returned, so the table has to say it:
+  # otherwise a 429 on the chunk holding the sample size is published as
+  # "sample size not reported". "incomplete" when some excerpts were read (the
+  # values present are real; an NA is unknown), "failed" when none were.
+  # Not for a duplicate: its first copy's row carries the flag, and relabelling
+  # it would count one document twice as outstanding.
+  gone <- extraction_failed_requests(docs, answers)
+  # gr_read_many() already calls such a document "failed", so that it is not
+  # saved to a store and a later run retries it. Its answer is kept, though, and
+  # what was read is real: relabel it here with the extraction's own count, and
+  # say "incomplete" when some excerpts were read. The generic reason is
+  # replaced by the more precise one below rather than repeated.
+  kept <- vapply(docs, function(d) !is.null(answers[[d]]), logical(1), USE.NAMES = FALSE)
+  generic <- !is.na(error) & grepl("request(s) failed, so the document was not read in full",
+                                   error, fixed = TRUE)
+  hit <- (status %in% c("ok", "restored") | (status == "failed" & kept & generic)) &
+    gone$failed > 0L
+  error[hit & generic] <- NA_character_
+  if (any(hit)) {
+    none_read <- hit & !is.na(gone$chunks) & gone$failed >= gone$chunks
+    status[hit] <- ifelse(none_read[hit], "failed", "incomplete")
+    of <- ifelse(is.na(gone$chunks), "?", as.character(gone$chunks))
+    why <- ifelse(none_read,
+                  sprintf("every extraction request failed (%d of %s), so nothing was read",
+                          gone$failed, of),
+                  sprintf(paste0("%d of %s extraction request(s) failed, so a field left ",
+                                 "empty may be in a part of the document that was not read"),
+                          gone$failed, of))
+    why <- ifelse(is.na(gone$first_error), why, paste0(why, "; first error: ", gone$first_error))
+    error[hit] <- ifelse(is.na(error[hit]), why[hit], paste0(error[hit], "; ", why[hit]))
+  }
+  # "failed" although every extraction request succeeded: what failed was
+  # another request in the read, such as a conflict adjudication or a
+  # contextual header, each of which has a fallback that keeps the excerpt.
+  # Left "failed", the row showed its values beside NA counts, gr_flow() said
+  # it had none, synthesis dropped it, and its error said the document was not
+  # read in full, which it was. Every excerpt was read, so its values and its
+  # empty cells mean what they mean in any "ok" row, which is what this row
+  # was before the run status counted every request. `error` still names a
+  # failure the pipeline did not mark as recovered.
+  aux <- status == "failed" & kept & generic & gone$failed == 0L
+  if (any(aux)) {
+    error[aux] <- ifelse(gone$open[aux] == 0L, NA_character_,
+                         sprintf(paste0("every extraction request succeeded; %d other ",
+                                        "request(s) in the read failed%s"),
+                                 gone$open[aux],
+                                 ifelse(is.na(gone$first_error[aux]), "",
+                                        paste0(" (first error: ", gone$first_error[aux], ")"))))
+    status[aux] <- "ok"
+  }
   # A document that was never read has no record, so its n_filled of zero would
   # read as "reports none of these fields" -- exactly the confusion the status
   # column exists to prevent. Make it NA and let the status say why.
   # A duplicate WAS read -- once, as another row. Its values are the first
   # copy's values, so treating it as unread would blank a row that is fully
   # known and mark it as a job to redo.
-  unread <- !summary$status %in% c("ok", "restored", "duplicate")
+  unread <- !status %in% c("ok", "restored", "duplicate", "incomplete")
   tab$n_filled[unread] <- NA_integer_
   tab$n_unverified[unread] <- NA_integer_
-  tab$status <- as.character(summary$status)
+  tab$status <- status
   # Carried into the table so the deduplicated set is one subset() away without
   # having to join back to $summary.
   tab$duplicate_of <- as.character(summary$duplicate_of %||% NA_character_)
-  tab$error <- as.character(summary$error)
+  tab$error <- error
   rownames(tab) <- NULL
   tab
+}
+
+#' How many of each document's extraction requests failed, of how many, the
+#' first error, and how many requests of any kind failed without recovering.
+#'
+#' From the answer's notes. The extract reader has written `failed_calls` and
+#' `chunks` there since it was introduced, so an absent count is a zero rather
+#' than an unknown. The rest is from the answer's trace, where a request the
+#' pipeline recovered from carries `recovered = TRUE`; the first error named is
+#' the first unrecovered one, and none is named when every one was recovered.
+#' @noRd
+extraction_failed_requests <- function(docs, answers) {
+  one <- function(d, key, default) {
+    a <- answers[[d]]
+    if (is.null(a)) return(default)
+    n <- as.list(a$notes %||% list())
+    as_int1(n[[key, exact = TRUE]], default)
+  }
+  errs <- function(d) {
+    tr <- answers[[d]]$trace
+    if (inherits(tr, "gr_trace")) tr$errors else list()
+  }
+  open <- function(e) Filter(function(x) !isTRUE(x$recovered), e)
+  # Only an unrecovered error, as failed_note() names one. A recovered error
+  # did not cost the read anything, so it is never why a row is incomplete:
+  # falling back to it, a row whose extraction replies came back unreadable
+  # (which the trace records as successful requests) gave a recovered
+  # embeddings 404 from the semantic segmenter as its "first error".
+  first_error <- function(d) {
+    e <- open(errs(d))
+    if (!length(e)) return(NA_character_)
+    substr(as_chr1(e[[1]]$error, NA_character_), 1, 120)
+  }
+  list(failed = vapply(docs, one, integer(1), key = "failed_calls", default = 0L,
+                       USE.NAMES = FALSE),
+       chunks = vapply(docs, one, integer(1), key = "chunks", default = NA_integer_,
+                       USE.NAMES = FALSE),
+       first_error = vapply(docs, first_error, character(1), USE.NAMES = FALSE),
+       open = vapply(docs, function(d) length(open(errs(d))), integer(1), USE.NAMES = FALSE))
 }
 
 #' @noRd

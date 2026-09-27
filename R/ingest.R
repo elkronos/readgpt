@@ -100,7 +100,8 @@ gr_ingest_spec <- function(clean = "standard", ocr = c("auto", "always", "never"
 #' @param spec A `gr_ingest_spec`, a bare preset name, or `NULL` for defaults.
 #' @param cache Use the session document cache. The cache key includes the file's
 #'   size and mtime plus every ingestion option; for a web address, the address,
-#'   so it is downloaded once a session.
+#'   so it is downloaded once a session. Registering a cleaner or extractor the
+#'   ingestion uses again (as when fixing it) starts a new cache entry.
 #' @param trace Optional `gr_trace`.
 #' @return A `gr_document`: a list with `blocks` (data frame), `text`, `source`,
 #'   `spec` and `stats`.
@@ -179,14 +180,19 @@ gr_ingest <- function(source, spec = NULL, cache = NULL, trace = NULL) {
       gr_warning = rec$record)
   }
 
+  # The spec names its cleaners and extractor; the code that runs is whatever is
+  # registered under those names now. Registering a fixed cleaner under its old
+  # name is the ordinary way to repair one, and with names alone in the key the
+  # document the broken one produced kept coming back from the cache.
+  code <- ingest_code(spec, is_path = is_path, url = url, source = source)
   if (is_path) {
     fi <- file.info(source)
     key <- gr_hash(list(normalizePath(source, winslash = "/", mustWork = FALSE),
-                        fi$size, as.numeric(fi$mtime), unclass(spec)))
+                        fi$size, as.numeric(fi$mtime), unclass(spec), code))
   } else if (url) {
     # The address, not what it serves today: a page that changes during a
     # session is read as it was the first time, as a file is until it is saved.
-    key <- gr_hash(list("url", source, unclass(spec)))
+    key <- gr_hash(list("url", source, unclass(spec), code))
   } else {
     # Hash the SAME string the pipeline goes on to ingest. Joining with "\n"
     # here while ingestion joined with "\n\n" made a two-element vector hash
@@ -195,7 +201,7 @@ gr_ingest <- function(source, spec = NULL, cache = NULL, trace = NULL) {
     key <- gr_hash(list("inline",
                         paste(vapply(source, as_chr1, character(1), USE.NAMES = FALSE),
                               collapse = "\n\n"),
-                        unclass(spec)))
+                        unclass(spec), code))
   }
 
   if (cache && !is.null(gr_state$doc_cache[[key]])) {
@@ -294,6 +300,52 @@ as_ingest_spec <- function(spec) {
   if (is.character(spec) && length(spec) == 1L) return(gr_ingest_spec(clean = spec))
   if (is.list(spec)) return(do.call(gr_ingest_spec, spec))
   gr_abort("`ingest` must be a gr_ingest_spec, a preset name, or a named list.")
+}
+
+#' The registered code an ingestion with `spec` would run, for its cache key.
+#'
+#' The cleaners the spec's steps name, with the stage and scope that decide
+#' their order and reach, and the extractor. A file is read by the extractor the
+#' spec forces or its extension selects. What a web address serves decides its
+#' extractor and is not known before the download, so every registered one goes
+#' in. Inline text uses none. Nothing here raises: a name that is not
+#' registered is reported where it is used, as before.
+#'
+#' Each entry goes in with its code and with when it was registered. The code
+#' alone cannot see what the function calls: a cleaner that calls a global
+#' helper, or reads a global pattern, is the same code after the helper is
+#' fixed, so registering it again still served the document the broken helper
+#' had left. Registering an entry again is how a fix is put in place, so it
+#' starts a new cache entry for every document that uses it. The document cache
+#' lives only as long as the session, so a key that differs between sessions
+#' costs nothing.
+#' @noRd
+ingest_code <- function(spec, is_path, url, source) {
+  steps <- tryCatch(resolve_clean_steps(spec$clean), error = function(e) character(0))
+  cleaners <- lapply(steps, function(s) {
+    e <- gr_state$cleaners[[s]]
+    if (is.null(e)) NULL else list(e$fn, e$stage, e$scope %||% "block", e$registered)
+  })
+  forced <- spec$extractor
+  code_of <- function(e) if (is.null(e)) NULL else list(e$fn, e$registered)
+  ex <- if (!is.null(forced)) {
+    tryCatch(code_of(gr_state$extractors[[as_chr1(forced)]]), error = function(e) NULL)
+  } else if (url) {
+    lapply(gr_state$extractors, function(e) list(e$fn, e$extensions, e$registered))
+  } else if (is_path) {
+    code_of(extractor_for(tolower(tools::file_ext(source))))
+  }
+  list(cleaners = cleaners, extractor = ex)
+}
+
+#' A number no earlier registration of a cleaner or extractor has had.
+#'
+#' Stored on the entry, it tells the ingest cache that the entry was put in
+#' place again; see ingest_code().
+#' @noRd
+registration_stamp <- function() {
+  gr_state$registrations <- (gr_state$registrations %||% 0) + 1
+  gr_state$registrations
 }
 
 #' @export

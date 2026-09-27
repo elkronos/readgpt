@@ -14,7 +14,9 @@ The number of entries removed, invisibly.
 }
 \description{
 Removes the stored responses and resets the session counters. The directory
-itself is left in place.
+itself is left in place, and so is anything in it that is not a cache entry
+(a \code{\link[=gr_read_many]{gr_read_many()}} store, your own files): only files in the cache's own
+layout are removed.
 }
 \examples{
 cache <- gr_cache(file.path(tempdir(), "readgpt-clear-cache"))

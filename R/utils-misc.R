@@ -323,11 +323,33 @@ hash_parts <- function(x, prefix = "", depth = 0L) {
                           depth + 1L)
              }), use.names = FALSE)))
   }
+  if (is.function(x)) {
+    # as.character() cannot turn a function into text, so every function used
+    # to serialise as the bare word "function" and any two hashed alike. A
+    # cleaner fixed and registered again under its old name was then served
+    # from the ingest cache as the broken one had left it. The code is hashed
+    # (deparse() leaves out source references and byte code), and so is where
+    # it runs: the same code in two closures can hold different values. A
+    # named environment (the global one, a package) goes in by name, so a key
+    # built from one is the same in every session; any other by identity.
+    return(paste0(prefix, "=function:", paste(deparse(x), collapse = "\n"),
+                  "@", env_identity(environment(x))))
+  }
   v <- tryCatch(as.character(x), error = function(e) class(x)[1])
   nms <- names(x)
   paste0(prefix, "=", class(x)[1], ":",
          if (is.null(nms)) "" else paste0("[", paste(nms, collapse = ","), "]"),
          paste(v, collapse = "\u0002"))
+}
+
+#' What a function's environment is, for a hash: its name when it has one,
+#' otherwise its address.
+#' @noRd
+env_identity <- function(env) {
+  if (is.null(env)) return("<primitive>")
+  nm <- environmentName(env)
+  if (nzchar(nm)) return(nm)
+  utils::capture.output(print.default(env))[1]
 }
 
 #' @noRd
@@ -361,6 +383,42 @@ mark_utf8 <- function(x) {
   if (any(need)) { tmp <- x[need]; Encoding(tmp) <- "UTF-8"; x[need] <- tmp }
   x
 }
+
+#' Lower case that does not depend on the session's locale.
+#'
+#' `tolower()` lowers what the C library's locale calls a letter. In a C locale
+#' on Linux (cron, containers, `R CMD check`) that is A-Z alone, so a Russian
+#' sentence kept its capital letter and a quotation of it in lower case did not
+#' match, on that machine only. The common cased scripts are mapped here code point by code
+#' point, which `chartr()` does the same way in every locale; `tolower()` then
+#' does what else the locale can.
+#' @noRd
+lower_text <- function(x) tolower(chartr(.gr_case_map$upper, .gr_case_map$lower, x))
+
+#' Upper- and lower-case letters for lower_text(), as two strings of the same
+#' length: Latin-1, Latin Extended-A and Additional (Vietnamese), Greek,
+#' Cyrillic and Armenian. Pairs whose lower case is not one code point (the
+#' Turkish dotted capital I) are left to `tolower()`.
+#' @noRd
+.gr_case_map <- local({
+  plus <- function(from, by) list(up = from, low = from + by)
+  pairs <- list(
+    plus(c(0xC0:0xD6, 0xD8:0xDE), 32L),                                   # Latin-1
+    plus(c(seq(0x100L, 0x12EL, 2L), seq(0x132L, 0x136L, 2L), seq(0x139L, 0x147L, 2L),
+           seq(0x14AL, 0x176L, 2L), 0x179L, 0x17BL, 0x17DL), 1L),          # Latin Extended-A
+    list(up = 0x178L, low = 0xFFL),                                       # Y with diaeresis
+    plus(c(seq(0x1E00L, 0x1E94L, 2L), seq(0x1EA0L, 0x1EFEL, 2L)), 1L),    # Latin Extended Additional
+    plus(c(0x391:0x3A1, 0x3A3:0x3AB), 32L),                               # Greek
+    list(up = c(0x386L, 0x388:0x38A, 0x38CL, 0x38EL, 0x38FL),
+         low = c(0x3ACL, 0x3AD:0x3AF, 0x3CCL, 0x3CDL, 0x3CEL)),           # Greek with tonos
+    plus(0x400:0x40F, 80L), plus(0x410:0x42F, 32L),                       # Cyrillic
+    plus(c(seq(0x460L, 0x480L, 2L), seq(0x48AL, 0x4BEL, 2L), seq(0x4D0L, 0x52EL, 2L)), 1L),
+    plus(seq(0x4C1L, 0x4CDL, 2L), 1L),
+    plus(0x531:0x556, 48L)                                                # Armenian
+  )
+  list(upper = intToUtf8(unlist(lapply(pairs, `[[`, "up"))),
+       lower = intToUtf8(unlist(lapply(pairs, `[[`, "low"))))
+})
 
 #' Coerce text to valid UTF-8, whatever it arrived as.
 #'

@@ -315,9 +315,9 @@ check. A prompt with no recorded response raises `gr_replay_miss` rather than
 inventing an answer, because a result that looks like the original and is not is
 worse than no replay at all.
 
-Embeddings are not model calls and are not in the trace, so a replay reproduces
-chunk *ranking* only when the recording used a deterministic embedder and the
-replay uses the same one. That is why this vignette set `embedder = "lexical"`
+A trace records each embeddings request and what it cost, but not the vectors
+that came back, so a replay reproduces chunk *ranking* only when the recording
+used a deterministic embedder and the replay uses the same one. That is why this vignette set `embedder = "lexical"`
 at the top.
 
 ## Many documents

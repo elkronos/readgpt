@@ -44,7 +44,13 @@
 #'   which is required for anything that reasons about position or repetition
 #'   across the whole document (dropping a trailing bibliography, or detecting
 #'   a running head by how often a line recurs). A document-scoped step that was
-#'   applied per block would simply never fire.
+#'   applied per block would simply never fire. Its result is matched back to
+#'   the blocks line by line, so such a step should remove whole lines, or cut
+#'   the text short (at the start of a line or inside one), and leave the
+#'   lines it keeps as they were: each block then keeps whichever of its lines
+#'   survived. A step that rewrites text inside lines is matched line for line
+#'   when it keeps every line; otherwise it is applied to each block on its
+#'   own, with a `gr_clean_unmapped` warning.
 #' @return Invisibly, `name`.
 #' @seealso [gr_cleaners()], [gr_clean()], [gr_ingest_spec()]
 #' @family ingest functions
@@ -61,7 +67,8 @@ gr_register_cleaner <- function(name, fn, stage = c("early", "late"), descriptio
   stage <- match.arg(stage); scope <- match.arg(scope)
   if (!is.function(fn)) gr_abort("`fn` must be a function of (text, opts).")
   registry_set("cleaners", name, list(name = name, fn = fn, stage = stage, scope = scope,
-                                      description = description, default_on = default_on))
+                                      description = description, default_on = default_on,
+                                      registered = registration_stamp()))
 }
 
 #' List registered cleaners
@@ -160,16 +167,19 @@ gr_clean <- function(text, steps = NULL, opts = list()) {
       # head only looks like one when you can see the whole document at once.
       joined <- paste(text, collapse = sep)
       cleaned <- as_chr1(reg[[s]]$fn(joined, opts))
-      text <- vapply(text, function(bt) {
-        trimmed <- trimws(bt)
-        if (!nzchar(trimmed)) return("")
-        if (grepl(trimmed, cleaned, fixed = TRUE)) return(bt)
-        # The block did not survive intact. It may still contain a line the
-        # cleaner strips (a running head inside a longer block), so try the
-        # cleaner on the block alone before discarding it.
-        sub <- as_chr1(reg[[s]]$fn(bt, opts))
-        if (nzchar(trimws(sub)) && !identical(sub, bt)) sub else ""
-      }, character(1), USE.NAMES = FALSE)
+      mapped <- map_document_step(text, joined, cleaned)
+      if (is.null(mapped)) {
+        # Re-running a document-level decision on one block cannot repeat it
+        # (a running head needs the other pages to be seen as one), so this is
+        # a fallback, and it says so rather than passing for the real thing.
+        gr_warn(sprintf(paste0("The document-scoped cleaner '%s' rewrote text inside lines, so its ",
+                               "result could not be matched back to the blocks it came from. It ",
+                               "was applied to each block on its own instead."), s),
+                class = "gr_clean_unmapped")
+        mapped <- vapply(text, function(bt) as_chr1(reg[[s]]$fn(bt, opts)), character(1),
+                         USE.NAMES = FALSE)
+      }
+      text <- mapped
     } else {
       text <- vapply(text, function(tx) as_chr1(reg[[s]]$fn(tx, opts)), character(1), USE.NAMES = FALSE)
     }
@@ -178,6 +188,84 @@ gr_clean <- function(text, steps = NULL, opts = list()) {
   }
   attr(text, "gr_clean_log") <- log
   text
+}
+
+#' Map a document-scoped step's result back onto the blocks it was given.
+#'
+#' The step saw `joined`, the blocks separated by blank lines, and returned
+#' `cleaned`. Keeping a block only when its WHOLE text survived deleted every
+#' block the step edited in part: a paragraph that began with a running head,
+#' or a conclusion with the References heading on its next line, went with the
+#' line the step removed. So the result is matched line by line instead: each
+#' non-blank line of `cleaned` is found, in order, among the lines of `joined`,
+#' and every block keeps the lines of it that survived. A block none of whose
+#' lines survived comes back as "".
+#'
+#' That covers a step that removes whole lines or cuts the text at the start
+#' of a line, which is what the built-in ones do. A step that cuts the text
+#' short inside a line keeps each block up to the cut. A step that rewrites
+#' text inside lines but keeps every line is mapped line for line. Anything
+#' else returns NULL, and the caller falls back.
+#' @noRd
+map_document_step <- function(text, joined, cleaned) {
+  if (identical(cleaned, joined)) return(ifelse(has_content(text), text, ""))
+  # A trailing "\n" is appended so strsplit() keeps a block's own trailing
+  # empty line. With it, the lines of `joined` are exactly each block's lines
+  # with one empty separator line between blocks.
+  lines_of <- function(s) strsplit(paste0(s, "\n"), "\n", fixed = TRUE)[[1]]
+  orig <- lines_of(joined)
+  n <- vapply(text, function(t) length(lines_of(t)), integer(1), USE.NAMES = FALSE)
+  owner <- rep(rbind(seq_along(text), 0L), rbind(n, 1L))
+  owner <- owner[seq_len(length(owner) - 1L)]     # no separator after the last block
+  if (length(owner) != length(orig)) return(NULL)
+  out_lines <- lines_of(cleaned)
+  blank <- !nzchar(trimws(orig))
+
+  by_block <- function(x) split(x, factor(owner, levels = c(0L, seq_along(text))))[-1L]
+
+  # Blank lines carry nothing to match; a step may add or drop them freely.
+  kept <- rep(FALSE, length(orig))
+  subsequence <- TRUE
+  i <- 1L
+  for (line in out_lines[nzchar(trimws(out_lines))]) {
+    while (i <= length(orig) && orig[i] != line) i <- i + 1L
+    if (i > length(orig)) { subsequence <- FALSE; break }
+    kept[i] <- TRUE
+    i <- i + 1L
+  }
+  idx <- by_block(seq_along(orig))
+  if (!subsequence) {
+    # The start of the input and nothing after it: a step that cut the text
+    # short inside a line, from a numbered "6 References" heading to the end,
+    # say. Every block before the cut is kept, the one it fell in keeps what
+    # the step left of it, and every block after it is gone. Applied to each
+    # block on its own instead, the cut never fired and the whole bibliography
+    # was kept.
+    if (startsWith(joined, cleaned)) {
+      m <- length(out_lines)          # the line the cut fell in
+      return(vapply(idx, function(own) {
+        t <- if (max(own) < m) paste(orig[own], collapse = "\n")
+             else if (own[1] > m) ""
+             else paste(c(orig[own[own < m]], out_lines[m]), collapse = "\n")
+        if (nzchar(trimws(t))) t else ""
+      }, character(1), USE.NAMES = FALSE))
+    }
+    # Not the input with lines taken out. The same number of lines means text
+    # was rewritten in place, and each block takes back its own lines.
+    if (length(out_lines) != length(orig)) return(NULL)
+    return(vapply(by_block(out_lines), function(l) {
+      t <- paste(l, collapse = "\n")
+      if (nzchar(trimws(t))) t else ""
+    }, character(1), USE.NAMES = FALSE))
+  }
+
+  vapply(seq_along(text), function(b) {
+    own <- idx[[b]]
+    content <- own[!blank[own]]
+    if (!length(content) || !any(kept[content])) return("")
+    if (all(kept[content])) return(text[b])
+    paste(orig[own[kept[own] | blank[own]]], collapse = "\n")
+  }, character(1), USE.NAMES = FALSE)
 }
 
 # ---------------------------------------------------------------------------
@@ -236,8 +324,10 @@ register_builtin_cleaners <- function() {
     })
 
   gr_register_cleaner("hyphenation", stage = "early", default_on = TRUE,
-    description = "Rejoin words split across line breaks by PDF layout ('mito-\\nchondria')",
-    fn = function(x, o) gsub("(\\w)[-\u2010\u2011]\\s*\n\\s*(\\w)", "\\1\\2", x, perl = TRUE))
+    description = paste0("Rejoin words split across line breaks by PDF layout ('mito-\\nchondria', ",
+                         "'LIA-\\nBLE' in capitals); number ranges ('18-\\n65') and compounds ",
+                         "('Anglo-\\nSaxon') are left alone"),
+    fn = function(x, o) rejoin_hyphenated(x))
 
   gr_register_cleaner("headers_footers", stage = "early", default_on = FALSE, scope = "document",
     description = "Drop short lines repeated on many pages (running heads)",
@@ -304,6 +394,50 @@ register_builtin_cleaners <- function() {
     fn = function(x, o) tolower(x))
 
   invisible(NULL)
+}
+
+#' Rejoin words that PDF layout split at a line break with a hyphen.
+#'
+#' A letter before the hyphen and a lower-case letter after it. `\w` also
+#' matched digits, so a range that wrapped at its hyphen ("aged 18-" / "65
+#' years") became one wrong number, "aged 1865 years", and a quote of that
+#' number then checked out against the document. In mixed-case text an
+#' upper-case letter after the break is a compound ("Anglo-" / "Saxon"), not a
+#' split word. `[ \t]` rather than `\s`, so the match cannot run across a
+#' blank line; `\r?`, so text with Windows line ends is rejoined too.
+#'
+#' Text set in capitals (a disclaimer, a contract's liability clause) has
+#' nothing but capitals after its breaks, so that rule never fired there:
+#' "LIA-" / "BLE" stayed split, and a quote of "LIABLE" failed to check out. A
+#' word of capitals broken before more capitals is rejoined as well, unless
+#' the words beside the pair all have lower-case letters: that is mixed-case
+#' text, and the pair two abbreviations ("the HIV-" / "AIDS epidemic").
+#' @noRd
+rejoin_hyphenated <- function(x) {
+  if (length(x) != 1L) return(vapply(x, rejoin_hyphenated, character(1), USE.NAMES = FALSE))
+  if (is.na(x)) return(x)
+  x <- gsub("(\\p{L})[-\u2010\u2011][ \t]*\r?\n[ \t]*(\\p{Ll})", "\\1\\2", x, perl = TRUE)
+  m <- gregexpr("(?<!\\p{L})(\\p{Lu}{2,})[-\u2010\u2011][ \t]*\r?\n[ \t]*(\\p{Lu}+)(?!\\p{L})",
+                x, perl = TRUE)[[1]]
+  if (m[1] == -1L) return(x)
+  start <- as.integer(m)
+  end <- start + attr(m, "match.length") - 1L
+  # The nearest word before the pair and after it, "" where there is none.
+  before <- substring(x, pmax(1L, start - 80L), start - 1L)
+  after <- substring(x, end + 1L, end + 80L)
+  prev <- ifelse(grepl("\\p{L}", before, perl = TRUE),
+                 sub("(?s)^.*?(\\p{L}+)[^\\p{L}]*$", "\\1", before, perl = TRUE), "")
+  nxt <- ifelse(grepl("\\p{L}", after, perl = TRUE),
+                sub("(?s)^[^\\p{L}]*(\\p{L}+).*$", "\\1", after, perl = TRUE), "")
+  lower <- function(w) grepl("\\p{Ll}", w, perl = TRUE)
+  capitals <- (nzchar(prev) & !lower(prev)) | (nzchar(nxt) & !lower(nxt))
+  join <- capitals | !(lower(prev) | lower(nxt))
+  if (!any(join)) return(x)
+  cs <- attr(m, "capture.start"); cl <- attr(m, "capture.length")
+  first <- substring(x, cs[, 1], cs[, 1] + cl[, 1] - 1L)
+  second <- substring(x, cs[, 2], cs[, 2] + cl[, 2] - 1L)
+  regmatches(x, list(m)) <- list(ifelse(join, paste0(first, second), regmatches(x, list(m))[[1]]))
+  x
 }
 
 #' Named cleaning presets.

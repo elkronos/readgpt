@@ -51,6 +51,12 @@
 #'   value. Leave as `NA` rather than guessing: wrong provenance sends a reader
 #'   to the wrong page with full confidence.
 #' @param extra Named list of segmenter-specific detail, kept on `$extra`.
+#' @param source_text For a segmenter that puts text a model wrote into a
+#'   chunk (a context line, a rewrite): the document text each chunk was made
+#'   from, one value per chunk or one recycled value. It becomes the
+#'   `source_text` column, which is what quotes from the chunk are checked
+#'   against. `NA`, or leaving it out, says the chunk's `text` is the
+#'   document's own.
 #' @return A [gr_chunks].
 #' @seealso [gr_register_segmenter()], [gr_chunks], [gr_segment()],
 #'   [gr_chunk_stats()], [new_answer()]
@@ -64,7 +70,7 @@
 #'                  block_id = 1L)
 #' gr_chunk_stats(ch)
 new_chunks <- function(text, method, spec, page = NA_integer_, section = NA_character_,
-                       block_id = NA_integer_, extra = list()) {
+                       block_id = NA_integer_, extra = list(), source_text = NULL) {
   text <- vapply(text %||% character(0), as_chr1, character(1), USE.NAMES = FALSE)
   keep <- has_content(text)
   text <- text[keep]
@@ -84,6 +90,9 @@ new_chunks <- function(text, method, spec, page = NA_integer_, section = NA_char
     block_id = rep_to(block_id),
     stringsAsFactors = FALSE
   )
+  # Only when given, so a chunk set whose text is all the document's own looks
+  # as it always has. as.character(): an all-NA vector is logical.
+  if (!is.null(source_text)) df$source_text <- as.character(rep_to(source_text))
   structure(list(chunks = df, method = method, spec = spec, extra = extra),
             class = "gr_chunks")
 }
@@ -92,15 +101,22 @@ new_chunks <- function(text, method, spec, page = NA_integer_, section = NA_char
 #'
 #' Shared by every segmenter, so overlap, minimum size and the hard cap behave
 #' identically no matter which segmentation strategy you pick.
+#'
+#' Besides the text and its provenance, `span` gives, for each chunk, the first
+#' and last of the caller's `units` it was packed from (overlap carried in from
+#' the chunk before is not counted), for a segmenter that has to say where a
+#' chunk came from in terms the provenance columns cannot hold.
 #' @noRd
 pack_units <- function(units, max_tokens, overlap_tokens = 0L, min_tokens = 0L,
                        joiner = "\n\n", meta = NULL, can_split = TRUE) {
   units <- vapply(units %||% character(0), as_chr1, character(1), USE.NAMES = FALSE)
   keep <- has_content(units)
   units <- units[keep]
+  origin <- which(keep)
   if (!is.null(meta)) meta <- meta[keep, , drop = FALSE]
   if (!length(units)) {
-    return(list(text = character(0), meta = meta[0, , drop = FALSE]))
+    return(list(text = character(0), meta = meta[0, , drop = FALSE],
+                span = data.frame(first = integer(0), last = integer(0))))
   }
   max_tokens <- as.integer(clamp(max_tokens, 16, Inf))
   overlap_tokens <- as.integer(clamp(overlap_tokens, 0, max_tokens - 1L))
@@ -110,24 +126,27 @@ pack_units <- function(units, max_tokens, overlap_tokens = 0L, min_tokens = 0L,
   # ever deals with units that can fit. `can_split = FALSE` (used by the `page`
   # segmenter, where a chunk boundary is semantically meaningful) keeps the unit
   # whole but reports the overflow instead of silently emitting it.
-  exploded <- list(); emeta <- list()
+  exploded <- list(); emeta <- list(); eorigin <- integer(0)
   for (i in seq_along(units)) {
     tks <- gr_count_tokens(units[i])
     if (tks <= max_tokens || !can_split) {
       exploded[[length(exploded) + 1L]] <- units[i]
       emeta[[length(emeta) + 1L]] <- if (is.null(meta)) NULL else meta[i, , drop = FALSE]
+      eorigin <- c(eorigin, origin[i])
     } else {
       parts <- hard_split(units[i], max_tokens)
       for (p in parts) {
         exploded[[length(exploded) + 1L]] <- p
         emeta[[length(emeta) + 1L]] <- if (is.null(meta)) NULL else meta[i, , drop = FALSE]
+        eorigin <- c(eorigin, origin[i])
       }
     }
   }
   units <- unlist(exploded, use.names = FALSE)
+  origin <- eorigin
   meta <- if (is.null(meta)) NULL else do.call(rbind, emeta)
 
-  out <- character(0); out_meta <- list()
+  out <- character(0); out_meta <- list(); out_span <- list()
   buf <- character(0); buf_tokens <- 0L; buf_start <- 1L
   flush <- function(end_idx) {
     if (!length(buf)) return(invisible(NULL))
@@ -137,6 +156,7 @@ pack_units <- function(units, max_tokens, overlap_tokens = 0L, min_tokens = 0L,
     # placeholder so positions stay aligned with `out`.
     out_meta[[length(out) ]] <<- if (is.null(meta)) NA else
       meta_over(meta, buf_start, max(end_idx, buf_start))
+    out_span[[length(out)]] <<- origin[c(buf_start, max(end_idx, buf_start))]
     invisible(NULL)
   }
   i <- 1L
@@ -169,7 +189,7 @@ pack_units <- function(units, max_tokens, overlap_tokens = 0L, min_tokens = 0L,
   # Merge runt chunks forward so a stray one-line paragraph does not become its
   # own API call.
   if (min_tokens > 0L && length(out) > 1L) {
-    merged <- character(0); mmeta <- list()
+    merged <- character(0); mmeta <- list(); mspan <- list()
     for (j in seq_along(out)) {
       tks <- gr_count_tokens(out[[j]])
       # Measure the JOINED text, not the sum of the two counts. Every estimate
@@ -184,12 +204,14 @@ pack_units <- function(units, max_tokens, overlap_tokens = 0L, min_tokens = 0L,
         # partly comes from -- the same lie, arrived at from the other side.
         mmeta[[length(merged)]] <- combine_meta(mmeta[[length(merged)]],
                                                 if (j <= length(out_meta)) out_meta[[j]] else NA)
+        mspan[[length(merged)]] <- c(mspan[[length(merged)]][1], out_span[[j]][2])
       } else {
         merged[[length(merged) + 1L]] <- out[[j]]
         mmeta[[length(merged)]] <- if (j <= length(out_meta)) out_meta[[j]] else NA
+        mspan[[length(merged)]] <- out_span[[j]]
       }
     }
-    out <- merged; out_meta <- mmeta
+    out <- merged; out_meta <- mmeta; out_span <- mspan
   }
   out <- unlist(out, use.names = FALSE) %||% character(0)
   keep_meta <- Filter(function(m) is.data.frame(m), out_meta)
@@ -199,7 +221,9 @@ pack_units <- function(units, max_tokens, overlap_tokens = 0L, min_tokens = 0L,
   # place with full confidence. If the rows and the chunks ever disagree, drop
   # the provenance rather than emit a plausible-looking lie.
   if (!is.null(meta_out) && nrow(meta_out) != length(out)) meta_out <- NULL
-  list(text = out, meta = meta_out)
+  span <- data.frame(first = vapply(out_span, `[`, integer(1), 1L),
+                     last = vapply(out_span, `[`, integer(1), 2L))
+  list(text = out, meta = meta_out, span = span)
 }
 
 #' Provenance for a chunk built from units `from:to`.

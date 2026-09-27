@@ -80,7 +80,10 @@ easy calls, not yet trustworthy alone on the hard ones.
 
 A document that could not be read at all gets \code{status = "failed"} and no
 decision. It is not excluded, and it is not silently absent: it is an
-outstanding job. A review whose denominator is unknown is not a review.
+outstanding job. A review whose denominator is unknown is not a review. The
+same goes for a document whose screening request failed, or whose reply was
+not the JSON asked for: no model judged it, so it is not "unclear" either.
+\code{error} says what happened, and with a \code{store} the next run screens it again.
 }
 
 \section{Reporting it}{

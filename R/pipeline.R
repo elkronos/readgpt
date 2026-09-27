@@ -58,8 +58,11 @@ print.gr_recipe <- function(x, ...) {
   cat(sprintf("  segment : %s (max %d tok, overlap %d, min %d)\n",
               x$segment$method, x$segment$max_tokens, x$segment$overlap_tokens,
               x$segment$min_tokens))
+  # A recipe without a model reads with the client's; sprintf() on a NULL
+  # returns nothing, which would drop the whole line.
   cat(sprintf("  read    : %s [%s] model=%s\n", x$read$reader,
-              tryCatch(gr_reader_signature(x$read), error = function(e) "?"), x$read$model))
+              tryCatch(gr_reader_signature(x$read), error = function(e) "?"),
+              x$read$model %||% "(the client's)"))
   invisible(x)
 }
 

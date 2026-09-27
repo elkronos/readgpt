@@ -27,6 +27,7 @@ Imports:
     tools,
     utils
 Suggests:
+    curl,
     ellmer,
     future,
     future.apply,

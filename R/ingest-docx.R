@@ -70,19 +70,29 @@ docx_symbol <- function(font, code) {
 }
 
 #' The text of a paragraph as it reads: runs in order, a tab or a line break as
-#' a space, a non-breaking hyphen as a hyphen, a symbol as its character. Text
-#' in a text box belongs to the box, which is read on its own, and text a
-#' tracked change moved away is read where it was moved to.
+#' a space, a non-breaking hyphen as a hyphen, a symbol as its character, and an
+#' equation as a line of text (see `docx_math_text()`). Text in a text box
+#' belongs to the box, which is read on its own, and text a tracked change moved
+#' away is read where it was moved to.
+#'
+#' Equations were not read at all: their text is in the Office Math namespace
+#' (`m:r/m:t`), not in `w:r` runs, so an effect size typed with the equation
+#' editor ("OR = 0.62 (95% CI 0.48 to 0.80)") vanished from the sentence around
+#' it, and a paragraph holding only a display equation vanished whole.
 #'
 #' `depth` is how many text boxes the paragraph sits inside: a run belongs to it
 #' when it sits inside exactly as many, and one inside more is in a text box the
 #' paragraph anchors.
 #' @noRd
 docx_para_text <- function(p, ns, depth = 0L) {
-  bits <- xml2::xml_find_all(p, sprintf(paste0(
-    ".//w:r[count(ancestor::w:txbxContent) = %d and not(ancestor::w:moveFrom)]",
+  if (!"m" %in% names(ns)) ns <- c(ns, m = .gr_math_ns)
+  own <- sprintf("count(ancestor::w:txbxContent) = %d and not(ancestor::w:moveFrom)",
+                 as.integer(depth))
+  # One query, so runs and equations come back in document order.
+  bits <- xml2::xml_find_all(p, paste0(
+    ".//w:r[", own, " and not(ancestor::m:oMath)]",
     "/*[self::w:t or self::w:tab or self::w:br or self::w:cr or self::w:noBreakHyphen ",
-    "or self::w:sym]"), as.integer(depth)), ns)
+    "or self::w:sym] | .//m:oMath[", own, " and not(ancestor::m:oMath)]"), ns)
   if (!length(bits)) return("")
   kind <- xml2::xml_name(bits)
   txt <- rep(" ", length(bits))
@@ -93,7 +103,93 @@ docx_para_text <- function(p, ns, depth = 0L) {
     txt[i] <- docx_symbol(xml2::xml_attr(bits[[i]], "w:font", ns),
                           xml2::xml_attr(bits[[i]], "w:char", ns))
   }
+  for (i in which(kind == "oMath")) {
+    # Two equations of one display block, one after the other, are kept apart.
+    txt[i] <- paste0(if (i > 1L && kind[i - 1L] == "oMath") " ", docx_math_text(bits[[i]], ns))
+  }
   gsub("[ \t]+", " ", paste(txt, collapse = ""))
+}
+
+#' The Office Math namespace, in which Word writes equations.
+#' @noRd
+.gr_math_ns <- "http://schemas.openxmlformats.org/officeDocument/2006/math"
+
+#' An equation as one line of text.
+#'
+#' Its text is read in order, with the structure that decides what the
+#' figures mean written out: a fraction as "num/den", a superscript as "^", a
+#' subscript as "_", a root as "sqrt()", brackets as the brackets it shows, a
+#' matrix as rows in "[...]". Joining the text alone made a fraction 1/2 read
+#' as "12" and a squared term "I2", a number the document never gave. Text a
+#' tracked change deleted, or moved away, is not read. Parts in parentheses are
+#' wrapped when they are more than one number or name, so "(a + b)/2" keeps
+#' its meaning.
+#' @noRd
+docx_math_text <- function(node, ns) {
+  kids <- function(x) {
+    k <- xml2::xml_children(x)
+    nm <- xml2::xml_name(k)
+    k[!grepl("Pr$", nm) & !nm %in% c("del", "moveFrom")]
+  }
+  part <- function(x, name) {
+    k <- xml2::xml_find_first(x, paste0("./m:", name), ns)
+    if (inherits(k, "xml_missing")) "" else rd(k)
+  }
+  wrap <- function(s) {
+    s <- trimws(s)
+    if (!nzchar(s) || grepl("^[[:alnum:].]+$", s) || grepl("^\\(.*\\)$", s)) s
+    else paste0("(", s, ")")
+  }
+  prop <- function(x, path, default) {
+    k <- xml2::xml_find_first(x, path, ns)
+    if (inherits(k, "xml_missing")) return(default)
+    as_chr1(xml2::xml_attr(k, "m:val", ns), default)
+  }
+  script <- function(mark, s) if (nzchar(trimws(s))) paste0(mark, wrap(s)) else ""
+  rd <- function(x) {
+    nm <- xml2::xml_name(x)
+    switch(nm,
+      t = xml2::xml_text(x),
+      tab = , br = , cr = " ",
+      f = {
+        num <- part(x, "num"); den <- part(x, "den")
+        if (identical(prop(x, "./m:fPr/m:type", ""), "noBar")) paste0(wrap(num), ", ", wrap(den))
+        else paste0(wrap(num), "/", wrap(den))
+      },
+      sSup = paste0(part(x, "e"), script("^", part(x, "sup"))),
+      sSub = paste0(part(x, "e"), script("_", part(x, "sub"))),
+      sSubSup = paste0(part(x, "e"), script("_", part(x, "sub")), script("^", part(x, "sup"))),
+      sPre = paste0(script("_", part(x, "sub")), script("^", part(x, "sup")), " ", part(x, "e")),
+      rad = {
+        deg <- trimws(part(x, "deg"))
+        if (nzchar(deg)) paste0("root(", deg, ", ", part(x, "e"), ")")
+        else paste0("sqrt(", part(x, "e"), ")")
+      },
+      d = {
+        es <- vapply(xml2::xml_find_all(x, "./m:e", ns), rd, character(1))
+        paste0(prop(x, "./m:dPr/m:begChr", "("),
+               paste(es, collapse = prop(x, "./m:dPr/m:sepChr", "|")),
+               prop(x, "./m:dPr/m:endChr", ")"))
+      },
+      nary = paste0(prop(x, "./m:naryPr/m:chr", "\u222b"), script("_", part(x, "sub")),
+                    script("^", part(x, "sup")), " ", part(x, "e")),
+      func = {
+        arg <- part(x, "e")
+        paste0(part(x, "fName"), if (!grepl("^[([]", arg)) " ", arg)
+      },
+      # A mean's bar and a hat are combining marks, so "x-bar" is not read as x.
+      bar = paste0(part(x, "e"),
+                   if (identical(prop(x, "./m:barPr/m:pos", "bot"), "top")) "\u0305" else "\u0332"),
+      acc = paste0(part(x, "e"), prop(x, "./m:accPr/m:chr", "\u0302")),
+      limLow = paste0(part(x, "e"), script("_", part(x, "lim"))),
+      limUpp = paste0(part(x, "e"), script("^", part(x, "lim"))),
+      eqArr = paste(vapply(xml2::xml_find_all(x, "./m:e", ns), rd, character(1)), collapse = "; "),
+      m = paste0("[", paste(vapply(xml2::xml_find_all(x, "./m:mr", ns), function(r) {
+        paste(vapply(xml2::xml_find_all(r, "./m:e", ns), rd, character(1)), collapse = ", ")
+      }, character(1)), collapse = "; "), "]"),
+      paste(vapply(kids(x), rd, character(1)), collapse = ""))
+  }
+  trimws(gsub("[ \t]+", " ", rd(node)))
 }
 
 #' Which paragraph styles are headings, by style ID.

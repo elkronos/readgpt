@@ -892,17 +892,26 @@ pdf_outline_titles <- function(path) {
 }
 
 #' The form in which a heading is recognised: case, spacing, leading section
-#' numbers ("2.", "2.1", "IV.") and trailing punctuation ignored.
+#' numbers ("2.", "2.1", "IV.") and letters ("A.", "B.2") and trailing
+#' punctuation ignored.
+#'
+#' Only numbers and roman numerals were stripped, so an IEEE-style subsection
+#' "A. Participants" never matched the bookmark "Participants", while "C."
+#' and "D.", being roman numerals, were stripped, and "C. Outcomes" did: that
+#' one label then covered the rest of the paper, Discussion and Conclusion
+#' included.
 #' @noRd
 heading_key <- function(x) {
-  x <- tolower(gsub("[[:space:]]+", " ", trimws(x)))
-  x <- sub("^(\\d+(\\.\\d+)*\\.?|[ivxlcdm]+\\.)\\s+", "", x, perl = TRUE)
+  x <- lower_text(gsub("[[:space:]]+", " ", trimws(x)))
+  x <- sub("^(\\d+(\\.\\d+)*\\.?|[ivxlcdm]+\\.|[a-z]\\.(\\d+(\\.\\d+)*\\.?)?)\\s+", "", x,
+           perl = TRUE)
   sub("[[:punct:][:space:]]+$", "", x, perl = TRUE)
 }
 
 #' Section names common enough in reports and papers to be recognised as
 #' headings when a PDF has no bookmarks. Only a line that is nothing but one of
-#' these (numbered or not) counts, so body text cannot match.
+#' these (numbered or not) counts, and not one that ends a sentence or carries
+#' on the line above it; see `heading_matcher()` and `pdf_page_blocks()`.
 #' @noRd
 .gr_pdf_headings <- c("abstract", "summary", "executive summary", "introduction",
                       "background", "method", "methods", "materials and methods",
@@ -911,24 +920,61 @@ heading_key <- function(x) {
                       "bibliography", "acknowledgements", "acknowledgments", "appendix")
 
 #' A function that says whether a line is a heading, and if so which.
+#'
+#' A line that ends a sentence or a clause (".", "!", "?", ",", ";") is not a
+#' heading, unless the bookmark it matches ends so too: the last line of a
+#' wrapped paragraph ("findings.") matched the section name once its full stop
+#' was stripped, cut the paragraph in two and relabelled everything after it.
+#'
+#' Small capitals are compared without their spaces: pdftotext sets a small-caps
+#' title's larger first letter apart ("I. I NTRODUCTION", "M ETHODS"), and it
+#' matched neither its bookmark nor the standard name.
 #' @noRd
 heading_matcher <- function(titles = character(0)) {
   keys <- heading_key(titles)
+  squash <- function(k) gsub(" ", "", k, fixed = TRUE)
+  flat <- squash(keys)
+  names_flat <- squash(.gr_pdf_headings)
+  ends <- "[.!?,;]$"
+  title_stops <- grepl(ends, trimws(titles))
+  # Vectorised over lines: a page's lines are asked about at once, so the
+  # lower-casing runs once a page rather than once a line.
   function(line) {
-    t <- trimws(line)
-    if (!nzchar(t)) return(NA_character_)
+    t <- trimws(as.character(line))
+    out <- rep(NA_character_, length(t))
     k <- heading_key(t)
-    if (!nzchar(k)) return(NA_character_)
+    ok <- nzchar(t) & nzchar(k)
     j <- match(k, keys)
-    if (!is.na(j)) return(titles[[j]])
-    if (k %in% .gr_pdf_headings || grepl("^appendix [a-z0-9]{1,3}$", k)) return(t)
-    NA_character_
+    miss <- is.na(j)
+    j[miss] <- match(squash(k[miss]), flat)
+    stops <- grepl(ends, t)
+    hit <- ok & !is.na(j)
+    take <- hit & (!stops | title_stops[j])
+    out[take] <- titles[j[take]]
+    std <- ok & !hit & !stops &
+      (k %in% .gr_pdf_headings | squash(k) %in% names_flat | grepl("^appendix [a-z0-9]{1,3}$", k))
+    out[std] <- t[std]
+    out
   }
 }
 
 #' Paragraph blocks for a document's pages, each with its page and the heading
 #' it falls under. A heading carries over from one page to the next, as it does
 #' for a reader.
+#'
+#' A line is not taken for a heading when it carries on the line above it: a
+#' line starting in lower case below one that does not end a sentence
+#' ("...with earlier" / "findings").
+#'
+#' A word hyphenated across a paragraph break is put back together. The
+#' hyphenation cleaner rejoins "multi-" / "component" within a block, but not
+#' across two, and a word breaks across blocks where a page ends, and where a
+#' column's lines are spaced apart by a footnote or float beside them in the
+#' other column. Two paragraphs of one page, the first ending in a letter and a
+#' hyphen and the second starting in lower case, are one paragraph. Across a
+#' page break only the rest of the word moves back, onto the last line of the
+#' page before, so the rest of the text keeps its page. Left apart, the chunk
+#' held "multi- component", and a quote of the sentence did not check out.
 #' @noRd
 pdf_page_blocks <- function(pages, is_heading) {
   text <- character(0); page <- integer(0); section <- character(0); kind <- character(0)
@@ -942,20 +988,56 @@ pdf_page_blocks <- function(pages, is_heading) {
     invisible(NULL)
   }
   for (i in seq_along(pages)) {
-    buf <- character(0)
-    for (l in pages[[i]]) {
-      h <- is_heading(l)
-      if (is.na(h)) {
-        buf <- c(buf, l)
-        next
-      }
-      add(paragraphs_of(paste(buf, collapse = "\n")), i, "body")
-      buf <- character(0)
-      current <- h
-      add(trimws(l), i, "heading")
+    l <- as.character(pages[[i]])
+    if (!length(l)) next
+    h <- is_heading(l)
+    tl <- trimws(l)
+    prev <- c("", tl[-length(tl)])
+    h[!is.na(h) & nzchar(prev) & grepl("^[[:lower:]]", tl) & !grepl("[.!?:]$", prev)] <- NA
+    from <- 1L
+    for (a in which(!is.na(h))) {
+      if (a > from) add(paragraphs_of(paste(l[from:(a - 1L)], collapse = "\n")), i, "body")
+      current <- h[a]
+      add(tl[a], i, "heading")
+      from <- a + 1L
     }
-    add(paragraphs_of(paste(buf, collapse = "\n")), i, "body")
+    if (from <= length(l)) add(paragraphs_of(paste(l[from:length(l)], collapse = "\n")), i, "body")
   }
-  data.frame(text = text, page = page, section = section, kind = kind,
-             stringsAsFactors = FALSE)
+  out <- data.frame(text = text, page = page, section = section, kind = kind,
+                    stringsAsFactors = FALSE)
+  join_hyphen_breaks(out)
+}
+
+#' Put back words hyphenated across two body blocks; see `pdf_page_blocks()`.
+#' @noRd
+join_hyphen_breaks <- function(b) {
+  n <- nrow(b)
+  if (n < 2L) return(b)
+  txt <- b$text
+  broken <- grepl("\\p{L}[-\u2010\u2011]$", txt, perl = TRUE)
+  starts_low <- grepl("^\\s*\\p{Ll}", txt, perl = TRUE)
+  at <- which(broken[-n] & starts_low[-1L] & b$kind[-n] == "body" & b$kind[-1L] == "body")
+  if (!length(at)) return(b)
+  # On plain vectors: assigning into a data frame's column copies it each time.
+  page <- b$page
+  keep <- rep(TRUE, n)
+  for (k in at) {
+    # A block already emptied into the one before it passes the join on.
+    j <- k
+    while (!keep[j]) j <- j - 1L
+    nxt <- sub("^\\s+", "", txt[k + 1L])
+    if (page[j] == page[k + 1L]) {
+      txt[j] <- paste0(txt[j], "\n", nxt)
+      keep[k + 1L] <- FALSE
+    } else {
+      word <- regmatches(nxt, regexpr("^\\S+", nxt))
+      txt[j] <- paste0(txt[j], "\n", word)
+      rest <- sub("^\\s+", "", substring(nxt, nchar(word) + 1L))
+      if (nzchar(rest)) txt[k + 1L] <- rest else keep[k + 1L] <- FALSE
+    }
+  }
+  b$text <- txt
+  b <- b[keep, , drop = FALSE]
+  rownames(b) <- NULL
+  b
 }

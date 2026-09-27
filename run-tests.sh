@@ -10,15 +10,17 @@
 #   bash run-tests.sh --check      # full R CMD check instead (slower, stricter)
 #   bash run-tests.sh --no-install # skip dependency installation
 #   bash run-tests.sh --yes        # install missing deps without asking
+#   bash run-tests.sh --deps       # list the R packages it needs, then stop
 #
 set -euo pipefail
 
-MODE=test; ASK=1; DO_INSTALL=1
+MODE=test; ASK=1; DO_INSTALL=1; DEPS_ONLY=0
 for a in "$@"; do
   case "$a" in
     --check)      MODE=check ;;
     --no-install) DO_INSTALL=0 ;;
     --yes|-y)     ASK=0 ;;
+    --deps)       DEPS_ONLY=1 ;;
     -h|--help)    sed -n '2,14p' "$0"; exit 0 ;;
     *) echo "Unknown option: $a" >&2; exit 2 ;;
   esac
@@ -53,6 +55,25 @@ echo "R:       $(Rscript -e 'cat(R.version.string)')"
 # R >= 4.1 is required (the package uses the native |> era baseline).
 Rscript -e 'if (getRversion() < "4.1.0") { cat("ERROR: readgpt needs R >= 4.1.0; you have", as.character(getRversion()), "\n"); quit(status = 1) }'
 
+# --- what it needs ---------------------------------------------------------
+# Everything the package imports, read from DESCRIPTION so the list cannot fall
+# behind it: a hand-kept list left out digest, and on a fresh library the
+# script said "Deps: ok" and then failed at R CMD INSTALL. Plus testthat and
+# withr for the suite, and for --check knitr and rmarkdown, because R CMD build
+# rebuilds the vignettes. The rest of Suggests gates optional features (PDF,
+# OCR, HTML, parallelism) that the tests skip.
+REQUIRED=$(Rscript -e '
+  a <- commandArgs(TRUE)
+  f <- read.dcf(file.path(a[1], "DESCRIPTION"), fields = c("Depends", "Imports"))
+  x <- trimws(sub("[(].*", "", unlist(strsplit(paste(f[!is.na(f)], collapse = ","), ","))))
+  x <- setdiff(x[nzchar(x)], c("R", rownames(installed.packages(priority = "base"))))
+  x <- unique(c(x, "testthat", "withr", if (identical(a[2], "check")) c("knitr", "rmarkdown")))
+  cat(paste(deparse(x, width.cutoff = 500L), collapse = ""))' "$PKG" "$MODE")
+if [ "$DEPS_ONLY" -eq 1 ]; then
+  echo "Required: $(Rscript -e "cat($REQUIRED)")"
+  exit 0
+fi
+
 # --- a writable library ----------------------------------------------------
 # On macOS the system library often is not writable, which is the single most
 # common reason `R CMD INSTALL` fails here. Use a personal library instead.
@@ -66,9 +87,6 @@ echo "Library: $LIB"
 export R_LIBS_USER="$LIB"
 
 # --- dependencies ----------------------------------------------------------
-# Only these four are needed to run the suite. Everything else in Suggests
-# gates optional features (PDF, OCR, HTML, parallelism) that the tests skip.
-REQUIRED='c("testthat", "withr", "jsonlite", "httr")'
 MISSING=$(Rscript -e "cat(paste(setdiff($REQUIRED, rownames(installed.packages())), collapse=' '))")
 
 if [ -n "$MISSING" ]; then
@@ -92,6 +110,14 @@ if [ -n "$MISSING" ]; then
   fi
 fi
 echo "Deps:    ok"
+
+# R CMD build runs the vignettes through pandoc, which is not an R package and
+# so cannot be installed from here. Say so now rather than after the install.
+if [ "$MODE" = "check" ] && ! Rscript -e 'quit(status = if (isTRUE(rmarkdown::pandoc_available())) 0 else 1)' >/dev/null 2>&1; then
+  echo "ERROR: --check builds the vignettes, which needs pandoc, and none was found." >&2
+  echo "       Install it (https://pandoc.org/installing.html) and re-run." >&2
+  exit 1
+fi
 
 # --- install the package ---------------------------------------------------
 echo

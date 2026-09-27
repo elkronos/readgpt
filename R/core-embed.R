@@ -35,13 +35,28 @@
 #'   is marked `recovered = TRUE` in the trace's `errors`: the text was still
 #'   embedded, on word overlap, so nothing was left unread.
 #' @param embedder A registered embedder name (see [gr_embedders()]), or a
-#'   function of `(texts, params)`. Defaults to the embed function supplied with
-#'   the client, if any, and otherwise to `gr_options("embedder")`.
+#'   function of `(texts, params)`. When it is `NULL` the first of these is
+#'   used: `gr_options("embedder")` when it names one, then the embed function
+#'   supplied with the client (a [gr_mock_client()]'s `embed_handler`, or the
+#'   `embed` given to [gr_backend_client()] or [gr_ellmer_client()]), then the
+#'   built-in `"api"`. So an embedder named in [gr_options()] wins over the
+#'   client's own embed function.
 #' @param fallback What to do when the embedding request fails. **Defaults to
 #'   `"lexical"`**: hashed bag-of-words vectors that measure word overlap, not
 #'   meaning, so `semantic` segmentation and `retrieve` ranking become markedly
 #'   less accurate. The substitution warns and is recorded, but the run
 #'   continues. Use `"error"` to fail fast, or `"none"` to get an empty matrix.
+#'   An embedder fails when it raises, or returns the wrong number of rows,
+#'   vectors with no dimensions, or missing or non-finite values. The built-in
+#'   `"api"` embedder also fails on a reply that leaves a text without a usable
+#'   vector (missing, empty or all zeros), gives vectors of different lengths,
+#'   or labels them with `index` fields that are not one for each text sent
+#'   (vectors are matched to texts by `index` when the reply gives it). It
+#'   retries a rate limit (HTTP 429), a server error or a dropped connection up
+#'   to the client's `max_retries`, as [gr_call()] does, and the warning names
+#'   the HTTP status and the provider's message. A refused key (HTTP 401 or
+#'   403) is a failure like the others rather than a stop, since a key can be
+#'   allowed to chat and not to embed; a missing key stops the run.
 #' @return A numeric matrix, one row per input, carrying an `"embedding_source"`
 #'   attribute naming the embedder that produced it (`"api"` or `"lexical"` for
 #'   the built-ins). Always check it before treating the rows as semantic.
@@ -118,13 +133,18 @@ gr_embed <- function(client, texts, model = NULL, batch_size = 64L, cache = NULL
                 recorded, emb$name)
       else sprintf("'%s' is not deterministic, so re-running it need not give the same vectors",
                    emb$name)
+      # Noted on the client, so a miss this causes says so: the prompts built
+      # from these vectors are not the recorded ones, and a bare "the replay
+      # has diverged" sent people looking for a different document or question.
+      if (is.environment(client$.idx)) client$.idx$embed_degraded <- TRUE
       return(degrade(paste0(
         "Replaying a run cannot reproduce its embeddings: ", why, ". A trace records ",
         "embeddings requests, not the vectors they returned. Falling back to hashed lexical ",
-        "vectors, so chunk ranking may differ from the original run even though every ",
-        "recorded answer is reproduced exactly. Record the run with a deterministic embedder ",
-        "(gr_options(embedder = 'lexical'), or one registered with ",
-        "gr_register_embedder(deterministic = TRUE)) and replay it with the same one, ",
+        "vectors, which place semantic cuts and rank chunks differently from the original run, ",
+        "so the replay can send prompts the recording does not hold (a gr_replay_miss, or ",
+        "failed calls with strict = FALSE) and not give the recorded answer. Record the run ",
+        "with a deterministic embedder (gr_options(embedder = 'lexical'), or one registered ",
+        "with gr_register_embedder(deterministic = TRUE)) and replay it with the same one, ",
         "and the replay is exact."),
         "gr_replay_no_embeddings"))
     }
@@ -155,6 +175,12 @@ gr_embed <- function(client, texts, model = NULL, batch_size = 64L, cache = NULL
          else if (!is.numeric(m)) "it did not return a numeric matrix"
          else if (NROW(m) != length(texts))
            sprintf("it returned %d row(s) for %d text(s)", NROW(m), length(texts))
+         # Vectors with no dimensions, or with holes, rank nothing: every
+         # cosine came out 0 (or NA), and a reader took the first chunk as the
+         # best one while the matrix passed for a good one.
+         else if (length(m) == 0L || (is.matrix(m) && ncol(m) == 0L))
+           "it returned vectors with no dimensions"
+         else if (!all(is.finite(m))) "it returned missing or non-finite values"
          else NULL
   if (is.null(bad)) return(finish_embedding(m, emb$name, trace, length(texts)))
 
@@ -218,36 +244,139 @@ embed_api <- function(texts, params) {
                            else "gr_call_cap", "gr_embed_error"))
       }
       started <- Sys.time()
-      resp <- tryCatch(
-        httr::POST(paste0(client$base_url, "/embeddings"),
-                   httr::content_type_json(),
-                   httr::add_headers(.headers = headers),
-                   httr::timeout(client$timeout),
-                   body = body, encode = "json"),
-        error = function(e) e)
+      resp <- embed_post(client, paste0(client$base_url, "/embeddings"), headers, body)
       parsed <- if (inherits(resp, "condition") || httr::status_code(resp) >= 300) NULL else
         tryCatch(httr::content(resp, as = "parsed", type = "application/json"),
                  error = function(e) NULL)
-      embed_record(trace, model, texts_b, resp, parsed,
+      got <- embed_vectors(parsed, length(idx))
+      problem <- if (is.null(parsed)) embed_http_problem(resp) else got$problem
+      embed_record(trace, model, texts_b, resp, parsed, problem,
                    seconds = as.numeric(difftime(Sys.time(), started, units = "secs")))
-      if (is.null(parsed$data)) {
-        gr_abort(sprintf("the request to '%s' did not return embeddings", model),
+      if (!is.null(problem)) {
+        gr_abort(sprintf("the request to '%s' failed: %s", model, problem),
                  class = "gr_embed_error")
       }
       for (j in seq_along(idx)) {
-        v <- as.numeric(unlist(parsed$data[[j]]$embedding))
-        n <- sqrt(sum(v^2)); if (n > 0) v <- v / n
+        v <- got$vectors[[j]]
+        v <- v / sqrt(sum(v^2))
         out[[idx[j]]] <- v
         if (cache) gr_state$embed_cache[[keys[idx[j]]]] <- v
       }
     }
   }
-  d <- max(vapply(out, function(v) length(v %||% numeric(0)), integer(1)))
-  t(vapply(out, function(v) {
-    v <- as.numeric(v %||% numeric(0))
-    if (length(v) < d) v <- c(v, rep(0, d - length(v)))
-    v[seq_len(d)]
-  }, numeric(d), USE.NAMES = FALSE))
+  # One vector space. Rows of different lengths (a cached vector from before
+  # the endpoint changed its model, say) used to be padded with zeros to the
+  # longest and ranked against each other, which means nothing.
+  d <- unique(lengths(out))
+  if (length(d) != 1L) {
+    gr_abort(sprintf("the embeddings for '%s' have different lengths (%s)", model,
+                     paste(sort(d), collapse = ", ")),
+             class = "gr_embed_error")
+  }
+  matrix(unlist(out, use.names = FALSE), nrow = length(out), byrow = TRUE)
+}
+
+#' POST one embeddings request, retrying a transient failure as gr_call() does.
+#'
+#' It used to be one attempt: a single 429 on any batch of a long document sent
+#' every row of the matrix to the lexical fallback, although the client's
+#' `max_retries` promised otherwise, and the next call, made a moment later,
+#' got real vectors. The statuses retried, the backoff and a server's
+#' Retry-After are http_call()'s. Returns the last response, or the transport
+#' error once the retries are spent.
+#' @noRd
+embed_post <- function(client, url, headers, body) {
+  retries <- as_int1(client$max_retries, 0L)
+  attempt <- 0L
+  repeat {
+    attempt <- attempt + 1L
+    resp <- tryCatch(
+      httr::POST(url,
+                 httr::content_type_json(),
+                 httr::add_headers(.headers = headers),
+                 httr::timeout(client$timeout),
+                 body = body, encode = "json"),
+      error = function(e) e)
+    if (inherits(resp, "condition")) {
+      if (attempt > retries) return(resp)
+      Sys.sleep(backoff_delay(as_num1(client$retry_pause_base, 0), attempt))
+      next
+    }
+    status <- httr::status_code(resp)
+    if (!(status %in% .retryable_status) || attempt > retries) return(resp)
+    wait <- retry_after(resp) %||% backoff_delay(as_num1(client$retry_pause_base, 0), attempt)
+    gr_msg(sprintf("Embeddings request: HTTP %d; retrying in %.1fs (attempt %d/%d).",
+                   status, wait, attempt, retries + 1L))
+    Sys.sleep(wait)
+  }
+}
+
+#' Why an embeddings request that got no usable body failed: the transport
+#' error, or the HTTP status with the provider's own message, so a rate limit,
+#' a bad request and a bad key no longer read alike.
+#' @noRd
+embed_http_problem <- function(resp) {
+  if (inherits(resp, "condition")) return(paste0("Transport error: ", conditionMessage(resp)))
+  status <- as_int1(httr::status_code(resp), NA_integer_)
+  if (is.na(status) || status < 300L) return("the response was not readable JSON")
+  body <- tryCatch(httr::content(resp, as = "text", encoding = "UTF-8"), error = function(e) "")
+  msg <- tryCatch({
+    js <- jsonlite::parse_json(body)
+    err <- if (is.list(js)) js[["error"]] else NULL
+    if (is.list(err)) as_chr1(err[["message"]], "") else as_chr1(err, "")
+  }, error = function(e) "")
+  if (!nzchar(msg)) msg <- trimws(substr(as_chr1(body, ""), 1, 300))
+  if (nzchar(msg)) sprintf("HTTP %d: %s", status, msg) else sprintf("HTTP %d", status)
+}
+
+#' The vectors in an embeddings response, in the order of the texts sent, or
+#' why the response cannot be used.
+#'
+#' Checked rather than trusted. Each element was taken to be the text at its
+#' position, but the API says which text a vector is for in its `index`, and
+#' a gateway that gathers a batch out of order gave every text another text's
+#' vector with nothing to show for it. An element with no embedding (`null`,
+#' `[]`) became an empty vector, padded with zeros: a whole batch of them made
+#' an n x 0 matrix that gr_embed() returned as good "api" vectors, and one of
+#' them made a text no query could ever reach. Either is a failed request now,
+#' and gr_embed()'s `fallback` decides what happens next.
+#' @return `list(vectors =)` or `list(problem =)`.
+#' @noRd
+embed_vectors <- function(parsed, n) {
+  data <- if (is.list(parsed)) parsed[["data"]] else NULL
+  if (!is.list(data) || !length(data)) return(list(problem = "the response held no embeddings"))
+  if (length(data) != n) {
+    return(list(problem = sprintf("the response held %d embedding(s) for %d text(s)",
+                                  length(data), n)))
+  }
+  index <- lapply(data, function(el) if (is.list(el)) el[["index"]] else NULL)
+  given <- !vapply(index, is.null, logical(1))
+  if (any(given)) {
+    pos <- vapply(index, function(i) as_num1(i, NA_real_), numeric(1))
+    if (!all(given) || anyNA(pos) || !setequal(pos, seq_len(n) - 1L) || anyDuplicated(pos)) {
+      return(list(problem = sprintf(paste0("the response's `index` fields are not the numbers ",
+                                           "0 to %d, one for each text sent"), n - 1L)))
+    }
+    data <- data[order(pos)]
+  }
+  vectors <- lapply(data, function(el) {
+    e <- if (is.list(el)) el[["embedding"]] else NULL
+    v <- unlist(e, use.names = FALSE)
+    # A null inside the array is dropped by unlist(), so the lengths disagree.
+    if (!is.numeric(v) || length(v) != length(e)) numeric(0) else as.numeric(v)
+  })
+  len <- lengths(vectors)
+  bad <- len == 0L | !vapply(vectors, function(v) all(is.finite(v)) && any(v != 0), logical(1))
+  if (any(bad)) {
+    return(list(problem = sprintf(paste0("the response held no usable embedding (missing, empty, ",
+                                         "non-numeric or all zeros) for %d of %d text(s)"),
+                                  sum(bad), n)))
+  }
+  if (length(unique(len)) != 1L) {
+    return(list(problem = sprintf("the response held embeddings of different lengths (%s)",
+                                  paste(sort(unique(len)), collapse = ", "))))
+  }
+  list(vectors = vectors)
 }
 
 #' Record one embeddings request in the trace, priced like a model call.
@@ -260,21 +389,25 @@ embed_api <- function(texts, params) {
 #' recorded as failed with no tokens, as http_call() records one; gr_embed()
 #' marks it recovered when its fallback replaces it.
 #' @noRd
-embed_record <- function(trace, model, texts, resp, parsed, seconds = NA_real_) {
+embed_record <- function(trace, model, texts, resp, parsed, problem = NULL, seconds = NA_real_) {
   if (!inherits(trace, "gr_trace")) return(invisible(NULL))
+  status <- if (inherits(resp, "condition")) 0L
+            else if (inherits(resp, "response")) as_int1(httr::status_code(resp), NA_integer_)
+            else NA_integer_
   res <- if (is.list(parsed) && !is.null(parsed[["data"]])) {
     ug <- if (is.list(parsed[["usage"]])) parsed[["usage"]] else list()
-    gr_result(TRUE, model = model,
-              usage = settle_usage(list(input = ug[["prompt_tokens"]] %||% ug[["input_tokens"]],
-                                        output = 0L),
-                                   sum(gr_count_tokens(texts)), ""))
+    usage <- settle_usage(list(input = ug[["prompt_tokens"]] %||% ug[["input_tokens"]],
+                               output = 0L),
+                          sum(gr_count_tokens(texts)), "")
+    # A reply that held embeddings the checks refused was still answered, and
+    # billed, so its tokens stay on the step; only its vectors are unusable.
+    if (is.null(problem)) gr_result(TRUE, model = model, usage = usage)
+    else gr_result(FALSE, model = model, status = status, usage = usage,
+                   error = sprintf("Embeddings request to '%s' failed: %s", model, problem))
   } else {
-    status <- if (inherits(resp, "condition")) 0L else as_int1(httr::status_code(resp), NA_integer_)
     gr_result(FALSE, model = model, status = status, error = sprintf(
       "Embeddings request to '%s' failed: %s", model,
-      if (inherits(resp, "condition")) conditionMessage(resp)
-      else if (!is.na(status) && status >= 300L) sprintf("HTTP %d", status)
-      else "the response held no embeddings"))
+      problem %||% embed_http_problem(resp)))
   }
   trace_record(trace, "embed.request", list(), res,
                params = list(model = model, texts = length(texts)), seconds = seconds,
@@ -288,7 +421,7 @@ embed_cap_message <- function(trace, i, n) {
   if (identical(cap_name(trace), "spending limit")) {
     sprintf(paste0("the run has spent $%s, which reaches the $%s spending limit, so %s was ",
                    "not sent; raise gr_options(max_cost_usd =)"),
-            fmt_usd(trace$spent_usd), format(gr_options("max_cost_usd"), scientific = FALSE), what)
+            fmt_usd(budget_spent(trace)), format(gr_options("max_cost_usd"), scientific = FALSE), what)
   } else {
     sprintf("%s would pass the run's %s-call cap, so it was not sent; raise gr_options(max_calls =)",
             what, format(gr_options("max_calls"), scientific = FALSE))
@@ -395,10 +528,11 @@ bm25_scores <- function(docs, query, k1 = 1.5, b = 0.75) {
 #' matches ASCII only, so the old `[^[:alnum:][:space:]]` blanked every letter
 #' outside A-Z: a Russian, Greek, Arabic or Chinese document had no terms at
 #' all, BM25 scored every chunk 0 and lexical vectors were all zero, so rerank
-#' and retrieve picked chunks in document order without saying so, and
-#' "Größe" became "Gr" and "e". `\p{M}` is in the class because Devanagari,
-#' Thai, Arabic and Hebrew write vowels and diacritics as combining marks, and
-#' blanking those broke every word apart. For ASCII text nothing changes.
+#' and retrieve picked chunks in document order without saying so, and the
+#' German word for "size", with its umlaut and sharp s, became "Gr" and "e".
+#' `\p{M}` is in the class because Devanagari, Thai, Arabic and Hebrew write
+#' vowels and diacritics as combining marks, and blanking those broke every
+#' word apart. For ASCII text nothing changes.
 #'
 #' Scripts written without spaces between words (Chinese, Japanese, Thai, Lao,
 #' Khmer, Myanmar) give one "word" per clause, which matches nothing, so a run

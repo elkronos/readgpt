@@ -83,6 +83,9 @@
 #' print(ans$trace)          # calls, tokens, first error
 #' as_json(ans)              # every prompt and response from this one run
 #' ```
+#' An answer taken from a [gr_compare()] carries its own recipe's segmentation
+#' and read only; the comparison's `cmp$trace` has the ingestion and every
+#' recipe.
 #'
 #' @section Extending it:
 #' Each axis is a registry, so additions behave exactly like built-ins:
@@ -143,8 +146,14 @@
 #'   \item{`reader`, `signature`}{Which strategy ran, and its traversal
 #'     signature (see [gr_reader_signature()]).}
 #'   \item{`question`}{The question, as asked.}
-#'   \item{`trace`}{The [gr_trace] for this run. In a [gr_compare()] the trace is
-#'     shared across recipes, so it records every recipe's calls.}
+#'   \item{`trace`}{The [gr_trace] for this run. From [answer_document()] it
+#'     holds the whole run: ingestion, segmentation and the read. **An answer
+#'     taken from a [gr_compare()] holds only its own recipe's segmentation and
+#'     read** (its segmentation requests, which `semantic`, `proposition` and
+#'     `contextual` with `context_source = "llm"` bill, the pre-flight check and
+#'     the reader's requests), because each recipe is counted apart. Ingestion
+#'     and the other recipes are in the comparison's own trace, `cmp$trace`:
+#'     cost or save that one as the record of what the comparison did.}
 #'   \item{`recipe`, `document`, `segmentation`}{Added by [answer_document()] and
 #'     [gr_compare()]: the recipe name, the source and ingestion stats, and the
 #'     chunk statistics the reader saw.}
@@ -153,7 +162,8 @@
 #' @section Methods:
 #' `print()` shows the answer, the calls, tokens and cost, where the evidence
 #' came from, and, when the answer is partial, why; [as_json()] serialises the
-#' answer together with every prompt and response from the same run.
+#' answer together with every prompt and response in its `trace` (for an
+#' answer from [gr_compare()], its recipe's read alone; see `trace` above).
 #' @seealso [answer_document()] and [gr_read()] which return one, [gr_compare()]
 #'   to compare several, [is_not_found()] to test the sentinel, [as_json()],
 #'   [new_answer()] to build one in a custom reader

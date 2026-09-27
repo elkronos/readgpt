@@ -150,10 +150,12 @@ test_that("reworded sentences are told apart by what they say, and traded claims
   expect_match(trade$text, "It replicated, with a 40% fall in deaths [study 3].", fixed = TRUE)
   expect_false(grepl("Lee & Petrov", trade$text, fixed = TRUE))
   # The same trade, word for word: the fabricated sentence is left wherever it
-  # went, the honest one rendered wherever it went.
+  # went, the honest one rendered wherever it went. (A pure trade: leaving a
+  # second "A benefit [study 1]." behind cites study 1 once more than the draft
+  # did, and a pass that does that is now discarded.)
   verbatim <- run(function(d) {
     d <- sub("A benefit [study 1], with a 40% cut in deaths [study 3].",
-             "A benefit [study 1]. SWAP", d, fixed = TRUE)
+             "SWAP", d, fixed = TRUE)
     d <- sub("It replicated [study 3].", "A benefit [study 1], with a 40% cut in deaths [study 3].",
              d, fixed = TRUE)
     sub("SWAP", "It replicated [study 3].", d, fixed = TRUE)

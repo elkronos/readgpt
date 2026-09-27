@@ -68,6 +68,10 @@
 #' Headings go first because they are not claims and an editing pass is meant to
 #' be free to rewrite them -- and because a heading with no terminator glued
 #' itself to the first sentence of its section, which then measured as one unit.
+#'
+#' The ideographic full stop, question and exclamation marks end a sentence as
+#' well, with or without a space after them: Chinese and Japanese put none, so a
+#' whole review came back as one sentence.
 #' @noRd
 split_sentences <- function(txt) {
   txt <- as_chr1(txt)
@@ -77,9 +81,115 @@ split_sentences <- function(txt) {
     txt <- gsub(paste0("\\b", gsub(".", "\\.", a, fixed = TRUE)),
                 gsub(".", "\u0001", a, fixed = TRUE), txt, perl = TRUE)
   }
-  parts <- unlist(strsplit(txt, "(?<=[.!?])\\s+", perl = TRUE), use.names = FALSE)
+  txt <- gsub("([\u3002\uff01\uff1f])(?![[:space:]])", "\\1 ", txt, perl = TRUE)
+  parts <- unlist(strsplit(txt, "(?<=[.!?\u3002\uff01\uff1f])\\s+", perl = TRUE),
+                  use.names = FALSE)
   parts <- trimws(gsub("\u0001", ".", parts, fixed = TRUE))
   parts[nzchar(parts)]
+}
+
+#' Sentences as the guard measures them: a run of citation markers standing on
+#' its own belongs to the sentence before it.
+#'
+#' "... a benefit in every adult. [study 1] [study 2]" splits after the full
+#' stop, and the markers became a "sentence" of their own -- the only claim
+#' sentence, with no words in it -- so the universal in the sentence they cite
+#' was never counted. Moving a marker past the full stop was enough to pass.
+#' @noRd
+measured_sentences <- function(text, word = "study") {
+  parts <- split_sentences(text)
+  if (length(parts) < 2L) return(parts)
+  marker <- cite_grammar(word)$marker
+  bare <- gsub(marker, "", parts, perl = TRUE, ignore.case = TRUE)
+  # \p{L}\p{N} rather than [[:alnum:]], whose reach depends on the locale.
+  alone <- !grepl("[\\p{L}\\p{N}]", bare, perl = TRUE) &
+    grepl(marker, parts, perl = TRUE, ignore.case = TRUE)
+  alone[1] <- FALSE
+  if (!any(alone)) return(parts)
+  unname(vapply(split(parts, cumsum(!alone)), paste, character(1), collapse = " "))
+}
+
+#' Common English words the guard's word lists presuppose.
+#'
+#' Function words, which every English paragraph is full of and no other
+#' language shares often. The short words English has in common with its
+#' neighbours ("a", "in", "no", "on", "to", "is", "was") are kept apart in
+#' `.gr_guard_english_shared`: they count as English against another
+#' language's words, but cannot vouch for accented text on their own, since
+#' "a" is also Czech for "and".
+#' @noRd
+.gr_guard_english <- c("the", "and", "of", "that", "with", "for", "this", "are", "were", "been",
+                       "be", "by", "from", "which", "have", "has", "had", "not", "than", "these",
+                       "those", "their", "its", "it", "they", "there", "also", "more", "into",
+                       "between", "both", "only", "such", "other", "most", "may", "might",
+                       "would", "could", "should", "when", "while", "who", "whether", "however",
+                       "although", "because")
+
+#' @noRd
+.gr_guard_english_shared <- c("a", "an", "in", "on", "to", "is", "was", "as", "at", "or", "no",
+                              "so", "we", "can", "but", "all", "one", "two", "three")
+
+#' Common function words of other languages written in the Latin alphabet.
+#'
+#' French, Spanish, Portuguese, Italian, German, Dutch, the Scandinavian
+#' languages, Czech, Polish, Romanian, Hungarian, Turkish, Indonesian. Words
+#' that are also English, or that lower-case to a common abbreviation in a
+#' clinical review ("il" in IL-6, "los" for length of stay, "von" in von
+#' Willebrand, "de" in de novo), are left out: one of those in an English
+#' draft would count against it.
+#' @noRd
+.gr_guard_foreign <- c(
+  "le", "les", "des", "du", "une", "est", "sont", "dans", "pour", "qui", "que", "avec", "sur",
+  "ont", "aux", "ces", "cette", "\u00e9t\u00e9", "mais", "leur", "leurs", "elle", "ils",
+  "el", "las", "en", "por", "una", "fue", "este", "esta", "pero", "como", "m\u00e1s",
+  "uma", "n\u00e3o", "foi", "pelo", "pela", "dos",
+  "che", "gli", "della", "delle", "sono", "nel", "alla", "anche",
+  "der", "das", "den", "dem", "und", "ist", "sind", "zu", "auf", "f\u00fcr", "nicht", "ein",
+  "eine", "einer", "wurde", "wurden", "bei", "aus", "auch", "sich", "wir", "oder",
+  "het", "een", "zijn", "werd", "niet", "voor", "ook", "bij", "naar",
+  "och", "att", "det", "som", "\u00e4r", "og", "ikke",
+  "je", "\u017ee", "jsou", "byl", "jako", "si\u0119", "nie", "jest", "przez",
+  "\u0219i", "\u00een", "\u00e9s", "egy", "hogy", "nem",
+  "ve", "bir", "i\u00e7in", "olarak",
+  "yang", "dan", "dengan", "untuk", "ini", "dari", "pada", "tidak", "adalah")
+
+#' Whether the escalation guard can read a text at all.
+#'
+#' Its hedges, boosters and universals are English stems. On a French draft
+#' there were no hedges to keep, "demontrent clairement" (demonstrate clearly)
+#' was no booster and "tous les essais" (all the trials) no universal, so every
+#' escalation passed and the revision replaced the draft. A guard that cannot
+#' read the text must not approve a revision of it.
+#'
+#' The test is a count, not language identification: a text is unreadable when
+#' letters outside the Latin alphabet are a large share of it (Chinese,
+#' Russian, Greek, Arabic ...), when common function words of another
+#' language outnumber English ones, when accented letters appear with no
+#' English function word to vouch for the text, or when twenty or more words
+#' include no English function word at all. It can be wrong both ways on a
+#' text of a few words: a short English draft with an accented name is not
+#' revised, which costs the revision and never the draft; and a sentence or
+#' two in a language with no accents and none of the listed words -- short
+#' Indonesian, say -- is read as English, and measured by English words.
+#' @noRd
+guard_reads <- function(text, word = "study") {
+  txt <- gsub(cite_grammar(word)$marker, " ", as_chr1(text), perl = TRUE, ignore.case = TRUE)
+  txt <- gsub("(^|\n)[ \t]*#{1,6}[^\n]*", "\\1", txt, perl = TRUE)
+  # \p{L}, not [[:alpha:]]: under perl = TRUE the POSIX class is ASCII only,
+  # so it could not see the letters this exists to count.
+  n_letters <- nchar(gsub("[^\\p{L}]", "", txt, perl = TRUE))
+  if (!n_letters) return(TRUE)
+  other <- nchar(gsub("[^\\p{L}]|[A-Za-z]", "", txt, perl = TRUE)) / n_letters
+  if (other > 0.3) return(FALSE)
+  low <- lower_text(txt)
+  words <- regmatches(low, gregexpr("\\p{L}+", low, perl = TRUE))[[1]]
+  en <- sum(words %in% .gr_guard_english)
+  en_any <- en + sum(words %in% .gr_guard_english_shared)
+  fo <- sum(words %in% .gr_guard_foreign)
+  if (fo > 0L && fo >= en_any) return(FALSE)
+  if (en == 0L && other > 0.02) return(FALSE)
+  if (en_any == 0L && length(words) >= 20L) return(FALSE)
+  TRUE
 }
 
 #' Words too common to say which sentence a reworded one came from.
@@ -136,7 +246,7 @@ sentence_spans <- function(txt) {
 #' suggest" with neither the hedge nor the universal rule looking at it.
 #' @noRd
 claim_sentences <- function(text, word = "study") {
-  parts <- split_sentences(text)
+  parts <- measured_sentences(text, word)
   if (!length(parts)) return(character(0))
   parts[grepl(cite_grammar(word)$marker, parts, perl = TRUE, ignore.case = TRUE)]
 }
@@ -167,16 +277,21 @@ count_marks <- function(low, pats, prefix = TRUE) {
 #' and restricting the booster check to cited sentences left the one place such a
 #' sentence actually gets written -- uncited framing prose between the claims --
 #' entirely unguarded.
+#'
+#' `universals_all` is the universal count over all prose too, for the
+#' revision that moved words out of the claim sentences; see strength_guard().
 #' @noRd
 claim_strength <- function(text, word = "study") {
-  sents <- split_sentences(text)
-  cited <- claim_sentences(text, word)
-  low_cited <- tolower(paste(cited, collapse = " "))
-  low_all <- tolower(paste(sents, collapse = " "))
+  sents <- measured_sentences(text, word)
+  cited <- sents[grepl(cite_grammar(word)$marker, sents, perl = TRUE, ignore.case = TRUE)]
+  low_cited <- lower_text(paste(cited, collapse = " "))
+  low_all <- lower_text(paste(sents, collapse = " "))
   list(sentences = length(cited),
+       uncited = length(sents) - length(cited),
        hedges = sum(count_marks(low_cited, .gr_hedges)),
        boosters = count_marks(low_all, .gr_boosters),
-       universals = count_marks(low_cited, .gr_universals, prefix = FALSE))
+       universals = count_marks(low_cited, .gr_universals, prefix = FALSE),
+       universals_all = count_marks(low_all, .gr_universals, prefix = FALSE))
 }
 
 #' Refuse a revision that made the review claim more than the draft did.
@@ -198,10 +313,33 @@ claim_strength <- function(text, word = "study") {
 #'     pass that removes the most heavily hedged sentence lowers the rate, and is
 #'     refused. The cost of that is a discarded pass and a warning; the draft
 #'     stands.
+#'
+#' Universals are counted over the claim sentences, so that framing prose can
+#' say "all of which" -- unless the revision has FEWER claim sentences or MORE
+#' uncited ones than the draft. Then a claim may be sitting in uncited prose,
+#' its marker dropped or moved, and universals are counted over everything:
+#' "Participants over 65 had more adverse events [study 1]" came back as "All
+#' patients over 65 always suffer more adverse events", uncited, and no rule
+#' looked at it.
+#'
+#' And a text the guard cannot read (guard_reads()) is refused outright, the
+#' draft or the revision: counting English stems in French finds nothing to
+#' refuse.
 #' @noRd
 strength_guard <- function(before, after, word = "study") {
+  for (t in list(list(before, "draft"), list(after, "revision"))) {
+    if (!guard_reads(t[[1]], word)) {
+      return(list(ok = FALSE, reason = sprintf(
+        "the %s is not in English, and the check against strengthening a claim reads English only",
+        t[[2]])))
+    }
+  }
   b <- claim_strength(before, word)
   a <- claim_strength(after, word)
+  if (a$sentences < b$sentences || a$uncited > b$uncited) {
+    b$universals <- b$universals_all
+    a$universals <- a$universals_all
+  }
   new_u <- names(a$universals)[a$universals > b$universals]
   if (length(new_u)) {
     return(list(ok = FALSE, reason = sprintf(
@@ -224,6 +362,68 @@ strength_guard <- function(before, after, word = "study") {
     }
   }
   list(ok = TRUE, reason = NA_character_)
+}
+
+#' How many times the text cites each study, named by id.
+#'
+#' A range counts once for every id in it, so "[studies 1-3]" and "[study 1]
+#' [study 2] [study 3]" cite the same.
+#' @noRd
+cite_counts <- function(text, word = "study") {
+  txt <- as_chr1(text)
+  hits <- regmatches(txt, gregexpr(cite_grammar(word)$marker, txt, perl = TRUE,
+                                   ignore.case = TRUE))[[1]]
+  # Each distinct marker read once: a review cites the same few studies many times.
+  u <- unique(hits)
+  ids <- unlist(lapply(u, cite_marker_ids, word = word)[match(hits, u)], use.names = FALSE)
+  if (!length(ids)) return(stats::setNames(integer(0), character(0)))
+  tab <- table(as.integer(ids))
+  stats::setNames(as.integer(tab), names(tab))
+}
+
+#' Why a revision moved citations in a way the set comparison cannot see, or NA.
+#'
+#' revise_once() compares the SET of studies cited, which a revision could keep
+#' while doing two things the documentation says discard a pass:
+#'
+#'   * citing a study more often than the draft did. Each extra marker
+#'     attributes one more statement to that study; with the set unchanged,
+#'     "The drug cures the disease [study 1]" could be added to a draft that
+#'     cited study 1 once, for something else.
+#'   * taking the marker off a claim sentence that stays, which is what fewer
+#'     claim sentences alongside more uncited ones means. The claim is then
+#'     the review's own assertion, with the study still cited somewhere else.
+#'     A cut that removes a claim sentence whole is not this: it leaves fewer
+#'     claim sentences and no more uncited ones.
+#'
+#' A citation dropped as a sentence is cut, or merged into its neighbour's, is
+#' allowed: that is what the `cut` pass is for.
+#' @noRd
+citation_shift <- function(before, after, word = "study") {
+  b <- cite_counts(before, word)
+  a <- cite_counts(after, word)
+  was <- b[names(a)]
+  was[is.na(was)] <- 0L
+  more <- names(a)[a > was]
+  if (length(more)) {
+    return(sprintf("the revision cited %s more often than the draft did",
+                   paste(sprintf("study %s (%d times, not %d)", more, a[more], was[more]),
+                         collapse = ", ")))
+  }
+  count <- function(txt) {
+    sents <- measured_sentences(txt, word)
+    cited <- sum(grepl(cite_grammar(word)$marker, sents, perl = TRUE, ignore.case = TRUE))
+    list(sentences = cited, uncited = length(sents) - cited)
+  }
+  sb <- count(before)
+  sa <- count(after)
+  lost <- min(sb$sentences - sa$sentences, sa$uncited - sb$uncited)
+  if (lost > 0L) {
+    return(sprintf(paste0("the revision took the citation off %d claim sentence(s): %d fewer ",
+                          "carry a marker, and %d more carry none"),
+                   lost, sb$sentences - sa$sentences, sa$uncited - sb$uncited))
+  }
+  NA_character_
 }
 
 #' Which passes a `coherence` argument asks for.
@@ -274,8 +474,23 @@ synth_revise <- function(drafted, question, client, spec, trace, style = NULL,
   text <- as_chr1(drafted)
   report <- list()
   steps <- character(0)
+  # Every pass is measured by strength_guard(), whose words are English. On a
+  # draft in another language it could refuse nothing, so a pass that turned
+  # "three small trials suggest" into "trials prove" was kept and published.
+  # Not sent at all, rather than sent and then refused: the call costs money
+  # and its result could not be kept.
+  unread <- length(passes) > 0L && !guard_reads(text)
+  if (unread) {
+    gr_warn(paste0("The revision pass(es) were not run: the check that refuses a revision which ",
+                   "strengthens a claim reads English, and this draft is not in English. The draft ",
+                   "is kept as written."),
+            class = "gr_revision_unguarded")
+  }
   for (pass in passes) {
-    step <- revise_once(text, question, client, spec, trace, style, pass)
+    step <- if (unread) {
+      list(ran = FALSE, kept = FALSE,
+           reason = "the draft is not in English, which the escalation guard reads")
+    } else revise_once(text, question, client, spec, trace, style, pass)
     report[[length(report) + 1L]] <- data.frame(
       pass = pass, ran = isTRUE(step$ran), kept = isTRUE(step$kept),
       # Comma-joined rather than a list column: this frame is printed, written to
@@ -312,7 +527,7 @@ synth_revise <- function(drafted, question, client, spec, trace, style = NULL,
 #' Whether a model reply stopped at its output limit rather than finishing.
 #' @noRd
 reply_cut_off <- function(res) {
-  tolower(as_chr1(res$finish_reason, "")) %in% .gr_cut_off_reasons
+  lower_text(as_chr1(res$finish_reason, "")) %in% .gr_cut_off_reasons
 }
 
 #' @noRd
@@ -400,6 +615,14 @@ revise_once <- function(drafted, question, client, spec, trace, style, pass) {
     gr_warn(sprintf("The '%s' pass was discarded: %s.", pass, reason),
             class = "gr_coherence_rejected")
     return(list(ran = TRUE, kept = FALSE, reason = reason))
+  }
+  # Same studies, cited differently: a marker reused for a new sentence, or
+  # taken off a claim that stays.
+  moved <- citation_shift(drafted, res$text, "study")
+  if (!is.na(moved)) {
+    gr_warn(sprintf("The '%s' pass was discarded: %s.", pass, moved),
+            class = "gr_coherence_rejected")
+    return(list(ran = TRUE, kept = FALSE, reason = moved))
   }
   # The guard the citation check cannot make. Same markers, stronger claim.
   st <- strength_guard(drafted, res$text)

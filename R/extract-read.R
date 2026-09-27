@@ -92,6 +92,24 @@ read_extract <- function(chunks, question, client, spec, trace) {
       quote_backs_value(rec$record[[nm]], ev$text[i], ev$source_text[i], fields[[nm]])
     }, logical(1))
     ev$verified <- ev$verified & backs
+    # A value the adjudicating call judged unsupported -- it chose none of the
+    # values the document gave -- is kept, as the first value, and is not
+    # verified, whatever its quote says. Left verified, the cell read as
+    # settled and fully supported although the one judgement asked of it said
+    # the opposite, and the call it cost bought nothing.
+    rejected <- names(rec$unresolved)[rec$unresolved == "rejected"]
+    ev$verified[as.character(ev$field) %in% rejected] <- FALSE
+  }
+  # Named once, for the row's `warnings`: what resolve = "model" could not
+  # settle, and so kept as with resolve = "first".
+  if (length(rec$unresolved)) {
+    why <- c(rejected = "the adjudicating request chose none of the values",
+             failed = "the adjudicating request failed",
+             limit = "a request limit was reached before it could be made")
+    gr_warn(sprintf("resolve = \"model\" did not settle %s; the first value is kept.",
+                    paste(sprintf("'%s' (%s)", names(rec$unresolved), why[rec$unresolved]),
+                          collapse = ", ")),
+            class = "gr_extract_unresolved")
   }
 
   # A value is SUPPORTED when a span was quoted for it, that span really occurs
@@ -137,18 +155,25 @@ read_extract <- function(chunks, question, client, spec, trace) {
              # paper in a screening run as a broken read. An UNSUPPORTED value is
              # a different matter: something is in the table that nothing in the
              # document backs, and that is exactly what `partial` is for.
-             partial = failed > 0 || any(capped) || length(unsupported) > 0,
+             # A value that could not be read is a field the document may well
+             # report, and nothing in the table says what it was.
+             partial = failed > 0 || any(capped) || length(unsupported) > 0 ||
+               length(rec$unreadable) > 0,
              # With a request failed, an empty field may be in the excerpt that
-             # was never read, so it is unknown rather than not reported.
+             # was never read, so it is unknown rather than not reported. So is
+             # one a chunk gave a value for that could not be read as its type.
              notes = list(chunks = nrow(d), fields = length(fields),
                           filled = length(filled),
                           not_reported = if (failed > 0) character(0)
-                                         else setdiff(names(fields), filled),
-                          unknown = if (failed > 0) setdiff(names(fields), filled)
-                                    else character(0),
+                                         else setdiff(names(fields), c(filled, rec$unreadable)),
+                          unknown = union(rec$unreadable,
+                                          if (failed > 0) setdiff(names(fields), filled)
+                                          else character(0)),
                           unsupported = unsupported,
                           dropped_unverified = if (isTRUE(spec[["require_quote"]]))
                             unsupported else character(0),
+                          unreadable = rec$unreadable,
+                          unresolved = rec$unresolved,
                           conflicts = rec$conflicts, failed_calls = failed,
                           record = record))
 }
@@ -161,10 +186,20 @@ read_extract <- function(chunks, question, client, spec, trace) {
 #' inconsistently. `resolve = "model"` spends one call per conflicted field.
 #' Chunks that agree on a value pool their quotes: the value is cited with the
 #' best one any of them gave (best_supported_hit()).
+#'
+#' Also returns `unreadable`, the fields left empty although some chunk gave a
+#' value that could not be read as the field's type (unreadable_value()), and
+#' `unresolved`, the conflicted fields `resolve = "model"` did not settle,
+#' named by why: "rejected" (the adjudicating call chose none of the values),
+#' "failed" (it failed, or its reply chose nothing it could) or "limit" (a
+#' request limit was reached first, so it was not made). The first value is
+#' kept for each.
 #' @noRd
 reconcile_fields <- function(got, fields, d, client, spec, trace) {
   record <- empty_record(fields)
   conflicts <- list()
+  unreadable <- character(0)
+  unresolved <- character(0)
   ev_chunk <- integer(0); ev_quote <- character(0); ev_field <- character(0)
   resolve <- match.arg(as_chr1(spec[["resolve"]] %||% "first"), c("first", "model"))
   src <- extract_verbatim_source(d)
@@ -179,10 +214,15 @@ reconcile_fields <- function(got, fields, d, client, spec, trace) {
 
   for (nm in names(fields)) {
     hits <- list()
+    odd <- FALSE
     for (g in got) {
       if (!isTRUE(g$ok) || is.null(g$value)) next
-      v <- coerce_field(g$value[[nm]], fields[[nm]])
-      if (is.null(v)) next
+      raw <- g$value[[nm]]
+      v <- coerce_field(raw, fields[[nm]])
+      if (is.null(v)) {
+        odd <- odd || unreadable_value(raw)
+        next
+      }
       q <- as_chr1(g$value[[paste0(nm, "__quote")]], "")
       # What the evidence row will say: the span verifies in the chunk and
       # carries the value (see read_extract()).
@@ -206,12 +246,21 @@ reconcile_fields <- function(got, fields, d, client, spec, trace) {
     # placeholder.
     real <- !vapply(hits, function(h) isTRUE(h$filler), logical(1))
     if (any(real)) hits <- hits[real]
-    if (!length(hits)) next
+    # Empty, although a chunk gave something: "120 (60 per arm)", "unclear" for
+    # a boolean, digits nothing here reads. Recorded as not reported, that was
+    # a finding the document does not support, with nothing marking it.
+    if (!length(hits)) {
+      if (odd) unreadable <- c(unreadable, nm)
+      next
+    }
 
     # value_key(), not format(). format() keeps seven significant digits, so
     # 0.123456789 and 0.123456781 -- or two counts above 2^31 -- were the same
     # value and a real conflict between two parts of one paper was not reported.
-    keys <- vapply(hits, function(h) value_key(h$value), character(1))
+    # By type, so two spellings of one string ("Randomised controlled trial",
+    # "randomised controlled trial.") are one value, not a conflict that
+    # resolve = "model" pays to adjudicate.
+    keys <- vapply(hits, function(h) value_key(h$value, fields[[nm]]$type), character(1))
     # One hit per distinct value, in order of first appearance -- so "first"
     # still means the earliest chunk's VALUE -- but carrying the best quote any
     # chunk gave for it. Taking the first hit's quote made the abstract's
@@ -222,10 +271,16 @@ reconcile_fields <- function(got, fields, d, client, spec, trace) {
     chosen <- reps[[1]]
 
     if (length(reps) > 1L) {
-      conflicts[[nm]] <- unique(keys)
-      if (identical(resolve, "model") && trace_can_call(trace)) {
-        pick <- resolve_conflict(nm, fields[[nm]], reps, client, spec, trace)
-        if (!is.null(pick)) chosen <- pick
+      conflicts[[nm]] <- vapply(reps, function(h) value_key(h$value), character(1))
+      if (identical(resolve, "model")) {
+        # Not trace_can_call(): at the per-document limit it sets the trace's
+        # budget_stop, and gr_read_many() then called a document whose every
+        # chunk had been read "failed ... before the document was read in
+        # full", kept it out of the store and re-read it on every run.
+        pick <- if (extract_can_adjudicate(trace)) {
+          resolve_conflict(nm, fields[[nm]], reps, client, spec, trace)
+        } else "limit"
+        if (is.character(pick)) unresolved[[nm]] <- pick else chosen <- pick
       }
     }
     record[[nm]] <- chosen$value
@@ -239,7 +294,23 @@ reconcile_fields <- function(got, fields, d, client, spec, trace) {
     }
   }
   list(record = record, conflicts = conflicts, evidence_chunk = ev_chunk,
-       evidence_quote = ev_quote, evidence_field = ev_field)
+       evidence_quote = ev_quote, evidence_field = ev_field,
+       unreadable = unreadable, unresolved = unresolved)
+}
+
+#' Could one more request be made on `trace`?
+#'
+#' trace_can_call() without its record: that sets `budget_stop` when the
+#' answer is no, which says the read was cut short. An adjudication skipped at
+#' the limit cuts nothing short; every excerpt has been read by then.
+#' @noRd
+extract_can_adjudicate <- function(trace) {
+  if (!inherits(trace, "gr_trace")) return(TRUE)
+  was <- list(stop = trace$budget_stop, why = trace$stop_reason)
+  if (trace_can_call(trace)) return(TRUE)
+  trace$budget_stop <- was$stop
+  trace$stop_reason <- was$why
+  FALSE
 }
 
 #' The pieces of a quotation, in the order they are quoted.
@@ -382,11 +453,9 @@ fold_numerals <- function(s) {
   s <- to_utf8(s)
   # Everything below but the case is a character outside ASCII.
   if (!grepl("[^\\x01-\\x7f]", s, perl = TRUE)) return(tolower(s))
-  # Full-width, Arabic-Indic (both), Devanagari and Bengali digits, then the
-  # full-width and Arabic decimal and thousands separators and percent sign.
-  from <- intToUtf8(c(0xFF10:0xFF19, 0x0660:0x0669, 0x06F0:0x06F9, 0x0966:0x096F,
-                      0x09E6:0x09EF, 0xFF0E, 0xFF0C, 0x066B, 0x066C, 0xFF05))
-  s <- chartr(from, paste0(strrep("0123456789", 5L), ".,.,%"), s)
+  # Digits of other scripts and their separators, as numeric_token() reads
+  # them (.gr_digit_fold).
+  s <- chartr(.gr_digit_fold$from, .gr_digit_fold$to, s)
   sup <- "\u2070\u00b9\u00b2\u00b3\u2074\u2075\u2076\u2077\u2078\u2079\u207a\u207b"
   # A minus sign on the line before a superscript is the exponent's own sign:
   # "10" U+2212 U+00B9 U+2070 is 10^-10.
@@ -1319,10 +1388,21 @@ unmarked_join_ok <- function(a, b, src) {
 #' identical. `%.15g` keeps every digit a value written in a paper can have, so
 #' two such values differ here exactly when they differ on the page; it also
 #' prints a whole number without a decimal point or an exponent.
+#'
+#' With `type = "string"`, the value as a quotation is matched
+#' (normalise_for_match(): case, quote marks, dashes and spaces folded), less
+#' the quote marks around it and the punctuation after it, so two chunks that
+#' write one value two ways do not count as contradicting each other. Nothing
+#' else is folded: "-0.3" and "0.3", or "54%" and "54", stay two values. An
+#' enum value is one of the declared values exactly, so it is compared as it
+#' is.
 #' @noRd
-value_key <- function(v) {
+value_key <- function(v, type = NULL) {
   if (is.numeric(v)) return(sprintf("%.15g", v[1]))
-  as_chr1(v, "")
+  s <- as_chr1(v, "")
+  if (!identical(type, "string")) return(s)
+  s <- sub("[\\s\"'.,;:!?]+$", "", normalise_for_match(s), perl = TRUE)
+  sub("^[\\s\"']+", "", s, perl = TRUE)
 }
 
 #' Mark the errors a trace recorded after the first `before` as recovered.
@@ -1340,6 +1420,11 @@ extract_mark_recovered <- function(trace, before) {
   invisible(NULL)
 }
 
+#' Ask a model which of a conflicted field's values the document supports.
+#'
+#' Returns the hit it chose, or why there is none: "rejected" when it chose
+#' none of them (0), "failed" when the request failed or its reply named no
+#' option.
 #' @noRd
 resolve_conflict <- function(nm, field, hits, client, spec, trace) {
   # value_key(), for the reason reconcile_fields() uses it: format() showed
@@ -1368,11 +1453,17 @@ resolve_conflict <- function(nm, field, hits, client, spec, trace) {
     # every excerpt was still read: the failure is recovered. Counted as a
     # failed read, it made a fully extracted document "failed", unstored and
     # left out of synthesis, and re-read on every run while the call kept
-    # failing. The conflict itself stays in `conflicts`.
+    # failing. The conflict itself stays in `conflicts`, and the field in the
+    # answer's `unresolved` note.
     extract_mark_recovered(trace, before)
-    return(NULL)
+    return("failed")
   }
   # json_field(): `$` let a reply keyed `choices` answer a read of `choice`.
-  i <- as_int1(json_field(out$value, "choice"), 0L)
-  if (i >= 1L && i <= length(hits)) hits[[i]] else NULL
+  # A reply that names no option is no verdict; 0 is one -- that none of the
+  # values is supportable -- and the caller marks the value it keeps
+  # unverified rather than presenting it as settled.
+  i <- as_int1(json_field(out$value, "choice"), NA_integer_)
+  if (is.na(i) || i < 0L || i > length(hits)) return("failed")
+  if (i == 0L) return("rejected")
+  hits[[i]]
 }

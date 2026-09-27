@@ -33,7 +33,8 @@
 #' Register a cleaning step
 #'
 #' @param name Step name.
-#' @param fn Function of `(text, opts)` returning cleaned text.
+#' @param fn Function of `(text, opts)` returning cleaned text. `opts` holds
+#'   what [gr_clean()] was given, and `.blocks`, the whole document's blocks.
 #' @param stage `"early"` (structure-preserving, e.g. boilerplate removal) or
 #'   `"late"` (destructive normalisation, e.g. digit stripping). Early steps
 #'   always run before late steps regardless of the order the user lists them.
@@ -76,6 +77,15 @@ gr_register_cleaner <- function(name, fn, stage = c("early", "late"), descriptio
 #' `default_on` marks the steps the `"standard"` preset runs. Steps are always
 #' applied `"early"` stage first, whatever order you list them in.
 #'
+#' Two steps can only judge by what the document shows them. `hyphenation`
+#' cannot tell a word split at a line end from a compound broken at its own
+#' hyphen ("placebo-" / "controlled"); it keeps the hyphen when the document
+#' writes the compound whole somewhere, and otherwise joins the two halves.
+#' `headers_footers` finds running heads by where they stand on their pages
+#' (a PDF's, form feeds in text, or `.pages` given to [gr_clean()]); without
+#' pages it takes a short line with a letter in it repeated at the edge of its
+#' block, so a label that is a block of its own and recurs can go with them.
+#'
 #' @return A data frame with `name`, `stage`, `scope`, `default_on` and
 #'   `description`.
 #' @seealso [gr_clean()], [gr_register_cleaner()], [gr_ingest_spec()]
@@ -110,7 +120,11 @@ gr_cleaners <- function() {
 #'   `"early"` cleaner runs before every `"late"` one, regardless of the order
 #'   given. This is what stops digit removal from running before the page and
 #'   figure filters that need digits to match.
-#' @param opts Named list passed to every step.
+#' @param opts Named list passed to every step. Each step also finds in it
+#'   `.blocks`, all the blocks as they stand before that step, for a step that
+#'   decides by what the rest of the document says (as `hyphenation` and
+#'   `headers_footers` do); and `.pages`, a page per block, where the caller
+#'   gives one ([gr_ingest()] does).
 #' @return The cleaned character vector, with a `"gr_clean_log"` attribute
 #'   recording characters removed per step.
 #' @export
@@ -157,6 +171,12 @@ gr_clean <- function(text, steps = NULL, opts = list()) {
   sep <- "\n\n"
   for (s in steps) {
     before <- sum(nchar(text))
+    # What a step may know of the rest of the document: the blocks as they
+    # stand (and, from gr_ingest(), their pages in `.pages`), and for a step
+    # applied block by block an environment to keep what it works out from
+    # them in, once for all the blocks.
+    step_opts <- opts
+    step_opts[[".blocks"]] <- text
     if (identical(reg[[s]]$scope %||% "block", "document")) {
       # Decide on the whole document, but report per block, so the caller's
       # block-aligned provenance (page, section, block_id) stays valid. A block
@@ -166,7 +186,7 @@ gr_clean <- function(text, steps = NULL, opts = list()) {
       # bibliography heading and its entries are separate blocks, and a running
       # head only looks like one when you can see the whole document at once.
       joined <- paste(text, collapse = sep)
-      cleaned <- as_chr1(reg[[s]]$fn(joined, opts))
+      cleaned <- as_chr1(reg[[s]]$fn(joined, step_opts))
       mapped <- map_document_step(text, joined, cleaned)
       if (is.null(mapped)) {
         # Re-running a document-level decision on one block cannot repeat it
@@ -176,12 +196,14 @@ gr_clean <- function(text, steps = NULL, opts = list()) {
                                "result could not be matched back to the blocks it came from. It ",
                                "was applied to each block on its own instead."), s),
                 class = "gr_clean_unmapped")
-        mapped <- vapply(text, function(bt) as_chr1(reg[[s]]$fn(bt, opts)), character(1),
+        mapped <- vapply(text, function(bt) as_chr1(reg[[s]]$fn(bt, step_opts)), character(1),
                          USE.NAMES = FALSE)
       }
       text <- mapped
     } else {
-      text <- vapply(text, function(tx) as_chr1(reg[[s]]$fn(tx, opts)), character(1), USE.NAMES = FALSE)
+      step_opts[[".memo"]] <- new.env(parent = emptyenv())
+      text <- vapply(text, function(tx) as_chr1(reg[[s]]$fn(tx, step_opts)), character(1),
+                     USE.NAMES = FALSE)
     }
     log[[s]] <- list(step = s, stage = reg[[s]]$stage, scope = reg[[s]]$scope %||% "block",
                      chars_removed = before - sum(nchar(text)))
@@ -299,22 +321,31 @@ map_document_step <- function(text, joined, cleaned) {
 register_builtin_cleaners <- function() {
 
   gr_register_cleaner("page_numbers", stage = "early", default_on = TRUE,
-    description = "Drop decorated page-number lines ('Page 4', '- 12 -', '[12]', '12.'); bare numbers are kept",
+    description = paste0("Drop decorated page-number lines ('Page 4', '- 12 -', '[12]', and '12.' ",
+                         "unless the line before runs on into it); bare numbers are kept"),
     fn = function(x, o) {
       x <- gsub("(?mi)^[ \t]*(page|p\\.)[ \t]*\\d+[ \t]*(of[ \t]*\\d+)?[ \t]*$", "", x, perl = TRUE)
       # A bare number on its own line is only treated as a page number when it
       # is DECORATED (- 12 -, [12], 12.) . An undecorated number is far more
       # often a table cell, and stripping those silently gutted numeric columns
       # under the default preset.
-      gsub("(?m)^[ \t]*(?:[-\u2013\u2014][ \t]*\\d{1,4}[ \t]*[-\u2013\u2014]|\\[[ \t]*\\d{1,4}[ \t]*\\]|\\d{1,4}[ \t]*\\.)[ \t]*$",
-           "", x, perl = TRUE)
+      x <- gsub("(?m)^[ \t]*(?:[-\u2013\u2014][ \t]*\\d{1,4}[ \t]*[-\u2013\u2014]|\\[[ \t]*\\d{1,4}[ \t]*\\])[ \t]*$",
+                "", x, perl = TRUE)
+      drop_numbered_lines(x)
     })
 
   gr_register_cleaner("captions", stage = "early", default_on = FALSE,
-    description = "Drop figure/table caption lines (OFF by default: destroys table-heavy documents)",
+    description = paste0("Drop figure/table caption lines: 'Table 2.', 'Figure 3:', 'Fig. 3 |', ",
+                         "'Table 2 Baseline ...' or the label alone, not 'Table 2 shows ...' ",
+                         "(OFF by default: a caption can be the only statement of a result)"),
     fn = function(x, o) {
-      gsub("(?mi)^[ \t]*(figure|fig\\.|table|tbl\\.|exhibit|chart)[ \t]*\\d+[.:)]?.*$", "",
-           x, perl = TRUE)
+      # A caption's label is followed by punctuation, a title in capitals, or
+      # nothing. "Table 2 shows that mortality fell ..." is a result stated in
+      # the body, and matching any line that started with the label deleted
+      # it: a whole paragraph of a DOCX, the first line of one in a PDF.
+      gsub(paste0("(?m)^[ \t]*(?i:figure|fig\\.|table|tbl\\.|exhibit|chart)[ \t]*S?\\d+[A-Za-z]?",
+                  "(?:[ \t]*$|[ \t]*[.:|)\u2013\u2014].*$|[ \t]+-[ \t].*$|[ \t]+\\p{Lu}.*$)"),
+           "", x, perl = TRUE)
     })
 
   gr_register_cleaner("urls", stage = "early", default_on = FALSE,
@@ -347,27 +378,27 @@ register_builtin_cleaners <- function() {
 
   gr_register_cleaner("hyphenation", stage = "early", default_on = TRUE,
     description = paste0("Rejoin words split across line breaks by PDF layout ('mito-\\nchondria', ",
-                         "'LIA-\\nBLE' in capitals); number ranges ('18-\\n65') and compounds ",
-                         "('Anglo-\\nSaxon') are left alone"),
-    fn = function(x, o) rejoin_hyphenated(x))
+                         "'LIA-\\nBLE' in capitals); a compound the document writes with its ",
+                         "hyphen elsewhere ('follow-up') keeps it; number ranges ('18-\\n65') ",
+                         "and compounds ('Anglo-\\nSaxon') are left alone"),
+    fn = function(x, o) {
+      rejoin_hyphenated(x, compounds = function() {
+        document_compounds(o[[".blocks", exact = TRUE]] %||% x, o[[".memo", exact = TRUE]])
+      })
+    })
 
   gr_register_cleaner("headers_footers", stage = "early", default_on = FALSE, scope = "document",
-    description = "Drop short lines repeated on many pages (running heads)",
-    fn = function(x, o) {
-      lines <- strsplit(x, "\n", fixed = TRUE)[[1]]
-      if (length(lines) < 8L) return(x)
-      trimmed <- trimws(lines)
-      short <- nchar(trimmed) > 0 & nchar(trimmed) <= as.integer(o$header_max_chars %||% 80L)
-      tab <- table(trimmed[short])
-      thresh <- max(3L, as.integer(o$header_min_repeats %||% 3L))
-      repeated <- names(tab)[tab >= thresh]
-      if (!length(repeated)) return(x)
-      paste(lines[!(trimmed %in% repeated)], collapse = "\n")
-    })
+    description = paste0("Drop running heads and feet: short lines repeated at the top or bottom ",
+                         "of many pages, or at the edge of blocks where pages are not known"),
+    fn = function(x, o) drop_running_heads(x, o))
 
   gr_register_cleaner("collapse_whitespace", stage = "late", default_on = TRUE,
     description = "Collapse runs of spaces/tabs and 2+ consecutive blank lines, and trim block edges; preserves paragraph breaks",
     fn = function(x, o) {
+      # A line of no-break or ideographic spaces is a blank line, and becomes
+      # one. Inside a line those spaces are kept: "1<no-break space>200" is one
+      # number, which the quotation check must be able to see.
+      x <- gsub(sprintf("(?m)^[ \t%s]+$", .gr_uspace), "", x, perl = TRUE)
       x <- gsub("[ \t]+", " ", x, perl = TRUE)
       x <- gsub("[ \t]*\n[ \t]*", "\n", x, perl = TRUE)
       x <- gsub("\n{3,}", "\n\n", x, perl = TRUE)
@@ -385,11 +416,17 @@ register_builtin_cleaners <- function() {
     })
 
   gr_register_cleaner("ligatures", stage = "late", default_on = TRUE,
-    description = "Expand typographic ligatures and normalise smart quotes/dashes",
+    description = "Expand typographic ligatures and straighten smart quotes; en and em dashes are kept",
     fn = function(x, o) {
+      # The en and em dash stay as they are. Written as "-" and "--" they no
+      # longer matched a quotation that kept the source's dash, which the
+      # check folds to one hyphen ("effects<em dash>though" against
+      # "effects--though"); and "cohort-482 participants in all-was" read as
+      # compounds and a minus sign to the check's word and number boundaries,
+      # which know the dashes themselves for punctuation.
       from <- c("\ufb00", "\ufb01", "\ufb02", "\ufb03", "\ufb04",
-                "\u201c", "\u201d", "\u2018", "\u2019", "\u2013", "\u2014", "\u2026")
-      to   <- c("ff", "fi", "fl", "ffi", "ffl", "\"", "\"", "'", "'", "-", "--", "...")
+                "\u201c", "\u201d", "\u2018", "\u2019", "\u2026")
+      to   <- c("ff", "fi", "fl", "ffi", "ffl", "\"", "\"", "'", "'", "...")
       for (i in seq_along(from)) x <- gsub(from[i], to[i], x, fixed = TRUE)
       x
     })
@@ -413,9 +450,148 @@ register_builtin_cleaners <- function() {
 
   gr_register_cleaner("lowercase", stage = "late", default_on = FALSE,
     description = "Lowercase everything (loses proper-noun and acronym signal)",
-    fn = function(x, o) tolower(x))
+    # lower_text(), not tolower(): in a C locale tolower() lowers A-Z alone, and
+    # the same document came out differently on a different machine.
+    fn = function(x, o) lower_text(x))
 
   invisible(NULL)
+}
+
+#' Drop lines that are a number and a full stop ("12."), as a page number is
+#' set, but not where the line before runs on into it.
+#'
+#' Hard-wrapped text puts the number a sentence ends on alone on its last line
+#' ("the total enrolled was" / "1200.", "shown in Table" / "3."), and dropping
+#' every such line took the value out of the sentence. The line goes when it
+#' opens the block or follows a blank line, or when the line before it ends a
+#' sentence; one that ends mid-sentence (a word, a comma, a colon) is being
+#' continued, and keeps its number.
+#' @noRd
+drop_numbered_lines <- function(x) {
+  if (!grepl("(?m)^[ \t]*\\d{1,4}[ \t]*\\.[ \t]*$", x, perl = TRUE)) return(x)
+  # A trailing "\n" makes strsplit() keep a final empty line, so pasting the
+  # lines back with "\n" gives `x` again exactly.
+  lines <- strsplit(paste0(x, "\n"), "\n", fixed = TRUE)[[1]]
+  hit <- which(grepl("^[ \t]*\\d{1,4}[ \t]*\\.[ \t]*$", lines, perl = TRUE))
+  prev <- c("", lines)[hit]
+  ends <- "[.!?\u3002\uff01\uff1f][\"'\u201d\u2019)\\]]*[ \t]*$"
+  alone <- !has_visible(prev) | grepl(ends, mark_utf8(prev), perl = TRUE)
+  lines[hit[alone]] <- ""
+  paste(lines, collapse = "\n")
+}
+
+#' The compounds a document writes with a hyphen inside a line, lower case,
+#' as "follow-up": each pair of words either side of a hyphen, so
+#' "investigator-blinded-trial" gives "investigator-blinded" and
+#' "blinded-trial". Kept in `memo` (see gr_clean()), so a document's blocks
+#' are read once, not once per block.
+#' @noRd
+document_compounds <- function(texts, memo = NULL) {
+  if (is.environment(memo) && !is.null(memo$compounds)) return(memo$compounds)
+  texts <- mark_utf8(as.character(texts))
+  tok <- unique(unlist(regmatches(texts, gregexpr("\\p{L}+(?:[-\u2010\u2011]\\p{L}+)+", texts,
+                                                  perl = TRUE)), use.names = FALSE))
+  out <- character(0)
+  if (length(tok)) {
+    parts <- strsplit(tok, "[-\u2010\u2011]", perl = TRUE)
+    out <- unlist(lapply(parts, function(p) paste(p[-length(p)], p[-1L], sep = "-")),
+                  use.names = FALSE)
+    out <- unique(lower_text(mark_utf8(out)))
+  }
+  if (is.environment(memo)) memo$compounds <- out
+  out
+}
+
+#' Drop running heads and feet from a document's text: what the
+#' `headers_footers` cleaner does.
+#'
+#' Every short line repeated three times anywhere used to go, which took the
+#' repeated values of a table ("12", "Yes", "NR") with it and left the values
+#' that were not repeated beside the wrong labels. A running head is known by
+#' where it stands, so the lines are put back on their pages -- from `.pages`
+#' (the blocks' pages, which gr_ingest() gives) or form feeds -- and the PDF
+#' reader's own test, drop_running_lines(), picks the lines repeated at the
+#' top or bottom of many pages. Where no pages are known, a line is taken only
+#' when it has a letter in it and stands at the edge of its block (its first
+#' or last line, or the whole block), as a head does in text where pages ran
+#' together. That is a guess: a label repeated as a block of its own is still
+#' taken for one.
+#' @noRd
+drop_running_heads <- function(x, o) {
+  lines <- strsplit(paste0(x, "\n"), "\n", fixed = TRUE)[[1]]
+  if (length(lines) < 8L) return(x)
+  max_chars <- as.integer(o[["header_max_chars", exact = TRUE]] %||% 80L)
+  times <- max(3L, as.integer(o[["header_min_repeats", exact = TRUE]] %||% 3L))
+  page <- line_pages(x, lines, o)
+  drop <- if (!is.null(page)) running_on_pages(lines, page, max_chars, times)
+          else running_at_edges(lines, max_chars, times)
+  if (!any(drop)) return(x)
+  paste(lines[!drop], collapse = "\n")
+}
+
+#' The page of each line of `x`, a document's blocks joined by blank lines, or
+#' NULL when none is known. From `.pages` when those are the blocks' pages and
+#' `x` is their text; otherwise from form feeds, which pdftotext puts between
+#' pages. A line between blocks, or of a block with no page, has none (NA).
+#' @noRd
+line_pages <- function(x, lines, o) {
+  blocks <- o[[".blocks", exact = TRUE]]
+  pages <- o[[".pages", exact = TRUE]]
+  if (!is.null(blocks) && length(pages) == length(blocks) && any(!is.na(pages)) &&
+      identical(paste(blocks, collapse = "\n\n"), x)) {
+    n <- vapply(blocks, function(t) length(strsplit(paste0(t, "\n"), "\n", fixed = TRUE)[[1]]),
+                integer(1), USE.NAMES = FALSE)
+    owner <- rep(rbind(seq_along(blocks), 0L), rbind(n, 1L))
+    owner <- owner[seq_len(length(owner) - 1L)]
+    if (length(owner) == length(lines)) {
+      return(ifelse(owner > 0L, suppressWarnings(as.integer(pages))[pmax(owner, 1L)], NA_integer_))
+    }
+  }
+  ff <- grepl("\f", lines, fixed = TRUE)
+  if (any(ff)) return(cumsum(ff) + 1L)
+  NULL
+}
+
+#' Which lines drop_running_lines() takes for running heads and feet, once the
+#' lines are put on their pages.
+#' @noRd
+running_on_pages <- function(lines, page, max_chars, times) {
+  drop <- logical(length(lines))
+  plain <- gsub("\f", "", lines, fixed = TRUE)
+  on <- !is.na(page)
+  idx <- split(which(on), factor(page[on], levels = unique(page[on])))
+  if (length(idx) < 3L) return(drop)
+  kept <- drop_running_lines(lapply(idx, function(i) plain[i]), min_pages = times,
+                             max_chars = max_chars)
+  for (k in seq_along(idx)) {
+    own <- idx[[k]]
+    keep <- kept[[k]]
+    if (length(keep) == length(own)) next
+    # The page's lines with the running ones taken out, in order: walk both.
+    j <- 1L
+    for (i in seq_along(own)) {
+      if (j <= length(keep) && identical(plain[own[i]], keep[j])) j <- j + 1L
+      else drop[own[i]] <- TRUE
+    }
+  }
+  drop
+}
+
+#' Short lines with a letter in them, repeated `times` times or more, each
+#' time at the edge of its block (the first or last line of it, or the whole
+#' of it): the running heads of text whose pages are not known.
+#' @noRd
+running_at_edges <- function(lines, max_chars, times) {
+  trimmed <- mark_utf8(trimws(lines))
+  text <- has_visible(trimmed)
+  n <- length(lines)
+  edge <- text & (!c(FALSE, text[-n]) | !c(text[-1L], FALSE))
+  cand <- edge & nchar(trimmed) <= max_chars & grepl("\\p{L}", trimmed, perl = TRUE)
+  drop <- logical(n)
+  if (!any(cand)) return(drop)
+  count <- table(trimmed[cand])
+  drop[cand & trimmed %in% names(count)[count >= times]] <- TRUE
+  drop
 }
 
 #' Rejoin words that PDF layout split at a line break with a hyphen.
@@ -457,11 +633,56 @@ register_builtin_cleaners <- function() {
 #' block and slicing it by character position once per pair took time in
 #' proportion to the length times the number of pairs: a 2 MB block in capitals
 #' took a minute.
+#'
+#' Not every hyphen at a line end is the break's. TeX breaks lines after the
+#' hyphen of a compound too ("placebo-" / "controlled", "follow-" / "up"), and
+#' deleting it made words that are not in the document, so a faithful
+#' quotation of "placebo-controlled" did not check out. A split word and a
+#' compound look the same at the break; what tells them apart is the rest of
+#' the document. So a pair the rules above would join keeps its hyphen, on one
+#' line, when the document writes that compound with the hyphen inside a line
+#' somewhere (`compounds`, lower case; see document_compounds()). One it
+#' writes nowhere is still joined: a limitation of the step, which a spec can
+#' avoid by leaving `hyphenation` out of `clean`.
+#'
+#' `compounds` is those compounds, or a function that returns them, called
+#' only when the text has a break to decide; by default, the compounds of `x`
+#' itself.
 #' @noRd
-rejoin_hyphenated <- function(x) {
-  if (length(x) != 1L) return(vapply(x, rejoin_hyphenated, character(1), USE.NAMES = FALSE))
+rejoin_hyphenated <- function(x, compounds = NULL) {
+  if (length(x) != 1L) {
+    return(vapply(x, rejoin_hyphenated, character(1), compounds = compounds, USE.NAMES = FALSE))
+  }
   if (is.na(x)) return(x)
-  x <- gsub("(\\p{L})[-\u2010\u2011][ \t]*\r?\n[ \t]*(\\p{Ll})", "\\1\\2", x, perl = TRUE)
+  own <- x
+  lex <- NULL
+  lexicon <- function() {
+    if (is.null(lex)) {
+      lex <<- if (is.function(compounds)) compounds()
+              else if (is.null(compounds)) document_compounds(own)
+              else compounds
+    }
+    lex
+  }
+  written <- function(left, right) {
+    if (!length(lexicon())) return(rep(FALSE, length(left)))
+    lower_text(mark_utf8(paste(left, right, sep = "-"))) %in% lexicon()
+  }
+  brk <- "(?<=\\p{L})[-\u2010\u2011][ \t]*\r?\n[ \t]*(?=\\p{Ll})"
+  if (grepl(brk, x, perl = TRUE)) {
+    keep <- FALSE
+    if (length(lexicon())) {
+      # Cut at the breaks; each break's words are the letters that end the
+      # piece before it and start the piece after it.
+      pieces <- split_perl(x, brk)
+      k <- length(pieces)
+      left <- regmatches(pieces[-k], regexpr("\\p{L}+$", pieces[-k], perl = TRUE))
+      right <- regmatches(pieces[-1L], regexpr("^\\p{L}+", pieces[-1L], perl = TRUE))
+      if (length(left) == k - 1L && length(right) == k - 1L) keep <- written(left, right)
+    }
+    x <- if (!any(keep)) gsub(brk, "", x, perl = TRUE)
+         else paste0(c(rbind(pieces[-k], ifelse(keep, "-", "")), pieces[k]), collapse = "")
+  }
   if (!grepl("\\p{Lu}[-\u2010\u2011][ \t]*\r?\n[ \t]*\\p{Lu}", x, perl = TRUE)) return(x)
   # A trailing "\n" makes strsplit() keep a final empty line, so pasting the
   # lines back with "\n" gives `x` again exactly.
@@ -483,7 +704,13 @@ rejoin_hyphenated <- function(x) {
     (low_a <= 1L & count(after, "\\p{Lu}") >= 5L)
   j <- i[capitals | (low_b == 0L & low_a == 0L)]
   if (!length(j)) return(x)
-  lines[j] <- sub("[-\u2010\u2011][ \t]*\r?$", "", lines[j], perl = TRUE)
+  tail_word <- sub("[-\u2010\u2011][ \t]*\r?$", "",
+                   substring(lines[j], tail_at[j], tail_at[j] + attr(tail_at, "match.length")[j] - 1L),
+                   perl = TRUE)
+  head_word <- trimws(substring(lines[j + 1L], 1L, attr(head_at, "match.length")[j + 1L]))
+  keep <- written(tail_word, head_word)
+  lines[j] <- ifelse(keep, sub("[ \t]*\r?$", "", lines[j], perl = TRUE),
+                     sub("[-\u2010\u2011][ \t]*\r?$", "", lines[j], perl = TRUE))
   lines[j + 1L] <- sub("^[ \t]+", "", lines[j + 1L], perl = TRUE)
   sep <- rep("\n", n - 1L)
   sep[j] <- ""

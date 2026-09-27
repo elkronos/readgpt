@@ -37,7 +37,8 @@
 #'   about what counts as the primary outcome; it does not decide what is
 #'   collected, because `fields` does that. Defaults to a neutral instruction.
 #' @param recipe The ingest and segmentation to use. The reader is always
-#'   `extract`, whatever the recipe says.
+#'   `extract`, whatever the recipe says, and a `reader =` override in `...`
+#'   is an error.
 #' @param client,store,on_error,max_total_usd,recursive As [gr_read_many()].
 #'   `store` is worth setting for anything longer than a coffee break: an
 #'   interrupted extraction resumes instead of restarting.
@@ -46,7 +47,12 @@
 #'   for the same field. `"first"` (default) takes the earlier one and records
 #'   the disagreement in the `conflicts` column, costing nothing. `"model"`
 #'   spends one extra call per disagreeing field to adjudicate; if that call
-#'   fails, the first value is kept, as with `"first"`.
+#'   fails, or a request limit is reached before it can be made, the first
+#'   value is kept, as with `"first"`, and a warning (in the row's
+#'   `summary$warnings`) names the field. If it chooses none of the values,
+#'   the first value is kept but is not verified, so `n_unverified` counts it
+#'   and `require_quote` drops it. Two spellings of one string (case, quote
+#'   marks, a trailing full stop) are one value, not a disagreement.
 #' @param require_quote Discard any value that is not verified: one with no
 #'   quote, a quote that is not verbatim in the chunk it cited, or a quote that
 #'   does not state the value (see "Verifying it" below). Off by default: an
@@ -139,10 +145,19 @@
 #' None."); otherwise it is the model reporting nothing, and so is not a
 #' value, and a real value from another part of the document replaces it.
 #'
+#' What the check establishes is that the sentence states the number, not that
+#' the number counts what the field describes: "The dose was 240 mg daily."
+#' verifies `n = 240` as readily as "240 patients were randomised." does, and
+#' so does a quotation that joins such a sentence to another with "[...]".
+#' Where that matters, read the `quote` as well as `verified`.
+#'
 #' `n_unverified` counts the cells in that row whose value could not be tied to a
 #' verbatim span, either because no quote was given, or because the quote is
-#' not in the chunk or does not carry the value. That column is the one to look
-#' at before believing a table:
+#' not in the chunk or does not carry the value. It also counts a field left
+#' empty because the value given for it could not be read as the field's type
+#' ("120 (60 per arm)" or "3 million" for an integer, "unclear" for a boolean;
+#' see [gr_field()]): the document may well report it, so it is not listed as
+#' not reported. That column is the one to look at before believing a table:
 #' `n_unverified` of zero means every value in the row can be pointed at in the
 #' document. A row where it is not zero is not wrong, but it is unaudited, and
 #' the answer is marked `partial` to say so. `require_quote = TRUE` turns the
@@ -229,6 +244,14 @@ gr_extract <- function(sources, fields, goal = NULL, recipe = "research",
   # and cut up, and this function is defined by what it does afterwards. Letting
   # a recipe's own reader through would make gr_extract() return an answer
   # object with no record in it, which fails much later and much less clearly.
+  # Nor through `...`: gr_read_many() applies its overrides on top of this
+  # recipe, so `reader = "stuff"` replaced "extract" and every document came
+  # back "ok" with nothing filled, its answer holding no record to read.
+  if ("reader" %in% ...names()) {
+    gr_abort(paste0("gr_extract() always reads with the 'extract' reader, so `reader` cannot ",
+                    "be overridden. Leave it out, or use gr_read_many() for another reader."),
+             class = "gr_bad_override")
+  }
   base <- as_recipe(recipe)
   rd <- unclass(base$read)
   rd$reader <- "extract"
@@ -302,7 +325,8 @@ print.gr_extraction <- function(x, ...) {
   # does not state the value is unverified too (verified = FALSE, match = 1).
   if (unver) {
     cat(sprintf(paste0("  %d value(s) not verified: no quote, a quote not found in the chunk ",
-                       "cited, or one that does not state the value\n"), unver))
+                       "cited, one that does not state the value, or a value that could not ",
+                       "be read as its field's type\n"), unver))
   }
   cnf <- sum(!is.na(tab$conflicts))
   if (cnf) cat(sprintf("  %d document(s) contradicted themselves on at least one field\n", cnf))
@@ -319,7 +343,9 @@ print.gr_extraction <- function(x, ...) {
   }
   cost <- gr_trace_cost(x$trace)
   total <- if (nrow(cost)) sum(cost$usd) else 0
-  cat(sprintf("  this run: %d model call(s), %s\n", x$trace$calls,
+  # format_call_counts(): the trace's `calls` counts embeddings requests too,
+  # and printed them as model calls.
+  cat(sprintf("  this run: %s, %s\n", format_call_counts(x$trace),
               if (!nrow(cost)) "no cost recorded"
               else if (is.na(total)) "cost unknown (unpriced model)"
               else sprintf("$%.4f", total)))
@@ -417,7 +443,10 @@ extraction_table <- function(docs, answers, fields, summary) {
     } else {
       unique(as.character(ev$field[isTRUE_vec(ev$verified)]))
     }
-    length(setdiff(here, supported)) + length(a$notes$dropped_unverified)
+    # And the fields a chunk gave a value for that could not be read as the
+    # field's type: an empty cell, but not one the document is silent about.
+    length(setdiff(here, supported)) + length(a$notes$dropped_unverified) +
+      length(a$notes$unreadable)
   }, integer(1), USE.NAMES = FALSE)
   tab$conflicts <- vapply(docs, function(d) {
     a <- answers[[d]]

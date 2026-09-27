@@ -890,8 +890,10 @@ audit's search section and the bibliographic columns are lost with it. And
 **Extraction gives you a typed table, not prose.** A paragraph about one paper
 cannot be compared with a paragraph about two hundred others; a table can be
 sorted, counted, filtered and published. Each field is filled from every chunk
-and then reconciled. That is free where the chunks agree and costs one call
-where the document contradicts itself, and `conflicts` records that it did.
+and then reconciled, at no cost by default. Where the document contradicts
+itself, `conflicts` names the field and the earliest chunk's value is kept;
+`resolve = "model"` spends one call per disagreeing field to have the model
+choose instead.
 
 `n_unverified` is the column to look at before believing a row: zero means every
 value in it can be pointed at in the document. `extracted$evidence` is the long
@@ -1349,11 +1351,16 @@ segmenter, `max_tokens`, overlap, minimum chunk size, reader (tick several to
 compare), top-k, citations, model, temperature, cost cap. A free "Preview
 chunking" button shows how your settings break the document up before you spend
 anything, and the trace tab shows the trace of the run that produced the answer,
-not a second billed pass.
+not a second billed pass. `extract` and `screen` are not offered: they read
+against a protocol rather than answer a question, so use `gr_extract()` and
+`gr_screen()`. A blank cost cap leaves the R session's
+`gr_options("max_cost_usd")` in force rather than lifting the limit.
 
 Set `GPTREAD_DOC_ROOTS` (colon-separated) to control which folders the app can
 read. **Unset, it defaults to `~/Documents`, falling back to your entire home
-directory**. Set it explicitly before exposing the app to anyone else.
+directory**. Set it explicitly before exposing the app to anyone else. The app
+opens only the files its document menu lists: PDF, Word, text, Markdown, HTML
+and image files under those folders, never hidden files or hidden folders.
 
 ## Optional packages
 
@@ -1380,14 +1387,18 @@ pages empty.
 bash run-tests.sh              # install deps if needed, install, run the suite
 bash run-tests.sh --check      # full R CMD check instead
 bash run-tests.sh --no-install # skip dependency installation
+bash run-tests.sh --deps       # list the R packages it needs, then stop
 ```
 
 Works from the package directory or the repository root. It uses a personal R
 library, so it will not fail on a read-only system library.
 
-Running the suite needs `testthat`, `withr`, `jsonlite` and `httr`, plus
-`knitr` for the vignette check and `future` + `future.apply` for the tests that
-check a parallel run accounts for itself. The rest of `Suggests` gates optional
+Running the suite needs the packages readgpt imports (`digest`, `httr`,
+`jsonlite`) and `testthat` and `withr`; `--check` also needs `knitr`,
+`rmarkdown` and pandoc to build the vignettes. The script installs the R
+packages it finds missing. Add `knitr` for the vignette check and `future` +
+`future.apply` for the tests that check a parallel run accounts for itself,
+which skip without them. The rest of `Suggests` gates optional
 features (PDF, OCR, HTML) that the tests do not exercise. Tests that need an
 absent package skip rather than fail, which is why CI installs the ones above
 explicitly: `parallel = TRUE` once shipped under-reporting every run it sped up,

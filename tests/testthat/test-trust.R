@@ -319,8 +319,10 @@ test_that("a scanned PDF page read without OCR is recorded as unread", {
   expect_warning(doc <- gr_ingest(f), class = "gr_ocr_unavailable")
   expect_identical(doc$stats$unread_pages, 2L)
   expect_identical(names(doc$warnings), "gr_ocr_unavailable")
-  # Declining OCR is a choice, not a loss.
-  expect_length(gr_ingest(f, gr_ingest_spec(ocr = "never"))$stats$unread_pages, 0L)
+  # Declining OCR does not make the page read: under ocr = "never" a page with
+  # no text was not counted, so an answer from a scanned document was not
+  # marked partial (review finding ingest-07).
+  expect_identical(gr_ingest(f, gr_ingest_spec(ocr = "never"))$stats$unread_pages, 2L)
 })
 
 test_that("hierarchical summaries cut to fit make the answer partial", {

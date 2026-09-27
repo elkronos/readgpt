@@ -685,7 +685,11 @@ claims_by_batch <- function() {
 
 test_that("the review stages say when a limit stopped them", {
   local_registries()
-  gr_register_model("claims-small", context_window = 1000, max_output = 500,
+  # 1060, not 1000: the fixture needs exactly two batches. A study block is 28
+  # real tokens and the heuristic once put it at 21 (+3), so at 1000 two
+  # batches fitted only because of that undercount; counted with its line
+  # breaks (review6 tokenize-embed-06) it makes three there.
+  gr_register_model("claims-small", context_window = 1060, max_output = 500,
                     input_usd = 1, output_usd = 10000)
   cl <- claims_by_batch()
   gr_options(max_cost_usd = 0.5)

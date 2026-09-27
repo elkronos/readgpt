@@ -242,18 +242,26 @@ jobs:
             # output is then checked for the sentinels that degradation leaves.
             # Every guide, each in a fresh environment so none can lean on
             # objects another one left behind.
+            #
+            # error = FALSE: knit(), unlike rmarkdown, defaults to error = TRUE,
+            # which writes a chunk error into the output and carries on, so a
+            # vignette whose every chunk failed passed here. Now an error ends
+            # the knit, unless the chunk says error = TRUE to show one on purpose.
             files <- list.files("vignettes", pattern = "[.]Rmd$", full.names = TRUE)
             if (!length(files)) { cat("No vignettes found.\n"); quit(status = 1) }
             failed <- FALSE
             for (f in files) {
-              knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+              knitr::opts_chunk$set(collapse = TRUE, comment = "#>", error = FALSE)
               md <- tempfile(fileext = ".md")
               ok <- tryCatch({ knitr::knit(f, output = md, quiet = TRUE, envir = new.env()); TRUE },
                              error = function(e) { cat(f, "failed:", conditionMessage(e), "\n"); FALSE })
               if (!isTRUE(ok)) { failed <- TRUE; next }
               out <- grep("^#>", readLines(md, warn = FALSE), value = TRUE)
               if (!length(out)) { cat(f, "produced no output at all.\n"); failed <- TRUE; next }
-              bad <- grep("NOT_IN_DOCUMENT|No API key available|Transport error|HTTP [0-9]{3}",
+              # "No API key found" is what a request with no key says now; the
+              # older "No API key available" is kept in case a vignette prints it.
+              bad <- grep(paste0("NOT_IN_DOCUMENT|No API key found|No API key available|",
+                                 "Transport error|HTTP [0-9]{3}"),
                           out, value = TRUE)
               if (length(bad)) {
                 cat(f, "degraded rather than running clean:\n")

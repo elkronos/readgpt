@@ -23,35 +23,173 @@
 #' Normalise text for quotation matching.
 #'
 #' Folds away exactly the differences a model introduces when it quotes
-#' faithfully: whitespace, curly quotes, dashes, and case. Nothing else -- in
-#' particular no stemming and no punctuation stripping, because "revenue fell"
-#' and "revenue fell 12%" must not compare equal.
+#' faithfully: whitespace, curly quotes, dashes, and case, and how a letter is
+#' encoded (compose_marks(), and the full-width forms fold_width() turns into
+#' ASCII). Nothing else -- in particular no stemming and no punctuation
+#' stripping, because "revenue fell" and "revenue fell 12%" must not compare
+#' equal.
 #' @noRd
 normalise_for_match <- function(x) {
-  x <- fold_for_match(to_utf8(as.character(x)))
+  x <- fold_for_match(compose_marks(to_utf8(as.character(x))))
   trimws(gsub("[[:space:]]+", " ", x, perl = TRUE))
 }
 
 #' The character-for-character part of normalise_for_match(): quote marks,
-#' dashes and spaces to their plain forms, and lower case. Each character stays
+#' dashes and spaces to their plain forms, full-width letters, digits and
+#' number signs to ASCII (fold_width()), and lower case. Each character stays
 #' one character, which is what lets the evidence page find a normalised
 #' quotation in the original text (see normalised_with_map()).
 #'
-#' `keep = TRUE` folds only the quote marks, the hyphens and the minus sign,
-#' and keeps case, the en dash, em dash and horizontal bar, and the no-break
-#' and thin spaces as they were: what match_source() hands the boundary test.
+#' Guillemets and the corner brackets of Chinese and Japanese are quote marks,
+#' as curly quotes are: a French or Japanese quotation wrapped in them failed
+#' to verify where the same quotation in English quote marks did. The spaces
+#' that group no digits (the typographic spaces and the ideographic space) are
+#' spaces, which `[[:space:]]` does not match.
+#'
+#' `keep = TRUE` folds only the quote marks, the full-width forms, those
+#' spaces, the hyphens and the minus sign, and keeps case, the en dash, em
+#' dash and horizontal bar, and the no-break and thin spaces as they were:
+#' what match_source() hands the boundary test.
 #' @noRd
 fold_for_match <- function(x, keep = FALSE) {
   # \u escapes, not literals: R CMD check flags non-ASCII bytes in R sources,
   # and a source file whose meaning depends on its own encoding is the bug this
   # package has already been bitten by twice.
-  x <- gsub("[\u2018\u2019\u201a\u201b\u2032]", "'", x, perl = TRUE)
-  x <- gsub("[\u201c\u201d\u201e\u201f\u2033]", '"', x, perl = TRUE)
+  x <- gsub("[\u2018\u2019\u201a\u201b\u2032\u2039\u203a]", "'", x, perl = TRUE)
+  x <- gsub("[\u201c\u201d\u201e\u201f\u2033\u00ab\u00bb\u300c\u300d\u300e\u300f]", '"', x,
+            perl = TRUE)
+  x <- gsub("[\u2000-\u2006\u2008\u200a\u205f\u3000]", " ", x, perl = TRUE)
+  x <- fold_width(x)
   if (keep) return(gsub("[\u2010\u2011\u2012\u2212]", "-", x, perl = TRUE))
   x <- gsub("[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]", "-", x, perl = TRUE)
   x <- gsub("[\u00a0\u2007\u2009\u202f]", " ", x, perl = TRUE)
   fold_case(x)
 }
+
+#' Full-width letters, digits and number signs as the ASCII characters they
+#' are, one for one: a CJK source writes a full-width "120" and a model quotes
+#' it in ASCII digits. The number signs are the quote marks, the per cent and
+#' plus signs, the comma, the hyphen-minus and the full stop, so a full-width
+#' decimal point, thousands separator or minus sign is one to the boundary
+#' test too: "45" is not a whole number in "45.2" written full width. Not the
+#' full-width sentence marks and brackets, which the sentence and aside tests
+#' read as they are (.gr_sentence_stop).
+#' @noRd
+fold_width <- function(x) {
+  hit <- which(!is.na(x) &
+                 grepl("[\uff02\uff05\uff07\uff0b-\uff0e\uff10-\uff19\uff21-\uff3a\uff41-\uff5a]", x,
+                       perl = TRUE))
+  for (i in hit) {
+    cp <- utf8ToInt(x[i])
+    if (anyNA(cp)) next
+    w <- (cp >= 0xFF10L & cp <= 0xFF19L) | (cp >= 0xFF21L & cp <= 0xFF3AL) |
+      (cp >= 0xFF41L & cp <= 0xFF5AL) | (cp >= 0xFF0BL & cp <= 0xFF0EL) |
+      cp == 0xFF02L | cp == 0xFF05L | cp == 0xFF07L
+    cp[w] <- cp[w] - 0xFEE0L
+    x[i] <- intToUtf8(cp)
+  }
+  x
+}
+
+#' Canonical composition, for the letters it is written for.
+#'
+#' A letter and the combining accents after it (NFD, as macOS tools and some
+#' web pages write text) are the same text as the one accented letter (NFC,
+#' as a model writes it), and a quotation of one must verify against the
+#' other. Base R has no Unicode normalisation, so this composes from a table:
+#' the Latin letters .gr_tex_accents lists (the accents of the European
+#' languages and Vietnamese), with the horn of Vietnamese and the comma below
+#' of Romanian; the Cyrillic short i, yo, yi and short u; the Greek vowels
+#' with tonos or dialytika; and Korean jamo into their syllables
+#' (compose_hangul()). Any other decomposed letter is left as it is, so a
+#' quotation that differs from its source only there fails to verify:
+#' reported, never passed.
+#' @noRd
+compose_marks <- function(x) {
+  hit <- which(!is.na(x) & grepl("[\u0300-\u036f\u1100-\u11ff]", x, perl = TRUE))
+  if (!length(hit)) return(x)
+  tab <- compose_table()
+  for (i in hit) {
+    cp <- utf8ToInt(x[i])
+    if (anyNA(cp)) next
+    cp <- compose_hangul(cp)
+    # Accent by accent, from the letter out: a letter carrying two ("a" with
+    # a dot below and a circumflex) takes the first, and what that makes
+    # takes the next.
+    repeat {
+      at <- which(cp >= 0x300L & cp <= 0x36FL)
+      at <- at[at > 1L]
+      if (!length(at)) break
+      k <- match(paste(cp[at - 1L], cp[at]), tab$key)
+      if (all(is.na(k))) break
+      at <- at[!is.na(k)]
+      cp[at - 1L] <- tab$to[k[!is.na(k)]]
+      cp <- cp[-at]
+    }
+    x[i] <- intToUtf8(cp)
+  }
+  x
+}
+
+#' Korean jamo, as code points, composed: a leading consonant and a vowel into
+#' their syllable, and a syllable and a trailing consonant into one, by the
+#' arithmetic Unicode defines for them.
+#' @noRd
+compose_hangul <- function(cp) {
+  n <- length(cp)
+  if (n < 2L || !any(cp >= 0x1100L & cp <= 0x11C2L)) return(cp)
+  lead <- which(cp[-n] >= 0x1100L & cp[-n] <= 0x1112L & cp[-1L] >= 0x1161L & cp[-1L] <= 0x1175L)
+  if (length(lead)) {
+    cp[lead] <- 0xAC00L + ((cp[lead] - 0x1100L) * 21L + (cp[lead + 1L] - 0x1161L)) * 28L
+    cp <- cp[-(lead + 1L)]
+    n <- length(cp)
+  }
+  if (n < 2L) return(cp)
+  tail <- which(cp[-n] >= 0xAC00L & cp[-n] <= 0xD7A3L & (cp[-n] - 0xAC00L) %% 28L == 0L &
+                  cp[-1L] >= 0x11A8L & cp[-1L] <= 0x11C2L)
+  if (length(tail)) {
+    cp[tail] <- cp[tail] + (cp[tail + 1L] - 0x11A7L)
+    cp <- cp[-(tail + 1L)]
+  }
+  cp
+}
+
+#' The compositions compose_marks() makes: `key` is a letter's code point and
+#' an accent's, pasted, and `to` the letter they make. Built on first use,
+#' from .gr_tex_accents (records.R) and the few more listed here.
+#' @noRd
+compose_table <- function() {
+  if (!is.null(.gr_compose_memo$key)) return(.gr_compose_memo)
+  more <- list(
+    list(mark = "\u031b", from = c("o", "u", "O", "U"),
+         to = c("\u01a1", "\u01b0", "\u01a0", "\u01af")),
+    list(mark = "\u0326", from = c("s", "t", "S", "T"),
+         to = c("\u0219", "\u021b", "\u0218", "\u021a")),
+    list(mark = "\u0306", from = c("\u0438", "\u0418", "\u0443", "\u0423"),
+         to = c("\u0439", "\u0419", "\u045e", "\u040e")),
+    list(mark = "\u0308", from = c("\u0435", "\u0415", "\u0456", "\u0406", "\u03b9", "\u03c5",
+                                   "\u0399", "\u03a5"),
+         to = c("\u0451", "\u0401", "\u0457", "\u0407", "\u03ca", "\u03cb", "\u03aa", "\u03ab")),
+    list(mark = "\u0301",
+         from = c("\u03b1", "\u03b5", "\u03b7", "\u03b9", "\u03bf", "\u03c5", "\u03c9",
+                  "\u0391", "\u0395", "\u0397", "\u0399", "\u039f", "\u03a5", "\u03a9",
+                  "\u03ca", "\u03cb"),
+         to = c("\u03ac", "\u03ad", "\u03ae", "\u03af", "\u03cc", "\u03cd", "\u03ce",
+                "\u0386", "\u0388", "\u0389", "\u038a", "\u038c", "\u038e", "\u038f",
+                "\u0390", "\u03b0")))
+  acc <- c(.gr_tex_accents, more)
+  one <- function(ch) vapply(ch, utf8ToInt, integer(1), USE.NAMES = FALSE)
+  key <- unlist(lapply(acc, function(a) paste(one(a$from), utf8ToInt(a$mark))), use.names = FALSE)
+  to <- unlist(lapply(acc, function(a) one(a$to)), use.names = FALSE)
+  keep <- !duplicated(key)
+  .gr_compose_memo$key <- key[keep]
+  .gr_compose_memo$to <- to[keep]
+  .gr_compose_memo
+}
+
+#' Where compose_table() keeps what it builds.
+#' @noRd
+.gr_compose_memo <- new.env(parent = emptyenv())
 
 #' lower_text() of each string, worked out one distinct code point at a time.
 #' The result is the same; the cost is not. `chartr()` and `tolower()` read
@@ -105,7 +243,7 @@ lower_cp <- function(cp) {
 #' read many times (sentence_marks()).
 #' @noRd
 match_source <- function(x) {
-  marks <- fold_for_match(to_utf8(as_chr1(x, "")), keep = TRUE)
+  marks <- fold_for_match(compose_marks(to_utf8(as_chr1(x, ""))), keep = TRUE)
   # One character for every run of spacing, as normalise_for_match() collapses
   # it, except that a lone grouping space stays what it was; then none at
   # either end.
@@ -165,7 +303,10 @@ strip_bold <- function(x, edges = FALSE) {
 #' meaning anything.
 #'
 #' Deliberately narrow: quote marks, ellipses, commas, semicolons, colons, full
-#' stops, dashes and space. Not `%`, not `)`, not any digit -- those carry
+#' stops, dashes and space, and the ideographic full stop and comma and the
+#' full-width colon and semicolon Chinese and Japanese write them with (their
+#' quote marks, the corner brackets, and guillemets are quote marks by now:
+#' fold_for_match()). Not `%`, not `)`, not any digit -- those carry
 #' content, and a quotation that changed one is exactly what this is for. Nor
 #' a lone full stop before a digit: ".45" and ".001" are how APA style writes a
 #' correlation and a p value, and trimmed to "45" and "001" they were numbers
@@ -173,10 +314,11 @@ strip_bold <- function(x, edges = FALSE) {
 #' number's start). An ellipsis before a digit still goes.
 #' @noRd
 trim_quote_edges <- function(x) {
-  edge <- "[\"'\u2026.,;:[:space:]]+"
+  marks <- "\"'\u2026.,;:\u3001\u3002\uff1a\uff1b[:space:]"
+  edge <- paste0("[", marks, "]+")
   strip <- function(s) {
     # A full stop before a digit, not after another stop, opens a decimal.
-    decimal <- grepl("^[\"'\u2026.,;:[:space:]]*(?<![.\u2026])\\.[0-9]", s, perl = TRUE)
+    decimal <- grepl(paste0("^[", marks, "]*(?<![.\u2026])\\.[0-9]"), s, perl = TRUE)
     s <- gsub(paste0("^", edge, "|", edge, "$"), "", s, perl = TRUE)
     s[decimal] <- paste0(".", s[decimal])
     s
@@ -1457,13 +1599,23 @@ cited_chunks <- function(text) cited_ids(text, "chunk")
 #' @section What the numbers mean:
 #' `match` is 1 for an exact quotation once whitespace, quote marks, dashes and
 #' case are folded away. These are the differences a faithful quotation introduces.
+#' Guillemets and the corner brackets of Chinese and Japanese count as quote
+#' marks, a full-width letter, digit or number sign as its ASCII form, the
+#' ideographic space as a space, and a letter written with combining accents
+#' (as macOS tools write text) as the accented letter, for Latin, Greek,
+#' Cyrillic and Korean letters. readgpt does no other Unicode normalisation,
+#' so a quotation that differs from its document only in how some other
+#' letter is encoded is reported unverified, never verified by mistake.
 #' It has to match whole words and whole numbers: "5%" is not found in "25%",
 #' nor "12%" in "-12%", nor "20" in "200", nor "200" in "1 200" written with a
 #' thin space, nor ".45" in "1.45". Chinese, Japanese and Thai put no spaces
 #' between words, so a clause quoted from them may start and end anywhere;
 #' numbers in them are still whole, and a circled list number before one is
-#' not part of it. Markdown bold is not text, in the quotation or the
-#' document.
+#' not part of it. That includes ending inside a word: a quotation that stops
+#' at a verb's stem verifies where the document goes on to a negating ending
+#' written on to it, as an English quotation that stops before "not" does,
+#' with or without a full stop the model added. Markdown bold is not text, in
+#' the quotation or the document.
 #' A span made of several passages (in paragraphs, as a list, in separate
 #' quote marks, or joined by "..." or "\[...\]") is checked passage by passage
 #' and is verified when every passage is found, the parts either side of an
@@ -1621,27 +1773,70 @@ gr_verify_evidence <- function(answer, chunks = NULL) {
 #' left alone: the first hit would be a guess dressed as a fact. So is a span
 #' that cannot be found at all, which is exactly the unverified case, where the
 #' chunk-level fallback is already as much as is known.
+#'
+#' Only quotations are placed, and only as whole words and whole numbers
+#' (found_whole(), as span_match() finds them). A per-chunk answer (`kind`
+#' "answer", what `map_reduce` records) is the model's words, not a sentence
+#' of the document, and a quotation the check did not find in its own chunk
+#' (`verified` FALSE, `match` below 1) is not known to be anywhere: placing
+#' either by where its text happens to occur gave "Yes." from page 3 the page
+#' of "All eyes were on the board" on page 1. A quotation checked against its
+#' chunk is in one of the blocks the chunk was cut from, so when every block
+#' holding it is on one page, that page is the quotation's. The one case that
+#' reasoning misses is a quotation that runs across the join of two blocks in
+#' its chunk and also occurs whole in a block on another page; nothing marks
+#' a chunk's blocks, so that one is placed on the other page.
 #' @noRd
 resolve_evidence_pages <- function(evidence, blocks) {
   if (!is.data.frame(evidence) || !nrow(evidence)) return(evidence)
   if (!is.data.frame(blocks) || !nrow(blocks) || is.null(blocks$page)) return(evidence)
   if (all(is.na(blocks$page))) return(evidence)
+  skip <- rep(FALSE, nrow(evidence))
+  kind <- evidence[["kind"]]
+  if (!is.null(kind)) skip <- skip | as.character(kind) %in% "answer"
+  # Not verified and not in the chunk word for word. An extracted value's
+  # quotation that is there but does not state the value (match 1) is still a
+  # sentence of the document, and its page is still worth giving.
+  verified <- evidence[["verified"]]
+  if (!is.null(verified)) {
+    whole <- suppressWarnings(as.numeric(evidence[["match"]] %||% NA_real_)) %in% 1
+    skip <- skip | (as.logical(verified) %in% FALSE & !whole)
+  }
+  if (all(skip)) return(evidence)
 
-  src <- normalise_for_match(blocks$text)
+  norm <- normalise_for_match(blocks$text)
+  # A block's match_source(), made the first time a span is found in it, and
+  # once for all the blocks with the same text (a running header, a footer).
+  same <- match(norm, norm)
+  src <- vector("list", length(norm))
+  whole_in <- function(s, b) {
+    if (is.null(src[[b]])) src[[b]] <<- match_source(blocks$text[[b]])
+    found_whole(s, src[[b]])
+  }
   page <- blocks$page
   section <- blocks$section
-  for (i in seq_len(nrow(evidence))) {
+  if (!is.null(section) && all(is.na(section))) section <- NULL
+  for (i in which(!skip)) {
     s <- trim_quote_edges(normalise_for_match(evidence$text[[i]]))
     if (!nzchar(s)) next
-    hit <- which(vapply(src, function(b) nzchar(b) && grepl(s, b, fixed = TRUE),
-                        logical(1), USE.NAMES = FALSE))
+    # The substring test first, over every block at once; the boundary test
+    # only where it finds the span.
+    hit <- which(nzchar(norm) & grepl(s, norm, fixed = TRUE))
     if (!length(hit)) next
-    pg <- unique(page[hit][!is.na(page[hit])])
-    if (length(pg) == 1L) evidence$page[[i]] <- pg
-    if (!is.null(section)) {
-      sc <- unique(section[hit][!is.na(section[hit])])
-      if (length(sc) == 1L && is.na(evidence$section[[i]])) evidence$section[[i]] <- sc
+    want_section <- !is.null(section) && !is.null(evidence$section) &&
+      is.na(evidence$section[[i]])
+    pg <- NULL
+    sc <- NULL
+    for (at in split(hit, same[hit])) {
+      if (!whole_in(s, at[1L])) next
+      pg <- unique(c(pg, page[at][!is.na(page[at])]))
+      if (want_section) sc <- unique(c(sc, section[at][!is.na(section[at])]))
+      # Two pages settle the page, and two sections the section: a common
+      # phrase need not be looked for in every block that has it.
+      if (length(pg) > 1L && (!want_section || length(sc) > 1L)) break
     }
+    if (length(pg) == 1L) evidence$page[[i]] <- pg
+    if (length(sc) == 1L) evidence$section[[i]] <- sc
   }
   evidence
 }

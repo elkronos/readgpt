@@ -60,8 +60,12 @@ gr_trace_save <- function(trace, path) {
 #' also the cheapest possible bug report: a trace file is a re-runnable
 #' recording of exactly what went wrong.
 #'
-#' @param source A `gr_trace`, a path to a file written by [gr_trace_save()], or
-#'   an already-parsed list in that shape.
+#' @param source A `gr_trace`; a path to a file written by [gr_trace_save()];
+#'   the JSON text [as_json()] writes for a trace or for an answer (whose trace
+#'   is used); or an already-parsed list in that shape. Parse a file yourself
+#'   with `jsonlite::fromJSON(path, simplifyVector = FALSE)`: the default
+#'   simplification turns the steps into a data frame, which loses what a
+#'   replay needs, and is refused with a message that says so.
 #' @param strict If `TRUE` (default), a prompt with no recorded response raises
 #'   a `gr_replay_miss` error. That is usually what you want: a miss means the
 #'   replay has diverged from the recording, and continuing would produce a
@@ -94,17 +98,35 @@ gr_trace_save <- function(trace, path) {
 #' A trace records each request to an embeddings endpoint (a step labelled
 #' `"embed.request"`, counted in `calls` and priced like any other request),
 #' but not the vectors that came back, so a replay has nothing to answer those
-#' requests with. Whether a replay reproduces a run's chunk *ranking* therefore
-#' depends on how the run embedded, and that is checked rather than assumed.
-#' The ranking reproduces exactly when the recording used a **deterministic**
-#' embedder and the replay uses the **same** one; both conditions, because
-#' replaying an API-embedded run with a deterministic local embedder would
-#' compute vectors the original never saw while looking exact. Anything else
-#' falls back to hashed lexical vectors and warns with class
-#' `gr_replay_no_embeddings`; every recorded answer is still reproduced, but the
-#' ranking may differ. Record a run you intend to publish with
-#' `gr_options(embedder = "lexical")`, or with your own embedder registered as
-#' `deterministic = TRUE`.
+#' requests with. A run that embedded (the `semantic` segmenter, the
+#' `retrieve` and `iterative` readers, `rerank` when word overlap finds
+#' nothing, and so the `"needle"` recipe) therefore replays only when the
+#' recording used a **deterministic** embedder and the replay uses the
+#' **same** one: the vectors are then computed again, exactly. Both
+#' conditions, because replaying an API-embedded run with a deterministic
+#' local embedder would compute vectors the original never saw while looking
+#' exact. Anything else, including a run recorded with the default `"api"`
+#' embedder (or a [gr_mock_client()]'s embed handler), warns with class
+#' `gr_replay_no_embeddings` and falls back to hashed lexical vectors. Those
+#' place semantic cuts and rank chunks differently, so such a replay usually
+#' sends prompts the recording does not hold: a strict replay stops with
+#' `gr_replay_miss`, whose message names this cause, and a non-strict one gets
+#' failed calls for them and does not give the recorded answer. Record a run
+#' you intend to publish or replay with `gr_options(embedder = "lexical")`, or
+#' with your own embedder registered as `deterministic = TRUE`.
+#'
+#' @section Limits:
+#' A saved trace says whether a limit cut the run short (`budget_stop`,
+#' `stop_reason`), and a replay of such a run stops where it stopped when it
+#' runs under the limits it was recorded with. Replayed calls count against
+#' `max_calls` as they did when recorded. When the spending limit stopped the
+#' recorded run, each replayed call also counts what it cost when recorded
+#' against `max_cost_usd` (in the trace's `replayed_usd`; nothing is spent);
+#' for any other run it counts nothing, so a replay of an expensive run is not
+#' stopped by the replaying session's limit. A replay under a higher limit, or
+#' none, that asks for a call past the recorded stop gets a `gr_replay_miss`
+#' saying so, and one under a lower limit stops sooner, marked partial as the
+#' run would have been.
 #'
 #' @section The recipe "auto" chose:
 #' A recording of [answer_document()] with `recipe = "auto"` holds the recipe
@@ -140,6 +162,9 @@ gr_trace_save <- function(trace, path) {
 #' answer_document(readgpt_example(), "What was revenue?", "fast",
 #'                 client = gr_replay_client(f))$answer
 gr_replay_client <- function(source, strict = TRUE) {
+  # Read once: a file is parsed, and a trace listed, a single time for all the
+  # lookups below.
+  source <- replay_read(source)
   steps <- replay_steps(source)
   embed_source <- replay_embed_source(source)
   auto_choices <- replay_auto_choices(source)
@@ -202,6 +227,19 @@ gr_replay_client <- function(source, strict = TRUE) {
     # Which embedder the RECORDING used, so a replay can tell an embedding it
     # can reproduce from one it cannot. See gr_embed().
     embed_source = embed_source,
+    # Which limit cut the recorded run short, or NA, so a miss past the stop
+    # can say why it missed. A trace saved before this was recorded says
+    # nothing, and its misses keep the general message.
+    .recorded_stop = if (isTRUE(source$budget_stop)) as_chr1(source$stop_reason, "limit")
+                     else NA_character_,
+    # Whether a replayed call counts what it cost when recorded against
+    # max_cost_usd: only when the spending limit stopped the recorded run, so
+    # the replay stops at the same call. A run the limit never stopped replays
+    # whatever limit the replaying session has, as it always did; counted
+    # there, a $12 recording made under a raised limit stopped at the default
+    # $5 when someone else replayed it.
+    .replay_costs = isTRUE(source$budget_stop) &&
+      identical(as_chr1(source$stop_reason, ""), "cost"),
     # The recipe answer_document()'s "auto" chose in the recording for a
     # document and question, found by their key. Replayed rather than chosen
     # again: what the choice rests on (the token count, the registered models,
@@ -235,28 +273,67 @@ print.gr_replay_client <- function(x, ...) {
 
 # --- internals -------------------------------------------------------------
 
+#' A recording as a plain list, in the shape trace_as_list() gives, from any
+#' source gr_replay_client() takes. Raises when it cannot be one, saying why.
+#'
+#' Each misread used to end in a message about something else. A trace parsed
+#' with jsonlite's default simplification has its steps as a data frame, and
+#' walking that walked its columns: the replay found no calls and said the run
+#' had made none. The JSON text of a trace or an answer was taken for a file
+#' name, and reported as "No such trace file" followed by the whole JSON.
+#' @noRd
+replay_read <- function(source) {
+  obj <- source
+  if (inherits(source, "gr_trace")) {
+    obj <- trace_as_list(source)
+  } else if (is.character(source) && length(source) == 1L && !is.na(source)) {
+    text <- inherits(source, "json") ||
+      (!file.exists(source) && grepl("^\\s*\\{", source, useBytes = TRUE))
+    if (!text && !file.exists(source)) {
+      gr_abort(sprintf("No such trace file: %s", source), class = "gr_file_not_found")
+    }
+    obj <- tryCatch(if (text) jsonlite::parse_json(as.character(source), simplifyVector = FALSE)
+                    else jsonlite::fromJSON(source, simplifyVector = FALSE),
+                    error = function(e) NULL)
+    if (is.null(obj)) {
+      gr_abort(if (text) "Could not parse that JSON text as a trace. Write it with as_json() or gr_trace_save()."
+               else sprintf("Could not parse '%s' as a trace. Write it with gr_trace_save().", source),
+               class = "gr_replay_unreadable")
+    }
+  }
+  if (!is.list(obj)) {
+    gr_abort(paste0("`source` must be a gr_trace, a path written by gr_trace_save(), the JSON ",
+                    "text of a trace, or a parsed trace."),
+             class = "gr_replay_unreadable")
+  }
+  # An answer, or its JSON: its trace is the recording.
+  if (is.null(obj[["steps", exact = TRUE]]) && !is.null(obj[["trace", exact = TRUE]])) {
+    inner <- obj[["trace", exact = TRUE]]
+    if (inherits(inner, "gr_trace")) inner <- trace_as_list(inner)
+    if (is.list(inner) && !is.null(inner[["steps", exact = TRUE]])) obj <- inner
+  }
+  steps <- obj[["steps", exact = TRUE]]
+  if (is.data.frame(steps)) {
+    gr_abort(paste0("This trace's steps were read as a data frame, which is what ",
+                    "jsonlite::fromJSON() makes of them with its default simplifyVector = TRUE, ",
+                    "and that loses the shape a replay needs. Pass the file's path to ",
+                    "gr_replay_client(), or read it with ",
+                    "jsonlite::fromJSON(path, simplifyVector = FALSE)."),
+             class = "gr_replay_unreadable")
+  }
+  if (is.null(steps) || !is.list(steps)) {
+    gr_abort(paste0("`source` holds no list of `steps`, so it is not a trace. Pass a gr_trace, ",
+                    "a file written by gr_trace_save(), or the JSON text as_json() writes."),
+             class = "gr_replay_unreadable")
+  }
+  obj
+}
+
 #' Model steps from a trace, a parsed trace, or a file.
 #' @noRd
 replay_steps <- function(source) {
-  obj <- source
-  if (is.character(source) && length(source) == 1L) {
-    if (!file.exists(source)) {
-      gr_abort(sprintf("No such trace file: %s", source), class = "gr_file_not_found")
-    }
-    obj <- tryCatch(jsonlite::fromJSON(source, simplifyVector = FALSE),
-                    error = function(e) NULL)
-    if (is.null(obj)) {
-      gr_abort(sprintf("Could not parse '%s' as a trace. Write it with gr_trace_save().",
-                       source), class = "gr_replay_unreadable")
-    }
-  } else if (inherits(source, "gr_trace")) {
-    obj <- trace_as_list(source)
-  }
-  if (!is.list(obj)) {
-    gr_abort("`source` must be a gr_trace, a path written by gr_trace_save(), or a parsed trace.",
-             class = "gr_replay_unreadable")
-  }
-  steps <- obj$steps %||% list()
+  obj <- replay_read(source)
+  steps <- obj$steps
   out <- list()
   for (st in steps) {
     if (!is.list(st)) next
@@ -291,24 +368,37 @@ replay_steps <- function(source) {
       # document, and reported 0 misses -- certifying itself as an exact
       # reproduction of a run it had not reproduced.
       finish_reason = as_chr1(st$finish_reason, NA_character_),
-      label = as_chr1(st$label, "call")
+      label = as_chr1(st$label, "call"),
+      # What the call counted against max_cost_usd when it was recorded, which
+      # the replayed call counts again (see trace_record()).
+      budget_usd = replay_step_budget(st, if (!is.na(answered)) answered else requested)
     )
   }
   out
 }
 
+#' What a recorded call counted against the spending limit.
+#'
+#' The step says, in a trace written since it began to. An older one is priced
+#' from its tokens at the model that answered, as the recording session priced
+#' it, and a call it answered from a cache or a replay counted nothing.
+#' @noRd
+replay_step_budget <- function(st, model) {
+  if (!is.null(st$budget_usd)) return(max(as_num1(st$budget_usd, 0), 0))
+  if (isTRUE(st$cached)) return(0)
+  tok <- if (is.list(st$tokens)) st$tokens else list()
+  usd <- tryCatch(suppressWarnings(as.numeric(gr_estimate_cost(
+    as_chr1(model, "unknown"), as_int1(tok$input, 0L), as_int1(tok$output, 0L)))),
+    error = function(e) NA_real_)
+  if (length(usd) == 1L && is.finite(usd) && usd > 0) usd else 0
+}
+
 #' A recording as a plain list, or NULL when it cannot be read. For the
 #' lookups beside replay_steps() that find a note in the recording: those make
-#' do without it, and replay_steps() is what reports a source it cannot use.
+#' do without it, and replay_read() is what reports a source it cannot use.
 #' @noRd
 replay_source_list <- function(source) {
-  obj <- source
-  if (inherits(source, "gr_trace")) obj <- trace_as_list(source)
-  else if (is.character(source) && length(source) == 1L && file.exists(source)) {
-    obj <- tryCatch(jsonlite::fromJSON(source, simplifyVector = FALSE),
-                    error = function(e) NULL)
-  }
-  if (is.list(obj)) obj else NULL
+  tryCatch(replay_read(source), error = function(e) NULL)
 }
 
 #' The model a replay client stands for, and the others a recording needs.
@@ -482,8 +572,10 @@ replay_lookup <- function(client, messages, model, params) {
       sprintf(" The same prompt IS recorded under model %s; replay the run with that model.",
               paste(sprintf("'%s'", other), collapse = " or "))
     } else {
-      sprintf(" The recording holds %d distinct prompt(s); this is not one of them, so the replay has diverged from the run that produced it (a different document, question, recipe or segmenter).",
-              length(idx$full))
+      paste0(sprintf(paste0(" The recording holds %d distinct prompt(s); this is not one of them, ",
+                            "so the replay has diverged from the run that produced it"),
+                     length(idx$full)),
+             replay_miss_causes(client))
     }
     idx$misses <- c(idx$misses, list(list(model = as_chr1(model, "?"), messages = messages)))
     msg <- paste0("No recorded response for this prompt.", detail)
@@ -503,7 +595,7 @@ replay_lookup <- function(client, messages, model, params) {
   idx$hits <- idx$hits + 1L
   st <- recorded[[pos]]
 
-  gr_result(
+  res <- gr_result(
     ok = st$ok, text = st$response, error = st$error, status = NA_integer_,
     usage = list(input = st$tokens$input, output = st$tokens$output),
     model = as_chr1(st$answered_model, model),
@@ -512,4 +604,39 @@ replay_lookup <- function(client, messages, model, params) {
     finish_reason = as_chr1(st$finish_reason, NA_character_),
     cached = TRUE
   )
+  # What the call cost when it was recorded, for a recording the spending
+  # limit stopped. Nothing is spent, but the trace counts it against
+  # max_cost_usd, so a replay stops where the recorded run did. Counted as
+  # nothing, it never reached the limit that stopped the run, asked for the
+  # call after the stop, and missed.
+  if (isTRUE(client[[".replay_costs", exact = TRUE]])) res$replay_usd <- as_num1(st$budget_usd, 0)
+  res
+}
+
+#' Why a prompt the replay asked for may be missing from the recording, for the
+#' gr_replay_miss message: the two causes a replay can see for itself, or the
+#' usual suspects when neither applies.
+#' @noRd
+replay_miss_causes <- function(client) {
+  idx <- client$.idx
+  why <- character(0)
+  if (is.environment(idx) && isTRUE(idx$embed_degraded)) {
+    why <- c(why, paste0(
+      "this replay could not reproduce the recording's embeddings (see the ",
+      "gr_replay_no_embeddings warning), so its semantic cuts or chunk ranking can differ from ",
+      "the recording's and send prompts the recording does not hold. A run that embeds replays ",
+      "exactly only when it was recorded, and is replayed, with the same deterministic embedder, ",
+      "such as gr_options(embedder = 'lexical')"))
+  }
+  stop <- as_chr1(client[[".recorded_stop", exact = TRUE]], NA_character_)
+  if (!is.na(stop)) {
+    what <- switch(stop, calls = "call cap (max_calls)", cost = "spending limit (max_cost_usd)",
+                   "limits")
+    why <- c(why, sprintf(paste0(
+      "the recorded run was cut short by its %s after %d recorded call(s), so a replay under a ",
+      "higher limit, or none, asks for calls the recording never made. Replay it under the ",
+      "limits it was recorded with"), what, as_int1(client$n_recorded, 0L)))
+  }
+  if (!length(why)) return(" (a different document, question, recipe or segmenter).")
+  paste0(": ", paste(why, collapse = "; and "), ".")
 }

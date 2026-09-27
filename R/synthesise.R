@@ -37,7 +37,9 @@
 #' @param protocol A [gr_protocol()]; its `outline` and `question` are used
 #'   unless you give them directly.
 #' @param outline The sections, as a named character vector: names are headings,
-#'   values say what that section has to cover. As [gr_protocol()].
+#'   values say what that section has to cover. As [gr_protocol()]. A heading
+#'   with a blank brief is dropped, unless the claim assignment (see `claims`)
+#'   places claims in it: then its heading is its brief.
 #' @param question The review question, for framing.
 #' @param client A `gr_client`.
 #' @param model,max_section_tokens,temperature Overrides for the writing calls.
@@ -62,7 +64,14 @@
 #' @param bib Which columns carry bibliographic identity, as a named list of
 #'   `citation`, `authors`, `year`, `title`, `venue`, `doi`. Omitted, the
 #'   conventional names are looked for, which is why
-#'   `gr_protocols("bibliography")` works without configuration. The most
+#'   `gr_protocols("bibliography")` works without configuration: `citation`
+#'   (or `cite`, `citation_key`, `cite_key`), `authors` (or `author`), `year`,
+#'   `title`, `venue` (or `journal`) and `doi`, in any case. Names that are as
+#'   often findings -- `date`, `source`, `url`, `published`, `publication` --
+#'   are not taken for bibliographic ones unless named here. A column found
+#'   this way is withheld from the writing prompts and used for the citations
+#'   and references; give a role as `NA` to keep a column of that name as a
+#'   finding (`bib = list(venue = NA)`). The most
 #'   reliable route is a `citation` field asked for during extraction: parsing
 #'   an arbitrary author list is a heuristic, and where it cannot be done
 #'   confidently the run falls back to markers rather than printing a name that
@@ -81,10 +90,22 @@
 #' @param claims A [gr_claims()] result. With it each section argues that
 #'   section's claims and sees only the studies those claims rest on, rather
 #'   than being handed every study and writing a paragraph per row. Needs an
-#'   `outline` from [gr_outline()], which carries the assignment.
+#'   `outline` from [gr_outline()], which carries the assignment, and it must be
+#'   an outline derived from these same claims: the run stops
+#'   (`gr_claims_mismatch`) when the outline says it came from other claims,
+#'   and (`gr_claims_unplaced`) when the assignment places a claim in a heading
+#'   the outline does not have -- a heading renamed after [gr_outline()], say;
+#'   rename it in `attr(outline, "claims")$section` too. A section given no
+#'   claims is written from the rows, as without `claims`, except the closing
+#'   section, which is written from `gaps` alone and is left out when there
+#'   are none. A section too large for one prompt is written a few claims at a
+#'   time, each batch sent only its claims' studies, and merged.
 #' @param gaps A [gr_gaps()] result, or lines of text. Given to the closing
-#'   section [gr_outline()] named, with an instruction to state those gaps and
-#'   no others.
+#'   section [gr_outline()] named, `attr(outline, "closing")`, with an
+#'   instruction to state those gaps and no others. When the outline has no
+#'   such section they reach none, and a warning (`gr_gaps_unused`) says so.
+#'   They are cut, at a line, to a quarter of the model's input room, with a
+#'   warning (`gr_gaps_truncated`), and the closing section is then partial.
 #' @param trace A [gr_trace()] to fold this write-up's accounting into, as in
 #'   [gr_read_many()]. It is a parent, not this stage's counter: `$trace` is
 #'   still the write-up's own, so `gr_options(max_calls =)` bounds the write-up
@@ -96,7 +117,10 @@
 #'   session's locale, so it is the same on every machine: it ignores case,
 #'   accents and apostrophes, filing an accented name with its base letter.
 #'   Two papers by the same authors in the same year are lettered (2019a,
-#'   2019b) in title order.
+#'   2019b) in title order; a key that does not end in a year is lettered
+#'   after a hyphen ("in press-a"). Under `"author-year"`, an entry whose key
+#'   came from a `citation` field leads with that key, so the prose can be
+#'   followed to it.
 #'
 #' @return An object of class `gr_synthesis`:
 #'   \describe{
@@ -133,8 +157,12 @@
 #'       including batch drafts and merges, that stopped at the reply limit),
 #'       `partial`. A section is partial when any of those counts is non-zero
 #'       (`n_cited` aside), when it came back empty, when a batch of studies
-#'       was lost or not read, when its batch drafts could not be merged, or,
-#'       with `claims`, when it did not write up a claim it was given.}
+#'       was lost or not read, when its batch drafts could not be merged or
+#'       one had to be cut to fit the merge, when (without `claims`) none of
+#'       the studies of a batch it was drafted from is cited in it, when it
+#'       could not be sent at all (its brief and gaps leave no room in the
+#'       window), when the gaps given to it were cut, or, with `claims`, when
+#'       it did not write up a claim it was given.}
 #'     \item{`citations`}{Every citation, resolved to the row it points at, in
 #'       long form: `section`, `study`, `document`, `document_id`.}
 #'     \item{`studies`}{The rows that were written from, with the `study` number
@@ -158,6 +186,14 @@
 #' large for one prompt is written in batches and merged, so a section costs
 #' batches + merges instead. Either way the cost is per *section*, not per
 #' document: the expensive reading has already happened.
+#'
+#' The merge folds every batch draft into one reply of at most
+#' `max_section_tokens`, the same limit each draft had, so a section drafted
+#' from a very large table covers only what that one reply can hold. Nothing
+#' checks that it cites every study -- a section need not -- but without
+#' `claims` a batch none of whose studies the merged section cites is
+#' reported (`gr_synth_batch_dropped`) and marks it partial. Raise
+#' `max_section_tokens`, or divide the table between narrower sections.
 #'
 #' @seealso [gr_extract()], [gr_protocol()], [gr_screen()]
 #' @export
@@ -207,6 +243,12 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
   # there. Losing it silently would take every section back to writing from rows.
   assign_map <- attr(outline, "claims")
   closing <- as_chr1(attr(outline, "closing"), NA_character_)
+  fingerprint <- attr(outline, "claims_fingerprint")
+  # A section the claim assignment names is a section to write, whatever its
+  # brief says. outline_vector() drops a heading with a blank brief, and
+  # gr_outline() keeps one when the model left the brief empty, so the section
+  # vanished here and took its claims with it.
+  outline <- fill_assigned_briefs(outline, assign_map)
   outline <- outline_vector(outline)
   if (!length(outline)) {
     gr_abort(paste0("`outline` is empty. Give the sections to write, as a named character ",
@@ -230,8 +272,7 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
     # Nothing downstream could detect it: the numbers are all valid, they just
     # mean other studies, and the review attributes findings to papers that do
     # not contain them.
-    ident <- function(d) as.character(d$document_id %||% d$document)
-    if (!identical(ident(claims$studies), ident(used))) {
+    if (!identical(study_identity(claims$studies), study_identity(used))) {
       gr_abort(paste0("These claims were drawn from a different set of studies than this ",
                       "synthesis is writing from, so their study numbers point at different ",
                       "rows. Give gr_claims() and gr_synthesise() the same `extraction` and the ",
@@ -245,6 +286,41 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
                       "yourself with attr(outline, \"claims\") <- data.frame(section = , ",
                       "claim_id = )."),
                class = "gr_no_claim_assignment")
+    }
+    if (is.null(assign_map$section) || is.null(assign_map$claim_id)) {
+      gr_abort(paste0("attr(outline, \"claims\") must be a data frame with columns `section` and ",
+                      "`claim_id`, as gr_outline() makes it. Without them no section finds its ",
+                      "claims, and every section falls back to writing from rows."),
+               class = "gr_no_claim_assignment")
+    }
+    # Claim numbers are positions in ONE gr_claims() result. An outline made
+    # from another run -- a re-run, or a reconcile that ordered the claims
+    # differently -- names the same numbers for different claims, and each
+    # section argued someone else's. gr_outline() stamps the claims it was
+    # given; nothing to compare against is an outline made some other way.
+    if (!is.null(fingerprint) &&
+        !identical(as_chr1(fingerprint), claims_fingerprint(claims$claims))) {
+      gr_abort(paste0("This outline's claim assignment was made from different claims than the ",
+                      "`claims` given, so its claim numbers name different claims. Derive the ",
+                      "outline from these claims with gr_outline(claims)."),
+               class = "gr_claims_mismatch")
+    }
+    # Every claim the assignment places has to land in a section that is
+    # written. A claim assigned to a heading the outline no longer has -- one
+    # renamed after gr_outline(), which `names<-` allows and keeps the
+    # assignment through -- was never argued, the renamed section fell back to
+    # writing from rows, and nothing said so.
+    orphan <- !as.character(assign_map$section) %in% names(outline)
+    if (any(orphan)) {
+      gr_abort(sprintf(paste0("The outline assigns claim(s) %s to section(s) %s, which it does not ",
+                              "contain, so those claims would never be written. A heading renamed ",
+                              "after gr_outline() does this: rename it in ",
+                              "attr(outline, \"claims\")$section too, or move the claims to a ",
+                              "section the outline has."),
+                       paste(sort(unique(assign_map$claim_id[orphan])), collapse = ", "),
+                       paste0("'", unique(as.character(assign_map$section[orphan])), "'",
+                              collapse = ", ")),
+               class = "gr_claims_unplaced")
     }
     # gr_claims() warned when a batch came back with nothing, but that warning
     # is long gone by the time the review is written, and every section is
@@ -296,24 +372,69 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
   # chronology, say -- extract it a second time under a name of its own.
   rendered <- render_studies(used, hide = unlist(bib_columns(used, bib), use.names = FALSE))
   # gr_gaps() returns a table; a section wants lines. Accepting both means the
-  # caller never has to know which.
+  # caller never has to know which. Lines of text are one block: as several
+  # strings they were not "nonblank" and reached no section.
   if (inherits(gaps, "gr_gaps") || is.data.frame(gaps)) gaps <- render_gaps(gaps)
+  if (is.character(gaps) && length(gaps) > 1L) gaps <- as_chr1(gaps[nzchar(trimws(gaps))])
+  if (!is_nonblank(gaps)) gaps <- NULL
+  # Gaps reach exactly one section, the closing one gr_outline() marked: handing
+  # them to every section makes every section recite them. An outline with no
+  # such heading -- written by hand, from a protocol, or with the closing
+  # heading renamed -- sent them nowhere while `$gaps` reported them.
+  if (!is.null(gaps) && (is.na(closing) || !closing %in% names(outline))) {
+    gr_warn(sprintf(paste0("`gaps` were given, but the outline has no closing section to state them ",
+                           "(%s), so no section does. Name the heading that should with ",
+                           "attr(outline, \"closing\") <- \"<heading>\"."),
+                    if (is.na(closing)) "it names none" else sprintf("it names '%s'", closing)),
+            class = "gr_gaps_unused")
+    gaps <- NULL
+  }
+  # Bounded, because they are the closing section's fixed text and every batch
+  # of it resends them. Cut at a line, and said: that section states only the
+  # gaps it was given.
+  gaps_cut <- FALSE
+  if (!is.null(gaps)) {
+    room <- tryCatch(gr_budget(spec$model, reserve_output = spec$max_answer_tokens)$input,
+                     gr_budget_error = function(e) NA_integer_)
+    fit <- if (is.na(room)) gaps else cap_gap_lines(gaps, max(1L, room %/% 4L))
+    if (!identical(fit, gaps)) {
+      gr_warn(sprintf(paste0("The gaps were cut to %d of %d line(s) to fit the model's window, so ",
+                             "section '%s' states only those. It is marked partial."),
+                      attr(fit, "kept"), attr(fit, "of"), closing),
+              class = "gr_gaps_truncated")
+      gaps <- as.character(fit)
+      gaps_cut <- TRUE
+    }
+  }
   weights <- if (is.null(claims)) NULL else study_weight(used)
   # One latch for the whole write-up, so the ceiling is reported once rather
   # than once per section.
   capped <- new.env(parent = emptyenv())
   rows <- lapply(seq_along(outline), function(i) {
     heading <- names(outline)[[i]]
-    gr_msg(sprintf("[%d/%d] %s", i, length(outline), heading))
     ids <- if (is.null(assign_map)) integer(0) else
       as.integer(assign_map$claim_id[as.character(assign_map$section) == heading])
-    synth_section(heading, outline[[i]], question, rendered, used, client, spec, trace, style,
-                  claims = claims, claim_ids = ids, weights = weights,
-                  # Gaps reach exactly one section, the one gr_outline() marked.
-                  # Handing them to every section makes every section recite them.
-                  gaps = if (!is.na(closing) && identical(heading, closing)) gaps else NULL,
-                  capped = capped)
+    is_closing <- !is.na(closing) && identical(heading, closing)
+    # The closing section of a write-up from claims, with no claim placed in
+    # it and no gaps to state, has nothing to say, and was written from every
+    # row instead. Left out, unless it is all there is.
+    if (!is.null(claims) && is_closing && !length(ids) && is.null(gaps) && length(outline) > 1L) {
+      gr_msg(sprintf(paste0("Section '%s' was left out: no claim was placed in it and no gaps were ",
+                            "given. Pass `gaps = gr_gaps(claims)` to write it."), heading))
+      return(NULL)
+    }
+    gr_msg(sprintf("[%d/%d] %s", i, length(outline), heading))
+    # A section that cannot be sized is that section's failure. Uncaught, a
+    # budget error ended the write-up and threw away every section already
+    # written and paid for.
+    tryCatch(
+      synth_section(heading, outline[[i]], question, rendered, used, client, spec, trace, style,
+                    claims = claims, claim_ids = ids, weights = weights,
+                    gaps = if (is_closing) gaps else NULL, capped = capped,
+                    gaps_cut = is_closing && gaps_cut),
+      gr_budget_error = function(e) synth_unwritten(heading, outline[[i]], ids, conditionMessage(e)))
   })
+  rows <- rows[!vapply(rows, is.null, logical(1))]
 
   sections <- do.call(rbind, lapply(rows, `[[`, "row"))
   citations <- rbind_evidence(lapply(rows, `[[`, "citations"))
@@ -482,7 +603,9 @@ print.gr_synthesis <- function(x, ...) {
   }
   cost <- gr_trace_cost(x$trace)
   total <- if (nrow(cost)) sum(cost$usd) else 0
-  cat(sprintf("  this run: %d model call(s), %s\n", x$trace$calls,
+  # format_call_counts(), not `calls`: that counts embeddings requests too, and
+  # a run that made any showed them as model calls, disagreeing with the trace.
+  cat(sprintf("  this run: %s, %s\n", format_call_counts(x$trace),
               if (!nrow(cost)) "no cost recorded"
               else if (is.na(total)) "cost unknown (unpriced model)"
               else sprintf("$%.4f", total)))
@@ -490,6 +613,83 @@ print.gr_synthesis <- function(x, ...) {
 }
 
 # --- internals -------------------------------------------------------------
+
+#' The system prompt for a closing section written from the gaps alone: the
+#' closing section of a write-up from claims, when no claim was placed in it.
+#' It is given no study, so it is told to name none.
+#' @noRd
+.gr_gaps_section_system <- paste0(
+  "You write the '%s' section of a review: what the body of work it reviews does not cover. ",
+  "You are given the gaps, computed by counting the studies' records, and no study records. ",
+  "State those gaps in prose, grouping the ones that belong together, and say what each leaves ",
+  "unanswered. Do not add a gap that is not listed, do not name or cite a study, and do not ",
+  "guess at findings. Write prose for the section only -- no heading, no preamble, no closing ",
+  "summary of what you just wrote.")
+
+#' Give a blank brief to the heading it belongs to, for each section the
+#' claim assignment names, so outline_vector() keeps the section. A heading
+#' is its own brief already when an outline is a bare vector.
+#' @noRd
+fill_assigned_briefs <- function(outline, assign_map) {
+  nms <- names(outline)
+  if (is.null(assign_map) || !length(outline) || is.null(nms) || is.null(assign_map$section)) {
+    return(outline)
+  }
+  v <- vapply(outline, as_chr1, character(1), USE.NAMES = FALSE)
+  blank <- !nzchar(trimws(v)) & nzchar(trimws(nms)) & nms %in% as.character(assign_map$section)
+  if (any(blank)) outline[blank] <- nms[blank]
+  outline
+}
+
+#' What identifies a synthesis's rows, for comparing two sets of them.
+#'
+#' The document ids, else the document names. Else the rows themselves, as the
+#' writing model is shown them: with neither column, or with every id NA, the
+#' comparison was of character(0) with character(0), or of NAs with NAs, and
+#' claims from any other table of the same length passed it.
+#' @noRd
+study_identity <- function(d) {
+  for (col in c("document_id", "document")) {
+    v <- d[[col]]
+    if (!is.null(v) && !all(is.na(v))) return(as.character(v))
+  }
+  render_studies(d)
+}
+
+#' A fingerprint of a claims table: which claim each number is.
+#'
+#' gr_outline() stamps it on the outline as `attr(, "claims_fingerprint")`, and
+#' gr_synthesise() compares it with the claims it is given, because an
+#' assignment by claim number means nothing against another set of claims.
+#' @noRd
+claims_fingerprint <- function(cw) {
+  gr_hash(list(claim_id = as.integer(cw$claim_id), claim = as.character(cw$claim)))
+}
+
+#' The first lines of `gaps` that fit `n` tokens, or `gaps` itself when all do;
+#' a first line too long on its own is cut. `attr(, "kept")` and `attr(, "of")`
+#' count the lines.
+#' @noRd
+cap_gap_lines <- function(gaps, n) {
+  if (gr_count_tokens(gaps) <= n) return(gaps)
+  lines <- strsplit(as_chr1(gaps), "\n", fixed = TRUE)[[1]]
+  keep <- cumsum(gr_count_tokens(lines) + 1L) <= n
+  out <- if (any(keep)) paste(lines[keep], collapse = "\n") else gr_truncate_tokens(lines[1], n)
+  structure(out, kept = max(1L, sum(keep)), of = length(lines))
+}
+
+#' A section that could not be written at all, with the warning that says so.
+#' @noRd
+synth_unwritten <- function(heading, brief, claim_ids, why) {
+  gr_warn(sprintf("Section '%s' was not written (%s). It is marked partial.", heading, why),
+          class = "gr_synth_too_large")
+  list(row = data.frame(section = heading, brief = as_chr1(brief), text = "",
+                        n_cited = 0L, n_unknown = 0L, n_unsupplied = 0L, n_unparsed = 0L,
+                        n_truncated = 0L, n_claims = length(claim_ids),
+                        claims_missed = length(claim_ids), partial = TRUE,
+                        stringsAsFactors = FALSE),
+       unsupplied = integer(0), citations = NULL)
+}
 
 #' The studies a synthesis works from, numbered.
 #'
@@ -569,34 +769,48 @@ render_studies <- function(used, hide = character(0)) {
 #' @noRd
 synth_section <- function(heading, brief, question, rendered, used, client, spec, trace,
                           style = NULL, claims = NULL, claim_ids = integer(0),
-                          weights = NULL, gaps = NULL, capped = NULL) {
+                          weights = NULL, gaps = NULL, capped = NULL, gaps_cut = FALSE) {
   # With claims, the section argues a list of claims and sees only the studies
   # those claims rest on. Without, it sees every study and writes from rows --
   # which is what produces "Smith (2019) found X. Garcia (2022) found Y."
   by_claims <- !is.null(claims) && length(claim_ids)
+  # The closing section of a write-up from claims, holding no claim, states the
+  # gaps and reads no study. Written from rows, it was handed every study under
+  # the row-by-row prompt: prose about each study under a heading meant for
+  # what the studies leave out, and at scale nearly half the write-up's prompt
+  # tokens. gr_synthesise() gives gaps to that section alone, and leaves it out
+  # when there are none.
+  gaps_only <- !is.null(claims) && !length(claim_ids) && is_nonblank(gaps)
+  # Every study, rendered: a section written a few claims at a time sends each
+  # batch its own rows from here.
+  all_rows <- rendered
   if (by_claims) {
     cw <- claims$claims[claims$claims$claim_id %in% claim_ids, , drop = FALSE]
     want <- unique(claims$support$study[claims$support$claim_id %in% claim_ids])
     # Indexing the ALREADY-rendered blocks rather than re-rendering, so the
     # bibliographic columns stay hidden by exactly the same rule.
     rendered <- rendered[used$study %in% want]
-    claim_block <- render_claims(cw, claims$support, weights)
+    blocks <- render_claims(cw, claims$support, weights, collapse = FALSE)
+    claim_block <- paste(blocks, collapse = "\n\n")
+  } else if (gaps_only) {
+    rendered <- character(0)
   }
   system_prompt <- if (by_claims) .gr_prompts$claims_section_system else
-    sprintf(.gr_prompts$synthesise_system, heading)
+    if (gaps_only) sprintf(.gr_gaps_section_system, heading) else
+      sprintf(.gr_prompts$synthesise_system, heading)
   # Appended rather than replacing: the register is how it is written, not what
   # it may say, and the rules above about citing and not inventing hold whatever
   # voice is asked for.
   if (is_nonblank(style)) system_prompt <- paste0(system_prompt, " Register: ", as_chr1(style))
-  ask <- paste0("Review question: ", question,
-                "\n\nSection: ", heading, "\nThis section must cover: ", brief)
-  if (by_claims) ask <- paste0(ask, "\n\n<claims>\n", claim_block, "\n</claims>")
-  if (is_nonblank(gaps)) {
-    # The gaps are COMPUTED from the table, so the section may state these and
-    # nothing else as a gap. That is the whole reason they are computed.
-    ask <- paste0(ask, "\n\n<gaps>\n", as_chr1(gaps), "\n</gaps>\n",
-                  "State only the gaps listed above. Do not add others.")
-  }
+  base <- paste0("Review question: ", question,
+                 "\n\nSection: ", heading, "\nThis section must cover: ", brief)
+  # The gaps are COMPUTED from the table, so the section may state these and
+  # nothing else as a gap. That is the whole reason they are computed.
+  gap_block <- if (!is_nonblank(gaps)) "" else
+    paste0("\n\n<gaps>\n", as_chr1(gaps), "\n</gaps>\n",
+           "State only the gaps listed above. Do not add others.")
+  with_claims <- function(block) paste0(base, "\n\n<claims>\n", block, "\n</claims>", gap_block)
+  ask <- if (by_claims) with_claims(claim_block) else paste0(base, gap_block)
   # The brief is repeated after the studies (see below), and a restatement that
   # is not in the overhead is a prompt that overruns the window by exactly its
   # length. `ask` itself is sent once, hence "never" there; the tail is counted
@@ -605,7 +819,13 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
   overhead <- prompt_overhead(ask, system_prompt, "never") +
     if (identical(as_chr1(spec$restate, "auto"), "never")) 0L else
       gr_count_tokens(paste0("\n\nAgain, the question: ", again))
-  bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
+  # No room for the section's own text is this section's problem, not the
+  # run's. gr_budget() raised and nothing caught it, so a claims block larger
+  # than the window aborted the write-up with every section before it already
+  # written, and paid for, thrown away. NULL here is a section that cannot be
+  # sent whole; with claims it is written a few claims at a time instead.
+  bud <- tryCatch(gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead),
+                  gr_budget_error = function(e) NULL)
 
   body <- paste(rendered, collapse = "\n\n")
   lost_batches <- 0L
@@ -621,11 +841,21 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
   # section ending "However, the trial" came back complete.
   cut_off <- 0L
   merge_failed <- FALSE
+  # Batch drafts the merge had to cut to fit before merging them.
+  merge_cut <- 0L
+  # The section's own text leaves no room for a study, and claims whose own
+  # block of studies does not fit a prompt: neither can be written.
+  too_large <- FALSE
+  unwritable <- integer(0)
   # Studies a batch draft cited without being in its batch (or the merge cited
   # without any draft citing them), and studies a batch cited that it was
-  # given. Only written in the batch path without claims.
+  # given. Only written in the batch path.
   batch_stray <- integer(0)
   batch_honest <- integer(0)
+  # The studies each batch was sent, and whether its draft came back: what the
+  # merged section is checked against below.
+  batch_rows <- list()
+  batch_read <- logical(0)
   text <- if (!trace_can_call(trace)) {
     # Every other stage checks the run's ceiling before it spends -- gr_claims(),
     # gr_outline(), revise_once() and every reader do. Synthesis did not, so a
@@ -640,18 +870,20 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
               class = "gr_synth_capped")
     }
     ""
-  } else if (gr_count_tokens(body) <= bud$input) {
-    res <- gr_call(client, list(
+  } else if (!is.null(bud) && gr_count_tokens(body) <= bud$input) {
+    msgs <- list(
       list(role = "system", content = system_prompt),
-      list(role = "user", content = ask),
-      # The section's job again after the studies, for the same reason
-      # answer_messages() asks last: over several thousand tokens of table, an
-      # instruction given once at the top is a long way from where the writing
-      # happens.
-      list(role = "user", content = paste0("<studies>\n", body, "\n</studies>",
-                                           restate_tail(body, again, spec$restate)))
-    ), model = spec$model, max_output = spec$max_answer_tokens,
-       temperature = spec$temperature, trace = trace, label = "synthesise.section")
+      list(role = "user", content = ask))
+    # The section's job again after the studies, for the same reason
+    # answer_messages() asks last: over several thousand tokens of table, an
+    # instruction given once at the top is a long way from where the writing
+    # happens. A section written from the gaps alone has no studies to send.
+    if (!gaps_only) {
+      msgs[[3L]] <- list(role = "user", content = paste0("<studies>\n", body, "\n</studies>",
+                                                         restate_tail(body, again, spec$restate)))
+    }
+    res <- gr_call(client, msgs, model = spec$model, max_output = spec$max_answer_tokens,
+                   temperature = spec$temperature, trace = trace, label = "synthesise.section")
     if (usable_text(res) && reply_cut_off(res)) cut_off <- cut_off + 1L
     if (usable_text(res)) res$text else ""
   } else {
@@ -659,8 +891,30 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
     # Cheaper alternatives -- take the first N rows, or summarise the table first
     # -- both drop studies without saying which, which is the one thing a review
     # may not do.
-    groups <- synth_batches(rendered, bud$input)
-    parts <- vapply(groups, function(g) {
+    #
+    # With claims, a batch is some of the section's claims and the studies
+    # behind them, not some of its studies under the whole claims block. The
+    # block went into every batch as fixed overhead: batches shrank to a few
+    # studies that each resent every claim, and past the window the section
+    # could not be written at all.
+    jobs <- if (by_claims) {
+      room <- tryCatch(gr_budget(spec$model, reserve_output = spec$max_answer_tokens,
+                                 overhead = prompt_overhead(with_claims(""), system_prompt,
+                                                            "never"))$input,
+                       gr_budget_error = function(e) NULL)
+      if (is.null(room)) NULL else {
+        cb <- claim_batches(blocks, claims$support, all_rows, room)
+        unwritable <- attr(cb, "unwritable")
+        lapply(cb, function(j) list(ask = with_claims(j$block), rows = j$rows))
+      }
+    } else if (!is.null(bud)) {
+      groups <- synth_batches(rendered, bud$input)
+      # Without claims `rendered` is every study in order, so a position in it
+      # is a row of `used`.
+      lapply(attr(groups, "index"), function(ix) list(ask = ask, rows = ix))
+    }
+    too_large <- is.null(jobs) || (!length(jobs) && !length(unwritable))
+    parts <- vapply(jobs, function(j) {
       # Counted apart from a batch whose CALL failed. Both leave an empty part,
       # but "2 batches of studies failed" points at the model or the network,
       # and the cause here is the ceiling the caller set. `<<-` is right in this
@@ -668,8 +922,8 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
       if (!trace_can_call(trace)) { capped_batches <<- capped_batches + 1L; return("") }
       res <- gr_call(client, list(
         list(role = "system", content = system_prompt),
-        list(role = "user", content = ask),
-        list(role = "user", content = paste0("<studies>\n", paste(g, collapse = "\n\n"),
+        list(role = "user", content = j$ask),
+        list(role = "user", content = paste0("<studies>\n", paste(all_rows[j$rows], collapse = "\n\n"),
                                              "\n</studies>"))
       ), model = spec$model, max_output = spec$max_answer_tokens,
          temperature = spec$temperature, trace = trace, label = "synthesise.batch")
@@ -686,30 +940,30 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
     # `<-`, not `<<-`: an if/else block shares the enclosing frame, so `<<-`
     # here would have written to the global environment and left this one at 0.
     lost_batches <- sum(!nzchar(parts)) - capped_batches
-    # Each batch draft checked against the studies IT was given, before the
-    # merge makes one text of them. Without claims a batch is shown its own
-    # rows and, as a rule, nothing else that names a study, so one citing a
-    # study outside them cited something it never saw -- and checked against
-    # the whole section, that passed as known, was rendered and went into the
-    # reference list. Not with claims: every batch is shown the claims block,
-    # which lists every study behind every claim, so a citation outside the
-    # batch there is the model doing as it was told.
-    if (!by_claims) {
-      idx <- attr(groups, "index")
-      # A number the brief or the gaps block names was shown to every batch.
-      in_ask <- cited_ids(ask, "study")
-      for (b in seq_along(parts)) {
-        ids <- cited_ids(parts[[b]], "study")
-        # Without claims `rendered` is every study in order, so a position in
-        # it is a row of `used`.
-        given <- union(used$study[idx[[b]]], in_ask)
-        batch_stray <- c(batch_stray, setdiff(intersect(ids, used$study), given))
-        batch_honest <- c(batch_honest, intersect(ids, given))
-      }
+    batch_rows <- lapply(jobs, function(j) used$study[j$rows])
+    batch_read <- nzchar(parts)
+    # Each batch draft checked against what IT was given -- its rows, and any
+    # study its prompt names (the brief, the gaps, its claims' own block) --
+    # before the merge makes one text of them. Checked against the whole
+    # section, a draft citing a study it never saw passed as known, was
+    # rendered and went into the reference list.
+    for (b in seq_along(parts)) {
+      ids <- cited_ids(parts[[b]], "study")
+      given <- union(batch_rows[[b]], cited_ids(jobs[[b]]$ask, "study"))
+      batch_stray <- c(batch_stray, setdiff(intersect(ids, used$study), given))
+      batch_honest <- c(batch_honest, intersect(ids, given))
     }
+    # The merge is shown the section's brief and the drafts. With claims, not
+    # the claims block: that is what did not fit.
+    merge_ask <- if (by_claims) paste0(base, gap_block) else ask
     from <- length(trace$steps) + 1L
-    m <- tree_merge(client, ask, parts, spec, trace, label = "synthesise.merge",
-                    system_prompt = system_prompt, kind = "draft")
+    m <- if (!length(parts)) list(text = "", ok = FALSE) else
+      tryCatch(tree_merge(client, merge_ask, parts, spec, trace, label = "synthesise.merge",
+                          system_prompt = system_prompt, kind = "draft"),
+               # The merge sizes its prompt as the section did. No room is a
+               # merge that did not happen, not a write-up that stops.
+               gr_budget_error = function(e) list(text = merge_giveup(parts[nzchar(parts)], spec),
+                                                  ok = FALSE, error = conditionMessage(e)))
     # tree_merge() accepts a merge reply cut off at the limit as it accepts any
     # other, and returns only the text, so the steps it recorded are the one
     # place that says whether a merge -- the last one, or one at a level below
@@ -718,22 +972,25 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
     # A merge that failed hands back the batch drafts joined and capped. The
     # section is not the merged draft it stands in for, whether or not every
     # batch was read; when none was, the lost batches already say so.
-    merge_failed <- !isTRUE(m$ok) && lost_batches + capped_batches < length(parts)
+    merge_failed <- length(parts) > 0L && !isTRUE(m$ok) &&
+      lost_batches + capped_batches < length(parts)
+    # A draft too long for the merge's prompt, or a merge group that failed and
+    # was passed up whole, is cut to fit before the next merge, and what it said
+    # past the cut is gone from a merge that otherwise succeeded.
+    merge_cut <- if (isTRUE(m$ok)) as_int1(m$truncated, 0L) else 0L
     # m$text on failure carries tree_merge()'s own "[merge failed; findings
     # above are truncated]" marker. Throwing it away for a raw paste() of the
     # parts discarded the one thing that said the section was incomplete.
     merged <- if (isTRUE(m$ok)) m$text else
       as_chr1(m$text, paste(parts[nzchar(parts)], collapse = "\n\n"))
-    # The merge is a call too, and it is shown `ask` and the drafts and no row
-    # of the table. A study it cites that no draft cited and the ask does not
-    # name is one it never saw, by the same rule as a batch draft's. Unchecked,
-    # "Also seen in [study 7]" added by the merge passed as known, was rendered
-    # and went into the reference list, with the section complete.
-    if (!by_claims) {
-      in_drafts <- unique(unlist(lapply(parts, cited_ids, word = "study"), use.names = FALSE))
-      batch_stray <- c(batch_stray, setdiff(intersect(cited_ids(merged, "study"), used$study),
-                                            union(in_drafts, in_ask)))
-    }
+    # The merge is a call too, and it is shown the brief and the drafts and no
+    # row of the table. A study it cites that no draft cited and the brief does
+    # not name is one it never saw, by the same rule as a batch draft's.
+    # Unchecked, "Also seen in [study 7]" added by the merge passed as known,
+    # was rendered and went into the reference list, with the section complete.
+    in_drafts <- unique(unlist(lapply(parts, cited_ids, word = "study"), use.names = FALSE))
+    batch_stray <- c(batch_stray, setdiff(intersect(cited_ids(merged, "study"), used$study),
+                                          union(in_drafts, cited_ids(merge_ask, "study"))))
     merged
   }
 
@@ -748,8 +1005,9 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
   # against the whole table it passed: it counted as known, was rendered as an
   # author-year citation and went into the reference list. `unsupplied` is kept
   # apart from `unknown` because the row does exist, and "a row that does not
-  # exist" would misdescribe it.
-  shown <- if (by_claims) want else used$study
+  # exist" would misdescribe it. A section written from the gaps is shown no
+  # study but one the gaps name.
+  shown <- if (by_claims) want else if (gaps_only) cited_ids(ask, "study") else used$study
   unknown <- setdiff(cited, used$study)
   unsupplied <- setdiff(intersect(cited, used$study), shown)
   # The same check per batch, for a section drafted in batches (see above),
@@ -765,11 +1023,37 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
   hits <- match(known, used$study)
   # The check in the other direction, which the citation check cannot make: a
   # section handed four claims and citing none of the studies behind one of them
-  # did not write that claim up. The outline promised it would.
+  # did not write that claim up. The outline promised it would. A claim that
+  # could not be sent at all is not written up whatever else cites its studies.
   missed <- if (!by_claims) integer(0) else {
-    claim_ids[!vapply(claim_ids, function(id) {
+    claim_ids[claim_ids %in% unwritable | !vapply(claim_ids, function(id) {
       any(claims$support$study[claims$support$claim_id == id] %in% known)
     }, logical(1))]
+  }
+  # And for a section drafted in batches without claims: a batch whose draft
+  # came back and not one of whose studies the section cites. The merge folds
+  # several drafts into one reply of the same length, and a merge that
+  # finished normally but kept only the first draft's studies -- 69 of 1000 --
+  # read as a complete section. Not with claims, where a claim is what must be
+  # covered, and `missed` checks that.
+  dropped <- if (by_claims || !length(batch_rows)) 0L else
+    sum(batch_read & !vapply(batch_rows, function(r) any(r %in% cited), logical(1)))
+  if (too_large) {
+    gr_warn(sprintf(paste0("Section '%s' was not written: its brief%s alone leave%s no room in ",
+                           "the model's window for a single study. It is marked partial; shorten ",
+                           "the brief, or use a model with a larger window."),
+                    heading, if (nzchar(gap_block)) " and gaps" else "",
+                    if (nzchar(gap_block)) "" else "s"),
+            class = "gr_synth_too_large")
+  }
+  if (length(unwritable)) {
+    gr_warn(sprintf(paste0("Section '%s': claim %s could not be sent, because the list of studies ",
+                           "behind %s alone does not fit the model's window. %s marked missed and ",
+                           "the section partial."),
+                    heading, paste(unwritable, collapse = ", "),
+                    if (length(unwritable) == 1L) "it" else "each",
+                    if (length(unwritable) == 1L) "It is" else "They are"),
+            class = "gr_synth_too_large")
   }
   if (length(missed)) {
     gr_warn(sprintf(paste0("Section '%s' was given %d claim(s) and did not write up %d of them ",
@@ -804,6 +1088,20 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
                     heading, as_chr1(m$error, "the merge failed")),
             class = "gr_synth_merge_failed")
   }
+  if (merge_cut > 0L) {
+    gr_warn(sprintf(paste0("Section '%s': %d batch draft(s) were too long for the merge and were ",
+                           "cut to fit, so what they said past the cut is missing. It is marked ",
+                           "partial."), heading, merge_cut),
+            class = "gr_synth_merge_truncated")
+  }
+  if (dropped > 0L) {
+    gr_warn(sprintf(paste0("Section '%s' was drafted in %d batches of studies and cites none of the ",
+                           "studies in %d of them: merging the drafts into one reply of at most %d ",
+                           "tokens left them out. It is marked partial; raise ",
+                           "`max_section_tokens`, or narrow what the section covers."),
+                    heading, length(batch_rows), dropped, spec$max_answer_tokens),
+            class = "gr_synth_batch_dropped")
+  }
   if (length(unparsed)) {
     gr_warn(sprintf(paste0("Section '%s' has %d citation(s) the check cannot read (%s), so the ",
                            "studies they name were not checked. The section is marked partial."),
@@ -827,13 +1125,18 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
                      partial = length(unknown) > 0L || length(unsupplied) > 0L ||
                        !nzchar(trimws(text)) || lost_batches > 0L || capped_batches > 0L ||
                        length(missed) > 0L || length(unparsed) > 0L || cut_off > 0L ||
-                       merge_failed,
+                       merge_failed || merge_cut > 0L || dropped > 0L || too_large ||
+                       isTRUE(gaps_cut),
                      stringsAsFactors = FALSE),
     # Which markers in THIS section must stay markers when the prose is rendered.
     unsupplied = leave,
     citations = if (!length(known)) NULL else
       data.frame(section = heading, study = known,
-                 document = used$document[hits],
+                 # A table with no `document` column is one gr_synthesise()
+                 # accepts; indexing NULL gave a zero-length column, and the
+                 # frame, and the run, failed.
+                 document = if (is.null(used$document)) NA_character_ else
+                   as.character(used$document[hits]),
                  # NOT as_chr1(): it collapses a vector to ONE string with
                  # newlines between the elements, so every citation row got the
                  # same value -- all the ids, glued together. It is for scalars.
@@ -864,8 +1167,13 @@ trace_cut_off <- function(trace, from, prefix) {
 #' resting on nine studies and one resting on a single pilot were getting the
 #' same space, which is a claim about the literature that the literature does not
 #' support.
+#'
+#' `collapse = FALSE` gives one block per claim, in that order, with the ids in
+#' `attr(, "claim_id")`: the tiers are set across the whole section first, so a
+#' section written a few claims at a time gives each claim the room it earned
+#' among all of them.
 #' @noRd
-render_claims <- function(cw, support, weights) {
+render_claims <- function(cw, support, weights, collapse = TRUE) {
   ord <- claim_order(cw, support, weights)
   cw <- cw[ord, , drop = FALSE]
   n <- nrow(cw)
@@ -894,6 +1202,7 @@ render_claims <- function(cw, support, weights) {
             if (!is.na(cw$scope[i])) sprintf("scope: %s", cw$scope[i])),
           collapse = "\n")
   }, character(1), USE.NAMES = FALSE) -> blocks
+  if (!collapse) return(structure(blocks, claim_id = cw$claim_id))
   paste(blocks, collapse = "\n\n")
 }
 
@@ -920,6 +1229,56 @@ synth_batches <- function(rendered, budget, max_n = Inf) {
   }
   attr(groups, "index") <- index
   groups
+}
+
+#' Pack a section's claims into batches that each fit `budget` input tokens
+#' together with the studies behind them.
+#'
+#' `blocks` is render_claims(collapse = FALSE): one block per claim, ranked.
+#' In that order a claim joins the current batch while its block and the rows
+#' it adds still fit, so a study behind several claims of one batch is sent
+#' once, and each batch resends only its own claims. A claim too large for a
+#' batch of its own goes out with its studies split over several batches,
+#' each carrying its block; one whose block alone leaves no room comes back in
+#' `attr(, "unwritable")`. Each batch is `block`, the text of its claims, and
+#' `rows`, its study numbers, which are positions in `rendered`.
+#' @noRd
+claim_batches <- function(blocks, support, rendered, budget) {
+  ids <- attr(blocks, "claim_id")
+  # The blank line between blocks, and between rows.
+  tb <- gr_count_tokens(blocks) + 2L
+  tr <- gr_count_tokens(rendered) + 2L
+  behind <- lapply(ids, function(id) sort(unique(support$study[support$claim_id == id])))
+  out <- list()
+  unwritable <- integer(0)
+  cur <- integer(0); rows <- integer(0); cost <- 0
+  flush <- function() {
+    if (!length(cur)) return(invisible(NULL))
+    block <- paste(blocks[cur], collapse = "\n\n")
+    if (cost <= budget) {
+      out[[length(out) + 1L]] <<- list(block = block, rows = rows)
+    } else {
+      # Only ever one claim: a second joins a batch only when it fits.
+      room <- budget - tb[cur]
+      if (room <= 0) {
+        unwritable <<- c(unwritable, ids[cur])
+      } else {
+        g <- synth_batches(rendered[rows], room)
+        for (ix in attr(g, "index")) out[[length(out) + 1L]] <<- list(block = block, rows = rows[ix])
+      }
+    }
+    cur <<- integer(0); rows <<- integer(0); cost <<- 0
+  }
+  for (k in seq_along(ids)) {
+    add <- function() tb[k] + sum(tr[setdiff(behind[[k]], rows)])
+    if (length(cur) && cost + add() > budget) flush()
+    cost <- cost + add()
+    cur <- c(cur, k)
+    rows <- sort(union(rows, behind[[k]]))
+  }
+  flush()
+  attr(out, "unwritable") <- unwritable
+  out
 }
 
 #' @noRd

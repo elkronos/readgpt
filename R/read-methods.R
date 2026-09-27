@@ -116,8 +116,14 @@ read_map_reduce <- function(chunks, question, client, spec, trace) {
                       notes = list(chunks = nrow(d), failed_calls = n_failed,
                                    reason = "no chunk yielded an answer")))
   }
+  from <- length(trace$steps) + 1L
   merged <- tree_merge(client, question, texts[useful], spec, trace, label = "reduce")
   cut <- cut + merged$truncated_calls
+  # A merge request that failed below the last level passes its group up
+  # unmerged and leaves `merged$ok` alone, and a finding cut to fit a merge
+  # lost its end; both are part of what the answer rests on.
+  merge_failed <- merge_failures(trace, from, "reduce")
+  merge_cut <- as.integer(as_num1(merged$truncated, 0))
   new_answer(merged$text, "map_reduce", question, d$chunk_id[useful], trace,
              chunks_sent = d$chunk_id,
              # These are the model's ANSWER for each chunk, not quotations
@@ -125,10 +131,31 @@ read_map_reduce <- function(chunks, question, client, spec, trace) {
              evidence = evidence_table(d$chunk_id[useful], texts[useful],
                                        d$page[useful], d$section[useful],
                                        kind = "answer"),
-             partial = n_failed > 0 || any(capped) || !merged$ok || cut > 0L,
-             notes = list(chunks = nrow(d), answered = sum(useful), failed_calls = n_failed,
-                          truncated_calls = cut,
+             partial = n_failed > 0 || any(capped) || !merged$ok || cut > 0L ||
+               merge_failed > 0L || merge_cut > 0L,
+             notes = list(chunks = nrow(d), answered = sum(useful),
+                          failed_calls = n_failed + merge_failed,
+                          merge_failures = merge_failed,
+                          truncated_calls = cut, truncations = merge_cut,
                           merge_levels = merged$levels, merge_ok = merged$ok))
+}
+
+#' How many requests recorded from step `from` on, under a label starting with
+#' `prefix`, failed.
+#'
+#' tree_merge() returns its text and whether the LAST merge worked. A group
+#' merge that fails at a level below that passes the group's findings up
+#' unmerged, which keeps them but says nothing, so a run with a failed request
+#' reported failed_calls = 0 and partial = FALSE. The trace records every
+#' request, a parallel level's included (see trace_cut_off()), so the count
+#' comes from there.
+#' @noRd
+merge_failures <- function(trace, from, prefix) {
+  if (!inherits(trace, "gr_trace") || from > length(trace$steps)) return(0L)
+  steps <- trace$steps[seq.int(from, length(trace$steps))]
+  sum(vapply(steps, function(st) {
+    !identical(st$kind, "local") && !isTRUE(st$ok) && startsWith(as_chr1(st$label, ""), prefix)
+  }, logical(1)))
 }
 
 # ---------------------------------------------------------------------------
@@ -248,19 +275,41 @@ read_skim <- function(chunks, question, client, spec, trace) {
                        source_text = reader_source_text(d)[keep], kind = "extracted")
   overhead <- prompt_overhead(question, answer_system(spec$cite), spec$restate)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
-  body <- paste(sprintf("[chunk %d]\n%s", ev$chunk_id, ev$text), collapse = "\n\n")
-  dropped <- 0L
+  pieces <- sprintf("[chunk %d]\n%s", ev$chunk_id, ev$text)
+  body <- paste(pieces, collapse = "\n\n")
+  consolidated <- FALSE
+  merge_ok <- TRUE
+  merge_failed <- 0L
+  merge_cut <- 0L
+  merge_error <- NULL
+  sent <- d$chunk_id
+  cite <- spec$cite
   if (gr_count_tokens(body) > bud$input) {
     # Evidence itself can exceed the window on a large document. Consolidate it
-    # tree-wise rather than truncating blind.
-    m <- tree_merge(client, question, ev$text, spec, trace, label = "skim.consolidate",
+    # tree-wise rather than truncating blind. Each passage keeps its label, so
+    # a consolidation that carries one forward says where it came from.
+    from <- length(trace$steps) + 1L
+    m <- tree_merge(client, question, pieces, spec, trace, label = "skim.consolidate",
                     system_prompt = .gr_prompts$summarise_system, kind = "evidence")
     body <- m$text
-    dropped <- nrow(ev)
+    consolidated <- TRUE
     cut <- cut + m$truncated_calls
+    # A failed consolidation hands back the passages joined and cut short, and
+    # a failed group below the last level passes its passages up unmerged:
+    # either way the answer is written from part of the evidence.
+    merge_ok <- isTRUE(m$ok)
+    merge_error <- m$error
+    merge_failed <- merge_failures(trace, from, "skim.consolidate")
+    merge_cut <- as.integer(as_num1(m$truncated, 0))
+    # Only the labels still in the text are in front of the model. Checked
+    # against every chunk, a citation it invented for a consolidation that
+    # kept no label passed; with none to cite, it is not asked for any, as
+    # `hierarchical` is not.
+    sent <- intersect(ev$chunk_id, cited_chunks(body))
+    cite <- isTRUE(spec$cite) && length(sent) > 0L
   }
   res2 <- if (trace_can_call(trace)) {
-    gr_call(client, answer_messages(question, body, cite = spec$cite, label = "Evidence",
+    gr_call(client, answer_messages(question, body, cite = cite, label = "Evidence",
                                     restate = spec$restate),
             model = spec$model, max_output = spec$max_answer_tokens,
             temperature = spec$temperature, trace = trace, label = "skim.answer")
@@ -269,12 +318,21 @@ read_skim <- function(chunks, question, client, spec, trace) {
   # No answer, no evidence; see stuff. The passages found are counted in the
   # notes all the same.
   new_answer(if (usable_text(res2)) res2$text else .NOT_FOUND, "skim", question, ev$chunk_id, trace,
-             chunks_sent = d$chunk_id, evidence = if (usable_text(res2)) ev,
-             partial = any(!ok) || !res2$ok || cut > 0L,
-             notes = list(chunks = nrow(d), with_evidence = nrow(ev),
-                          failed_calls = sum(!ok & !capped), truncated_calls = cut,
-                          evidence_consolidated = dropped > 0,
-                          evidence_verified = sum(isTRUE_vec(ev$verified))))
+             chunks_sent = sent, evidence = if (usable_text(res2)) ev,
+             partial = any(!ok) || !res2$ok || cut > 0L || !merge_ok || merge_failed > 0L ||
+               merge_cut > 0L,
+             notes = c(list(chunks = nrow(d), with_evidence = nrow(ev),
+                            failed_calls = sum(!ok & !capped) + merge_failed,
+                            truncated_calls = cut, truncations = merge_cut,
+                            evidence_consolidated = consolidated,
+                            evidence_verified = sum(isTRUE_vec(ev$verified))),
+                       if (consolidated) list(merge_ok = merge_ok,
+                                              cite_dropped = isTRUE(spec$cite) && !cite),
+                       # Why the consolidation gave up, when no request of it
+                       # failed; when one did, the trace's error says more
+                       # than "merge made no progress".
+                       if (!is.null(merge_error) && !merge_failed)
+                         list(error = as_chr1(merge_error))))
 }
 
 # ---------------------------------------------------------------------------
@@ -286,6 +344,13 @@ read_skim <- function(chunks, question, client, spec, trace) {
 #' @noRd
 read_retrieve <- function(chunks, question, client, spec, trace) {
   d <- chunks$chunks
+  # Nothing to rank. Carried on, the top-1 fallback below took order() of no
+  # scores, which is NA, and `[chunk NA]\nNA` went out as the only excerpt: the
+  # model answered from its own prior, partial = FALSE.
+  if (!nrow(d)) {
+    return(new_answer(.NOT_FOUND, "retrieve", question, integer(0), trace, partial = TRUE,
+                      notes = list(chunks = 0L, reason = "there are no chunks to read")))
+  }
   emb <- gr_embed(client, c(question, d$text), trace = trace)
   src <- attr(emb, "embedding_source") %||% "api"
   degraded_embed <- isTRUE(attr(emb, "embedding_fallback"))
@@ -304,7 +369,9 @@ read_retrieve <- function(chunks, question, client, spec, trace) {
   chunk_emb <- if (nrow(emb) >= 2L) emb[-1, , drop = FALSE] else NULL
   lambda <- as_num1(spec$mmr, 1)
   keep <- mmr_select(rel, chunk_emb, k, lambda)
-  if (!length(keep)) keep <- order(scores, decreasing = TRUE)[1]
+  # head(), not [1]: of no scores that is nothing rather than NA, and d[NA, ]
+  # is a row of NAs that fits any budget.
+  if (!length(keep)) keep <- utils::head(order(scores, decreasing = TRUE), 1L)
 
   overhead <- prompt_overhead(question, answer_system(spec$cite), spec$restate)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
@@ -533,6 +600,18 @@ read_rerank <- function(chunks, question, client, spec, trace) {
   fit <- fit_chunks(d, bud$input, order = as.integer(keep_ord))
   fit$idx <- arrange_context(fit$idx, spec$context_order)
   sub <- d[fit$idx, , drop = FALSE]
+  # Checked as `retrieve` checks it. Unchecked, a chunk the model had judged
+  # relevant and that did not fit was dropped without a word, and when none
+  # fitted the answer call went out with an empty <excerpts></excerpts> and
+  # the model's own prior came back as the document's answer.
+  if (!nrow(sub)) {
+    return(new_answer(.NOT_FOUND, "rerank", question, integer(0), trace, partial = TRUE,
+                      notes = list(chunks = nrow(d), candidates = m, used = 0L,
+                                   dropped_chunks = length(fit$dropped),
+                                   scoring_failures = n_failed, unscorable = n_unscorable,
+                                   prefilter = prefilter$method, degraded_to_bm25 = degraded,
+                                   reason = "no selected chunk fits the context window")))
+  }
   trace_note(trace, "rerank.select", list(candidates = m, kept = nrow(sub),
                                           prefilter = prefilter$method,
                                           degraded_to_bm25 = degraded,
@@ -551,8 +630,9 @@ read_rerank <- function(chunks, question, client, spec, trace) {
                                                    sub$section, sc[match(fit$idx, ii)],
                                                    kind = "verbatim"),
              partial = !res$ok || degraded || unjudged || cut > 0L ||
-               identical(prefilter$method, "spread"),
+               identical(prefilter$method, "spread") || length(fit$dropped) > 0L,
              notes = list(chunks = nrow(d), candidates = m, used = nrow(sub),
+                          dropped_chunks = length(fit$dropped),
                           scoring_failures = n_failed, unscorable = n_unscorable,
                           truncated_calls = cut, prefilter = prefilter$method,
                           degraded_to_bm25 = degraded))
@@ -621,13 +701,23 @@ read_hierarchical <- function(chunks, question, client, spec, trace) {
     fan <- as.integer(spec$fan_in)
     groups <- split(current, ceiling(seq_along(current) / fan))
     prev_n <- length(current)
-    nxt <- summarise(vapply(groups, paste, character(1), collapse = "\n\n"), level)
-    nxt <- nxt[has_content(nxt)]
-    gr_msg(sprintf("Hierarchical level %d: %d -> %d summaries.", level, prev_n, length(nxt)))
+    grouped <- vapply(groups, paste, character(1), collapse = "\n\n")
+    # Counted at every level, as at the first. A group whose summary failed
+    # was filtered out uncounted, and the fan_in summaries in it -- five chunks
+    # at level 2, twenty-five at level 3 -- left the answer with nothing in the
+    # notes or the flag to say so.
+    nxt <- count_failures(grouped, summarise(grouped, level))
+    got <- has_content(nxt)
+    gr_msg(sprintf("Hierarchical level %d: %d -> %d summaries.", level, prev_n, sum(got)))
     # A level that produced nothing, because a limit stopped it or every call
     # failed, leaves the summaries already paid for; they are cut to fit below.
-    if (!length(nxt)) break
-    current <- nxt
+    if (!any(got)) break
+    # A group with no summary goes up as its input rather than vanishing: the
+    # next level, or the cut to fit below, deals with it. The answer is partial
+    # either way, by the count above or, for a request a limit stopped, by
+    # gr_read().
+    nxt[!got] <- grouped[!got]
+    current <- unname(as.character(nxt))
     if (length(current) >= prev_n) break
   }
 
@@ -701,6 +791,10 @@ read_iterative <- function(chunks, question, client, spec, trace) {
   d <- chunks$chunks
   emb <- gr_embed(client, d$text, trace = trace)
   degraded_embed <- isTRUE(attr(emb, "embedding_fallback"))
+  src <- attr(emb, "embedding_source") %||% "api"
+  # The chunks on word overlap, for a round whose query could only be embedded
+  # that way; made the first time one needs them.
+  lex_emb <- if (identical(src, "lexical")) emb else NULL
   seen <- integer(0); seen_score <- numeric(0); queries <- as_chr1(question)
   dropped <- integer(0)
   rounds <- 0L; done_reason <- "max rounds"
@@ -715,8 +809,11 @@ read_iterative <- function(chunks, question, client, spec, trace) {
   # Built once and used for BOTH the budget and the call. Budgeting against
   # `answer_system` alone while sending this understated the overhead by 88
   # tokens a round, and the excerpts were sized to fill the gap.
+  # answer_system(spec$cite): this step is what writes the answer whenever the
+  # model is satisfied, so a request for citations that reached only the
+  # fallback answer call was dropped on the usual path.
   step_system <- paste0(
-    .gr_prompts$answer_system,
+    answer_system(spec$cite),
     " You are reading iteratively. If the excerpts so far are sufficient, set can_answer ",
     "true and give the answer. If not, set can_answer false and put in next_query the ",
     "specific missing information to search for -- a phrase you would expect to appear in ",
@@ -724,13 +821,31 @@ read_iterative <- function(chunks, question, client, spec, trace) {
 
   while (rounds < spec$max_rounds) {
     rounds <- rounds + 1L
-    q_emb <- gr_embed(client, queries[length(queries)], trace = trace)
-    sc <- if (nrow(emb)) cosine_against(emb, q_emb[1, ]) else rep(0, nrow(d))
+    q <- queries[length(queries)]
+    q_emb <- gr_embed(client, q, trace = trace)
+    rank_emb <- emb
+    q_vec <- if (nrow(q_emb)) q_emb[1, ] else numeric(0)
+    # One space for the query and the chunks. The query is embedded on its own
+    # each round, and one whose request failed came back as 512 hashed lexical
+    # dimensions against the API's vectors for the chunks: cosine_against()
+    # compared the first 512 of each, two unrelated spaces, and the round took
+    # whatever that picked with partial = FALSE. `retrieve` embeds the question
+    # with the chunks, in one request, and cannot mix them. Here both go onto
+    # word overlap for the round, and the answer says so.
+    if (nrow(d) && (!identical(attr(q_emb, "embedding_source") %||% "api", src) ||
+                    NCOL(q_emb) != NCOL(emb))) {
+      if (is.null(lex_emb)) lex_emb <- lexical_embed(d$text)
+      rank_emb <- lex_emb
+      q_vec <- lexical_embed(q)[1, ]
+      degraded_embed <- TRUE
+    }
+    degraded_embed <- degraded_embed || isTRUE(attr(q_emb, "embedding_fallback"))
+    sc <- if (nrow(rank_emb)) cosine_against(rank_emb, q_vec) else rep(0, nrow(d))
     # -Inf, not removal: mmr_select() treats a non-finite relevance as ineligible,
     # which is how a chunk already read stays out of this round without
     # renumbering everything around it.
     sc[seen] <- -Inf
-    take <- mmr_select(sc, if (nrow(emb) == nrow(d)) emb else NULL,
+    take <- mmr_select(sc, if (nrow(rank_emb) == nrow(d)) rank_emb else NULL,
                        as.integer(clamp(spec$top_k, 1, nrow(d))), as_num1(spec$mmr, 1))
     if (!length(take)) { done_reason <- "no unseen chunks"; break }
     seen <- c(seen, take)
@@ -779,6 +894,12 @@ read_iterative <- function(chunks, question, client, spec, trace) {
       break
     }
     if (isTRUE(json_field(out$value, "can_answer"))) {
+      answer <- as_chr1(json_text(out$value, "answer"), "")
+      # Satisfied, with no answer, is a step that failed. Returned, a blank came
+      # back as a blank answer and a null as a confident NOT_IN_DOCUMENT, both
+      # with evidence and partial = FALSE. The answer call below reads what was
+      # gathered instead, and that answer is partial.
+      if (!nzchar(trimws(answer))) { done_reason <- "step gave no answer"; break }
       trace_note(trace, "iterative.stop", list(rounds = rounds, reason = "model satisfied"))
       # `step$rows`, not `seen`: a chunk that did not fit the prompt was never
       # shown to the model, and reporting it as used -- with a row in the
@@ -787,7 +908,7 @@ read_iterative <- function(chunks, question, client, spec, trace) {
       # The step's JSON parsed, but the provider says the reply stopped at the
       # cap, so the answer inside it may be missing its end.
       cut <- as.integer(reply_cut_off(out$result))
-      return(new_answer(as_chr1(json_text(out$value, "answer"), .NOT_FOUND), "iterative", question,
+      return(new_answer(answer, "iterative", question,
                         d$chunk_id[keep], trace,
                         evidence = evidence_table(d$chunk_id[keep], reader_source_text(d)[keep],
                                                   d$page[keep], d$section[keep],
@@ -897,9 +1018,18 @@ read_ensemble <- function(chunks, question, client, spec, trace) {
   })
   names(results) <- members
   usable <- vapply(results, function(r) !is_not_found(r$answer), logical(1))
+  # The members' failed requests, of every kind they count, summed here:
+  # print() and partial_reasons() read the answer's own notes, not the
+  # members'.
+  member_count <- function(r, k) as_num1(as.list(r$notes %||% list())[[k, exact = TRUE]], 0)
+  failed <- sum(vapply(results, function(r) {
+    member_count(r, "failed_calls") + member_count(r, "scoring_failures") +
+      member_count(r, "failed_summaries")
+  }, numeric(1)))
   if (!any(usable)) {
     return(new_answer(.NOT_FOUND, "ensemble", question, integer(0), trace, partial = TRUE,
-                      notes = list(members = members, reason = "no member produced an answer")))
+                      notes = list(members = members, failed_calls = failed,
+                                   reason = "no member produced an answer")))
   }
   # Replies a member took cut off at the output cap are in what it answered,
   # and so in what is adjudicated here.
@@ -910,7 +1040,8 @@ read_ensemble <- function(chunks, question, client, spec, trace) {
     return(new_answer(only$answer, "ensemble", question, only$chunks_used, trace,
                       evidence = only$evidence, partial = TRUE,
                       notes = list(members = members, adjudication = "single member answered",
-                                   answered_by = members[usable], truncated_calls = cut)))
+                                   answered_by = members[usable], truncated_calls = cut,
+                                   failed_calls = failed)))
   }
   body <- paste(sprintf("<finding source=\"%s\">\n%s\n</finding>", members[usable],
                         vapply(results[usable], function(r) r$answer, character(1))),
@@ -950,14 +1081,27 @@ read_ensemble <- function(chunks, question, client, spec, trace) {
   }
 
   if (res$ok && reply_cut_off(res)) cut <- cut + 1L
+  # A member's own flag is part of what is adjudicated. Left out, a map_reduce
+  # member that read 3 of 10 chunks (7 requests failed) was merged with the
+  # other member's answer and the ensemble said it rested on the whole
+  # document.
+  member_partial <- members[usable][vapply(results[usable], function(r) isTRUE(r$partial),
+                                           logical(1))]
   new_answer(if (res$ok) res$text else paste(ans, collapse = "\n\n---\n\n"),
              "ensemble", question,
              unique(unlist(lapply(results[usable], function(r) r$chunks_used))), trace,
-             evidence = ev, partial = !res$ok || any(!usable) || cut > 0L,
-             notes = list(members = members, signatures = unname(sigs), truncated_calls = cut,
-                          answered = members[usable], adjudication = if (res$ok) "llm" else "concatenated",
-                          collapsed_members = collapsed,
-                          member_notes = lapply(results, function(r) r$notes)))
+             evidence = ev,
+             partial = !res$ok || any(!usable) || cut > 0L || length(member_partial) > 0L,
+             notes = c(list(members = members, signatures = unname(sigs), truncated_calls = cut,
+                            answered = members[usable],
+                            adjudication = if (res$ok) "llm" else "concatenated",
+                            collapsed_members = collapsed,
+                            failed_calls = failed, partial_members = member_partial,
+                            member_notes = lapply(results, function(r) r$notes)),
+                       if (length(member_partial))
+                         list(reason = sprintf("member(s) %s returned a partial answer",
+                                               paste(sprintf("'%s'", member_partial),
+                                                     collapse = ", ")))))
 }
 
 
@@ -1103,7 +1247,7 @@ read_preview <- function(chunks, question, client, spec, trace) {
     if (is.data.frame(tab) && nrow(tab) && all(c("id", "treatment") %in% names(tab)) &&
         is.atomic(tab$id) && is.atomic(tab$treatment)) {
       ids <- suppressWarnings(as.integer(tab$id))
-      tr <- tolower(trimws(as.character(tab$treatment)))
+      tr <- lower_text(trimws(as.character(tab$treatment)))
       # Lengths are equal by construction (columns of one frame), so no
       # recycling here; `ok` is as long as the plan.
       ok <- !is.na(ids) & ids >= 1L & ids <= n_units & tr %in% c("read", "skim", "skip")
@@ -1140,13 +1284,19 @@ read_preview <- function(chunks, question, client, spec, trace) {
                      treat == "read")
     treat[demoted] <- "skim"
   }
-  keep_rows <- fit$idx
+  # A demoted section is skimmed, whole, and not read as well. The part of it
+  # that fitted used to stay in the prompt verbatim while the section was
+  # skimmed too, so its chunks went in twice, in a prompt with room for
+  # neither.
+  keep_rows <- as.integer(setdiff(fit$idx, unlist(units[demoted], use.names = FALSE)))
 
   # One extraction call per skimmed SECTION, not per chunk. That is what makes
   # this cheaper than `skim`: the plan has already judged these sections
   # unlikely to hold the answer, so they get one look each.
   skim_units <- which(treat == "skim")
   ev_skim <- NULL
+  ev_rows <- list()
+  skim_sent <- integer(0)
   failed <- 0L
   not_sent <- 0L
   truncated <- 0L
@@ -1188,6 +1338,7 @@ read_preview <- function(chunks, question, client, spec, trace) {
     capped <- vapply(res, function(r) isTRUE(r$capped), logical(1))
     failed <- sum(!ok & !capped)
     not_sent <- sum(capped)
+    skim_sent <- as.integer(unlist(lapply(res[!capped], function(r) r$rows), use.names = FALSE))
     keep <- ok & !grepl("^[\"'`*_ ]*NONE[\"'`*_. ]*$", trimws(txt), ignore.case = TRUE) &
       has_content(txt)
     # Evidence cut off at the output cap; see skim.
@@ -1201,7 +1352,27 @@ read_preview <- function(chunks, question, client, spec, trace) {
                     character(1))
       ev_skim <- evidence_table(d$chunk_id[rows1], txt[keep], d$page[rows1], d$section[rows1],
                                 source_text = src, kind = "extracted")
+      ev_rows <- lapply(res[keep], function(r) r$rows)
     }
+  }
+
+  # The answer prompt is budgeted as a whole. The read rows were fitted to all
+  # of it and the skim evidence went in on top, which is exactly when the read
+  # rows had filled it -- demotion only happens then -- so gr_call() cut the
+  # reply's room (partial = FALSE, over an answer that could stop mid-sentence)
+  # or refused the call. The evidence goes into the room the read rows leave,
+  # whole, in document order; what does not fit is left out and counted.
+  ev_dropped <- 0L
+  if (!is.null(ev_skim) && nrow(ev_skim)) {
+    room <- bud$input -
+      if (length(keep_rows)) gr_count_tokens(render_chunks(d[keep_rows, , drop = FALSE])) else 0L
+    need <- gr_count_tokens(sprintf("[chunk %d]\n%s", ev_skim$chunk_id, ev_skim$text))
+    fits <- logical(length(need))
+    for (i in seq_along(need)) {
+      if (need[i] <= room) { fits[i] <- TRUE; room <- room - need[i] }
+    }
+    ev_dropped <- length(unlist(ev_rows[!fits], use.names = FALSE))
+    ev_skim <- ev_skim[fits, , drop = FALSE]
   }
 
   ev_read <- if (length(keep_rows)) {
@@ -1233,19 +1404,24 @@ read_preview <- function(chunks, question, client, spec, trace) {
       paste(sprintf("[chunk %d]\n%s", ev_skim$chunk_id, ev_skim$text), collapse = "\n\n")
   ), collapse = "\n\n")
 
+  # What some request was shown: the rows read and the sections a skim was sent
+  # for. Every chunk, as it was, took in the sections the plan skipped, which no
+  # model saw, so a citation of one could never be caught.
+  sent <- unique(d$chunk_id[c(keep_rows, skim_sent)])
+
   if (!nzchar(trimws(body))) {
     # The same counts the ordinary return carries. Omitting them left
     # `notes$skipped` NULL on exactly the run where everything was skipped,
     # which is the run somebody inspecting that field is looking at.
     return(new_answer(.NOT_FOUND, "preview", question, integer(0), trace, partial = TRUE,
-                      chunks_sent = d$chunk_id,
+                      chunks_sent = sent,
                       notes = list(sections = n_units, plan = plan_tab,
                                    read = sum(treat == "read"), skimmed = sum(treat == "skim"),
                                    skipped = sum(treat == "skip"),
                                    demoted_to_skim = length(demoted), failed_calls = failed,
                                    degraded = degraded,
                                    tokens_skipped = sum(d$tokens[skipped_rows]),
-                                   tokens_truncated = truncated,
+                                   tokens_truncated = truncated, dropped_chunks = ev_dropped,
                                    reason = "the plan skipped every section, or every skim failed")))
   }
 
@@ -1259,7 +1435,7 @@ read_preview <- function(chunks, question, client, spec, trace) {
   used <- unique(c(d$chunk_id[keep_rows], if (!is.null(ev_skim)) ev_skim$chunk_id))
   # No answer, no evidence; see stuff.
   new_answer(if (usable_text(res2)) res2$text else .NOT_FOUND, "preview", question, used, trace,
-             chunks_sent = d$chunk_id, evidence = if (usable_text(res2)) ev,
+             chunks_sent = sent, evidence = if (usable_text(res2)) ev,
              # A run that deliberately did not read part of the document is
              # partial in the sense the word carries everywhere else here: the
              # answer does not rest on everything that was available.
@@ -1267,13 +1443,13 @@ read_preview <- function(chunks, question, client, spec, trace) {
              # part of the document did not reach any model. It counts here for
              # the same reason `skip` does.
              partial = !res2$ok || failed > 0L || not_sent > 0L || any(treat == "skip") ||
-               degraded || truncated > 0L || cut > 0L,
+               degraded || truncated > 0L || cut > 0L || ev_dropped > 0L,
              notes = list(sections = n_units, plan = plan_tab,
                           read = sum(treat == "read"), skimmed = sum(treat == "skim"),
                           skipped = sum(treat == "skip"), demoted_to_skim = length(demoted),
                           failed_calls = failed, truncated_calls = cut, degraded = degraded,
                           tokens_skipped = sum(d$tokens[skipped_rows]),
-                          tokens_truncated = truncated))
+                          tokens_truncated = truncated, dropped_chunks = ev_dropped))
 }
 
 #' @noRd

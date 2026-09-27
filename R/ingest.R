@@ -101,7 +101,11 @@ gr_ingest_spec <- function(clean = "standard", ocr = c("auto", "always", "never"
 #' @param cache Use the session document cache. The cache key includes the file's
 #'   size and mtime plus every ingestion option; for a web address, the address,
 #'   so it is downloaded once a session. Registering a cleaner or extractor the
-#'   ingestion uses again (as when fixing it) starts a new cache entry.
+#'   ingestion uses again (as when fixing it) starts a new cache entry. The
+#'   cache lives in memory for the session, is shared by everything running in
+#'   the R process (every Shiny session of one app, say), and holds about
+#'   256 MB of documents; past that the documents used least recently are
+#'   dropped, and read again when next asked for.
 #' @param trace Optional `gr_trace`.
 #' @return A `gr_document`: a list with `blocks` (data frame), `text`, `source`,
 #'   `spec` and `stats`.
@@ -204,9 +208,8 @@ gr_ingest <- function(source, spec = NULL, cache = NULL, trace = NULL) {
                         unclass(spec), code))
   }
 
-  if (cache && !is.null(gr_state$doc_cache[[key]])) {
+  if (cache && !is.null(doc <- doc_cache_get(key))) {
     gr_msg("Using cached ingestion for this document + settings.")
-    doc <- gr_state$doc_cache[[key]]
     trace_note(trace, "ingest", list(cached = TRUE, blocks = nrow(doc$blocks)))
     return(doc)
   }
@@ -245,9 +248,12 @@ gr_ingest <- function(source, spec = NULL, cache = NULL, trace = NULL) {
 
   raw_chars <- sum(nchar(blocks$text))
   steps <- resolve_clean_steps(spec$clean)
+  # The blocks' pages go with them, so a step that decides by where a line
+  # stands on its page (headers_footers) can see the pages.
+  clean_opts <- utils::modifyList(as.list(spec), spec$cleaner_opts %||% list())
+  clean_opts[[".pages"]] <- blocks$page
   cleaned <- withCallingHandlers(
-    gr_clean(blocks$text, steps = steps,
-             opts = utils::modifyList(as.list(spec), spec$cleaner_opts %||% list())),
+    gr_clean(blocks$text, steps = steps, opts = clean_opts),
     gr_warning = rec$record)
   clean_log <- attr(cleaned, "gr_clean_log")
   blocks$text <- mark_utf8(as.character(cleaned))
@@ -284,13 +290,53 @@ gr_ingest <- function(source, spec = NULL, cache = NULL, trace = NULL) {
     warnings = rec$get()
   ), class = "gr_document")
 
-  if (cache) gr_state$doc_cache[[key]] <- doc
+  if (cache) doc_cache_put(key, doc)
   trace_note(trace, "ingest", list(cached = FALSE, source = basename(src),
                                    blocks = nrow(blocks), tokens = doc$stats$tokens,
                                    clean_steps = steps))
   gr_msg(sprintf("Ingested %d block(s), ~%d tokens (%d chars removed by cleaning).",
                  doc$stats$blocks, doc$stats$tokens, doc$stats$chars_removed))
   doc
+}
+
+#' How much the session's document cache holds, in bytes, before the
+#' documents used least recently are dropped from it.
+#' @noRd
+.gr_doc_cache_bytes <- 256 * 1024^2
+
+#' The session's document cache, kept within .gr_doc_cache_bytes.
+#'
+#' It kept every document ingested under every setting for the life of the R
+#' process, and a Shiny server that shows documents under several presets
+#' only ever grew. A document is now dropped when the documents held come to
+#' more than the budget and it is the one used least recently; the one just
+#' stored always stays. Dropping one costs its extraction again, never a wrong
+#' document: the key is unchanged. The order of use and the sizes are kept in
+#' the cache itself, under names ls() does not list, so clearing the cache
+#' clears them too.
+#' @noRd
+doc_cache_get <- function(key) {
+  cache <- gr_state$doc_cache
+  doc <- cache[[key]]
+  if (!is.null(doc)) cache$.order <- c(setdiff(cache$.order, key), key)
+  doc
+}
+
+#' @noRd
+doc_cache_put <- function(key, doc, budget = .gr_doc_cache_bytes) {
+  cache <- gr_state$doc_cache
+  sizes <- cache$.sizes %||% numeric(0)
+  sizes[[key]] <- as.numeric(utils::object.size(doc))
+  cache[[key]] <- doc
+  order <- c(setdiff(cache$.order %||% character(0), key), key)
+  while (length(order) > 1L && sum(sizes[order], na.rm = TRUE) > budget) {
+    if (exists(order[1L], envir = cache, inherits = FALSE)) rm(list = order[1L], envir = cache)
+    sizes <- sizes[names(sizes) != order[1L]]
+    order <- order[-1L]
+  }
+  cache$.order <- order
+  cache$.sizes <- sizes
+  invisible(NULL)
 }
 
 #' @noRd

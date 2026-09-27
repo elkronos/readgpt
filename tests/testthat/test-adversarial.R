@@ -257,7 +257,9 @@ test_that("a value carrying more than one number is a miss, not a concatenation"
   expect_identical(readgpt:::coerce_field("1,204 participants", f), 1204L)
   expect_identical(readgpt:::coerce_field("about -3 points", f), -3L)
   g <- gr_field("Effect size", type = "number")
-  expect_equal(readgpt:::coerce_field("45.2 million", g), 45.2)
+  # A scale word is not dropped: 45.2 is not "45.2 million" unless the field is
+  # in millions, which the value cannot say (review 6, corpus-extract-06).
+  expect_null(readgpt:::coerce_field("45.2 million", g))
   expect_equal(readgpt:::coerce_field("1.2e-3", g), 1.2e-3)
   expect_null(readgpt:::coerce_field("0.2 to 0.9", g))
 })
@@ -1480,11 +1482,13 @@ test_that("a text field that arrives as an array is joined, not discarded", {
                                  gr_read_spec("iterative", max_rounds = 3)))$answer, "482")
 
   # And the screener's reason and criterion, which are what the flow diagram
-  # counts exclusions by.
+  # counts exclusions by. An "include": an exclusion whose criterion is not one
+  # of the protocol's, as this joined pair is not, is held back as "unclear"
+  # with its reason rewritten (model-output-12), which is not what this checks.
   d <- withr::local_tempdir()
   writeLines("A randomised trial of 482 adults found a benefit.", file.path(d, "a.txt"))
   sc_cl <- gr_mock_client(function(messages, params)
-    paste0('{"decision":"exclude","reason":["Not randomised.","No control group."],',
+    paste0('{"decision":"include","reason":["Not randomised.","No control group."],',
            '"criterion":["Randomised comparison","Adults"],',
            '"quote":["A randomised trial of 482 adults found a benefit."]}'))
   sc <- quiet(gr_screen(d, question = "Q?", include = "Randomised comparison", client = sc_cl))
@@ -1627,12 +1631,18 @@ test_that("max_pdf_pages = Inf samples every page, and NA is the default", {
       "characters of it, on one line."))
   }
   grDevices::dev.off()
-  st <- function(v) quiet(gr_inventory(d, max_pdf_pages = v))$files$status
-  expect_identical(st(3L), "needs_ocr")      # the first three pages are blank
-  expect_identical(st(Inf), "ready")         # documented: Inf reads every page
-  expect_identical(st(1e10), "ready")
+  inv <- function(v) quiet(gr_inventory(d, max_pdf_pages = v))$files
+  # The first three pages are blank. A sample of three is spread across the
+  # document (pages 2, 4 and 6), so it finds the text layer and estimates the
+  # blank pages from what it saw. Taking the first three called this
+  # born-digital PDF a scan (screen-protocol-07, test-review6-records.R).
+  expect_identical(inv(3L)$status, "ready")
+  expect_identical(inv(3L)$ocr_pages, 2L)     # estimated from pages 2, 4 and 6
+  expect_identical(inv(Inf)$status, "ready")
+  expect_identical(inv(Inf)$ocr_pages, 3L)    # documented: Inf reads every page
+  expect_identical(inv(1e10)$ocr_pages, 3L)
   expect_warning(gr_inventory(d, max_pdf_pages = NA), class = "gr_bad_setting")
-  expect_identical(st(NA), "needs_ocr")      # the default, 3
+  expect_identical(inv(NA)$ocr_pages, 2L)     # the default, 3
   # ocr_min_chars is a count: as text it was compared as text, and "40" made a
   # page with a text layer look like a scan; NA failed every PDF.
   txt <- function(v) quiet(gr_inventory(d, max_pdf_pages = Inf, ocr_min_chars = v))$files$status

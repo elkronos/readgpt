@@ -88,6 +88,43 @@ empty_records <- function() {
   out
 }
 
+#' The tags the RIS specification defines.
+#' @noRd
+.gr_ris_tags <- c(
+  "TY", "ER", "A1", "A2", "A3", "A4", "AB", "AD", "AN", "AU", "AV", "BT", "C1", "C2", "C3",
+  "C4", "C5", "C6", "C7", "C8", "CA", "CN", "CP", "CT", "CY", "DA", "DB", "DI", "DO", "DP",
+  "ED", "EP", "ET", "ID", "IS", "J1", "J2", "JA", "JF", "JO", "KW", "L1", "L2", "L3", "L4",
+  "LA", "LB", "LK", "M1", "M2", "M3", "N1", "N2", "NV", "OP", "PB", "PP", "PY", "RI", "RN",
+  "RP", "SE", "SN", "SO", "SP", "ST", "T1", "T2", "T3", "TA", "TI", "TT", "U1", "U2", "U3",
+  "U4", "U5", "UR", "VL", "VO", "Y1", "Y2")
+
+#' The tag of each RIS line, and its value; NA for a line that is not a tag.
+#'
+#' A tag line is "AU  - Smith, J.": exactly two characters, two spaces and a
+#' hyphen. The pattern this replaced took zero to two spaces and tags of up to
+#' four characters, so a wrapped abstract line was read as a tag: "ER-positive
+#' tumours ..." ended the record there, and the year and DOI after it were
+#' lost, and "HER2-negative disease ..." was cut out of the abstract as a tag of
+#' its own. One space before the hyphen is still read, but only for a tag the
+#' RIS specification defines and only with a space or nothing after the
+#' hyphen, which is not how a wrapped sentence looks. And an `ER` with nothing
+#' after it ends a record however it is spaced.
+#' @noRd
+ris_tags <- function(lines) {
+  std <- grepl("^[A-Z][A-Z0-9]  -", lines)
+  known <- unique(c(.gr_ris_tags, unlist(.gr_ris_map, use.names = FALSE)))
+  one <- !std & grepl(sprintf("^(?:%s) -(?: |$)", paste(known, collapse = "|")), lines, perl = TRUE)
+  end <- !std & !one & grepl("^ER {0,2}-[[:space:]]*$", lines)
+  tag <- rep(NA_character_, length(lines))
+  val <- rep(NA_character_, length(lines))
+  hit <- std | one | end
+  tag[hit] <- substr(lines[hit], 1L, 2L)
+  val[std] <- trimws(substring(lines[std], 6L))
+  val[one] <- trimws(substring(lines[one], 5L))
+  val[end] <- ""
+  list(tag = tag, val = val)
+}
+
 #' Split a RIS file into records.
 #'
 #' A record starts at `TY  -` and ends at `ER  -`. Both are required by the
@@ -96,11 +133,11 @@ empty_records <- function() {
 #' `ER` and tolerating a missing final one is what survives real files.
 #' @noRd
 ris_records <- function(lines) {
-  # Tag lines look like "AU  - Smith, J." -- two to four characters, then spaces
-  # and a hyphen. A continuation line has no tag and belongs to the tag above.
-  tag_re <- "^([A-Z][A-Z0-9]{1,3})[[:space:]]{0,2}-[[:space:]]?(.*)$"
-  ends <- grep("^ER[[:space:]]{0,2}-", lines)
-  starts <- grep("^TY[[:space:]]{0,2}-", lines)
+  # A continuation line has no tag and belongs to the tag above. See ris_tags()
+  # for what counts as a tag.
+  rt <- ris_tags(lines)
+  ends <- which(rt$tag %in% "ER")
+  starts <- which(rt$tag %in% "TY")
   if (!length(starts)) return(list())
   # Pair each start with the first end after it; a start with no end runs to the
   # next start, or to the end of the file.
@@ -110,18 +147,16 @@ ris_records <- function(lines) {
     nxt <- if (i < length(starts)) starts[i + 1L] - 1L else length(lines)
     e <- ends[ends > s]
     stop_at <- if (length(e)) min(e[1] - 1L, nxt) else nxt
-    block <- lines[s:max(s, stop_at)]
-    m <- regmatches(block, regexec(tag_re, block))
     tags <- list(); last <- NULL
-    for (k in seq_along(block)) {
-      if (length(m[[k]]) == 3L) {
-        last <- m[[k]][2]
-        tags[[last]] <- c(tags[[last]], trimws(m[[k]][3]))
-      } else if (!is.null(last) && nzchar(trimws(block[k]))) {
+    for (k in s:max(s, stop_at)) {
+      if (!is.na(rt$tag[k])) {
+        last <- rt$tag[k]
+        tags[[last]] <- c(tags[[last]], rt$val[k])
+      } else if (!is.null(last) && nzchar(trimws(lines[k]))) {
         # A wrapped abstract. Append to the tag it continues rather than
         # dropping it, which is how half an abstract goes missing.
         n <- length(tags[[last]])
-        tags[[last]][n] <- paste(tags[[last]][n], trimws(block[k]))
+        tags[[last]][n] <- paste(tags[[last]][n], trimws(lines[k]))
       }
     }
     out[[i]] <- tags
@@ -152,6 +187,80 @@ records_from_ris <- function(lines, source_file) {
   finish_records(do.call(rbind, rows))
 }
 
+#' MEDLINE tags (PubMed's own format), mapped as .gr_ris_map maps RIS.
+#'
+#' Authors and the DOI are not here: they need more than the first tag present
+#' (see records_from_medline()).
+#' @noRd
+.gr_medline_map <- list(
+  type     = "PT",
+  year     = c("DP", "DEP"),
+  title    = c("TI", "BTI"),
+  venue    = c("JT", "TA"),
+  volume   = "VI",
+  issue    = "IP",
+  pages    = "PG",
+  abstract = "AB",
+  keywords = c("OT", "MH"),
+  accession = "PMID"
+)
+
+#' Split a PubMed file (.nbib, "PubMed" format in PubMed's Save menu) into
+#' records.
+#'
+#' This is what PubMed's "Send to: Citation manager" writes, and it is not RIS:
+#' a record starts at `PMID- `, tags are padded to four characters ("FAU - ",
+#' "LID - "), and a long value continues on lines indented by six spaces. Read
+#' as RIS it had no `TY` and gave no records, so the most searched database in
+#' health reviews dropped out of "records identified" behind a warning that
+#' blamed the file.
+#' @noRd
+medline_records <- function(lines) {
+  tagged <- grepl("^[A-Z](?:[A-Z0-9]{3}|[A-Z0-9]{2} |[A-Z0-9]  )-(?: |$)", lines, perl = TRUE)
+  tag <- ifelse(tagged, trimws(substr(lines, 1L, 4L)), NA_character_)
+  val <- ifelse(tagged, trimws(substring(lines, 6L)), NA_character_)
+  starts <- which(tag %in% "PMID")
+  if (!length(starts)) return(list())
+  ends <- c(starts[-1L] - 1L, length(lines))
+  lapply(seq_along(starts), function(i) {
+    tg <- character(0); vl <- character(0)
+    for (k in starts[i]:ends[i]) {
+      if (!is.na(tag[k])) {
+        tg <- c(tg, tag[k]); vl <- c(vl, val[k])
+      } else if (length(tg) && grepl("^[[:space:]]", lines[k]) && nzchar(trimws(lines[k]))) {
+        # A continuation, which PubMed indents. An unindented line that is not
+        # a tag is not part of any field.
+        vl[length(vl)] <- paste(vl[length(vl)], trimws(lines[k]))
+      }
+    }
+    list(tag = tg, val = vl)
+  })
+}
+
+#' @noRd
+records_from_medline <- function(lines, source_file) {
+  recs <- medline_records(lines)
+  if (!length(recs)) return(empty_records())
+  rows <- lapply(recs, function(r) {
+    tags <- split(r$val, factor(r$tag, levels = unique(r$tag)))
+    vals <- lapply(names(.gr_medline_map), function(f) tag_value(tags, .gr_medline_map[[f]]))
+    names(vals) <- names(.gr_medline_map)
+    # Authors in the order they are listed: the full names (FAU) where the
+    # record has them, else the short ones (AU), with a group author (CN) where
+    # it stands in the list.
+    au <- if ("FAU" %in% r$tag) c("FAU", "CN") else c("AU", "CN")
+    who <- trimws(r$val[r$tag %in% au])
+    vals$authors <- if (length(who[nzchar(who)])) paste(who[nzchar(who)], collapse = "; ") else NA_character_
+    # "LID - 10.1000/xyz [doi]" and "AID - S0140-6736(20)30183-5 [pii]": the
+    # DOI is the identifier marked as one.
+    ids <- trimws(r$val[r$tag %in% c("LID", "AID")])
+    doi <- sub("[[:space:]]*\\[doi\\]$", "", ids[grepl("\\[doi\\]$", ids)])
+    vals$doi <- if (length(doi)) doi[1] else NA_character_
+    as.data.frame(c(vals, list(source_file = source_file)), stringsAsFactors = FALSE)
+  })
+  finish_records(do.call(rbind, rows))
+}
+
 #' `@string`, `@preamble` and `@comment` are not records. They match the same
 #' `@word{` opener, and each one became a row with all seventeen fields NA --
 #' which dedupe_records() cannot collapse, because an NA key matches nothing,
@@ -166,40 +275,52 @@ records_from_ris <- function(lines, source_file) {
 #' Brace-counting rather than a regex: a title containing braces -- which is how
 #' BibTeX protects capitalisation, so `{DNA}` is common -- breaks any regex that
 #' assumes the first `}` ends the field.
+#'
+#' In bytes, not characters. Once one letter anywhere in the file is not ASCII
+#' the text is UTF-8, and R finds every character position it reports or takes
+#' (gregexpr(), regmatches(), substr()) by walking from the start of the
+#' string: a library of 8,000 entries with one accented name in it took 200 s
+#' against 16 s for the same file in ASCII, with nothing to show it was not
+#' hung. Braces and "@" are ASCII, so a byte offset never falls inside a
+#' character. Each entry is still counted from its own opening brace: its
+#' closing brace is the first brace after it that returns the depth to where it
+#' was before the entry opened.
 #' @noRd
 bib_entries <- function(txt) {
   txt <- paste(txt, collapse = "\n")
-  m <- gregexpr("@[[:alpha:]]+[[:space:]]*\\{", txt, perl = TRUE)
-  starts <- m[[1]]
+  starts <- gregexpr("@[A-Za-z]+[[:space:]]*\\{", txt, perl = TRUE, useBytes = TRUE)[[1]]
   if (starts[1] == -1L) return(list())
-  lens <- attr(starts, "match.length")
-  types <- tolower(sub("[[:space:]]*\\{$", "", sub("^@", "", regmatches(txt, m)[[1]])))
-  chars <- strsplit(txt, "", fixed = TRUE)[[1]]
-  nchars <- length(chars)
-  out <- list()
+  b <- charToRaw(txt)
+  open <- as.integer(starts + attr(starts, "match.length") - 1L)
+  types <- tolower(vapply(seq_along(starts), function(k) {
+    sub("[[:space:]]*\\{$", "", rawToChar(b[(starts[k] + 1L):open[k]]))
+  }, character(1)))
+  brace <- which(b == as.raw(0x7bL) | b == as.raw(0x7dL))
+  depth <- cumsum(ifelse(b[brace] == as.raw(0x7bL), 1L, -1L))     # after each brace
+  at_depth <- split(seq_along(brace), depth)
+  lines_at <- which(b == as.raw(0x0aL))
+  out <- vector("list", length(starts))
   for (idx in seq_along(starts)) {
     if (types[idx] %in% .gr_bib_skip) next
-    open <- starts[idx] + lens[idx] - 1L
-    depth <- 0L; i <- open; close <- NA_integer_
-    while (i <= nchars) {
-      if (chars[i] == "{") depth <- depth + 1L
-      else if (chars[i] == "}") {
-        depth <- depth - 1L
-        if (depth == 0L) { close <- i; break }
-      }
-      i <- i + 1L
-    }
+    o <- match(open[idx], brace)
+    # Depth moves one step at a time, so the first later brace at one level
+    # below the opening brace is where it closes.
+    v <- at_depth[[as.character(depth[o] - 1L)]]
+    j <- if (is.null(v)) 0L else findInterval(o, v) + 1L
+    close <- if (j >= 1L && j <= length(v)) brace[v[j]] else NA_integer_
     if (is.na(close)) {
       # Silently dropping it removed a study from the review -- from the counts,
       # from screening and from the flow diagram -- with nothing to notice.
-      gr_warn(sprintf(paste0("A BibTeX @%s entry beginning at character %d has no closing ",
+      gr_warn(sprintf(paste0("A BibTeX @%s entry beginning on line %d has no closing ",
                              "brace and was skipped; check the file for an unbalanced '{'."),
-                      types[idx], starts[idx]), class = "gr_bib_unterminated")
+                      types[idx], findInterval(starts[idx], lines_at) + 1L),
+              class = "gr_bib_unterminated")
       next
     }
-    out[[length(out) + 1L]] <- substr(txt, open + 1L, close - 1L)
+    out[[idx]] <- if (close - 1L < open[idx] + 1L) "" else
+      mark_utf8(rawToChar(b[(open[idx] + 1L):(close - 1L)]))
   }
-  out
+  out[!vapply(out, is.null, logical(1))]
 }
 
 #' Split one entry's body into its `name = value` fields.
@@ -418,31 +539,52 @@ bib_unlatex <- function(v) {
   mark_utf8(v)
 }
 
+#' Split a BibTeX name list on " and " at brace depth zero.
+#'
+#' Braces are how BibTeX says "one name": `{Centers for Disease Control and
+#' Prevention}` is one author. Splitting after the braces had been stripped
+#' made it two, "Centers for Disease Control" and "Prevention", and the
+#' citation read "(Control & Prevention, 2020)".
+#' @noRd
+bib_split_names <- function(v) {
+  if (is.na(v)) return(v)
+  m <- gregexpr("[[:space:]]+and[[:space:]]+", v, perl = TRUE)[[1]]
+  if (m[1] == -1L) return(v)
+  ch <- strsplit(v, "", fixed = TRUE)[[1]]
+  depth <- cumsum((ch == "{") - (ch == "}"))
+  top <- depth[m] == 0L
+  if (!any(top)) return(v)
+  at <- as.integer(m[top]); len <- attr(m, "match.length")[top]
+  substring(v, c(1L, at + len), c(at - 1L, nchar(v)))
+}
+
 #' @noRd
 records_from_bib <- function(txt, source_file) {
   entries <- bib_entries(txt)
   if (!length(entries)) return(empty_records())
+  clean <- function(v, nm) {
+    # Not in a path or a link, where "\o" is a folder, not a letter.
+    if (!nm %in% c("file", "url", "doi")) v <- bib_unlatex(v)
+    # Capitalisation-protecting braces are not part of the value, and the
+    # characters BibTeX makes you escape are not meant to keep their
+    # backslash: "Memory {\\&} Cognition" is "Memory & Cognition".
+    v <- gsub("\\\\([&%$#_{}])", "\\1", v, perl = TRUE)
+    trimws(gsub("[{}]", "", v))
+  }
   rows <- lapply(entries, function(body) {
     fields <- bib_fields(body)
     tags <- lapply(names(fields), function(nm) {
       v <- trimws(fields[[nm]])
-      # Not in a path or a link, where "\o" is a folder, not a letter.
-      if (!nm %in% c("file", "url", "doi")) v <- bib_unlatex(v)
-      # Capitalisation-protecting braces are not part of the value, and the
-      # characters BibTeX makes you escape are not meant to keep their
-      # backslash: "Memory {\\&} Cognition" is "Memory & Cognition".
-      v <- gsub("\\\\([&%$#_{}])", "\\1", v, perl = TRUE)
-      trimws(gsub("[{}]", "", v))
+      if (!identical(nm, "author")) return(clean(v, nm))
+      # BibTeX joins authors with " and "; RIS gives one per line. Normalise to
+      # the RIS shape so downstream sees one convention -- split while the
+      # braces that hold one name together are still there.
+      a <- vapply(bib_split_names(v), clean, character(1), nm = nm, USE.NAMES = FALSE)
+      paste(a[!is.na(a) & nzchar(a)], collapse = "; ")
     })
     names(tags) <- names(fields)
     vals <- lapply(names(.gr_bib_map), function(f) tag_value(tags, .gr_bib_map[[f]]))
     names(vals) <- names(.gr_bib_map)
-    # BibTeX joins authors with " and "; RIS gives one per line. Normalise to
-    # the RIS shape so downstream sees one convention.
-    if (!is.na(vals$authors)) {
-      vals$authors <- paste(trimws(strsplit(vals$authors, "[[:space:]]+and[[:space:]]+")[[1]]),
-                            collapse = "; ")
-    }
     as.data.frame(c(vals, list(type = NA_character_, accession = NA_character_,
                                source_file = source_file)), stringsAsFactors = FALSE)
   })
@@ -465,7 +607,7 @@ finish_records <- function(df) {
   df$year[!grepl("^[0-9]{4}$", df$year)] <- NA_character_
   # DOIs arrive as bare, as a URL, and with a "doi:" prefix. One shape, so two
   # records for one paper can be recognised as one paper.
-  df$doi <- tolower(trimws(df$doi))
+  df$doi <- lower_text(trimws(df$doi))
   df$doi <- sub("^(https?://)?(dx\\.)?doi\\.org/", "", df$doi)
   df$doi <- sub("^doi:[[:space:]]*", "", df$doi)
   df$doi[!grepl("^10\\.[0-9]{4,9}/", df$doi)] <- NA_character_
@@ -637,9 +779,12 @@ fold_latin <- function(x) {
 #' the title, and deleting it made different studies one key.
 #' @noRd
 title_key <- function(x) {
-  # Lower-cased again after folding: tolower() may leave a capital it has no
-  # table for in the C locale, and the fold turns it into an ASCII one.
-  v <- tolower(fold_latin(tolower(mark_utf8(as.character(x)))))
+  # lower_text(), not tolower(), which in a C locale on Linux lowers A-Z
+  # alone: a Greek or Cyrillic title in capitals and the same title in lower
+  # case were two works in CI and one on a laptop. Lower-cased again after
+  # folding, for a capital neither table has that the fold turns into an ASCII
+  # one.
+  v <- lower_text(fold_latin(lower_text(mark_utf8(as.character(x)))))
   v <- gsub("[^\\p{L}\\p{N}]+", "", v, perl = TRUE)
   v[is.na(v) | !nzchar(v)] <- NA_character_
   v
@@ -668,9 +813,12 @@ title_key <- function(x) {
 #' That is the one part of a citation that must be exactly right, resting on the
 #' loosest guarantee in the pipeline. From an export they are data.
 #'
-#' @param exports Paths to `.ris`, `.txt`, `.bib` or `.bibtex` files, or a
-#'   directory containing them. Several exports from several databases is the
-#'   normal case and is what the duplicate counts are for.
+#' @param exports Paths to `.ris`, `.txt`, `.bib`, `.bibtex` or `.nbib` files,
+#'   or directories containing them. Several exports from several databases is
+#'   the normal case and is what the duplicate counts are for. The format is
+#'   read from the content, not the extension: RIS, BibTeX, or PubMed's own
+#'   format (what its "Send to: Citation manager" writes, usually `.nbib`). A
+#'   file that is not UTF-8 is read as Windows-1252, with a warning naming it.
 #' @param files A directory of documents, or a character vector of paths, to
 #'   match records against. Optional: a record set is useful before anything has
 #'   been downloaded.
@@ -768,8 +916,8 @@ gr_records <- function(exports, files = NULL, search = NULL,
 #' @noRd
 export_paths <- function(exports) {
   ext <- c("ris", "bib", "bibtex", "txt", "nbib")
-  if (is.character(exports) && length(exports) == 1L && !is.na(exports) && dir.exists(exports)) {
-    f <- list.files(exports, full.names = TRUE, no.. = TRUE)
+  in_dir <- function(d) {
+    f <- list.files(d, full.names = TRUE, no.. = TRUE)
     f <- f[!dir.exists(f)]
     f <- f[tolower(tools::file_ext(f)) %in% ext]
     # Byte order, not sort(): sort() follows LC_COLLATE, so "adams" came before
@@ -779,7 +927,10 @@ export_paths <- function(exports) {
     # mark_utf8(), not enc2utf8(): in a C locale enc2utf8() rewrites the
     # unlabelled UTF-8 bytes of "\u00c9vora.ris" as the text "<c3><89>vora.ris",
     # which sorts before "Baker".
-    return(f[order(mark_utf8(f), method = "radix")])
+    f[order(mark_utf8(f), method = "radix")]
+  }
+  if (is.character(exports) && length(exports) == 1L && !is.na(exports) && dir.exists(exports)) {
+    return(in_dir(exports))
   }
   p <- as.character(unlist(exports, use.names = FALSE))
   p <- p[!is.na(p)]
@@ -789,6 +940,27 @@ export_paths <- function(exports) {
                      paste(sprintf("'%s'", missing), collapse = ", ")),
              class = "gr_no_exports")
   }
+  # A folder among several paths is read as it is on its own. Taken as a file,
+  # it failed to open, contributed nothing and still counted as an export:
+  # gr_records(c("exports/wos", "pubmed.ris")) read none of Web of Science.
+  folder <- dir.exists(p)
+  if (any(folder)) {
+    p <- unlist(lapply(seq_along(p), function(i) {
+      if (!folder[i]) return(p[i])
+      f <- in_dir(p[i])
+      if (!length(f)) {
+        gr_warn(sprintf(paste0("The folder '%s' holds no .ris, .bib, .bibtex, .txt or .nbib ",
+                               "files. It contributed no records."), p[i]),
+                class = "gr_unknown_export")
+      }
+      f
+    }), use.names = FALSE)
+    # A file named on its own and found again in a folder is one export, not
+    # two: reading it twice would count its records twice as "identified".
+    real <- vapply(p, function(x) tryCatch(normalizePath(x, winslash = "/", mustWork = FALSE),
+                                           error = function(e) x), character(1), USE.NAMES = FALSE)
+    p <- p[!duplicated(real)]
+  }
   p
 }
 
@@ -797,21 +969,55 @@ export_paths <- function(exports) {
 #' Exporters are careless with extensions -- Web of Science writes RIS into a
 #' `.txt`, and a `.txt` from Scholar is BibTeX. Looking at the first line is
 #' more reliable than trusting the name.
+#'
+#' The lines are made UTF-8 first. `readLines(encoding = "UTF-8")` only labels
+#' the bytes, and an EndNote export saved as "ANSI" on Windows is Windows-1252:
+#' with an accent in its first sixty lines every test below failed on it and
+#' the file was dropped as "not RIS", and with one further down the parser
+#' stopped gr_records() with "input string 2 is invalid in this locale". It is
+#' read as Windows-1252, the one guess to_utf8() makes, and a warning names the
+#' file, since a file in another encoding would come out with the wrong
+#' letters.
 #' @noRd
 read_export <- function(path) {
-  lines <- tryCatch(readLines(path, warn = FALSE, encoding = "UTF-8"),
-                    error = function(e) character(0))
+  # readLines() warns with the reason a file cannot be opened and then fails
+  # with "cannot open the connection"; the warning is the part worth saying.
+  held <- list()
+  lines <- tryCatch(withCallingHandlers(
+    readLines(path, warn = FALSE, encoding = "UTF-8"),
+    warning = function(w) { held[[length(held) + 1L]] <<- w; invokeRestart("muffleWarning") }),
+    error = function(e) { held[[length(held) + 1L]] <<- e; NULL })
+  if (is.null(lines)) {
+    # An empty frame with no warning of the package's own was how an export
+    # that could not be opened dropped out of "records identified" unnoticed.
+    gr_warn(sprintf("'%s' could not be read (%s). It contributed no records.", basename(path),
+                    conditionMessage(held[[1]])), class = "gr_export_unreadable")
+    return(empty_records())
+  }
+  for (w in held) warning(w)                  # a file that did read keeps its warnings
   if (!length(lines)) return(empty_records())
-  head_txt <- paste(utils::head(lines, 60), collapse = "\n")
+  bad <- sum(!validUTF8(lines))
+  lines <- to_utf8(lines)
+  lines[1] <- sub("^\ufeff", "", lines[1])                     # a byte-order mark
+  if (bad) {
+    gr_warn(sprintf(paste0("'%s' is not UTF-8: %d line(s) were read as Windows-1252 (Latin-1). ",
+                           "Check the accented names in its records, or export it again as UTF-8."),
+                    basename(path), bad), class = "gr_export_encoding")
+  }
+  head_lines <- utils::head(lines, 60)
+  head_txt <- paste(head_lines, collapse = "\n")
   if (grepl("^[[:space:]]*@[[:alpha:]]+[[:space:]]*\\{", head_txt) ||
       grepl("\n[[:space:]]*@[[:alpha:]]+[[:space:]]*\\{", head_txt)) {
     return(records_from_bib(lines, basename(path)))
   }
-  if (grepl("(^|\n)TY[[:space:]]{0,2}-", head_txt)) {
+  if (any(ris_tags(head_lines)$tag %in% "TY")) {
     return(records_from_ris(lines, basename(path)))
   }
-  gr_warn(sprintf(paste0("'%s' does not look like RIS or BibTeX: no 'TY  -' and no '@article{'. ",
-                         "It contributed no records."), basename(path)),
+  if (any(grepl("^PMID- ", head_lines))) {
+    return(records_from_medline(lines, basename(path)))
+  }
+  gr_warn(sprintf(paste0("'%s' does not look like RIS, BibTeX or PubMed: no 'TY  -', no ",
+                         "'@article{' and no 'PMID- '. It contributed no records."), basename(path)),
           class = "gr_unknown_export")
   empty_records()
 }
@@ -897,7 +1103,7 @@ record_first_author <- function(authors) {
       # lone letter first is a given name ("J LI"). With a comma the part
       # before it is the whole surname, however short its words: "VAN DAM, P"
       # was read as surname "VAN", initial "D".
-      bare <- tolower(gsub("[^\\p{L}]", "", w, perl = TRUE))
+      bare <- lower_text(gsub("[^\\p{L}]", "", w, perl = TRUE))
       len <- nchar(bare)
       np <- 0L
       while (np < length(w) - 1L && bare[np + 1L] %in% .gr_rec_particles) np <- np + 1L
@@ -953,7 +1159,7 @@ record_name_forms <- function(x) {
 #' The words of each name, less its particles, in both spellings.
 #' @noRd
 record_name_words <- function(x) {
-  lapply(tolower(fold_latin(x)), function(v) {
+  lapply(lower_text(fold_latin(x)), function(v) {
     if (is.na(v)) return(character(0))
     w <- strsplit(v, "[^\\p{L}\\p{N}]+", perl = TRUE)[[1]]
     w <- w[nchar(w) >= 2L]
@@ -967,7 +1173,7 @@ record_name_words <- function(x) {
 #' @noRd
 record_venue_words <- function(v) {
   v <- gsub("\\([^)]*\\)", " ", mark_utf8(as.character(v)))
-  lapply(tolower(fold_latin(v)), function(x) {
+  lapply(lower_text(fold_latin(v)), function(x) {
     if (is.na(x)) return(character(0))
     w <- strsplit(x, "[^\\p{L}\\p{N}]+", perl = TRUE)[[1]]
     w[nzchar(w) & !w %in% c("the", "of", "and", "for", "in", "on", "an", "de", "la", "le",
@@ -1096,7 +1302,7 @@ dedupe_records <- function(recs, how) {
     corp_key <- gsub("tre", "ter", gsub("z", "s", corp_key, fixed = TRUE), fixed = TRUE)
     # An author that is one word in capitals may be an organisation's acronym.
     acro <- ifelse(!fa$corporate & grepl("^(?:\\p{Lu}\\.?){2,8}$", fa$entry, perl = TRUE),
-                   tolower(fold_latin(gsub("[^\\p{L}]", "", fa$entry, perl = TRUE))), NA_character_)
+                   lower_text(fold_latin(gsub("[^\\p{L}]", "", fa$entry, perl = TRUE))), NA_character_)
     # "WHO" is the World Health Organization, "CDC" the Centers for Disease
     # Control and Prevention and "NICE" the National Institute for Health and
     # Care Excellence: the acronym's letters are the initials of the name's
@@ -1106,7 +1312,7 @@ dedupe_records <- function(recs, how) {
     acronym_of <- function(p, g) {
       a <- acro[p]
       if (is.na(a) || is.na(first_full[g])) return(FALSE)
-      w <- strsplit(tolower(fold_latin(first_full[g])), "[^\\p{L}]+", perl = TRUE)[[1]]
+      w <- strsplit(lower_text(fold_latin(first_full[g])), "[^\\p{L}]+", perl = TRUE)[[1]]
       w <- w[nchar(w) > 1L & !w %in% c("of", "for", "and", "the", "on", "in", "to", "at", "de",
                                        "la", "du", "des", "et", "y")]
       ini <- paste(substr(w, 1, 1), collapse = "")
@@ -1114,10 +1320,10 @@ dedupe_records <- function(recs, how) {
         substr(a, 1, 1) == substr(ini, 1, 1) &&
         grepl(paste0("^", paste(strsplit(a, "")[[1]], collapse = ".*")), ini)
     }
-    raw_words <- lapply(tolower(fold_latin(fa$entry)), function(v) {
+    raw_words <- lapply(lower_text(fold_latin(fa$entry)), function(v) {
       if (is.na(v)) character(0) else strsplit(v, "[^\\p{L}\\p{N}]+", perl = TRUE)[[1]]
     })
-    ini_lc <- tolower(fa$initial)
+    ini_lc <- lower_text(fa$initial)
     # Row i's surname is a given name in row j's entry, and row i's initial is
     # the first letter of another word there: "Li, W." read against "Li Wei".
     # "Li, W." against "Zhang, Li" fails the second half, as W is not Zhang.
@@ -1341,7 +1547,7 @@ match_files <- function(recs, files) {
   sur_re <- vapply(seq_len(n), function(i) {
     if (is.na(ay[i])) return(NA_character_)
     parts <- gsub("(\\p{Ll})(\\p{Lu})|(\\p{Lu})(\\p{Lu}\\p{Ll})", "\\1\\3 \\2\\4", sur_f[i], perl = TRUE)
-    w <- tolower(regmatches(parts, gregexpr("[\\p{L}\\p{N}]+", parts, perl = TRUE))[[1]])
+    w <- lower_text(regmatches(parts, gregexpr("[\\p{L}\\p{N}]+", parts, perl = TRUE))[[1]])
     if (!length(w)) return(NA_character_)
     paste0(before, "(?i:", paste(w, collapse = "[^\\p{L}\\p{N}]*"), ")", after)
   }, character(1))
@@ -1357,6 +1563,23 @@ match_files <- function(recs, files) {
   tk_all <- title_key(recs$title)
   ttl_key <- settle(ifelse(is.na(tk_all) | nchar(tk_all) < 12L, NA_character_,
                            substr(tk_all, 1, 24)))
+  # Route 3's other direction, a filename that is the start of a title, needs
+  # a stem as long as the title floor: "2.pdf" in a folder of numbered
+  # downloads was the start of "2019 novel coronavirus ..." and went to it as
+  # retrieved. And a stem that begins the titles of two works identifies
+  # neither, even where settle() above blanked one of their keys (it compares
+  # the first 24 letters of the titles, not the stem's shorter prefix of them).
+  stem_24 <- substr(stem, 1, 24)
+  stem_ok <- !is.na(stem) & nchar(stem) >= 12L
+  live <- !is.na(owner) & !is.na(tk_all) & nchar(tk_all) >= 12L
+  for (len in unique(nchar(stem_24[stem_ok]))) {
+    has <- live & nchar(tk_all) >= len
+    pre <- substr(tk_all[has], 1, len)
+    pre <- pre[!duplicated(paste(pre, owner[has], sep = "\r"))]  # one per work
+    shared <- unique(pre[duplicated(pre)])
+    j <- stem_ok & nchar(stem_24) == len
+    stem_ok[j] <- !stem_24[j] %in% shared
+  }
 
   # Each route gives, for one row, the untaken files it points to, or NULL when
   # the row has nothing to offer that route.
@@ -1380,7 +1603,7 @@ match_files <- function(recs, files) {
     function(i) {
       if (is.na(ttl_key[i])) return(NULL)
       which(!taken & !is.na(stem) &
-              (startsWith(stem, ttl_key[i]) | startsWith(tk_all[i], substr(stem, 1, 24))))
+              (startsWith(stem, ttl_key[i]) | (stem_ok & startsWith(tk_all[i], stem_24))))
     },
     # 4. First author's surname and the year both appear in the filename. This
     # is how people actually name downloaded PDFs -- "smith2019.pdf",
@@ -1561,8 +1784,9 @@ print.gr_records <- function(x, ...) {
 #'
 #' This function computes nothing. It exists so the answer travels with the run
 #' instead of living in a lab notebook. It reaches [gr_flow()] and the audit
-#' report, and it round-trips through [gr_protocol_save()] alongside the
-#' criteria, so what was searched and what was eligible are one artifact.
+#' report, and, given to [gr_protocol()] as `search`, it round-trips through
+#' [gr_protocol_save()] alongside the criteria, so what was searched and what
+#' was eligible are one artifact.
 #'
 #' @param databases Named character vector or list: name of each source, value
 #'   the query string run against it. The query is the point; a review reporting

@@ -36,6 +36,11 @@
 #' every caller's `client` is. `item_usd` is the most one item can cost, its
 #' prompt with the reply at its cap. Without it, a spending limit is the
 #' caller's to check before the batch, as preflight() does for a read.
+#'
+#' An item that raises an error in a worker stops that worker's share of the
+#' batch, and the error is raised once every item's trace is in the run's, so
+#' the calls already made stay counted. A worker process that dies takes the
+#' traces of its items with it; future raises that before anything returns.
 #' @noRd
 
 gr_lapply <- function(x, fn, parallel = NULL, workers = NULL, key = NULL, label = "task",
@@ -83,10 +88,19 @@ gr_lapply <- function(x, fn, parallel = NULL, workers = NULL, key = NULL, label 
   # replayed its first response twice, and $stats() reported an exact replay
   # with no misses. A replay makes no requests, so running it here costs
   # nothing but the illusion of speed.
+  #
+  # Here, but as the workers ran it: each item with a trace of its own, folded
+  # in afterwards. A worker checks no limit against what the rest of the run
+  # has spent, so a recorded batch that went past the spending limit made
+  # every one of its calls; checked against the run's trace, its replay
+  # stopped part way through, short of the recording, and said nothing of it.
   if (inherits(client, "gr_replay_client")) {
+    if (as.integer(clamp(workers %||% gr_options("workers"), 1, 32)) <= 1L) return(sequential())
     gr_msg(sprintf("Running %d %s(s) one at a time: a replay hands out its recording in order.",
                    length(x), label))
-    return(sequential())
+    parent_meta <- if (inherits(trace, "gr_trace")) trace$meta else list()
+    wrapped <- worker_item(fn, "", list(), list(), parent_meta, NULL)
+    return(batch_collect(lapply(x, wrapped), trace, NULL))
   }
 
   if (!requireNamespace("future", quietly = TRUE) ||
@@ -185,7 +199,10 @@ gr_lapply <- function(x, fn, parallel = NULL, workers = NULL, key = NULL, label 
     grepl("size of the globals|exceeds the maximum allowed size", conditionMessage(e))
   }
   cancelled <- NULL
-  out <- tryCatch(withCallingHandlers(
+  # The caller's random number stream is put back afterwards: future.seed =
+  # TRUE draws the workers' seeds from it and moves it on, so a script that
+  # drew random numbers after a read drew different ones with parallel = TRUE.
+  out <- keep_caller_rng(tryCatch(withCallingHandlers(
     future.apply::future_lapply(x, wrapped, future.seed = TRUE,
                                 future.globals = user$globals,
                                 future.packages = unique(c("readgpt", user$packages))),
@@ -201,7 +218,7 @@ gr_lapply <- function(x, fn, parallel = NULL, workers = NULL, key = NULL, label 
         stop(e)
       }
       e
-    })
+    }))
   if (inherits(out, "error")) {
     # future's message names the total and the limit first, then every global.
     sizes <- regmatches(conditionMessage(out),
@@ -213,12 +230,21 @@ gr_lapply <- function(x, fn, parallel = NULL, workers = NULL, key = NULL, label 
             class = "gr_parallel_unavailable")
     return(sequential())
   }
+  batch_collect(out, trace, state)
+}
+
+#' Fold what each item of a batch returned (see worker_item()) into the run,
+#' in the order of the batch, and hand back the values.
+#'
+#' `state` is the client's log and cache counters, to which only what a worker
+#' process did is added: an item run in this process has updated them already.
+#' @noRd
+batch_collect <- function(out, trace, state) {
   me <- Sys.getpid()
   for (r in out) {
     trace_absorb(trace, r$trace)
-    # An item run in this process has already updated the client's own log and
-    # counters; only a worker's are added. (A one-worker batch no longer comes
-    # here, but future decides where a future runs, not this function.)
+    # (A one-worker batch no longer goes to workers, but future decides where a
+    # future runs, not gr_lapply().)
     if (identical(r$pid, me)) next
     if (!is.null(state$log)) {
       state$log$calls <- c(state$log$calls, r$calls)
@@ -239,12 +265,35 @@ gr_lapply <- function(x, fn, parallel = NULL, workers = NULL, key = NULL, label 
     if (!is.null(cap) && is.finite(cap) && trace$calls > cap) {
       trace$budget_stop <- TRUE
       trace$stop_reason <- "calls"
-    } else if (!is.null(limit) && is.finite(limit) && (trace$spent_usd %||% 0) > limit) {
+    } else if (!is.null(limit) && is.finite(limit) && budget_spent(trace) > limit) {
       trace$budget_stop <- TRUE
       trace$stop_reason <- "cost"
     }
   }
+  # An item that failed is raised only now, after every item's trace and calls
+  # are in. Raised inside the batch, it took every worker's trace with it, and
+  # the calls already made and paid for were gone from the run's account.
+  failed <- Filter(function(r) !is.null(r$error), out)
+  if (length(failed)) stop(failed[[1]]$error)
   lapply(out, `[[`, "value")
+}
+
+#' Evaluate `expr`, then put the caller's random number stream back as it was.
+#'
+#' Nothing in this package may move the caller's stream (see
+#' with_private_rng()). The workers' seeds still come from it, so a run is as
+#' reproducible as before; it is only no longer moved on by one.
+#' @noRd
+keep_caller_rng <- function(expr) {
+  had <- exists(".Random.seed", envir = globalenv(), inherits = FALSE)
+  old <- if (had) get(".Random.seed", envir = globalenv(), inherits = FALSE) else NULL
+  on.exit({
+    if (had) assign(".Random.seed", old, envir = globalenv())
+    else if (exists(".Random.seed", envir = globalenv(), inherits = FALSE)) {
+      rm(".Random.seed", envir = globalenv())
+    }
+  }, add = TRUE)
+  expr
 }
 
 #' The function a worker runs for each item of a batch.
@@ -257,9 +306,14 @@ gr_lapply <- function(x, fn, parallel = NULL, workers = NULL, key = NULL, label 
 #' @noRd
 worker_item <- function(fn, key, opts, regs, parent_meta, state) {
   force(fn); force(key); force(opts); force(regs); force(parent_meta); force(state)
+  # Set once an item fails. A worker runs its share of the batch in order, in
+  # its own copy of this frame, and the items after a failure are not run, as
+  # a sequential run would not run them.
+  failed <- FALSE
   function(item) {
     if (nzchar(key)) Sys.setenv(OPENAI_API_KEY = key)
-    gr_state$options <- opts
+    # Empty for a batch run in this process, whose options are already these.
+    if (length(opts)) gr_state$options <- opts
     for (nm in names(regs)) if (!is.null(regs[[nm]])) assign(nm, regs[[nm]], envir = gr_state)
     sub <- gr_trace(meta = parent_meta)
     n_calls <- length(state$log$calls)
@@ -267,9 +321,16 @@ worker_item <- function(fn, key, opts, regs, parent_meta, state) {
     counts <- function() c(state$stats$hits %||% 0L, state$stats$misses %||% 0L,
                            state$stats$writes %||% 0L)
     before <- counts()
-    value <- fn(item, sub)
+    # Caught and handed back with the item's trace, for gr_lapply() to raise
+    # once every trace is in, rather than raised here, which discarded them.
+    err <- NULL
+    value <- if (failed) NULL else tryCatch(fn(item, sub), error = function(e) {
+      err <<- e
+      NULL
+    })
+    if (!is.null(err)) failed <<- TRUE
     # The process it ran in: gr_lapply() adds back only what a worker did.
-    list(value = value, trace = sub, pid = Sys.getpid(),
+    list(value = value, error = err, trace = sub, pid = Sys.getpid(),
          calls = state$log$calls[seq_along(state$log$calls) > n_calls],
          embeds = state$log$embeds[seq_along(state$log$embeds) > n_embeds],
          cache = counts() - before)
@@ -307,7 +368,7 @@ batch_shortfall <- function(trace, n, item_usd = NULL) {
   # limit cannot see it in this process either; it is counted as the trace
   # counts it.
   per <- as_num1(item_usd, 0)
-  if ((trace$spent_usd %||% 0) + n * max(per, 0) > limit) return("spending limit")
+  if (budget_spent(trace) + n * max(per, 0) > limit) return("spending limit")
   NULL
 }
 

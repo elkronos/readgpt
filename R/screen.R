@@ -35,6 +35,12 @@ read_screen <- function(chunks, question, client, spec, trace) {
              class = "gr_no_criteria")
   }
   d <- chunks$chunks
+  # Nothing to show the model is not a judgement on an excerpt, so not
+  # "unclear": the document fails and is outstanding, as an unreadable one is.
+  if (!NROW(d)) {
+    gr_abort("There is nothing to screen: the document has no chunks.",
+             class = "gr_empty_chunks")
+  }
   listing <- criteria_prompt(include, exclude)
   # "never": the message list below carries the question once.
   overhead <- prompt_overhead(paste(question, listing), .gr_prompts$screen_system, "never")
@@ -45,16 +51,27 @@ read_screen <- function(chunks, question, client, spec, trace) {
   # reads is the front of the paper -- title, abstract, opening -- and a decision
   # made from paragraphs 1, 2 and 47 is not that, however well it fits.
   fit <- fit_chunks(d, cap, prefix = TRUE)
-  if (!length(fit$idx)) {
-    return(new_answer("unclear", "screen", question, integer(0), trace,
-                      chunks_sent = integer(0), partial = TRUE,
-                      notes = list(decision = "unclear",
-                                   reason = "not even the first chunk fits one prompt",
-                                   criterion = NA_character_, seen_tokens = 0L,
-                                   document_tokens = sum(d$tokens), truncated = TRUE)))
-  }
   sub <- d[fit$idx, , drop = FALSE]
-  truncated <- length(fit$idx) < nrow(d)
+  if (!length(fit$idx)) {
+    # The first chunk alone is over the cap -- a structural chunk of title,
+    # abstract and introduction runs to 900 tokens, and screen_tokens of "a few
+    # hundred" is what the docs suggest. What was asked for is the opening, so
+    # the first chunk is cut down to the cap and that is screened. Returning
+    # "unclear" instead made no call at all, and a whole corpus came back as
+    # model deferrals on openings nobody had read.
+    sub <- screen_opening(d[1, , drop = FALSE], cap)
+    if (is.null(sub)) {
+      given <- as_int1(spec[["screen_tokens"]], NA_integer_)
+      gr_abort(if (!is.na(given) && given <= bud$input) {
+        sprintf(paste0("`screen_tokens = %d` leaves no room to show the model any of the ",
+                       "document once the chunk's heading is counted. Raise it."), given)
+      } else {
+        paste0("The question and criteria leave no room in the model's context for any of ",
+               "the document.")
+      }, class = "gr_bad_setting")
+    }
+  }
+  truncated <- nrow(sub) < nrow(d) || !identical(sub$text[1], d$text[1])
   # The chunks' own token counts, not `fit$tokens`. That one measures the
   # RENDERED prompt, which carries a "[chunk N]" header per chunk, so a document
   # that was read whole reported seeing more tokens than it contains -- a table
@@ -87,6 +104,17 @@ read_screen <- function(chunks, question, client, spec, trace) {
   # a read of `decision` and a real "include" was recorded from a key the schema
   # never defined.
   decision <- if (isTRUE(out$ok)) screen_decision(json_field(v, "decision")) else NA_character_
+  # Held to the protocol. The criterion used to be recorded as whatever the
+  # model wrote, so an adult trial excluded as "Conducted outside Europe" --
+  # a criterion no protocol listed -- left the review with nothing to say it
+  # happened, and the flow diagram gained a category nobody fixed in advance.
+  # An exclusion has to name one of the protocol's criteria; one that names
+  # another, or none, goes to a person as "unclear".
+  crit <- screen_criterion(decision, as_chr1(json_text(v, "criterion"), NA_character_),
+                           include, exclude)
+  reason <- as_chr1(json_text(v, "reason"), NA_character_)
+  if (crit$downgraded) reason <- downgrade_reason(crit$criterion, reason)
+  decision <- crit$decision
   # Said in the notes, where partial_reasons() and gr_read_many() look. A reply
   # that arrived but was not the JSON asked for has no transport error of its own.
   error <- if (!failed) NA_character_ else {
@@ -105,13 +133,10 @@ read_screen <- function(chunks, question, client, spec, trace) {
     orig <- as.character(sub[["source_text"]])
     said <- ifelse(is.na(orig), said, orig)
   }
-  ev <- if (nzchar(trimws(quote))) {
-    evidence_table(sub$chunk_id[1], quote, sub$page[1], sub$section[1],
-                   source_text = paste(said, collapse = "\n\n"), kind = "extracted")
-  } else NULL
+  ev <- if (nzchar(trimws(quote))) screen_evidence(quote, sub, said) else NULL
 
   new_answer(if (is.na(decision)) "" else decision, "screen", question,
-             if (is.null(ev)) integer(0) else ev$chunk_id,
+             if (is.null(ev)) integer(0) else ev$chunk_id[!is.na(ev$chunk_id)],
              trace, chunks_sent = if (capped) integer(0) else sub$chunk_id, evidence = ev,
              # A failed call is partial. "unclear" is NOT: it is a correct answer
              # meaning a person has to look, and marking it partial would put a
@@ -120,8 +145,9 @@ read_screen <- function(chunks, question, client, spec, trace) {
              # title-and-abstract screening is a method, not a defect.
              partial = !isTRUE(out$ok),
              notes = list(decision = decision,
-                          reason = as_chr1(json_text(v, "reason"), NA_character_),
-                          criterion = as_chr1(json_text(v, "criterion"), NA_character_),
+                          reason = reason,
+                          criterion = crit$criterion,
+                          criterion_valid = crit$valid,
                           seen_tokens = seen_tokens,
                           document_tokens = as.integer(sum(d$tokens)),
                           truncated = truncated,
@@ -148,15 +174,20 @@ read_screen <- function(chunks, question, client, spec, trace) {
 #'   start of the document. Leaving it unset shows as much as the model's context
 #'   allows. Setting it to a few hundred is title-and-abstract screening, done
 #'   deliberately: cheaper, and closer to what a human screener sees at this
-#'   stage. Either way the `truncated` and `seen_tokens` columns say what was
-#'   actually read.
+#'   stage. The opening is whole chunks while they fit; when the first chunk is
+#'   longer than the cap on its own (a structural chunk of title, abstract and
+#'   introduction can be), it is cut to the cap and that is what is screened. A
+#'   cap too small to show any of the document at all fails the document, with
+#'   an `error` naming `screen_tokens`. Either way the `truncated` and
+#'   `seen_tokens` columns say what was actually read.
 #' @param ... Recipe overrides, as in [gr_extract()].
 #'
 #' @return An object of class `gr_screening`:
 #'   \describe{
 #'     \item{`table`}{One row per document: `document`, `document_id`,
-#'       `decision`, `reason`, `criterion`, `quote`, `verified`, `seen_tokens`,
-#'       `document_tokens`, `truncated`, `status`, `duplicate_of`, `error`.}
+#'       `decision`, `reason`, `criterion`, `criterion_valid`, `quote`,
+#'       `verified`, `seen_tokens`, `document_tokens`, `truncated`, `status`,
+#'       `duplicate_of`, `error`.}
 #'     \item{`included`}{The distinct sources whose decision was `"include"`
 #'       (the paths, not the display labels). Duplicates are left out; they are
 #'       the same study, and `table` still has their rows. `gr_extract()` takes
@@ -182,12 +213,30 @@ read_screen <- function(chunks, question, client, spec, trace) {
 #' not the JSON asked for: no model judged it, so it is not "unclear" either.
 #' `error` says what happened, and with a `store` the next run screens it again.
 #'
+#' @section The criterion is checked:
+#' `criterion` is the criterion the model said decided it, in the protocol's
+#' own words when it matches one of `include` or `exclude` (case, spacing, a
+#' leading list marker, surrounding quotes and closing punctuation aside);
+#' `criterion_valid` says whether it did, and is `NA` when the model named
+#' none. An exclusion has to name one of the protocol's criteria: an exclusion
+#' criterion it meets, or an inclusion criterion it fails. One that names
+#' another criterion, or none, is recorded as `"unclear"` so that a person
+#' decides, with `criterion_valid = FALSE` (or `NA`) and a `reason` saying
+#' so. The match is on the wording, so a paraphrased criterion is held back
+#' too; that costs a person a look, where accepting an invented one would cost
+#' a study.
+#'
+#' The quote is checked against the excerpt the model was shown and attributed
+#' to the chunk that contains it; a quote spanning two chunks, or one that does
+#' not verify, has no chunk.
+#'
 #' @section Reporting it:
 #' `table(x$table$decision)` is the screening result and
-#' `table(x$table$criterion)` is the breakdown by exclusion criterion, which is
-#' what a flow diagram asks for. Duplicates were removed before screening, so
-#' `sum(!is.na(x$table$duplicate_of))` is the "duplicates removed" count and
-#' every one of them still has a row; see [gr_read_many()].
+#' `table(x$table$criterion[x$table$decision %in% "exclude"])` is the
+#' breakdown of exclusions by criterion, which is what a flow diagram asks for;
+#' every one names a criterion of the protocol. Duplicates were removed before
+#' screening, so `sum(!is.na(x$table$duplicate_of))` is the "duplicates
+#' removed" count and every one of them still has a row; see [gr_read_many()].
 #'
 #' @seealso [gr_protocol()], [gr_extract()], [gr_read_many()]
 #' @export
@@ -250,7 +299,7 @@ gr_screen <- function(sources, protocol = NULL, question = NULL, include = NULL,
   docs <- out$summary$document
   answers <- out$answers[docs]
   names(answers) <- docs
-  tab <- screening_table(docs, answers, out$summary)
+  tab <- screening_table(docs, answers, out$summary, include, exclude)
 
   structure(list(
     table    = tab,
@@ -296,7 +345,10 @@ print.gr_screening <- function(x, ...) {
   }
   cost <- gr_trace_cost(x$trace)
   total <- if (nrow(cost)) sum(cost$usd) else 0
-  cat(sprintf("  this run: %d model call(s), %s\n", x$trace$calls,
+  # format_call_counts(), not trace$calls: `calls` counts embeddings requests
+  # too, so a run with 2 model calls and 4 embeddings requests printed "6 model
+  # call(s)" above a trace that said 2.
+  cat(sprintf("  this run: %s, %s\n", format_call_counts(x$trace),
               if (!nrow(cost)) "no cost recorded"
               else if (is.na(total)) "cost unknown (unpriced model)"
               else sprintf("$%.4f", total)))
@@ -334,6 +386,116 @@ criteria_prompt <- function(include, exclude) {
         collapse = "\n\n")
 }
 
+#' The opening of a document whose first chunk is over the cap: that chunk cut
+#' down to fit, heading and all, or NULL when not even a word of it does.
+#'
+#' Measured on the rendered chunk, as fit_chunks() measures, and cut again by
+#' the overshoot if the heading and the text count to more together than apart.
+#' @noRd
+screen_opening <- function(row, cap) {
+  bare <- row
+  bare$text <- ""
+  room <- cap - gr_count_tokens(render_chunks(bare))
+  for (attempt in 1:3) {
+    if (room <= 0) return(NULL)
+    # A generous character prefix first: gr_truncate_tokens() searches the whole
+    # text for the boundary, and a chunk of 100,000 words cut to 300 tokens took
+    # a second. Sixteen characters a token is more than any text needs to hold
+    # `room` tokens; where it does not, the whole text is searched as before.
+    cut <- ""
+    if (nchar(row$text) > room * 16) {
+      pre <- substr(row$text, 1L, room * 16)
+      if (gr_count_tokens(pre) > room) cut <- gr_truncate_tokens(pre, room, marker = "")
+    }
+    if (!nzchar(cut)) cut <- gr_truncate_tokens(row$text, room, marker = "")
+    if (!nzchar(trimws(cut))) return(NULL)
+    try_row <- row
+    try_row$text <- cut
+    over <- gr_count_tokens(render_chunks(try_row)) - cap
+    if (over <= 0) {
+      try_row$tokens <- as.integer(gr_count_tokens(cut))
+      if (!is.null(try_row$chars)) try_row$chars <- nchar(cut)
+      return(try_row)
+    }
+    room <- room - over
+  }
+  NULL
+}
+
+#' The screening quote as evidence, attributed to the chunk it is in.
+#'
+#' Verified against the whole excerpt, since that is what the model read, but
+#' placed in the chunk that holds it. Pinned to the first chunk sent instead,
+#' a deciding sentence on page 3 was reported on page 1, verified, and a person
+#' checking it looked in the wrong place. A quote found in no single chunk --
+#' one spanning two, or one that did not verify -- has no chunk, page or
+#' section rather than the first chunk's.
+#' @noRd
+screen_evidence <- function(quote, sub, said) {
+  ev <- evidence_table(NA_integer_, quote, NA_integer_, NA_character_,
+                       source_text = paste(said, collapse = "\n\n"), kind = "extracted")
+  if (!nrow(ev) || !isTRUE(ev$verified[1])) return(ev)
+  at <- if (length(said) == 1L) 1L else {
+    found <- NA_integer_
+    for (i in seq_along(said)) {
+      if (isTRUE(span_match(quote, said[i])$verified)) { found <- i; break }
+    }
+    found
+  }
+  if (!is.na(at)) {
+    ev$chunk_id[1] <- sub$chunk_id[at]
+    ev$page[1] <- sub$page[at]
+    ev$section[1] <- sub$section[at]
+    ev$source_text[1] <- said[at]
+  }
+  ev
+}
+
+#' Hold screening decisions to the protocol's criteria.
+#'
+#' Vectorised over `decision` and `criterion`. A criterion that matches one of
+#' `include` or `exclude` once case, spacing, a list marker, surrounding quotes
+#' and closing punctuation are set aside is recorded in the protocol's own
+#' words, so the per-criterion count groups as the protocol does; `valid` says
+#' whether it matched (NA when none was named). An "exclude" whose criterion is
+#' not the protocol's -- or that names none -- becomes "unclear", which is
+#' what sends a document to a person, and `downgraded` marks it.
+#' @noRd
+screen_criterion <- function(decision, criterion, include, exclude) {
+  listed <- c(as.character(include), as.character(exclude))
+  key <- criterion_key(criterion)
+  named <- !is.na(criterion) & nzchar(key)
+  at <- ifelse(named, match(key, criterion_key(listed)), NA_integer_)
+  valid <- ifelse(named, !is.na(at), NA)
+  down <- !is.na(decision) & decision == "exclude" & !(valid %in% TRUE)
+  list(decision = ifelse(down, "unclear", decision),
+       criterion = ifelse(is.na(at), criterion, listed[at]),
+       valid = valid, downgraded = down)
+}
+
+#' A criterion folded for comparison. Lower case by lower_text(), per the
+#' package's rule, so the comparison does not depend on the locale.
+#' @noRd
+criterion_key <- function(x) {
+  if (!length(x)) return(character(0))
+  x <- gsub("[[:space:]]+", " ", to_utf8(x), perl = TRUE)
+  x <- sub("^ *[-*\u2022]+ *", "", x, perl = TRUE)
+  q <- "[\"'\u2018\u2019\u201c\u201d]"
+  x <- gsub(sprintf("^ *%s+|%s+ *$", q, q), "", x, perl = TRUE)
+  x <- sub("[.;:,]+ *$", "", x, perl = TRUE)
+  lower_text(trimws(x))
+}
+
+#' The reason recorded for an exclusion held back as "unclear".
+#' @noRd
+downgrade_reason <- function(criterion, reason) {
+  why <- ifelse(is.na(criterion) | !nzchar(trimws(to_utf8(criterion))),
+                "without naming a criterion",
+                sprintf("under \"%s\", which is not one of the protocol's criteria", criterion))
+  sprintf("Not excluded: the model excluded it %s, so a person should decide. Its reason: %s",
+          why, ifelse(is.na(reason), "none given", reason))
+}
+
 #' Read a decision back, defaulting to the one that is never wrong.
 #'
 #' For a reply that was read: anything unrecognised in it -- a missing field, a
@@ -345,12 +507,13 @@ criteria_prompt <- function(include, exclude) {
 #' decision for it, and the corpus marks the document "failed".
 #' @noRd
 screen_decision <- function(x) {
-  v <- tolower(trimws(as_chr1(x, "")))
+  v <- lower_text(trimws(as_chr1(x, "")))
   if (v %in% c("include", "exclude", "unclear")) v else "unclear"
 }
 
 #' @noRd
-screening_table <- function(docs, answers, summary) {
+screening_table <- function(docs, answers, summary, include = character(0),
+                            exclude = character(0)) {
   note <- function(d, field, default) {
     a <- answers[[d]]
     if (is.null(a)) default else {
@@ -376,6 +539,7 @@ screening_table <- function(docs, answers, summary) {
     criterion   = vapply(docs, function(d) as_chr1(note(d, "criterion", NA_character_),
                                                    NA_character_),
                          character(1), USE.NAMES = FALSE),
+    criterion_valid = rep(NA, length(docs)),   # filled in below
     quote       = vapply(docs, function(d) {
                     e <- ev_of(d); if (is.null(e)) NA_character_ else as_chr1(e$text)
                   }, character(1), USE.NAMES = FALSE),
@@ -398,6 +562,16 @@ screening_table <- function(docs, answers, summary) {
   unread <- !summary$status %in% c("ok", "restored", "duplicate")
   tab$decision[unread] <- NA_character_
   tab$truncated[unread] <- NA
+  # Checked again here, for answers a store restored from a run made before
+  # read_screen() checked them. On an answer it did check this changes nothing.
+  crit <- screen_criterion(tab$decision, tab$criterion, include, exclude)
+  if (any(crit$downgraded)) {
+    tab$reason[crit$downgraded] <- downgrade_reason(tab$criterion[crit$downgraded],
+                                                    tab$reason[crit$downgraded])
+  }
+  tab$decision <- crit$decision
+  tab$criterion <- crit$criterion
+  tab$criterion_valid <- crit$valid
   rownames(tab) <- NULL
   tab
 }

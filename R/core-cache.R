@@ -26,14 +26,20 @@
 #
 # FAILURES ARE NEVER CACHED. A transport error, a rate limit or a refusal is a
 # property of the moment, not of the request. Caching one would turn a blip into
-# a permanent wrong answer that no amount of re-running could clear.
+# a permanent wrong answer that no amount of re-running could clear. That
+# includes a reply that arrived but cannot be used: one cut off at the output
+# cap, and a structured reply that does not parse (see model_call()).
 
 #' A response cache
 #'
 #' Wrap a client with [gr_cache_client()] and every successful model call is
 #' written to disk, keyed on the exact request. Re-issuing the same request
 #' returns the stored response without touching the network: free, instant, and
-#' byte-identical even at a temperature above zero.
+#' byte-identical even at a temperature above zero. A failed call is never
+#' written, and neither is a reply cut off at the output cap or a structured
+#' (JSON-schema) reply that does not parse, so re-running asks again. An
+#' unparseable structured reply that an earlier version did store is asked
+#' again rather than replayed.
 #'
 #' The default location is under [tempdir()], so a cache costs nothing and
 #' disappears with the session. That is the right default for a package (it
@@ -48,8 +54,12 @@
 #' answers is an R closure, so by default it gets a fresh identity per object and
 #' its entries are session-scoped. Give it a stable `id` to opt in.
 #'
-#' @param dir Directory for cache entries. Defaults to the `cache_dir` option.
-#'   Created on first write, not here.
+#' @param dir Directory for cache entries. Defaults to the `cache_dir` option,
+#'   and to a directory under [tempdir()] when that is not set either. Created
+#'   on first write, not here. An empty string or `NA` is an error rather than
+#'   a directory: it is what `Sys.getenv()` returns for a variable that is not
+#'   set, and taken as a path it pointed the cache at the root of the
+#'   filesystem.
 #' @param read,write Whether to read existing entries and write new ones. Set
 #'   `write = FALSE` to run against a frozen cache; set `read = FALSE` to
 #'   refresh entries that are already stored.
@@ -87,12 +97,26 @@
 #' # Nothing is written until a call is cached.
 #' gr_cache_stats(cache)[c("entries", "hits", "misses")]
 gr_cache <- function(dir = NULL, read = TRUE, write = TRUE) {
+  # `%||%` falls back only for NULL, so "" (Sys.getenv() of an unset variable)
+  # and NA (which as_chr1() turns into "") were kept. file.path("", "ab", key)
+  # is "/ab/key.rds": as a normal user nothing was ever written and the run was
+  # not resumable, as root the entries went into the filesystem root, and
+  # cache_files() skips "" so gr_cache_stats() and gr_cache_clear() could not
+  # see them either way. An explicit value is refused, as an empty header value
+  # is; an unset option is unset.
+  if (!is.null(dir) &&
+      (length(dir) != 1L || !is.character(dir) || is.na(dir) || !nzchar(trimws(dir)))) {
+    gr_abort(paste0("`dir` must be one directory path. If it came from Sys.getenv(), that ",
+                    "variable is not set. Pass NULL for a cache that lasts this session."),
+             class = "gr_bad_setting")
+  }
+  dir <- dir %||% (gr_options("cache_dir") %|z|% default_cache_dir())
   st <- new.env(parent = emptyenv())
   st$hits <- 0L
   st$misses <- 0L
   st$writes <- 0L
   structure(list(
-    dir   = as_chr1(dir %||% gr_options("cache_dir") %||% default_cache_dir()),
+    dir   = as_chr1(dir),
     read  = isTRUE(read),
     write = isTRUE(write),
     .stats = st
@@ -298,7 +322,8 @@ cache_path <- function(dir, key) {
 #' with it.
 #' @noRd
 cache_get <- function(cache, key) {
-  if (!isTRUE(cache$read)) return(NULL)
+  # No directory is no cache: file.path("", ...) is the filesystem root.
+  if (!isTRUE(cache$read) || !nzchar(as_chr1(cache$dir))) return(NULL)
   path <- cache_path(cache$dir, key)
   if (!file.exists(path)) {
     cache$.stats$misses <- cache$.stats$misses + 1L
@@ -312,6 +337,17 @@ cache_get <- function(cache, key) {
   }
   cache$.stats$hits <- cache$.stats$hits + 1L
   res
+}
+
+#' Count a hit the caller could not use as the miss it is.
+#'
+#' client_dispatch() asks again when a stored reply fails the caller's test of
+#' a usable one (see model_call()); the statistics should say it was asked.
+#' @noRd
+cache_unhit <- function(cache) {
+  cache$.stats$hits <- max(cache$.stats$hits - 1L, 0L)
+  cache$.stats$misses <- cache$.stats$misses + 1L
+  invisible(NULL)
 }
 
 #' The response a cache file holds, rebuilt from its fields, or NULL.
@@ -378,7 +414,9 @@ is_plain_data <- function(x, depth = 0L) {
 #' continues uncached rather than dying over a full disk or a read-only mount.
 #' @noRd
 cache_put <- function(cache, key, res) {
-  if (!isTRUE(cache$write) || is.null(key)) return(invisible(FALSE))
+  if (!isTRUE(cache$write) || is.null(key) || !nzchar(as_chr1(cache$dir))) {
+    return(invisible(FALSE))
+  }
   path <- cache_path(cache$dir, key)
   dir <- dirname(path)
   if (!dir.exists(dir) && !dir.create(dir, recursive = TRUE, showWarnings = FALSE)) {

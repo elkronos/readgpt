@@ -149,9 +149,21 @@ parse_text <- function(file_path, chunk_token_limit = 3000, chunk_method = c("na
 
 #' @noRd
 .compat_read <- function(chunks, question, reader, client, ..., return_json = FALSE) {
-  txt <- if (inherits(chunks, "gr_chunks")) chunks$chunks$text else as.character(chunks)
-  doc <- gr_ingest(paste(txt, collapse = "\n\n"))
-  ch <- new_chunks(txt, "precomputed", gr_segment_spec(max_tokens = max(gr_count_tokens(txt), 32L)))
+  # The chunks are read as they are. They used to go through gr_ingest() as
+  # well, for a result nothing used, and gr_ingest() takes a string for a
+  # source: chunk text under 20 characters aborted the read, text ending in
+  # something like a file extension was looked for on disk, and text that was
+  # a web address was fetched. A gr_chunks is passed on whole, so its pages,
+  # sections, unread pages and warnings reach gr_read() and its answer.
+  ch <- if (inherits(chunks, "gr_chunks")) chunks else {
+    txt <- as.character(chunks)
+    txt <- txt[!is.na(txt)]
+    if (!any(has_content(txt))) {
+      gr_abort("`chunks` holds no text to read. Pass a character vector of chunks or a gr_chunks.",
+               class = "gr_empty_chunks")
+    }
+    new_chunks(txt, "precomputed", gr_segment_spec(max_tokens = max(gr_count_tokens(txt), 32L)))
+  }
   tr <- gr_trace(meta = list(reader = reader))
   a <- gr_read(ch, question, client %||% gr_client(), gr_read_spec(reader = reader, ...), trace = tr)
   if (return_json) as_json(a) else a$answer

@@ -25,14 +25,22 @@
 # to markers rather than printing a name that might be wrong.
 
 #' The conventional names for the bibliographic roles, in preference order.
+#'
+#' Only names that mean nothing else. `date`, `published`, `publication`,
+#' `source` and `url` were here too, and each is as often a finding -- when the
+#' data were collected, publication status, the registry or survey the data came
+#' from, a trial registration -- as a field of a reference. Taken for one, the
+#' column was withheld from every writing and claims prompt and printed as a
+#' reference list: "1. (2010-2014). national cancer registry." Such a column
+#' is used for a reference only when `bib` names it.
 #' @noRd
 .gr_bib_aliases <- list(
   citation = c("citation", "cite", "citation_key", "cite_key"),
   authors  = c("authors", "author"),
-  year     = c("year", "date", "published"),
+  year     = c("year"),
   title    = c("title"),
-  venue    = c("venue", "journal", "publication", "source"),
-  doi      = c("doi", "url")
+  venue    = c("venue", "journal"),
+  doi      = c("doi")
 )
 
 #' Resolve which columns carry bibliographic identity.
@@ -40,14 +48,23 @@
 #' `bib` names them outright. Otherwise the conventional names are looked for,
 #' which is what makes `gr_protocols("bibliography")` work without configuration.
 #' Nothing is guessed from content -- a column called `n` holding "2019" is not
-#' a year.
+#' a year. A role `bib` gives as `NA` or `""` has no column, so a column with
+#' its conventional name is left as a finding (`bib = list(venue = NA)`).
 #' @noRd
 bib_columns <- function(tab, bib = NULL) {
   out <- list()
   for (role in names(.gr_bib_aliases)) {
-    col <- if (!is.null(bib) && !is.null(bib[[role]])) as_chr1(bib[[role]]) else {
-      hit <- intersect(tolower(.gr_bib_aliases[[role]]), tolower(names(tab)))
-      if (length(hit)) names(tab)[match(hit[1], tolower(names(tab)))] else NULL
+    # Membership first: `bib[[role]]` is an error for a role a named character
+    # vector does not carry. NULL leaves the role to the conventional names, as
+    # it always has; NA or "" says there is no such column.
+    col <- if (!is.null(bib) && role %in% names(bib) && !is.null(bib[[role]])) {
+      v <- bib[[role]]
+      if (!length(v) || is.na(v[1])) "" else as_chr1(v)
+    } else {
+      # lower_text(), which lowers the same way in every locale.
+      nms <- lower_text(names(tab))
+      hit <- intersect(lower_text(.gr_bib_aliases[[role]]), nms)
+      if (length(hit)) names(tab)[match(hit[1], nms)] else NULL
     }
     if (!is.null(col) && nzchar(col)) {
       if (!col %in% names(tab)) {
@@ -469,7 +486,8 @@ bib_key <- function(row, cols, form = c("parenthetical", "narrative")) {
   if (identical(form, "narrative")) sprintf("%s (%s)", who, yr) else sprintf("%s, %s", who, yr)
 }
 
-#' Keys for every row, or NULL when any row lacks one.
+#' Keys for every row, one per row, or NULL when any row lacks one or two
+#' rows cannot be told apart.
 #' @noRd
 bib_keys <- function(used, cols, form = "parenthetical") {
   if (!length(cols)) return(NULL)
@@ -488,15 +506,62 @@ bib_keys <- function(used, cols, form = "parenthetical") {
       # collation of the file names -- so "2019a" named a different paper on
       # another machine.
       if (!is.null(cols$title)) i <- i[bib_order(as.character(used[[cols$title]][i]))]
-      # `sub()` is not vectorised over `replacement` -- it takes the first and
-      # warns -- so the obvious one-liner gave every duplicate the suffix "a"
-      # and left them identical, which is the fault the suffix exists to fix.
-      for (j in seq_along(i)) {
-        keys[i[j]] <- sub("([0-9]{3,4})([)]?)$", paste0("\\1", .gr_bib_suffix(j), "\\2"), keys[i[j]])
+      # One key at a time: `sub()` is not vectorised over `replacement` -- it
+      # takes the first and warns -- so the obvious one-liner gave every
+      # duplicate the suffix "a" and left them identical, which is the fault
+      # the suffix exists to fix. A letter that would give a key another row
+      # already has is skipped: "2019", "2019" and "2019a" were lettered 2019a,
+      # 2019b and 2019a.
+      j <- 0L
+      for (r in i) {
+        repeat {
+          j <- j + 1L
+          cand <- bib_letter(k, .gr_bib_suffix(j))
+          if (!cand %in% keys) break
+        }
+        keys[r] <- cand
       }
     }
   }
+  # Never two rows under one key. render_citations() collapses a run of
+  # markers to its distinct keys, so two studies sharing one were printed as a
+  # single citation -- a claim resting on two studies read as resting on one,
+  # beside two reference entries nobody could tell apart. Markers, if it comes
+  # to that, rather than that.
+  if (anyDuplicated(keys)) return(NULL)
   keys
+}
+
+#' A key with a same-author, same-year letter: after the year ("Smith, 2019a",
+#' "Smith (2019a)"), or after a hyphen when the key does not end in one
+#' ("Smith, in press-a", "Smith, n.d.-b"), as APA letters those. Lettering only
+#' a key that ended in a year left two "in press" papers under one key.
+#' @noRd
+bib_letter <- function(key, letter) {
+  if (grepl("[0-9]{3,4}[)]?$", key)) {
+    return(sub("([0-9]{3,4})([)]?)$", paste0("\\1", letter, "\\2"), key))
+  }
+  sub("([)]?)$", paste0("-", letter, "\\1"), key)
+}
+
+#' The letter bib_keys() added to a key built from a year, or "".
+#'
+#' A key built from authors and a year is "<who>, <year>", and a letter goes
+#' straight after the year, so the letter is the shortest ending of the key,
+#' of letters or a hyphen and letters, that leaves the key ending in the year.
+#' Read off the key rather than matched by pattern: a year printed "2019a" in
+#' the table, or "in press", is not a letter anybody added. Not bib_key() again
+#' per entry, which parses every author list a second time.
+#' @noRd
+bib_key_letter <- function(key, year) {
+  if (is.na(key) || !nzchar(year)) return("")
+  n <- nchar(key)
+  for (k in seq_len(max(0L, n - nchar(year)))) {
+    l <- substring(key, n - k + 1L)
+    if (!grepl("^-?[a-z]+$", l)) break
+    if (endsWith(substr(key, 1L, n - k), year)) return(l)
+  }
+  ""
 }
 
 #' Replace `[study N]` with the rendered citation.
@@ -560,14 +625,19 @@ reference_list <- function(used, keys, cited, cols, style) {
     v <- trimws(as_chr1(used[[cols[[role]]]][i]))
     if (identical(v, "NA")) "" else v
   }
-  # The a/b suffix bib_keys() assigned. `keys` was in this signature and unused,
+  # The a/b letter bib_keys() assigned. `keys` was in this signature and unused,
   # so the prose said "(Smith & Okafor, 2019a)" and "(Smith & Okafor, 2019b)"
   # against two identical reference entries -- neither citation resolvable,
   # which is the one thing a reference list has to do.
-  suffix <- function(i) {
-    if (is.null(keys) || i > length(keys) || is.na(keys[i])) return("")
-    m <- regmatches(keys[i], regexpr("[0-9]{3,4}[a-z]+", keys[i]))
-    if (!length(m)) "" else sub("^[0-9]{3,4}", "", m)
+  has_key <- function(i) !is.null(keys) && i <= length(keys) && !is.na(keys[i])
+  letter <- function(i) if (has_key(i)) bib_key_letter(keys[i], fld(i, "year")) else ""
+  # Under author-year the prose cites a row by its key, so the entry has to be
+  # findable by it. A key taken from a `citation` field is not what the other
+  # fields print -- with no authors or year it was a list of file names, the
+  # 2019a and 2019b nowhere in it -- so such an entry leads with the key itself.
+  # bib_key() takes the citation first whenever it has one, by the same test.
+  by_citation <- function(i) {
+    identical(style, "author-year") && has_key(i) && nzchar(fld(i, "citation"))
   }
   entries <- vapply(hit, function(i) {
     # Each part is trimmed of its own trailing punctuation before the parts are
@@ -579,10 +649,16 @@ reference_list <- function(used, keys, cited, cols, style) {
     # the place for that convention -- it is an artifact of the parser, and
     # printing it makes the output look machine-made.
     authors <- gsub(";[[:space:]]*", ", ", tidy(fld(i, "authors")))
-    bits <- c(authors,
-              if (nzchar(fld(i, "year"))) sprintf("(%s%s)", tidy(fld(i, "year")), suffix(i)) else "",
-              tidy(fld(i, "title")), tidy(fld(i, "venue")), tidy(fld(i, "doi")))
+    lead <- if (by_citation(i)) tidy(keys[i]) else ""
+    # The letter goes on the year when the year is what the key was built
+    # from; a key that leads the entry carries its own.
+    yr <- if (!nzchar(fld(i, "year"))) "" else
+      sprintf("(%s%s)", tidy(fld(i, "year")), if (nzchar(lead)) "" else letter(i))
+    bits <- c(lead, authors, yr, tidy(fld(i, "title")), tidy(fld(i, "venue")), tidy(fld(i, "doi")))
     bits <- bits[nzchar(bits)]
+    # A key with nothing else to say is still traced to its document.
+    doc <- as_chr1(used$document[i])
+    if (identical(bits, lead) && nzchar(lead) && nzchar(doc)) bits <- c(lead, doc)
     line <- paste(bits, collapse = ". ")
     if (!nzchar(line)) line <- as_chr1(used$document[i])
     paste0(line, ".")

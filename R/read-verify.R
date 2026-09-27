@@ -50,7 +50,7 @@ fold_for_match <- function(x, keep = FALSE) {
   if (keep) return(gsub("[\u2010\u2011\u2012\u2212]", "-", x, perl = TRUE))
   x <- gsub("[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]", "-", x, perl = TRUE)
   x <- gsub("[\u00a0\u2007\u2009\u202f]", " ", x, perl = TRUE)
-  tolower(x)
+  lower_text(x)
 }
 
 #' A source made ready for found_at().
@@ -94,7 +94,7 @@ match_source <- function(x) {
     folded[folded != 32L & spacing(folded)] <- 32L
     if (!identical(folded, cp)) text <- intToUtf8(folded)
   }
-  list(text = tolower(text), cp = c(0L, 0L, cp, integer(5L)), kind = c(0L, 0L, kind, integer(5L)),
+  list(text = lower_text(text), cp = c(0L, 0L, cp, integer(5L)), kind = c(0L, 0L, kind, integer(5L)),
        n = length(cp))
 }
 

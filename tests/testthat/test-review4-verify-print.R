@@ -270,3 +270,19 @@ test_that("a verbatim quote that does not state its value is not called 'not fou
   expect_true(any(grepl("2 quotation(s) not found in the document", readgpt:::partial_reasons(a),
                         fixed = TRUE)))
 })
+
+test_that("lower case does not depend on the session's locale", {
+  # tolower() lowers only A-Z in a C locale on Linux, so a quotation in lower
+  # case of a capitalised Russian sentence failed there and nowhere else.
+  up <- intToUtf8(c(0x412, 0x44b, 0x440, 0x443, 0x447, 0x43a, 0x430))       # Cyrillic
+  expect_identical(utf8ToInt(readgpt:::lower_text(up))[1], 0x432L)
+  expect_identical(utf8ToInt(readgpt:::lower_text(intToUtf8(0x391L))), 0x3B1L)   # Greek
+  expect_identical(utf8ToInt(readgpt:::lower_text(intToUtf8(0xC9L))), 0xE9L)     # Latin-1
+  expect_identical(utf8ToInt(readgpt:::lower_text(intToUtf8(0x1EA0L))), 0x1EA1L) # Vietnamese
+  expect_identical(readgpt:::lower_text("MiXeD 12"), "mixed 12")
+  old <- Sys.getlocale("LC_CTYPE")
+  skip_if(!nzchar(old), "no LC_CTYPE to restore")
+  withr::defer(suppressWarnings(Sys.setlocale("LC_CTYPE", old)))
+  skip_if(!nzchar(suppressWarnings(Sys.setlocale("LC_CTYPE", "C"))), "cannot switch to the C locale here")
+  expect_identical(utf8ToInt(readgpt:::lower_text(up))[1], 0x432L)
+})

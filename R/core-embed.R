@@ -409,7 +409,7 @@ bm25_scores <- function(docs, query, k1 = 1.5, b = 0.75) {
 #' @noRd
 lexical_terms <- function(x, min_chars = 2L) {
   x <- gsub("[^\\p{L}\\p{M}\\p{N}\\s]", " ", to_utf8(as_chr1(x)), perl = TRUE)
-  w <- tolower(words_of(x))
+  w <- lower_text(words_of(x))
   if (!length(w)) return(character(0))
   dense_script <- "\\p{Han}\\p{Hiragana}\\p{Katakana}\\p{Thai}\\p{Lao}\\p{Khmer}\\p{Myanmar}"
   # A run starts with a character of such a script and carries on through

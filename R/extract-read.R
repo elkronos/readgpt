@@ -366,7 +366,7 @@ fold_numerals <- function(s) {
   regmatches(s, m) <- lapply(regmatches(s, m), function(x)
     if (length(x)) paste0("^", chartr(sup, "0123456789+-", x)) else x)
   s <- gsub("[\u00a0\u2007\u2009\u202f]", " ", s, perl = TRUE)
-  tolower(gsub("\u2212", "-", s, fixed = TRUE))
+  lower_text(gsub("\u2212", "-", s, fixed = TRUE))
 }
 
 #' Every number written in digits, in each of the forms quote_numbers() lists.

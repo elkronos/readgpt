@@ -475,7 +475,16 @@ lower_text <- function(x) {
 
 #' lower_text() the direct way, character by character.
 #' @noRd
-lower_chars <- function(x) tolower(chartr(.gr_case_map$upper, .gr_case_map$lower, x))
+lower_chars <- function(x) {
+  # Bytes that are not UTF-8 (a CP1252 string in a UTF-8 session) are left as
+  # they came. chartr() and tolower() read them as the locale's multibyte text
+  # and stop with "invalid input multibyte string" under a C locale on Linux;
+  # both sides of a comparison go through here, so leaving them is consistent.
+  bad <- !is.na(x) & !validUTF8(x)
+  if (!any(bad)) return(tolower(chartr(.gr_case_map$upper, .gr_case_map$lower, x)))
+  x[!bad] <- tolower(chartr(.gr_case_map$upper, .gr_case_map$lower, x[!bad]))
+  x
+}
 
 #' lower_text() of one long string: only the distinct code points that have a
 #' case (a capital, a title-case letter, a Roman numeral or a circled capital)

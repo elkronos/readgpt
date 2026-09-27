@@ -302,6 +302,7 @@ test_that("what a protocol file cannot hold is said, not dropped", {
 # ---------------------------------------------------------------------------
 
 test_that("the survey reads a Windows-1252 text file as ingestion does", {
+  skip_if_not_installed("xml2")   # the HTML file needs it to be readable at all
   d <- withr::local_tempdir()
   txt <- rep("R\u00e9sum\u00e9 of the caf\u00e9 study \u2013 \u201cquoted\u201d", 20)
   r6_write(iconv(txt, "UTF-8", "CP1252"), file.path(d, "notes_cp1252.txt"), bytes = TRUE)

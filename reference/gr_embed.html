@@ -87,7 +87,14 @@
 
 
 <dt id="arg-trace">trace<a class="anchor" aria-label="anchor" href="#arg-trace"></a></dt>
-<dd><p>Optional trace.</p></dd>
+<dd><p>Optional trace. With the built-in <code>"api"</code> embedder, each
+request to the embeddings endpoint is checked against <code>max_calls</code> and
+<code>max_cost_usd</code> (see <code><a href="gr_options.html">gr_options()</a></code>) before it is sent and recorded in the
+trace, priced, once it is made; its tokens are counted in the trace's
+<code>embed_tokens</code>, not <code>tokens_in</code>. A request the limits refuse is a failure,
+handled by <code>fallback</code>. A failed request that the lexical fallback replaces
+is marked <code>recovered = TRUE</code> in the trace's <code>errors</code>: the text was still
+embedded, on word overlap, so nothing was left unread.</p></dd>
 
 
 <dt id="arg-fallback">fallback<a class="anchor" aria-label="anchor" href="#arg-fallback"></a></dt>

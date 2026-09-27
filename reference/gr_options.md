@@ -157,7 +157,10 @@ changing an option mid-session affects subsequent runs.
 - `max_calls` (400):
 
   Hard cap on model calls per run, checked before the first call and
-  again before every subsequent one. `NULL` removes the cap.
+  again before every subsequent one. A request to an embeddings endpoint
+  (the built-in `"api"` embedder) counts as one, and is checked and
+  priced against `max_cost_usd` the same way; an embedding served from
+  the session cache is free. `NULL` removes the cap.
 
 - `unknown_model_action` ("warn"):
 

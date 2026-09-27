@@ -101,7 +101,7 @@ a validated spec. It has a <code><a href="https://rdrr.io/r/base/print.html" cla
 <span class="r-out co"><span class="r-pr">#&gt;</span> &lt;gr_recipe 'semantic_topk'&gt;</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   ingest  : clean=standard ocr=auto</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   segment : semantic (max 800 tok, overlap 0, min 0)</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>   read    : retrieve [topk|1|none] model=gpt-5.6-terra</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>   read    : retrieve [topk|1|none] model=(the client's)</span>
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="co"># Start from a built-in and change one axis. The other two stay fixed, so</span></span></span>
 <span class="r-in"><span><span class="co"># any difference in the answer is attributable to the change.</span></span></span>
@@ -112,7 +112,7 @@ a validated spec. It has a <code><a href="https://rdrr.io/r/base/print.html" cla
 <span class="r-out co"><span class="r-pr">#&gt;</span> &lt;gr_recipe 'thorough_structural'&gt;</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   ingest  : clean=standard ocr=auto</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   segment : structural (max 1200 tok, overlap 0, min 0)</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>   read    : map_reduce [all|N+logN|tree] model=gpt-5.6-terra</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>   read    : map_reduce [all|N+logN|tree] model=(the client's)</span>
 </code></pre></div>
     </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>

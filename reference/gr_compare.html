@@ -121,6 +121,12 @@ frame with columns <code>recipe</code>, <code>segmenter</code>, <code>chunks</co
 identical read spec are collapsed with a warning rather than billed twice. A
 shared reader signature alone is not enough: two <code>retrieve</code> recipes with
 different <code>top_k</code> share a signature and are genuinely different runs.</p>
+<p>A comparison is one run for the spending limit: <code>max_cost_usd</code> in
+<code><a href="gr_options.html">gr_options()</a></code> is checked against what every recipe and every segmentation
+has spent so far, so a recipe that reaches it stops <code>partial</code> and the ones
+after it are refused and recorded as failed. <code>max_calls</code> is counted for
+each recipe on its own, so a recipe's answer does not depend on its
+position in the list.</p>
     </div>
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>
@@ -151,9 +157,9 @@ different <code>top_k</code> share a signature and are genuinely different runs.
 <span class="r-in"><span><span class="co"># One trace covers all three, so this is the cost of the whole comparison.</span></span></span>
 <span class="r-in"><span><span class="fu"><a href="gr_trace_summary.html">gr_trace_summary</a></span><span class="op">(</span><span class="va">cmp</span><span class="op">$</span><span class="va">trace</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>                          run_id calls cached steps tokens_in tokens_out errors</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1 run_20260924000649.312_78dfe7     5      0    16      2098         65      0</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>   elapsed_s</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1       0.1</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1 run_20260927025642.929_29588c     5      0    16      2098         65      0</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>   elapsed_s embed_calls embed_tokens</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1       0.1           0            0</span>
 </code></pre></div>
     </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>

@@ -10,7 +10,23 @@ Summarise with
 - `chunks`:
 
   Data frame, one row per chunk, with columns `chunk_id`, `text`,
-  `tokens`, `chars`, `page`, `section`, `block_id`.
+  `tokens`, `chars`, `page`, `section`, `block_id`, and sometimes
+  `source_text`.
+
+- `chunks$source_text`:
+
+  Optional. The document text a chunk was made from, for a segmenter
+  that puts text of its own into `text`: `proposition` fills it with the
+  passage the propositions were written from, and `contextual` with the
+  chunk's body without the bracketed context line. `NA`, or no such
+  column, means `text` is the document's own. A quotation from a chunk
+  is checked against `source_text` when it is there and not `NA`, and
+  against `text` otherwise, so what the segmenter wrote cannot verify a
+  quote. A chunk split to fit the token cap keeps the `source_text` of
+  the chunk it was cut from. A custom segmenter that writes into `text`
+  should set it with
+  [`new_chunks()`](https://elkronos.github.io/readgpt/reference/new_chunks.md)'s
+  `source_text`, or quotes are checked against what it wrote.
 
 - `method`:
 
@@ -29,6 +45,18 @@ Summarise with
   Method-specific detail: `boundaries` and `embedding_source` for
   `semantic`, `propositions` for `proposition`, `cap_enforced` when
   oversized chunks had to be split.
+
+- `trace`:
+
+  Set only when
+  [`gr_segment()`](https://elkronos.github.io/readgpt/reference/gr_segment.md)
+  was called without a `trace` and so made its own: the
+  [gr_trace](https://elkronos.github.io/readgpt/reference/gr_trace.md)
+  it recorded into, holding the requests the segmenter made (embeddings
+  for `semantic`, model calls for `proposition` and for `contextual`
+  with `context_source = "llm"`), which were held to
+  `gr_options(max_calls =, max_cost_usd =)`. When a `trace` is passed
+  they are recorded there instead, and this field is absent.
 
 ## Methods
 

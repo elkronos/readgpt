@@ -73,9 +73,8 @@ read with `"thorough"`: one request per chunk, then the requests that
 combine their answers. Both send every chunk, so the choice changes the
 number of requests and the cost, not how much of the document is read.
 
-The room is measured for the recipe's model and, unless `model` is
-passed in `...`, for the client's model as well, since a client built
-for another model may be what answers. A model whose limits readgpt has
+The room is measured for the model that answers: the one passed as
+`model` in `...`, or else the client's. A model whose limits readgpt has
 to guess (see
 [`gr_model_info()`](https://elkronos.github.io/readgpt/reference/gr_model_info.md))
 always gets `"thorough"`; register its real limits with

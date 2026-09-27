@@ -24,7 +24,10 @@ gr_trace_cost(trace)
 A data frame with one row per model: `model`, `calls`, `paid_calls`,
 `paid_in`, `paid_out`, `usd`. `sum(x$usd)` is the run's cost. A model
 with no registered price contributes `NA`, so a total that silently
-omitted an unpriced model is impossible.
+omitted an unpriced model is impossible. The exception is a model whose
+every request failed without sending a token (an embeddings request to
+an endpoint that has none, say): that cost nothing, priced or not, so it
+contributes 0.
 
 ## Details
 
@@ -50,12 +53,12 @@ ans <- answer_document(readgpt_example(), "What was revenue?", "fast", client = 
 #> Segmenting with 'paragraph' (cap 4000 tokens, overlap 0).
 #> Reading with 'stuff' (all|1|none) over 1 chunk(s).
 gr_trace_cost(ans$trace)
-#>           model calls paid_calls paid_in paid_out      usd
-#> 1 gpt-5.6-terra     1          1     595       13 0.001346
+#>        model calls paid_calls paid_in paid_out usd
+#> 1 mock-model     1          1     595       13   0
 
-# Priced by the model on the STEP (the recipe's model), not by the mock
-# that answered. A cached re-run costs nothing for a different reason:
-# paid_calls falls to zero while calls does not.
+# Priced by the model each step records: a mock's own model, at no cost.
+# A cached re-run costs nothing for a different reason: paid_calls falls
+# to zero while calls does not.
 cache <- gr_cache(file.path(tempdir(), "readgpt-cost-example"))
 again <- answer_document(readgpt_example(), "What was revenue?", "fast",
                          client = gr_cache_client(cl, cache))

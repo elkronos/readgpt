@@ -151,7 +151,10 @@ evaluation of automated screening reaches the same conclusion: reliable on the
 easy calls, not yet trustworthy alone on the hard ones.</p>
 <p>A document that could not be read at all gets <code>status = "failed"</code> and no
 decision. It is not excluded, and it is not silently absent: it is an
-outstanding job. A review whose denominator is unknown is not a review.</p>
+outstanding job. A review whose denominator is unknown is not a review. The
+same goes for a document whose screening request failed, or whose reply was
+not the JSON asked for: no model judged it, so it is not "unclear" either.
+<code>error</code> says what happened, and with a <code>store</code> the next run screens it again.</p>
     </div>
     <div class="section level2">
     <h2 id="reporting-it">Reporting it<a class="anchor" aria-label="anchor" href="#reporting-it"></a></h2>
@@ -181,14 +184,14 @@ every one of them still has a row; see <code><a href="gr_read_many.html">gr_read
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="va">s</span> <span class="op">&lt;-</span> <span class="fu">gr_screen</span><span class="op">(</span><span class="va">f</span>, question <span class="op">=</span> <span class="st">"Does the treatment work?"</span>,</span></span>
 <span class="r-in"><span>               include <span class="op">=</span> <span class="st">"Reports a randomised comparison"</span>, client <span class="op">=</span> <span class="va">cl</span><span class="op">)</span></span></span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> [1/1] file1dcd145a5e43.txt</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'file1dcd145a5e43.txt' with the 'txt' extractor.</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> [1/1] file1ceb1486321d.txt</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'file1ceb1486321d.txt' with the 'txt' extractor.</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Ingested 1 block(s), ~15 tokens (0 chars removed by cleaning).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Segmenting with 'structural' (cap 900 tokens, overlap 90).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Reading with 'screen' (head|1|none) over 1 chunk(s).</span>
 <span class="r-in"><span><span class="va">s</span><span class="op">$</span><span class="va">table</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"document"</span>, <span class="st">"decision"</span>, <span class="st">"reason"</span><span class="op">)</span><span class="op">]</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>               document decision                           reason</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1 file1dcd145a5e43.txt  include Reports a randomised comparison.</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1 file1ceb1486321d.txt  include Reports a randomised comparison.</span>
 </code></pre></div>
     </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>

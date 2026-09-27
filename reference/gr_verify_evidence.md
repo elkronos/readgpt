@@ -25,9 +25,12 @@ gr_verify_evidence(answer, chunks = NULL)
   [gr_chunks](https://elkronos.github.io/readgpt/reference/gr_chunks.md)
   the answer was read from. Needed for readers whose evidence is
   verbatim, where the comparison is against the chunk the span claims to
-  come from. `skim` answers already carry their sources, so they can be
-  checked without it; an `ensemble` needs it for the rows its verbatim
-  members contributed, even though its `skim` rows do not.
+  come from: its `source_text` where the segmenter recorded one (the
+  document text behind a chunk whose `text` carries model-written
+  context or propositions), and its `text` otherwise. `skim` answers
+  already carry their sources, so they can be checked without it; an
+  `ensemble` needs it for the rows its verbatim members contributed,
+  even though its `skim` rows do not.
 
   Pass the chunks the answer was actually read from. Chunk ids are
   positional, so a *different* chunk set of the same size will match on
@@ -46,6 +49,12 @@ characters). `verified` is `NA` where the question does not apply: a
 `map_reduce` evidence row is a per-chunk *answer*, not a quotation, and
 asking whether it appears in the chunk is a category error.
 
+For an `extract` answer, a quote has to carry the value it is cited for
+as well as appear in the chunk, and only the reader can check the first:
+it knows the value. A row the reader marked `verified = FALSE` for that
+reason stays `FALSE` here, with a `match` of 1 when the sentence itself
+is in the document. It is there, and it does not say this.
+
 ## Details
 
 A fabricated citation is more convincing than a fabricated answer,
@@ -57,8 +66,24 @@ there is no reason not to do it.
 
 `match` is 1 for an exact quotation once whitespace, quote marks, dashes
 and case are folded away. These are the differences a faithful quotation
-introduces. Below 1 it is the fraction of the span's words carried by
-its longest consecutive **run** in the source.
+introduces. It has to match whole words and whole numbers: "5%" is not
+found in "25%", nor "12%" in "-12%", nor "20" in "200", nor "200" in "1
+200" written with a thin space. Chinese, Japanese and Thai put no spaces
+between words, so a clause quoted from them may start and end anywhere;
+numbers in them are still whole. Markdown bold is not text, in the
+quotation or the document. A span made of several passages (in
+paragraphs, as a list, in separate quote marks, or joined by "..." or
+"\[...\]") is checked passage by passage and is verified when every
+passage is found, the parts either side of an elision in that order.
+What an elision leaves out may not be a negation ("the drug did ...
+reduce mortality" is not in "the drug did not reduce mortality"), and
+where it leaves out the end of a sentence the part after it has to start
+one ("Revenue ... rose 30%" is not in "Revenue fell 12%. Costs rose
+30%."). A line break inside a sentence is a line wrap, not a new
+passage: the lines are checked as one. Below 1 it is the fraction of the
+span's words carried by its longest consecutive **run** in the source,
+for the passage that matches worst; in a script written without spaces,
+the fraction of its characters.
 
 Read that number with its shape in mind. Because it measures a run,
 *where* the change falls matters as much as how much changed: altering
@@ -76,6 +101,10 @@ With `cite = TRUE` a reader asks the model to mark its sources as
 `[chunk 3]`. Every answer is checked for citations pointing at chunks
 that were never sent, whatever this function is called with; the result
 is `ans$notes$cited_unknown`, and an answer carrying one is `partial`.
+Lists and ranges are read (`[chunks 1, 2, and 9]`, `[chunks 1-9]`), and
+a bracket that opens like a citation but cannot be read, such as
+`[chunk nine]`, is listed in `ans$notes$cited_unparsed` and makes the
+answer `partial` too.
 
 ## See also
 

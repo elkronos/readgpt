@@ -416,9 +416,9 @@ print(ans$trace)
 as.data.frame(ans$trace)   # one row per request: stage, tokens, usd, seconds, prompt, reply
 gr_trace_summary(ans$trace)
 #>                          run_id calls cached steps tokens_in tokens_out errors
-#> 1 run_20260904035101.469_68d50e     1      0     8       669         13      0
-#>   elapsed_s
-#> 1       0.3
+#> 1 run_20260926192818.570_430322     1      0     4       595         13      0
+#>   elapsed_s embed_calls embed_tokens
+#> 1      0.07           0            0
 
 gr_estimate_cost("gpt-4o", ans$trace$tokens_in, ans$trace$tokens_out)
 as_json(ans)    # answer plus every prompt and response, from the same single run
@@ -764,12 +764,14 @@ every run and on every machine.
 **You can see what it cost.**
 [`gr_trace_cost()`](https://elkronos.github.io/readgpt/reference/gr_trace_cost.md)
 prices a run using each step’s own model and counts only the calls that
-were issued:
+were issued. A read uses the client’s model unless you name one; here
+the mock client is free, so a priced model is named to show a bill:
 
 ``` r
 
 cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
-run <- answer_document(readgpt_example(), "What was revenue?", "fast", client = cl)
+run <- answer_document(readgpt_example(), "What was revenue?", "fast", client = cl,
+                       model = "gpt-5.6-terra")
 gr_trace_cost(run$trace)
 #>           model calls paid_calls paid_in paid_out      usd
 #> 1 gpt-5.6-terra     1          1     595       13 0.001346

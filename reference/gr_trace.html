@@ -85,10 +85,19 @@
     <p>A <code>gr_trace</code>. It is an environment, so it accumulates by reference:
 pass the same trace to several calls and they all record into it. Fields:
 <code>run_id</code>, <code>started</code>, <code>meta</code>, <code>steps</code>, <code>calls</code>, <code>cached</code>, <code>tokens_in</code>,
-<code>tokens_out</code>, <code>errors</code>, <code>budget_stop</code>, <code>stop_reason</code>, <code>spent_usd</code>.
+<code>tokens_out</code>, <code>embed_tokens</code>, <code>errors</code>, <code>budget_stop</code>, <code>stop_reason</code>,
+<code>spent_usd</code>.
 <code>cached</code> counts the calls answered from a <code><a href="gr_cache.html">gr_cache()</a></code> or a
 <code><a href="gr_replay_client.html">gr_replay_client()</a></code> rather than the network, so <code>calls - cached</code> is what
-the run paid for.</p>
+the run paid for. <code>calls</code> includes requests to an embeddings endpoint,
+recorded as steps labelled <code>"embed.request"</code>. Their tokens are counted in
+<code>embed_tokens</code>, not in <code>tokens_in</code>, so <code>tokens_in</code> and <code>tokens_out</code> stay
+the size of the model calls' prompts and replies.</p>
+<p><code>errors</code> has one entry per request that failed: its <code>step</code>, <code>label</code> and
+<code>error</code>. A failure the run recovered from without losing any input, such
+as an embeddings request replaced by <code><a href="gr_embed.html">gr_embed()</a></code>'s lexical fallback,
+also carries <code>recovered = TRUE</code>. The answer still says what the fallback
+cost it (it is marked partial), but the document was read in full.</p>
 <p><code>budget_stop</code> is <code>TRUE</code> once a limit stopped the run, and <code>stop_reason</code>
 says which: <code>"calls"</code> for <code>max_calls</code>, <code>"cost"</code> for <code>max_cost_usd</code> (see
 <code><a href="gr_options.html">gr_options()</a></code>). <code>spent_usd</code> is what the calls so far cost, the figure
@@ -123,9 +132,9 @@ back, and whether it came from a <code><a href="gr_cache.html">gr_cache()</a></c
 <dd><p>The size of the prompt and the reply.</p></dd>
 
 <dt><code>usd</code></dt>
-<dd><p>What the request cost, 0 when it came from a cache. <code>NA</code>
-when the model has no registered price, as in <code><a href="gr_trace_cost.html">gr_trace_cost()</a></code>, whose
-total the column adds up to.</p></dd>
+<dd><p>What the request cost, 0 when it came from a cache or failed
+without sending any tokens. <code>NA</code> when the model has no registered price,
+as in <code><a href="gr_trace_cost.html">gr_trace_cost()</a></code>, whose total the column adds up to.</p></dd>
 
 <dt><code>seconds</code></dt>
 <dd><p>How long the request took, retries included. <code>NA</code> for a
@@ -155,20 +164,20 @@ the text that came back.</p></dd>
 <span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/invisible.html" class="external-link">invisible</a></span><span class="op">(</span><span class="fu"><a href="gr_read.html">gr_read</a></span><span class="op">(</span><span class="va">ch</span>, <span class="st">"What was revenue?"</span>, <span class="va">cl</span>, <span class="st">"map_reduce"</span>, trace <span class="op">=</span> <span class="va">tr</span><span class="op">)</span><span class="op">)</span></span></span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Reading with 'map_reduce' (all|N+logN|tree) over 5 chunk(s).</span>
 <span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/print.html" class="external-link">print</a></span><span class="op">(</span><span class="va">tr</span><span class="op">)</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;gr_trace run_20260924000658.747_3116bd&gt;  7 steps, 6 model calls, 1079 in / 36 out tokens, 0 error(s)</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;gr_trace run_20260927025652.369_a71b04&gt;  7 steps, 6 model calls, 1079 in / 36 out tokens, 0 error(s)</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   steps: map.answer x5, preflight x1, reduce x1 </span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>   cost: $0.0026 across gpt-5.6-terra</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>   cost: $0.0000 across mock-model</span>
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="co"># One row per request, with what each cost and how long it took.</span></span></span>
 <span class="r-in"><span><span class="va">reqs</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/as.data.frame.html" class="external-link">as.data.frame</a></span><span class="op">(</span><span class="va">tr</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="va">reqs</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"step"</span>, <span class="st">"stage"</span>, <span class="st">"tokens_in"</span>, <span class="st">"tokens_out"</span>, <span class="st">"usd"</span>, <span class="st">"seconds"</span><span class="op">)</span><span class="op">]</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>   step      stage tokens_in tokens_out      usd seconds</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1    2 map.answer       196          6 0.000464   0.000</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 2    3 map.answer       206          6 0.000484   0.000</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 3    4 map.answer       183          6 0.000438   0.001</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 4    5 map.answer       189          6 0.000450   0.000</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 5    6 map.answer       160          6 0.000392   0.000</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 6    7     reduce       145          6 0.000362   0.000</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>   step      stage tokens_in tokens_out usd seconds</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1    2 map.answer       196          6   0   0.001</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 2    3 map.answer       206          6   0   0.000</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 3    4 map.answer       183          6   0   0.001</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 4    5 map.answer       189          6   0   0.000</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 5    6 map.answer       160          6   0   0.000</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 6    7     reduce       145          6   0   0.000</span>
 </code></pre></div>
     </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>

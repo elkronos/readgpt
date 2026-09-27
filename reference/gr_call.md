@@ -77,7 +77,13 @@ a
 [`gr_cache()`](https://elkronos.github.io/readgpt/reference/gr_cache.md)
 or a
 [`gr_replay_client()`](https://elkronos.github.io/readgpt/reference/gr_replay_client.md)
-instead of the network.
+instead of the network. A reply cut off at the output cap keeps
+`ok = TRUE`, since its text is what the model wrote, but always carries
+`finish_reason = "length"`, whatever the provider called it
+(`"max_tokens"`, `"MAX_TOKENS"`, a Responses API status of
+`"incomplete"`); check for it wherever a complete reply matters. Such a
+reply is not written to a
+[`gr_cache()`](https://elkronos.github.io/readgpt/reference/gr_cache.md).
 
 ## See also
 

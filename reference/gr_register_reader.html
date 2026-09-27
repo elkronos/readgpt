@@ -115,7 +115,8 @@ its first request.</p></dd>
 
 <dt><code>spec</code></dt>
 <dd><p>A <code><a href="gr_read_spec.html">gr_read_spec()</a></code>. Honour at least <code>model</code>,
-<code>max_answer_tokens</code> and <code>temperature</code>.</p></dd>
+<code>max_answer_tokens</code> and <code>temperature</code>. <code><a href="gr_read.html">gr_read()</a></code> has already filled
+<code>model</code> from the client when the spec named none.</p></dd>
 
 <dt><code>trace</code></dt>
 <dd><p>Pass it to every <code><a href="gr_call.html">gr_call()</a></code> so your calls are counted and

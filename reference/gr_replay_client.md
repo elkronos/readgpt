@@ -44,26 +44,32 @@ re-runnable recording of exactly what went wrong.
 
 ## Matching
 
-A response is matched on the exact prompt messages plus the model id.
-When a run issued the same prompt more than once (which happens at a
-temperature above zero, and in readers that revisit a chunk), the
-recorded responses are returned in the order they were produced. Once
-they are exhausted the last one repeats.
+A response is matched on the exact prompt messages plus the model id the
+call asked for. That can differ from the model the trace records as
+answering: a
+[`gr_ellmer_client()`](https://elkronos.github.io/readgpt/reference/gr_ellmer_client.md)
+answers with its chat's model whatever the recipe asked for, and its
+runs replay all the same. When a run issued the same prompt more than
+once (which happens at a temperature above zero, and in readers that
+revisit a chunk), the recorded responses are returned in the order they
+were produced. Once they are exhausted the last one repeats.
 
 ## Embeddings
 
-Embeddings are not model calls and are not recorded in a trace, so
-whether a replay reproduces a run's chunk *ranking* depends on how the
-run embedded, and that is checked rather than assumed. The ranking
-reproduces exactly when the recording used a **deterministic** embedder
-and the replay uses the **same** one; both conditions, because replaying
-an API-embedded run with a deterministic local embedder would compute
-vectors the original never saw while looking exact. Anything else falls
-back to hashed lexical vectors and warns with class
-`gr_replay_no_embeddings`; every recorded answer is still reproduced,
-but the ranking may differ. Record a run you intend to publish with
-`gr_options(embedder = "lexical")`, or with your own embedder registered
-as `deterministic = TRUE`.
+A trace records each request to an embeddings endpoint (a step labelled
+`"embed.request"`, counted in `calls` and priced like any other
+request), but not the vectors that came back, so a replay has nothing to
+answer those requests with. Whether a replay reproduces a run's chunk
+*ranking* therefore depends on how the run embedded, and that is checked
+rather than assumed. The ranking reproduces exactly when the recording
+used a **deterministic** embedder and the replay uses the **same** one;
+both conditions, because replaying an API-embedded run with a
+deterministic local embedder would compute vectors the original never
+saw while looking exact. Anything else falls back to hashed lexical
+vectors and warns with class `gr_replay_no_embeddings`; every recorded
+answer is still reproduced, but the ranking may differ. Record a run you
+intend to publish with `gr_options(embedder = "lexical")`, or with your
+own embedder registered as `deterministic = TRUE`.
 
 ## The recipe "auto" chose
 

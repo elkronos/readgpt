@@ -64,18 +64,29 @@
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
     <p>A one-row data frame: <code>run_id</code>, <code>calls</code>, <code>cached</code>, <code>steps</code>,
-<code>tokens_in</code>, <code>tokens_out</code>, <code>errors</code>, <code>elapsed_s</code>. There is no cost column;
-combine <code>tokens_in</code>/<code>tokens_out</code> with <code><a href="gr_estimate_cost.html">gr_estimate_cost()</a></code> for that.</p>
+<code>tokens_in</code>, <code>tokens_out</code>, <code>errors</code>, <code>elapsed_s</code>, <code>embed_calls</code>,
+<code>embed_tokens</code>.</p>
+<p><code>calls</code> counts every request, including the <code>embed_calls</code> of them made to
+an embeddings endpoint. <code>tokens_in</code> and <code>tokens_out</code> are the size of the
+model calls' prompts and replies; the text sent to be embedded is counted
+in <code>embed_tokens</code> instead, because an embedding model is priced at a small
+fraction of a chat model's rate. There is no cost column: <code><a href="gr_trace_cost.html">gr_trace_cost()</a></code>
+prices every request at its own model, embeddings included, and is what the
+run cost. Combining <code>tokens_in</code>/<code>tokens_out</code> with <code><a href="gr_estimate_cost.html">gr_estimate_cost()</a></code>
+estimates the model calls alone at one model's prices.</p>
 <p><code>cached</code> is how many of those calls were answered from a <code><a href="gr_cache.html">gr_cache()</a></code> or a
 <code><a href="gr_replay_client.html">gr_replay_client()</a></code>. Their tokens are still counted in <code>tokens_in</code> and
 <code>tokens_out</code>, because that is how large the prompts and replies were; they
 were simply not paid for again. A run with <code>cached == calls</code> cost nothing,
 so feeding its token counts to <code><a href="gr_estimate_cost.html">gr_estimate_cost()</a></code> gives you what the run
 <em>would</em> have cost, not what it did.</p>
+<p><code>errors</code> counts every failed request, including any the run recovered
+from (see <code>errors</code> in <code><a href="gr_trace.html">gr_trace()</a></code>).</p>
     </div>
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>
-    <div class="dont-index"><p><code><a href="gr_trace.html">gr_trace()</a></code>, <code><a href="as_json.html">as_json()</a></code>, <code><a href="gr_estimate_cost.html">gr_estimate_cost()</a></code>, <code><a href="gr_cache.html">gr_cache()</a></code></p></div>
+    <div class="dont-index"><p><code><a href="gr_trace.html">gr_trace()</a></code>, <code><a href="as_json.html">as_json()</a></code>, <code><a href="gr_trace_cost.html">gr_trace_cost()</a></code>, <code><a href="gr_estimate_cost.html">gr_estimate_cost()</a></code>,
+<code><a href="gr_cache.html">gr_cache()</a></code></p></div>
     </div>
 
     <div class="section level2">
@@ -87,9 +98,15 @@ so feeding its token counts to <code><a href="gr_estimate_cost.html">gr_estimate
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Reading with 'map_reduce' (all|N+logN|tree) over 1 chunk(s).</span>
 <span class="r-in"><span><span class="fu">gr_trace_summary</span><span class="op">(</span><span class="va">ans</span><span class="op">$</span><span class="va">trace</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>                          run_id calls cached steps tokens_in tokens_out errors</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1 run_20260924000659.468_5f1c13     1      0     4       595         10      0</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>   elapsed_s</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1      0.02</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1 run_20260927025653.118_4b5540     1      0     4       595         10      0</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>   elapsed_s embed_calls embed_tokens</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1      0.02           0            0</span>
+<span class="r-in"><span></span></span>
+<span class="r-in"><span><span class="co"># What the run cost, each request priced at its own model (nothing, for a</span></span></span>
+<span class="r-in"><span><span class="co"># mock), and what its model calls would cost at another model's prices.</span></span></span>
+<span class="r-in"><span><span class="fu"><a href="gr_trace_cost.html">gr_trace_cost</a></span><span class="op">(</span><span class="va">ans</span><span class="op">$</span><span class="va">trace</span><span class="op">)</span></span></span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>        model calls paid_calls paid_in paid_out usd</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1 mock-model     1          1     595       10   0</span>
 <span class="r-in"><span><span class="fu"><a href="gr_estimate_cost.html">gr_estimate_cost</a></span><span class="op">(</span><span class="st">"gpt-4o"</span>, <span class="va">ans</span><span class="op">$</span><span class="va">trace</span><span class="op">$</span><span class="va">tokens_in</span>, <span class="va">ans</span><span class="op">$</span><span class="va">trace</span><span class="op">$</span><span class="va">tokens_out</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> [1] 0.0015875</span>
 </code></pre></div>

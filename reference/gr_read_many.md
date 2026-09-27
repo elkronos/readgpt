@@ -71,7 +71,13 @@ gr_read_many(
 
   Optional directory. Each document's result is written there as it
   completes and restored on a later run instead of being read again.
-  This is what makes a four-hour run survive being interrupted.
+  This is what makes a four-hour run survive being interrupted. Only a
+  document read in full is written, so one that failed (see `status`
+  below) is read again by the next run. An entry is restored only for
+  the same document, question, recipe, tokenizer and client
+  configuration: model, endpoint, `extra_body`, embedding model and
+  embedder. An entry that is not plain data, as a file planted in a
+  shared directory could be, is ignored and the document read again.
 
 - on_error:
 
@@ -87,6 +93,11 @@ gr_read_many(
   a model with a registered price: against one without, cost is
   *unknown* rather than zero, the ceiling cannot be enforced, and you
   get a `gr_corpus_cost_unknown` warning instead of a silent free pass.
+  The one exception is an embedding model with no price (the chat model
+  priced): the ceiling is then checked against the priced spend, which
+  leaves out only the embeddings requests, and a `gr_corpus_cost_floor`
+  warning names the model and says how to register it. `cost_usd` stays
+  `NA` either way, since what those documents cost in full is not known.
 
 - max_total_calls:
 
@@ -161,11 +172,20 @@ reached first), `"restored"` (read from `store`, not re-read now) or
 `"duplicate"` (see below). A document that `max_calls` or `max_cost_usd`
 stopped before it was read in full is `"failed"` too, with the limit in
 `error` and its partial answer in `answers`; it is not written to
-`store`, so a resumed run with a higher limit reads it again. A restored
-row keeps the numbers from when that document was first read, so its
-`cost_usd` is what it cost then, not what this run spent. That is why
-the run's own spend comes from `gr_trace_cost(x$trace)` and not from
-summing the column.
+`store`, so a resumed run with a higher limit reads it again. So is a
+document one of whose model requests failed (a network error, a 5xx or
+429 after the retries, a refusal, a reply that was not the JSON asked
+for): `error` says how many and gives the first error, the partial
+answer is in `answers`, and a resumed run reads it again rather than
+restoring what the failure left. A request the pipeline recovered from
+does not count: an embeddings request that failed and was replaced by
+lexical vectors leaves the document `"ok"`, with `partial` set. A row
+that a limit or a failed request stopped keeps `document_id`, `reader`
+and the chunk counts, since the text was read; only `answer` and
+`not_found` are left `NA`. A restored row keeps the numbers from when
+that document was first read, so its `cost_usd` is what it cost then,
+not what this run spent. That is why the run's own spend comes from
+`gr_trace_cost(x$trace)` and not from summing the column.
 
 ## Documents that are the same document
 
@@ -232,33 +252,33 @@ b <- tempfile(fileext = ".txt"); writeLines("Revenue was 51.8 million.", b)
 
 out <- gr_read_many(c(a, b), "What was revenue?", "fast", client = cl)
 #> 2 document(s), and gr_options(max_calls) is 400 PER DOCUMENT, so this run may make up to 800 call(s). Pass max_total_calls = to cap the run.
-#> [1/2] file1dcd2173fabc.txt
-#> Extracting 'file1dcd2173fabc.txt' with the 'txt' extractor.
+#> [1/2] file1ceb4cf147d7.txt
+#> Extracting 'file1ceb4cf147d7.txt' with the 'txt' extractor.
 #> Ingested 1 block(s), ~11 tokens (0 chars removed by cleaning).
 #> Segmenting with 'paragraph' (cap 4000 tokens, overlap 0).
 #> Reading with 'stuff' (all|1|none) over 1 chunk(s).
-#> [2/2] file1dcd602b5e17.txt ($0.0003 spent so far)
-#> Extracting 'file1dcd602b5e17.txt' with the 'txt' extractor.
+#> [2/2] file1ceb36e5713c.txt
+#> Extracting 'file1ceb36e5713c.txt' with the 'txt' extractor.
 #> Ingested 1 block(s), ~11 tokens (0 chars removed by cleaning).
 #> Segmenting with 'paragraph' (cap 4000 tokens, overlap 0).
 #> Reading with 'stuff' (all|1|none) over 1 chunk(s).
 out$summary[, c("document", "answer", "not_found", "status")]
 #>               document                            answer not_found status
-#> 1 file1dcd2173fabc.txt Revenue was 45.2 million dollars.     FALSE     ok
-#> 2 file1dcd602b5e17.txt Revenue was 45.2 million dollars.     FALSE     ok
+#> 1 file1ceb4cf147d7.txt Revenue was 45.2 million dollars.     FALSE     ok
+#> 2 file1ceb36e5713c.txt Revenue was 45.2 million dollars.     FALSE     ok
 
 # A missing file is one bad row, not a failed run.
 bad <- gr_read_many(c(a, "no-such-file.txt"), "What was revenue?", "fast", client = cl)
 #> 2 document(s), and gr_options(max_calls) is 400 PER DOCUMENT, so this run may make up to 800 call(s). Pass max_total_calls = to cap the run.
-#> [1/2] file1dcd2173fabc.txt
+#> [1/2] file1ceb4cf147d7.txt
 #> Using cached ingestion for this document + settings.
 #> Segmenting with 'paragraph' (cap 4000 tokens, overlap 0).
 #> Reading with 'stuff' (all|1|none) over 1 chunk(s).
-#> [2/2] no-such-file.txt ($0.0003 spent so far)
+#> [2/2] no-such-file.txt
 #> Warning: Document 'no-such-file.txt' failed: File not found: 'no-such-file.txt'. If you meant to pass document text rather than a path, it must not end in something that looks like a file extension.
 bad$summary[, c("document", "status", "error")]
 #>               document status
-#> 1 file1dcd2173fabc.txt     ok
+#> 1 file1ceb4cf147d7.txt     ok
 #> 2     no-such-file.txt failed
 #>                                                                                                                                                       error
 #> 1                                                                                                                                                      <NA>
@@ -266,6 +286,6 @@ bad$summary[, c("document", "status", "error")]
 
 # What the run actually cost, counting only calls that were really issued.
 gr_trace_cost(out$trace)
-#>           model calls paid_calls paid_in paid_out     usd
-#> 1 gpt-5.6-terra     2          2     184       26 0.00068
+#>        model calls paid_calls paid_in paid_out usd
+#> 1 mock-model     2          2     184       26   0
 ```

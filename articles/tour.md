@@ -111,7 +111,8 @@ When it is `TRUE`, `$notes` says what happened.
 ``` r
 
 names(ans$notes)
-#> [1] "chunks"       "answered"     "failed_calls" "merge_levels" "merge_ok"
+#> [1] "chunks"          "answered"        "failed_calls"    "truncated_calls"
+#> [5] "merge_levels"    "merge_ok"
 ```
 
 `$evidence` is what the answer rests on. What `text` holds depends on
@@ -359,8 +360,8 @@ is not the same as the tokens it moved:
 ``` r
 
 gr_trace_cost(ans$trace)[, c("model", "calls", "paid_calls", "usd")]
-#>           model calls paid_calls      usd
-#> 1 gpt-5.6-terra     1          1 0.001346
+#>        model calls paid_calls usd
+#> 1 mock-model     1          1   0
 ```
 
 ## Making a re-run free, and a result checkable
@@ -413,10 +414,10 @@ they can check. A prompt with no recorded response raises
 `gr_replay_miss` rather than inventing an answer, because a result that
 looks like the original and is not is worse than no replay at all.
 
-Embeddings are not model calls and are not in the trace, so a replay
-reproduces chunk *ranking* only when the recording used a deterministic
-embedder and the replay uses the same one. That is why this vignette set
-`embedder = "lexical"` at the top.
+A trace records each embeddings request and what it cost, but not the
+vectors that came back, so a replay reproduces chunk *ranking* only when
+the recording used a deterministic embedder and the replay uses the same
+one. That is why this vignette set `embedder = "lexical"` at the top.
 
 ## Many documents
 

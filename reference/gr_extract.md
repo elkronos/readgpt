@@ -77,15 +77,17 @@ gr_extract(
   What to do when two parts of one document give different values for
   the same field. `"first"` (default) takes the earlier one and records
   the disagreement in the `conflicts` column, costing nothing. `"model"`
-  spends one extra call per disagreeing field to adjudicate.
+  spends one extra call per disagreeing field to adjudicate; if that
+  call fails, the first value is kept, as with `"first"`.
 
 - require_quote:
 
-  Discard any value the model could not tie to a verbatim span in the
-  chunk it cited. Off by default: an extracted value is never thrown
-  away without being asked for, and `n_unverified` makes the same
-  problem visible without destroying anything. Turn it on for a protocol
-  that says no quote, no datum.
+  Discard any value that is not verified: one with no quote, a quote
+  that is not verbatim in the chunk it cited, or a quote that does not
+  state the value (see "Verifying it" below). Off by default: an
+  extracted value is never thrown away without being asked for, and
+  `n_unverified` makes the same problem visible without destroying
+  anything. Turn it on for a protocol that says no quote, no datum.
 
 - max_total_calls, trace:
 
@@ -116,7 +118,11 @@ An object of class `gr_extraction`:
 
   One row per document: `document`, one column per field in the schema
   and of that field's type, then `n_filled`, `n_unverified`,
-  `conflicts`, `status`, `duplicate_of`, `error`. A document whose
+  `conflicts`, `status`, `duplicate_of`, `error`. `status` is the run
+  status from `summary`, except that a document some of whose extraction
+  requests failed is `"incomplete"` (or `"failed"` if all did), and one
+  whose extraction requests all succeeded is not `"failed"` for another
+  request's failure; see the section on `NA` below. A document whose
   cleaned text repeats one already read is not read again (see
   [`gr_read_many()`](https://elkronos.github.io/readgpt/reference/gr_read_many.md)),
   so `subset(x$table, is.na(duplicate_of))` is the set of distinct
@@ -155,6 +161,16 @@ a finding you can publish, and "failed" is a job you have to redo.
 Filtering an extraction table without checking `status` silently turns
 the second into the first.
 
+A document where some of the extraction requests failed is
+`"incomplete"`, with the count in `error`: the values it has are real,
+but an `NA` there may sit in a part of the document that was never read,
+so it is unknown rather than not reported. A document where every
+request failed is `"failed"`. A failed request outside extraction, such
+as the adjudication `resolve = "model"` asks for (the first value is
+then kept) or a `contextual` header (the excerpt is read without it),
+leaves the document `"ok"`: every excerpt was read. `error` names such a
+failure unless the pipeline recorded it as recovered.
+
 ## What it costs
 
 One call per chunk per document: every chunk is read, because a schema
@@ -167,19 +183,34 @@ looking at fewer chunks.
 ## Verifying it
 
 Every filled cell is asked for the sentence it came from, and that
-sentence is checked against the text of the chunk it was attributed to.
-Nothing is ever discarded for failing: a paraphrase stays in `$evidence`
-with `verified = FALSE` and the fraction of it that did match in
-`match`.
+sentence is checked against the text of the chunk it was attributed to
+(the document's own text, never a header or rewrite a model added to the
+chunk). It must also carry the value: a number must be one of the
+numbers the sentence states, the sentence must not start or end inside a
+word, and a one-word fragment supports only a value it spells. A number
+counts however the sentence writes it: "1,204", "1 204", "0,45", a
+middle-dot decimal point (U+00B7, as the Lancet prints "0.84"), "3.2 x
+10^-5", "1.2 million", "54%" for 0.54, or English words ("Twenty-four",
+"three", "no" for zero). A quotation made of several passages (separate
+lines, bullets, "[...](https://rdrr.io/r/base/dots.html)") is checked
+passage by passage. Nothing is ever discarded for failing: a paraphrase
+stays in `$evidence` with `verified = FALSE` and the fraction of it that
+did match in `match`, and a real sentence that does not carry the value
+shows `verified = FALSE` with `match = 1`. When several parts of a
+document give the same value, it is cited with the best quote any of
+them gave. A string field that comes back "None" or "N/A" is kept only
+when its quote verifies and says so itself ("Conflicts of interest:
+None."); otherwise it is the model reporting nothing, and so is not a
+value, and a real value from another part of the document replaces it.
 
 `n_unverified` counts the cells in that row whose value could not be
 tied to a verbatim span, either because no quote was given, or because
-the quote is not in the chunk. That column is the one to look at before
-believing a table: `n_unverified` of zero means every value in the row
-can be pointed at in the document. A row where it is not zero is not
-wrong, but it is unaudited, and the answer is marked `partial` to say
-so. `require_quote = TRUE` turns the count into a policy and drops those
-values instead.
+the quote is not in the chunk or does not carry the value. That column
+is the one to look at before believing a table: `n_unverified` of zero
+means every value in the row can be pointed at in the document. A row
+where it is not zero is not wrong, but it is unaudited, and the answer
+is marked `partial` to say so. `require_quote = TRUE` turns the count
+into a policy and drops those values instead.
 
 See
 [`gr_verify_evidence()`](https://elkronos.github.io/readgpt/reference/gr_verify_evidence.md)
@@ -235,14 +266,14 @@ f <- tempfile(fileext = ".txt")
 writeLines("We ran a randomised controlled trial. We enrolled 120 participants.", f)
 
 x <- gr_extract(f, fields, client = cl)
-#> [1/1] file1dcd487ec805.txt
-#> Extracting 'file1dcd487ec805.txt' with the 'txt' extractor.
+#> [1/1] file1ceb718599d1.txt
+#> Extracting 'file1ceb718599d1.txt' with the 'txt' extractor.
 #> Ingested 1 block(s), ~22 tokens (0 chars removed by cleaning).
 #> Segmenting with 'structural' (cap 900 tokens, overlap 90).
 #> Reading with 'extract' (all|N+conflicts|none) over 1 chunk(s).
 x$table[, c("document", "design", "n", "n_unverified", "status")]
 #>               document                      design   n n_unverified status
-#> 1 file1dcd487ec805.txt randomised controlled trial 120            0     ok
+#> 1 file1ceb718599d1.txt randomised controlled trial 120            0     ok
 x$evidence[, c("field", "quote", "verified")]
 #>    field                                 quote verified
 #> 1 design We ran a randomised controlled trial.     TRUE

@@ -37,7 +37,8 @@ gr_ingest(source, spec = NULL, cache = NULL, trace = NULL)
 
   Use the session document cache. The cache key includes the file's size
   and mtime plus every ingestion option; for a web address, the address,
-  so it is downloaded once a session.
+  so it is downloaded once a session. Registering a cleaner or extractor
+  the ingestion uses again (as when fixing it) starts a new cache entry.
 
 - trace:
 

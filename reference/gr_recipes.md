@@ -70,5 +70,5 @@ gr_recipes("precise")
 #> <gr_recipe 'precise'>
 #>   ingest  : clean=standard ocr=auto
 #>   segment : sentence (max 600 tok, overlap 60, min 0)
-#>   read    : skim [all|N+1|none] model=gpt-5.6-terra
+#>   read    : skim [all|N+1|none] model=(the client's)
 ```

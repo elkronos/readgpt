@@ -72,7 +72,9 @@ were issued: a call served from a <code><a href="gr_cache.html">gr_cache()</a></
     <p>A data frame with one row per model: <code>model</code>, <code>calls</code>, <code>paid_calls</code>,
 <code>paid_in</code>, <code>paid_out</code>, <code>usd</code>. <code>sum(x$usd)</code> is the run's cost. A model with
 no registered price contributes <code>NA</code>, so a total that silently omitted an
-unpriced model is impossible.</p>
+unpriced model is impossible. The exception is a model whose every request
+failed without sending a token (an embeddings request to an endpoint that
+has none, say): that cost nothing, priced or not, so it contributes 0.</p>
     </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
@@ -95,12 +97,12 @@ cost nothing at all.</p>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Segmenting with 'paragraph' (cap 4000 tokens, overlap 0).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Reading with 'stuff' (all|1|none) over 1 chunk(s).</span>
 <span class="r-in"><span><span class="fu">gr_trace_cost</span><span class="op">(</span><span class="va">ans</span><span class="op">$</span><span class="va">trace</span><span class="op">)</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>           model calls paid_calls paid_in paid_out      usd</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1 gpt-5.6-terra     1          1     595       13 0.001346</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>        model calls paid_calls paid_in paid_out usd</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1 mock-model     1          1     595       13   0</span>
 <span class="r-in"><span></span></span>
-<span class="r-in"><span><span class="co"># Priced by the model on the STEP (the recipe's model), not by the mock</span></span></span>
-<span class="r-in"><span><span class="co"># that answered. A cached re-run costs nothing for a different reason:</span></span></span>
-<span class="r-in"><span><span class="co"># paid_calls falls to zero while calls does not.</span></span></span>
+<span class="r-in"><span><span class="co"># Priced by the model each step records: a mock's own model, at no cost.</span></span></span>
+<span class="r-in"><span><span class="co"># A cached re-run costs nothing for a different reason: paid_calls falls</span></span></span>
+<span class="r-in"><span><span class="co"># to zero while calls does not.</span></span></span>
 <span class="r-in"><span><span class="va">cache</span> <span class="op">&lt;-</span> <span class="fu"><a href="gr_cache.html">gr_cache</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/file.path.html" class="external-link">file.path</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempdir</a></span><span class="op">(</span><span class="op">)</span>, <span class="st">"readgpt-cost-example"</span><span class="op">)</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="va">again</span> <span class="op">&lt;-</span> <span class="fu"><a href="answer_document.html">answer_document</a></span><span class="op">(</span><span class="fu"><a href="readgpt_example.html">readgpt_example</a></span><span class="op">(</span><span class="op">)</span>, <span class="st">"What was revenue?"</span>, <span class="st">"fast"</span>,</span></span>
 <span class="r-in"><span>                         client <span class="op">=</span> <span class="fu"><a href="gr_cache_client.html">gr_cache_client</a></span><span class="op">(</span><span class="va">cl</span>, <span class="va">cache</span><span class="op">)</span><span class="op">)</span></span></span>

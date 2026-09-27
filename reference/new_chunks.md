@@ -21,7 +21,8 @@ new_chunks(
   page = NA_integer_,
   section = NA_character_,
   block_id = NA_integer_,
-  extra = list()
+  extra = list(),
+  source_text = NULL
 )
 ```
 
@@ -51,6 +52,14 @@ new_chunks(
 - extra:
 
   Named list of segmenter-specific detail, kept on `$extra`.
+
+- source_text:
+
+  For a segmenter that puts text a model wrote into a chunk (a context
+  line, a rewrite): the document text each chunk was made from, one
+  value per chunk or one recycled value. It becomes the `source_text`
+  column, which is what quotes from the chunk are checked against. `NA`,
+  or leaving it out, says the chunk's `text` is the document's own.
 
 ## Value
 

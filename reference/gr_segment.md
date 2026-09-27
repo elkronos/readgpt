@@ -31,14 +31,21 @@ gr_segment(doc, spec = NULL, client = NULL, trace = NULL)
 
 - trace:
 
-  Optional `gr_trace`.
+  Optional `gr_trace`. When none is given one is made, so the model
+  calls a segmenter makes are held to
+  `gr_options(max_calls =, max_cost_usd =)` and recorded, and it is
+  returned as `$trace`.
 
 ## Value
 
 A [gr_chunks](https://elkronos.github.io/readgpt/reference/gr_chunks.md)
 object. If the requested segmenter could not run it falls back and
 records the fallback in `$method`, e.g. `"semantic->paragraph"` when no
-`client` was supplied.
+`client` was supplied. `proposition` and `contextual` chunks carry a
+`source_text` column: the document text each chunk was made from,
+without the rewrite or the context line, which is what a quote from the
+chunk is checked against. When no `trace` was passed, `$trace` is the
+one this call recorded into.
 
 ## See also
 

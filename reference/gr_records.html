@@ -93,8 +93,18 @@ required, and the reason to supply it is that a review has to report it.</p></dd
 
 <dt id="arg-dedupe">dedupe<a class="anchor" aria-label="anchor" href="#arg-dedupe"></a></dt>
 <dd><p><code>"doi"</code> matches on DOI alone; <code>"doi+title"</code> (the default) falls
-back to normalised title and year when a DOI is missing, which is what
-catches the same conference paper indexed twice; <code>"none"</code> keeps everything.</p></dd>
+back to normalised title and year when a DOI cannot settle it, which is
+what catches the same conference paper indexed twice, or indexed once with
+its DOI and once without. The title fallback also needs the first author's
+surname to agree as a whole name ("Smith, J." and "Smith JA" agree, "Li" and
+"Lin" do not), or, when a record has no authors, the venue. It ignores
+titles shorter than 12 letters ("Reply", "Editorial") and never merges
+records carrying two different DOIs. A record without a DOI is merged with
+one that has a DOI, and a title with fewer than 12 Latin letters or digits
+is merged at all, only when the venues do not disagree, the first authors'
+initials do not differ, and the author or the venue confirms it. The kept row takes
+any field it lacks (the DOI, the journal) from the rows merged into it.
+<code>"none"</code> keeps everything.</p></dd>
 
 </dl></div>
     <div class="section level2">
@@ -102,7 +112,10 @@ catches the same conference paper indexed twice; <code>"none"</code> keeps every
     <p>An object of class <code>gr_records</code>:</p><dl><dt><code>records</code></dt>
 <dd><p>One row per distinct work, with <code>duplicate_of</code> naming the
 row a dropped record repeats, <code>file</code> the document matched to it, and
-<code>retrieved</code> whether one was found.</p></dd>
+<code>retrieved</code> whether one was found. A duplicate's file path counts
+towards the row it repeats, which is where the match is reported; a
+second copy the duplicate's own path points to is shown on the
+duplicate's row.</p></dd>
 
 <dt><code>counts</code></dt>
 <dd><p>Identified, per database, duplicates removed, distinct
@@ -154,7 +167,7 @@ loosest guarantee in the pipeline. From an export they are data.</p>
 <span class="r-in"><span><span class="va">recs</span> <span class="op">&lt;-</span> <span class="fu">gr_records</span><span class="op">(</span><span class="va">ris</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="va">recs</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> &lt;gr_records&gt; 1 record(s) from 1 export(s)</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>   file1dcd620c2057.ris 1</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>   file1ceb16f3e1e8.ris 1</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   records identified       1</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   duplicates removed       0</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   records screened         1</span>

@@ -73,8 +73,11 @@ are <em>presented</em> as quotations, and this is what checks that they are.</p>
 <dt id="arg-chunks">chunks<a class="anchor" aria-label="anchor" href="#arg-chunks"></a></dt>
 <dd><p>The <a href="gr_chunks.html">gr_chunks</a> the answer was read from. Needed for readers
 whose evidence is verbatim, where the comparison is against the chunk the
-span claims to come from. <code>skim</code> answers already carry their sources, so
-they can be checked without it; an <code>ensemble</code> needs it for the rows
+span claims to come from: its <code>source_text</code> where the segmenter recorded
+one (the document text behind a chunk whose <code>text</code> carries model-written
+context or propositions), and its <code>text</code> otherwise. <code>skim</code> answers
+already carry their sources, so they can be checked without it; an
+<code>ensemble</code> needs it for the rows
 its verbatim members contributed, even though its <code>skim</code> rows do not.</p>
 <p>Pass the chunks the answer was actually read from. Chunk ids are positional,
 so a <em>different</em> chunk set of the same size will match on id and compare
@@ -93,6 +96,11 @@ mixes them in one table, and the same value appears as the <code>kind</code> col
 question does not apply: a <code>map_reduce</code> evidence row is a per-chunk
 <em>answer</em>, not a quotation, and asking whether it appears in the chunk is a
 category error.</p>
+<p>For an <code>extract</code> answer, a quote has to carry the value it is cited for as
+well as appear in the chunk, and only the reader can check the first: it
+knows the value. A row the reader marked <code>verified = FALSE</code> for that
+reason stays <code>FALSE</code> here, with a <code>match</code> of 1 when the sentence itself is
+in the document. It is there, and it does not say this.</p>
     </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
@@ -107,8 +115,23 @@ reason not to do it.</p>
 
 <p><code>match</code> is 1 for an exact quotation once whitespace, quote marks, dashes and
 case are folded away. These are the differences a faithful quotation introduces.
+It has to match whole words and whole numbers: "5%" is not found in "25%",
+nor "12%" in "-12%", nor "20" in "200", nor "200" in "1 200" written with a
+thin space. Chinese, Japanese and Thai put no spaces between words, so a
+clause quoted from them may start and end anywhere; numbers in them are
+still whole. Markdown bold is not text, in the quotation or the document.
+A span made of several passages (in paragraphs, as a list, in separate
+quote marks, or joined by "..." or "[...]") is checked passage by passage
+and is verified when every passage is found, the parts either side of an
+elision in that order. What an elision leaves out may not be a negation
+("the drug did ... reduce mortality" is not in "the drug did not reduce
+mortality"), and where it leaves out the end of a sentence the part after
+it has to start one ("Revenue ... rose 30%" is not in "Revenue fell 12%.
+Costs rose 30%."). A line break inside a sentence is a line wrap, not a
+new passage: the lines are checked as one.
 Below 1 it is the fraction of the span's words carried by its longest
-consecutive <strong>run</strong> in the source.</p>
+consecutive <strong>run</strong> in the source, for the passage that matches worst; in
+a script written without spaces, the fraction of its characters.</p>
 <p>Read that number with its shape in mind. Because it measures a run, <em>where</em>
 the change falls matters as much as how much changed: altering the last word
 of a ten-word span leaves a run of nine and scores 0.9, while altering a word
@@ -125,7 +148,10 @@ quotation from a paraphrase assembled out of the same words.</p>
 <p>With <code>cite = TRUE</code> a reader asks the model to mark its sources as
 <code>[chunk 3]</code>. Every answer is checked for citations pointing at chunks that
 were never sent, whatever this function is called with; the result is
-<code>ans$notes$cited_unknown</code>, and an answer carrying one is <code>partial</code>.</p>
+<code>ans$notes$cited_unknown</code>, and an answer carrying one is <code>partial</code>. Lists
+and ranges are read (<code>[chunks 1, 2, and 9]</code>, <code>[chunks 1-9]</code>), and a bracket
+that opens like a citation but cannot be read, such as <code>[chunk nine]</code>, is
+listed in <code>ans$notes$cited_unparsed</code> and makes the answer <code>partial</code> too.</p>
     </div>
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>

@@ -184,8 +184,10 @@ price is refused. <code>NULL</code> removes the limit.</p></dd>
 
 <dt><code>max_calls</code> (400)</dt>
 <dd><p>Hard cap on model calls per run, checked before
-the first call and again before every subsequent one. <code>NULL</code> removes the
-cap.</p></dd>
+the first call and again before every subsequent one. A request to an
+embeddings endpoint (the built-in <code>"api"</code> embedder) counts as one, and
+is checked and priced against <code>max_cost_usd</code> the same way; an embedding
+served from the session cache is free. <code>NULL</code> removes the cap.</p></dd>
 
 <dt><code>unknown_model_action</code> ("warn")</dt>
 <dd><p><code>"warn"</code> or <code>"error"</code> when a model id

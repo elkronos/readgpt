@@ -90,7 +90,8 @@ extractor claims) also raises a <code>gr_path_as_text</code> warning.</p></dd>
 <dt id="arg-cache">cache<a class="anchor" aria-label="anchor" href="#arg-cache"></a></dt>
 <dd><p>Use the session document cache. The cache key includes the file's
 size and mtime plus every ingestion option; for a web address, the address,
-so it is downloaded once a session.</p></dd>
+so it is downloaded once a session. Registering a cleaner or extractor the
+ingestion uses again (as when fixing it) starts a new cache entry.</p></dd>
 
 
 <dt id="arg-trace">trace<a class="anchor" aria-label="anchor" href="#arg-trace"></a></dt>

@@ -109,7 +109,13 @@ was given a stable <code>id</code>; see <code><a href="gr_backend_client.html">g
 <dt id="arg-store">store<a class="anchor" aria-label="anchor" href="#arg-store"></a></dt>
 <dd><p>Optional directory. Each document's result is written there as
 it completes and restored on a later run instead of being read again. This
-is what makes a four-hour run survive being interrupted.</p></dd>
+is what makes a four-hour run survive being interrupted. Only a document
+read in full is written, so one that failed (see <code>status</code> below) is read
+again by the next run. An entry is restored only for the same document,
+question, recipe, tokenizer and client configuration: model, endpoint,
+<code>extra_body</code>, embedding model and embedder. An entry that is not plain
+data, as a file planted in a shared directory could be, is ignored and the
+document read again.</p></dd>
 
 
 <dt id="arg-on-error">on_error<a class="anchor" aria-label="anchor" href="#arg-on-error"></a></dt>
@@ -124,7 +130,12 @@ remaining documents <code>"skipped"</code>. This is a <em>corpus</em> ceiling an
 from <code>gr_options(max_cost_usd =)</code>, which is a limit per document.
 It needs a model with a registered price: against one without, cost is
 <em>unknown</em> rather than zero, the ceiling cannot be enforced, and you get a
-<code>gr_corpus_cost_unknown</code> warning instead of a silent free pass.</p></dd>
+<code>gr_corpus_cost_unknown</code> warning instead of a silent free pass. The one
+exception is an embedding model with no price (the chat model priced):
+the ceiling is then checked against the priced spend, which leaves out
+only the embeddings requests, and a <code>gr_corpus_cost_floor</code> warning names
+the model and says how to register it. <code>cost_usd</code> stays <code>NA</code> either way,
+since what those documents cost in full is not known.</p></dd>
 
 
 <dt id="arg-max-total-calls">max_total_calls<a class="anchor" aria-label="anchor" href="#arg-max-total-calls"></a></dt>
@@ -193,10 +204,19 @@ first), <code>"restored"</code> (read from <code>store</code>, not re-read now) 
 (see below). A document that <code>max_calls</code> or <code>max_cost_usd</code> stopped before it
 was read in full is <code>"failed"</code> too, with the limit in <code>error</code> and its partial
 answer in <code>answers</code>; it is not written to <code>store</code>, so a resumed run with a
-higher limit reads it again. A restored row keeps the numbers from when that
-document was first read, so its <code>cost_usd</code> is what it cost then, not what this
-run spent. That is why the run's own spend comes from <code>gr_trace_cost(x$trace)</code>
-and not from summing the column.</p>
+higher limit reads it again. So is a document one of whose model requests
+failed (a network error, a 5xx or 429 after the retries, a refusal, a reply
+that was not the JSON asked for): <code>error</code> says how many and gives the first
+error, the partial answer is in <code>answers</code>, and a resumed run reads it again
+rather than restoring what the failure left. A request the pipeline recovered
+from does not count: an embeddings request that failed and was replaced by
+lexical vectors leaves the document <code>"ok"</code>, with <code>partial</code> set. A row that a
+limit or a failed request stopped keeps <code>document_id</code>, <code>reader</code> and the chunk
+counts, since the text was read; only <code>answer</code> and <code>not_found</code> are left <code>NA</code>.
+A restored row keeps the numbers from when that document was first read, so
+its <code>cost_usd</code> is what it cost then, not what this run spent. That is why the
+run's own spend comes from <code>gr_trace_cost(x$trace)</code> and not from summing the
+column.</p>
     </div>
     <div class="section level2">
     <h2 id="documents-that-are-the-same-document">Documents that are the same document<a class="anchor" aria-label="anchor" href="#documents-that-are-the-same-document"></a></h2>
@@ -258,33 +278,33 @@ order-dependent, and a parallel loop would have to serialise on each of them. Wi
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="va">out</span> <span class="op">&lt;-</span> <span class="fu">gr_read_many</span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="va">a</span>, <span class="va">b</span><span class="op">)</span>, <span class="st">"What was revenue?"</span>, <span class="st">"fast"</span>, client <span class="op">=</span> <span class="va">cl</span><span class="op">)</span></span></span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> 2 document(s), and gr_options(max_calls) is 400 PER DOCUMENT, so this run may make up to 800 call(s). Pass max_total_calls = to cap the run.</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> [1/2] file1dcd2173fabc.txt</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'file1dcd2173fabc.txt' with the 'txt' extractor.</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> [1/2] file1ceb4cf147d7.txt</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'file1ceb4cf147d7.txt' with the 'txt' extractor.</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Ingested 1 block(s), ~11 tokens (0 chars removed by cleaning).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Segmenting with 'paragraph' (cap 4000 tokens, overlap 0).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Reading with 'stuff' (all|1|none) over 1 chunk(s).</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> [2/2] file1dcd602b5e17.txt ($0.0003 spent so far)</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'file1dcd602b5e17.txt' with the 'txt' extractor.</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> [2/2] file1ceb36e5713c.txt</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'file1ceb36e5713c.txt' with the 'txt' extractor.</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Ingested 1 block(s), ~11 tokens (0 chars removed by cleaning).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Segmenting with 'paragraph' (cap 4000 tokens, overlap 0).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Reading with 'stuff' (all|1|none) over 1 chunk(s).</span>
 <span class="r-in"><span><span class="va">out</span><span class="op">$</span><span class="va">summary</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"document"</span>, <span class="st">"answer"</span>, <span class="st">"not_found"</span>, <span class="st">"status"</span><span class="op">)</span><span class="op">]</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>               document                            answer not_found status</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1 file1dcd2173fabc.txt Revenue was 45.2 million dollars.     FALSE     ok</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 2 file1dcd602b5e17.txt Revenue was 45.2 million dollars.     FALSE     ok</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1 file1ceb4cf147d7.txt Revenue was 45.2 million dollars.     FALSE     ok</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 2 file1ceb36e5713c.txt Revenue was 45.2 million dollars.     FALSE     ok</span>
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="co"># A missing file is one bad row, not a failed run.</span></span></span>
 <span class="r-in"><span><span class="va">bad</span> <span class="op">&lt;-</span> <span class="fu">gr_read_many</span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="va">a</span>, <span class="st">"no-such-file.txt"</span><span class="op">)</span>, <span class="st">"What was revenue?"</span>, <span class="st">"fast"</span>, client <span class="op">=</span> <span class="va">cl</span><span class="op">)</span></span></span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> 2 document(s), and gr_options(max_calls) is 400 PER DOCUMENT, so this run may make up to 800 call(s). Pass max_total_calls = to cap the run.</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> [1/2] file1dcd2173fabc.txt</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> [1/2] file1ceb4cf147d7.txt</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Using cached ingestion for this document + settings.</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Segmenting with 'paragraph' (cap 4000 tokens, overlap 0).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Reading with 'stuff' (all|1|none) over 1 chunk(s).</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> [2/2] no-such-file.txt ($0.0003 spent so far)</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> [2/2] no-such-file.txt</span>
 <span class="r-wrn co"><span class="r-pr">#&gt;</span> <span class="warning">Warning: </span>Document 'no-such-file.txt' failed: File not found: 'no-such-file.txt'. If you meant to pass document text rather than a path, it must not end in something that looks like a file extension.</span>
 <span class="r-in"><span><span class="va">bad</span><span class="op">$</span><span class="va">summary</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"document"</span>, <span class="st">"status"</span>, <span class="st">"error"</span><span class="op">)</span><span class="op">]</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>               document status</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1 file1dcd2173fabc.txt     ok</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1 file1ceb4cf147d7.txt     ok</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 2     no-such-file.txt failed</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>                                                                                                                                                       error</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 1                                                                                                                                                      &lt;NA&gt;</span>
@@ -292,8 +312,8 @@ order-dependent, and a parallel loop would have to serialise on each of them. Wi
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="co"># What the run actually cost, counting only calls that were really issued.</span></span></span>
 <span class="r-in"><span><span class="fu"><a href="gr_trace_cost.html">gr_trace_cost</a></span><span class="op">(</span><span class="va">out</span><span class="op">$</span><span class="va">trace</span><span class="op">)</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>           model calls paid_calls paid_in paid_out     usd</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1 gpt-5.6-terra     2          2     184       26 0.00068</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>        model calls paid_calls paid_in paid_out usd</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1 mock-model     2          2     184       26   0</span>
 </code></pre></div>
     </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>

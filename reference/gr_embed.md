@@ -41,7 +41,16 @@ gr_embed(
 
 - trace:
 
-  Optional trace.
+  Optional trace. With the built-in `"api"` embedder, each request to
+  the embeddings endpoint is checked against `max_calls` and
+  `max_cost_usd` (see
+  [`gr_options()`](https://elkronos.github.io/readgpt/reference/gr_options.md))
+  before it is sent and recorded in the trace, priced, once it is made;
+  its tokens are counted in the trace's `embed_tokens`, not `tokens_in`.
+  A request the limits refuse is a failure, handled by `fallback`. A
+  failed request that the lexical fallback replaces is marked
+  `recovered = TRUE` in the trace's `errors`: the text was still
+  embedded, on word overlap, so nothing was left unread.
 
 - fallback:
 

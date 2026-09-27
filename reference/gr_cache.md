@@ -64,6 +64,12 @@ only its hash, so a cache directory does not accumulate copies of your
 documents. The response itself is stored in full, and a model response
 can of course quote the document it read.
 
+An entry is used only if the file holds plain data (lists, strings and
+numbers) in the shape this cache writes, and the response is rebuilt
+from those fields; anything else is a miss. So reading a cache directory
+someone else wrote cannot run code. It can still hold any answer its
+author chose, so treat a shared cache as you would its author's results.
+
 ## Caching a stochastic call
 
 At a temperature above zero a cache hit replays one sample rather than
@@ -85,7 +91,7 @@ for reproducing a recorded run
 ``` r
 cache <- gr_cache(dir = file.path(tempdir(), "readgpt-example-cache"))
 cache
-#> <gr_cache> /tmp/RtmpRyE9R0/readgpt-example-cache
+#> <gr_cache> /tmp/RtmpLoLTxN/readgpt-example-cache
 #>   0 entries, 0.0 B on disk; 0 hit(s), 0 miss(es), 0 write(s)
 
 # Nothing is written until a call is cached.

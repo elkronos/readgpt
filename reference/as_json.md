@@ -36,7 +36,12 @@ as_json(x, pretty = TRUE, ...)
 ## Value
 
 A `json`-classed character string. `NULL` fields are written as `null`
-rather than dropped.
+rather than dropped, and each number is written with as many significant
+digits as it takes to read back as the same number: 15 for most, 16 or
+17 for the few that need them
+([`jsonlite::toJSON()`](https://jeroen.r-universe.dev/jsonlite/reference/fromJSON.html)
+on its own rounds to four decimal places, and its `digits = NA` keeps 15
+significant digits). Pass `digits` to round them.
 
 ## See also
 

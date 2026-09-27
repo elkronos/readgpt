@@ -282,7 +282,7 @@ every request, as a network outage would:</p>
 <span><span class="va">bad</span></span>
 <span><span class="co">#&gt; &lt;gr_answer&gt; reader=stuff (PARTIAL)</span></span>
 <span><span class="co">#&gt;   Q: What was revenue in 2024?</span></span>
-<span><span class="co">#&gt;   1 model call(s), 0 in / 0 out tokens, 1 error(s), $0.0000 across gpt-5.6-terra</span></span>
+<span><span class="co">#&gt;   1 model call(s), 0 in / 0 out tokens, 1 error(s), $0.0000 across mock-model</span></span>
 <span><span class="co">#&gt;   ---</span></span>
 <span><span class="co">#&gt; Not found in the part of the document that was read.</span></span>
 <span><span class="co">#&gt;   ---</span></span>
@@ -338,15 +338,15 @@ and the tokens both used.</p>
 <span><span class="co">#&gt;   calls tokens_in tokens_out</span></span>
 <span><span class="co">#&gt; 1     1       599         13</span></span>
 <span><span class="fu"><a href="../reference/gr_trace_cost.html">gr_trace_cost</a></span><span class="op">(</span><span class="va">ans</span><span class="op">$</span><span class="va">trace</span><span class="op">)</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"model"</span>, <span class="st">"calls"</span>, <span class="st">"usd"</span><span class="op">)</span><span class="op">]</span></span>
-<span><span class="co">#&gt;           model calls      usd</span></span>
-<span><span class="co">#&gt; 1 gpt-5.6-terra     1 0.001354</span></span></code></pre></div>
+<span><span class="co">#&gt;        model calls usd</span></span>
+<span><span class="co">#&gt; 1 mock-model     1   0</span></span></code></pre></div>
 <p><code><a href="https://rdrr.io/r/base/as.data.frame.html" class="external-link">as.data.frame()</a></code> gives one row per request, with its cost
 and how long it took. The <code>prompt</code> and <code>reply</code>
 columns hold exactly what was sent and what came back:</p>
 <div class="sourceCode" id="cb15"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/base/as.data.frame.html" class="external-link">as.data.frame</a></span><span class="op">(</span><span class="va">ans</span><span class="op">$</span><span class="va">trace</span><span class="op">)</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"stage"</span>, <span class="st">"tokens_in"</span>, <span class="st">"tokens_out"</span>, <span class="st">"usd"</span>, <span class="st">"seconds"</span><span class="op">)</span><span class="op">]</span></span>
-<span><span class="co">#&gt;          stage tokens_in tokens_out      usd seconds</span></span>
-<span><span class="co">#&gt; 1 stuff.answer       599         13 0.001354   0.001</span></span></code></pre></div>
+<span><span class="co">#&gt;          stage tokens_in tokens_out usd seconds</span></span>
+<span><span class="co">#&gt; 1 stuff.answer       599         13   0   0.001</span></span></code></pre></div>
 <p><code>usd</code> is priced from readgpt’s list of known models
 (<code><a href="../reference/gr_models.html">gr_models()</a></code>). A model it does not know is priced as
 unknown rather than free. You can also estimate before sending anything.

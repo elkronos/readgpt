@@ -133,3 +133,7 @@ Each axis is a registry, so additions behave exactly like built-ins:
 ## Author
 
 **Maintainer**: Justin Chase <jchase.msu@gmail.com> \[copyright holder\]
+
+Authors:
+
+- Justin Chase <jchase.msu@gmail.com> \[copyright holder\]

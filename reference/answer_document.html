@@ -120,11 +120,10 @@ a model with a small context window. Anything longer is read with
 <code>"thorough"</code>: one request per chunk, then the requests that combine their
 answers. Both send every chunk, so the choice changes the number of requests
 and the cost, not how much of the document is read.</p>
-<p>The room is measured for the recipe's model and, unless <code>model</code> is passed in
-<code>...</code>, for the client's model as well, since a client built for another
-model may be what answers. A model whose limits readgpt has to guess (see
-<code><a href="gr_model_info.html">gr_model_info()</a></code>) always gets <code>"thorough"</code>; register its real limits with
-<code><a href="gr_register_model.html">gr_register_model()</a></code>.</p>
+<p>The room is measured for the model that answers: the one passed as <code>model</code>
+in <code>...</code>, or else the client's. A model whose limits readgpt has to guess
+(see <code><a href="gr_model_info.html">gr_model_info()</a></code>) always gets <code>"thorough"</code>; register its real limits
+with <code><a href="gr_register_model.html">gr_register_model()</a></code>.</p>
 <p>The answer's <code>recipe</code> names the recipe used, <code>notes$auto_recipe</code> records that
 <code>"auto"</code> chose it, and the trace has an <code>auto_recipe</code> step with the token
 count and the limit the choice was made on. A <code><a href="gr_replay_client.html">gr_replay_client()</a></code> repeats

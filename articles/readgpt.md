@@ -208,7 +208,7 @@ bad <- answer_document(readgpt_example(), "What was revenue in 2024?",
 bad
 #> <gr_answer> reader=stuff (PARTIAL)
 #>   Q: What was revenue in 2024?
-#>   1 model call(s), 0 in / 0 out tokens, 1 error(s), $0.0000 across gpt-5.6-terra
+#>   1 model call(s), 0 in / 0 out tokens, 1 error(s), $0.0000 across mock-model
 #>   ---
 #> Not found in the part of the document that was read.
 #>   ---
@@ -279,8 +279,8 @@ gr_trace_summary(ans$trace)[, c("calls", "tokens_in", "tokens_out")]
 #>   calls tokens_in tokens_out
 #> 1     1       599         13
 gr_trace_cost(ans$trace)[, c("model", "calls", "usd")]
-#>           model calls      usd
-#> 1 gpt-5.6-terra     1 0.001354
+#>        model calls usd
+#> 1 mock-model     1   0
 ```
 
 [`as.data.frame()`](https://rdrr.io/r/base/as.data.frame.html) gives one
@@ -290,8 +290,8 @@ row per request, with its cost and how long it took. The `prompt` and
 ``` r
 
 as.data.frame(ans$trace)[, c("stage", "tokens_in", "tokens_out", "usd", "seconds")]
-#>          stage tokens_in tokens_out      usd seconds
-#> 1 stuff.answer       599         13 0.001354   0.001
+#>          stage tokens_in tokens_out usd seconds
+#> 1 stuff.answer       599         13   0   0.001
 ```
 
 `usd` is priced from readgpt’s list of known models

@@ -1,7 +1,11 @@
 # Delete every entry in a cache
 
 Removes the stored responses and resets the session counters. The
-directory itself is left in place.
+directory itself is left in place, and so is anything in it that is not
+a cache entry (a
+[`gr_read_many()`](https://elkronos.github.io/readgpt/reference/gr_read_many.md)
+store, your own files): only files in the cache's own layout are
+removed.
 
 ## Usage
 

@@ -120,7 +120,11 @@ gr_synthesise(
   Append a `## References` section built from the studies the finished
   text actually cites. Alphabetical under `"author-year"`, numbered by
   study otherwise: the list is labelled by whatever the prose uses to
-  point into it.
+  point into it. The alphabetical order follows a fixed rule rather than
+  the session's locale, so it is the same on every machine: it ignores
+  case, accents and apostrophes, filing an accented name with its base
+  letter. Two papers by the same authors in the same year are lettered
+  (2019a, 2019b) in title order.
 
 - claims:
 
@@ -186,7 +190,21 @@ An object of class `gr_synthesis`:
 - `sections`:
 
   One row per section: `section`, `brief`, `text`, `n_cited`,
-  `n_unknown`, `partial`.
+  `n_unknown` (citations to a row that does not exist), `n_unsupplied`
+  (citations to a study that exists but was not given to the call that
+  wrote them: with `claims`, a study not behind that section's claims;
+  for a section written in batches, a study outside that batch. They are
+  left as markers and kept out of the reference list, with one
+  exception: once batch drafts are merged, a study that another batch of
+  the same section was given and cited cannot be told apart, so it is
+  rendered, and still counted), `n_unparsed` (brackets that open like a
+  citation, such as `[studies 1 to 7]`, but cannot be read as one, so
+  the studies they name were not checked), `n_truncated` (replies,
+  including batch drafts and merges, that stopped at the reply limit),
+  `partial`. A section is partial when any of those counts is non-zero
+  (`n_cited` aside), when it came back empty, when a batch of studies
+  was lost or not read, when its batch drafts could not be merged, or,
+  with `claims`, when it did not write up a claim it was given.
 
 - `citations`:
 
@@ -197,6 +215,15 @@ An object of class `gr_synthesis`:
 
   The rows that were written from, with the `study` number each was
   cited by.
+
+- `claims`:
+
+  The
+  [`gr_claims()`](https://elkronos.github.io/readgpt/reference/gr_claims.md)
+  result written from, or `NULL`. When its `$lost` names studies whose
+  claims batch contributed nothing, the run warns (`gr_claims_partial`),
+  and print() and the audit report say the review was written without
+  them.
 
 - `trace`:
 
@@ -243,8 +270,8 @@ cl <- gr_mock_client(function(messages, params) {
 f <- tempfile(fileext = ".txt")
 writeLines("We ran a randomised trial. We enrolled 120 people.", f)
 x <- gr_extract(f, fields, client = cl)
-#> [1/1] file1dcd1821ed84.txt
-#> Extracting 'file1dcd1821ed84.txt' with the 'txt' extractor.
+#> [1/1] file1ceb13fe4ae1.txt
+#> Extracting 'file1ceb13fe4ae1.txt' with the 'txt' extractor.
 #> Ingested 1 block(s), ~18 tokens (0 chars removed by cleaning).
 #> Segmenting with 'structural' (cap 900 tokens, overlap 90).
 #> Reading with 'extract' (all|N+conflicts|none) over 1 chunk(s).

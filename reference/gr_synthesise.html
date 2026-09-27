@@ -163,7 +163,11 @@ chance for a model to touch finished prose.</p></dd>
 <dd><p>Append a <code>## References</code> section built from the studies the
 finished text actually cites. Alphabetical under <code>"author-year"</code>, numbered
 by study otherwise: the list is labelled by whatever the prose uses to
-point into it.</p></dd>
+point into it. The alphabetical order follows a fixed rule rather than the
+session's locale, so it is the same on every machine: it ignores case,
+accents and apostrophes, filing an accented name with its base letter.
+Two papers by the same authors in the same year are lettered (2019a,
+2019b) in title order.</p></dd>
 
 
 <dt id="arg-claims">claims<a class="anchor" aria-label="anchor" href="#arg-claims"></a></dt>
@@ -214,7 +218,21 @@ asked for.</p></dd>
 
 <dt><code>sections</code></dt>
 <dd><p>One row per section: <code>section</code>, <code>brief</code>, <code>text</code>,
-<code>n_cited</code>, <code>n_unknown</code>, <code>partial</code>.</p></dd>
+<code>n_cited</code>, <code>n_unknown</code> (citations to a row that does not exist),
+<code>n_unsupplied</code> (citations to a study that exists but was not given to
+the call that wrote them: with <code>claims</code>, a study not behind that
+section's claims; for a section written in batches, a study outside
+that batch. They are left as markers and kept out of the reference
+list, with one exception: once batch drafts are merged, a study that
+another batch of the same section was given and cited cannot be told
+apart, so it is rendered, and still counted), <code>n_unparsed</code> (brackets
+that open like a citation, such as <code>[studies 1 to 7]</code>, but cannot be
+read as one, so the studies they name were not checked), <code>n_truncated</code> (replies,
+including batch drafts and merges, that stopped at the reply limit),
+<code>partial</code>. A section is partial when any of those counts is non-zero
+(<code>n_cited</code> aside), when it came back empty, when a batch of studies
+was lost or not read, when its batch drafts could not be merged, or,
+with <code>claims</code>, when it did not write up a claim it was given.</p></dd>
 
 <dt><code>citations</code></dt>
 <dd><p>Every citation, resolved to the row it points at, in
@@ -223,6 +241,12 @@ long form: <code>section</code>, <code>study</code>, <code>document</code>, <cod
 <dt><code>studies</code></dt>
 <dd><p>The rows that were written from, with the <code>study</code> number
 each was cited by.</p></dd>
+
+<dt><code>claims</code></dt>
+<dd><p>The <code><a href="gr_claims.html">gr_claims()</a></code> result written from, or <code>NULL</code>. When
+its <code>$lost</code> names studies whose claims batch contributed nothing, the
+run warns (<code>gr_claims_partial</code>), and print() and the audit report say
+the review was written without them.</p></dd>
 
 <dt><code>trace</code></dt>
 <dd><p>As <code><a href="gr_extract.html">gr_extract()</a></code>.</p></dd>
@@ -269,8 +293,8 @@ document: the expensive reading has already happened.</p>
 <span class="r-in"><span><span class="va">f</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".txt"</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/writeLines.html" class="external-link">writeLines</a></span><span class="op">(</span><span class="st">"We ran a randomised trial. We enrolled 120 people."</span>, <span class="va">f</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="va">x</span> <span class="op">&lt;-</span> <span class="fu"><a href="gr_extract.html">gr_extract</a></span><span class="op">(</span><span class="va">f</span>, <span class="va">fields</span>, client <span class="op">=</span> <span class="va">cl</span><span class="op">)</span></span></span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> [1/1] file1dcd1821ed84.txt</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'file1dcd1821ed84.txt' with the 'txt' extractor.</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> [1/1] file1ceb13fe4ae1.txt</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'file1ceb13fe4ae1.txt' with the 'txt' extractor.</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Ingested 1 block(s), ~18 tokens (0 chars removed by cleaning).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Segmenting with 'structural' (cap 900 tokens, overlap 90).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Reading with 'extract' (all|N+conflicts|none) over 1 chunk(s).</span>

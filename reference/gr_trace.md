@@ -40,12 +40,24 @@ as.data.frame(x, row.names = NULL, optional = FALSE, ...)
 A `gr_trace`. It is an environment, so it accumulates by reference: pass
 the same trace to several calls and they all record into it. Fields:
 `run_id`, `started`, `meta`, `steps`, `calls`, `cached`, `tokens_in`,
-`tokens_out`, `errors`, `budget_stop`, `stop_reason`, `spent_usd`.
-`cached` counts the calls answered from a
+`tokens_out`, `embed_tokens`, `errors`, `budget_stop`, `stop_reason`,
+`spent_usd`. `cached` counts the calls answered from a
 [`gr_cache()`](https://elkronos.github.io/readgpt/reference/gr_cache.md)
 or a
 [`gr_replay_client()`](https://elkronos.github.io/readgpt/reference/gr_replay_client.md)
 rather than the network, so `calls - cached` is what the run paid for.
+`calls` includes requests to an embeddings endpoint, recorded as steps
+labelled `"embed.request"`. Their tokens are counted in `embed_tokens`,
+not in `tokens_in`, so `tokens_in` and `tokens_out` stay the size of the
+model calls' prompts and replies.
+
+`errors` has one entry per request that failed: its `step`, `label` and
+`error`. A failure the run recovered from without losing any input, such
+as an embeddings request replaced by
+[`gr_embed()`](https://elkronos.github.io/readgpt/reference/gr_embed.md)'s
+lexical fallback, also carries `recovered = TRUE`. The answer still says
+what the fallback cost it (it is marked partial), but the document was
+read in full.
 
 `budget_stop` is `TRUE` once a limit stopped the run, and `stop_reason`
 says which: `"calls"` for `max_calls`, `"cost"` for `max_cost_usd` (see
@@ -95,8 +107,8 @@ order they were made, and none for local steps such as segmentation:
 
 - `usd`:
 
-  What the request cost, 0 when it came from a cache. `NA` when the
-  model has no registered price, as in
+  What the request cost, 0 when it came from a cache or failed without
+  sending any tokens. `NA` when the model has no registered price, as in
   [`gr_trace_cost()`](https://elkronos.github.io/readgpt/reference/gr_trace_cost.md),
   whose total the column adds up to.
 
@@ -132,18 +144,18 @@ ch <- gr_segment(readgpt_example(), list(method = "sentence", max_tokens = 150))
 invisible(gr_read(ch, "What was revenue?", cl, "map_reduce", trace = tr))
 #> Reading with 'map_reduce' (all|N+logN|tree) over 5 chunk(s).
 print(tr)
-#> <gr_trace run_20260924000658.747_3116bd>  7 steps, 6 model calls, 1079 in / 36 out tokens, 0 error(s)
+#> <gr_trace run_20260927025652.369_a71b04>  7 steps, 6 model calls, 1079 in / 36 out tokens, 0 error(s)
 #>   steps: map.answer x5, preflight x1, reduce x1 
-#>   cost: $0.0026 across gpt-5.6-terra
+#>   cost: $0.0000 across mock-model
 
 # One row per request, with what each cost and how long it took.
 reqs <- as.data.frame(tr)
 reqs[, c("step", "stage", "tokens_in", "tokens_out", "usd", "seconds")]
-#>   step      stage tokens_in tokens_out      usd seconds
-#> 1    2 map.answer       196          6 0.000464   0.000
-#> 2    3 map.answer       206          6 0.000484   0.000
-#> 3    4 map.answer       183          6 0.000438   0.001
-#> 4    5 map.answer       189          6 0.000450   0.000
-#> 5    6 map.answer       160          6 0.000392   0.000
-#> 6    7     reduce       145          6 0.000362   0.000
+#>   step      stage tokens_in tokens_out usd seconds
+#> 1    2 map.answer       196          6   0   0.001
+#> 2    3 map.answer       206          6   0   0.000
+#> 3    4 map.answer       183          6   0   0.001
+#> 4    5 map.answer       189          6   0   0.000
+#> 5    6 map.answer       160          6   0   0.000
+#> 6    7     reduce       145          6   0   0.000
 ```

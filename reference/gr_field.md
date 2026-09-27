@@ -27,7 +27,9 @@ gr_field(description, type = "string", values = NULL)
 
 - values:
 
-  For `type = "enum"`, the permitted values.
+  For `type = "enum"`, the permitted values. A declared value is kept as
+  written, including one such as `"null"` or `"none"` that would
+  otherwise read as missing.
 
 ## Value
 

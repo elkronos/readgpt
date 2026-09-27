@@ -57,7 +57,7 @@ gr_recipe("semantic_topk", segment = list(method = "semantic", max_tokens = 800)
 #> <gr_recipe 'semantic_topk'>
 #>   ingest  : clean=standard ocr=auto
 #>   segment : semantic (max 800 tok, overlap 0, min 0)
-#>   read    : retrieve [topk|1|none] model=gpt-5.6-terra
+#>   read    : retrieve [topk|1|none] model=(the client's)
 
 # Start from a built-in and change one axis. The other two stay fixed, so
 # any difference in the answer is attributable to the change.
@@ -68,5 +68,5 @@ r
 #> <gr_recipe 'thorough_structural'>
 #>   ingest  : clean=standard ocr=auto
 #>   segment : structural (max 1200 tok, overlap 0, min 0)
-#>   read    : map_reduce [all|N+logN|tree] model=gpt-5.6-terra
+#>   read    : map_reduce [all|N+logN|tree] model=(the client's)
 ```

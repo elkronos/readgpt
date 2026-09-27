@@ -124,6 +124,10 @@ reliable on the easy calls, not yet trustworthy alone on the hard ones.
 A document that could not be read at all gets `status = "failed"` and no
 decision. It is not excluded, and it is not silently absent: it is an
 outstanding job. A review whose denominator is unknown is not a review.
+The same goes for a document whose screening request failed, or whose
+reply was not the JSON asked for: no model judged it, so it is not
+"unclear" either. `error` says what happened, and with a `store` the
+next run screens it again.
 
 ## Reporting it
 
@@ -154,12 +158,12 @@ writeLines("We randomly assigned participants to two groups.", f)
 
 s <- gr_screen(f, question = "Does the treatment work?",
                include = "Reports a randomised comparison", client = cl)
-#> [1/1] file1dcd145a5e43.txt
-#> Extracting 'file1dcd145a5e43.txt' with the 'txt' extractor.
+#> [1/1] file1ceb1486321d.txt
+#> Extracting 'file1ceb1486321d.txt' with the 'txt' extractor.
 #> Ingested 1 block(s), ~15 tokens (0 chars removed by cleaning).
 #> Segmenting with 'structural' (cap 900 tokens, overlap 90).
 #> Reading with 'screen' (head|1|none) over 1 chunk(s).
 s$table[, c("document", "decision", "reason")]
 #>               document decision                           reason
-#> 1 file1dcd145a5e43.txt  include Reports a randomised comparison.
+#> 1 file1ceb1486321d.txt  include Reports a randomised comparison.
 ```

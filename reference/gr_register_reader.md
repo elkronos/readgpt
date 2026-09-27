@@ -79,6 +79,8 @@ Your function receives:
   A
   [`gr_read_spec()`](https://elkronos.github.io/readgpt/reference/gr_read_spec.md).
   Honour at least `model`, `max_answer_tokens` and `temperature`.
+  [`gr_read()`](https://elkronos.github.io/readgpt/reference/gr_read.md)
+  has already filled `model` from the client when the spec named none.
 
 - `trace`:
 

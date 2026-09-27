@@ -107,6 +107,11 @@ nothing downstream reads it and keeping it multiplied the cache size for no
 benefit. The prompt is <strong>not</strong> stored, only its hash, so a cache directory
 does not accumulate copies of your documents. The response itself is stored
 in full, and a model response can of course quote the document it read.</p>
+<p>An entry is used only if the file holds plain data (lists, strings and
+numbers) in the shape this cache writes, and the response is rebuilt from
+those fields; anything else is a miss. So reading a cache directory someone
+else wrote cannot run code. It can still hold any answer its author chose,
+so treat a shared cache as you would its author's results.</p>
     </div>
     <div class="section level2">
     <h2 id="caching-a-stochastic-call">Caching a stochastic call<a class="anchor" aria-label="anchor" href="#caching-a-stochastic-call"></a></h2>
@@ -127,7 +132,7 @@ or <code>read = FALSE</code>, when you want new draws.</p>
     <h2 id="ref-examples">Examples<a class="anchor" aria-label="anchor" href="#ref-examples"></a></h2>
     <div class="sourceCode"><pre class="sourceCode r"><code><span class="r-in"><span><span class="va">cache</span> <span class="op">&lt;-</span> <span class="fu">gr_cache</span><span class="op">(</span>dir <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/file.path.html" class="external-link">file.path</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempdir</a></span><span class="op">(</span><span class="op">)</span>, <span class="st">"readgpt-example-cache"</span><span class="op">)</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="va">cache</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;gr_cache&gt; /tmp/RtmpRyE9R0/readgpt-example-cache</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;gr_cache&gt; /tmp/RtmpLoLTxN/readgpt-example-cache</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   0 entries, 0.0 B on disk; 0 hit(s), 0 miss(es), 0 write(s)</span>
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="co"># Nothing is written until a call is cached.</span></span></span>

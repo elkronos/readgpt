@@ -55,7 +55,21 @@
 
 <dl><dt><code>chunks</code></dt>
 <dd><p>Data frame, one row per chunk, with columns <code>chunk_id</code>,
-<code>text</code>, <code>tokens</code>, <code>chars</code>, <code>page</code>, <code>section</code>, <code>block_id</code>.</p></dd>
+<code>text</code>, <code>tokens</code>, <code>chars</code>, <code>page</code>, <code>section</code>, <code>block_id</code>, and sometimes
+<code>source_text</code>.</p></dd>
+
+<dt><code>chunks$source_text</code></dt>
+<dd><p>Optional. The document text a chunk was made
+from, for a segmenter that puts text of its own into <code>text</code>:
+<code>proposition</code> fills it with the passage the propositions were written
+from, and <code>contextual</code> with the chunk's body without the bracketed
+context line. <code>NA</code>, or no such column, means <code>text</code> is the document's
+own. A quotation from a chunk is checked against <code>source_text</code> when it
+is there and not <code>NA</code>, and against <code>text</code> otherwise, so what the
+segmenter wrote cannot verify a quote. A chunk split to fit the token
+cap keeps the <code>source_text</code> of the chunk it was cut from. A custom
+segmenter that writes into <code>text</code> should set it with <code><a href="new_chunks.html">new_chunks()</a></code>'s
+<code>source_text</code>, or quotes are checked against what it wrote.</p></dd>
 
 <dt><code>method</code></dt>
 <dd><p>The segmenter that ran. <strong>If a segmenter fell back this
@@ -69,6 +83,15 @@ supplied, or <code>"page-&gt;paragraph"</code> for a source with no page provena
 <dd><p>Method-specific detail: <code>boundaries</code> and
 <code>embedding_source</code> for <code>semantic</code>, <code>propositions</code> for <code>proposition</code>,
 <code>cap_enforced</code> when oversized chunks had to be split.</p></dd>
+
+<dt><code>trace</code></dt>
+<dd><p>Set only when <code><a href="gr_segment.html">gr_segment()</a></code> was called without a <code>trace</code>
+and so made its own: the <a href="gr_trace.html">gr_trace</a> it recorded into, holding the
+requests the segmenter made (embeddings for <code>semantic</code>, model calls for
+<code>proposition</code> and for <code>contextual</code> with <code>context_source = "llm"</code>),
+which were held to <code>gr_options(max_calls =, max_cost_usd =)</code>. When a
+<code>trace</code> is passed they are recorded there instead, and this field is
+absent.</p></dd>
 
 
 </dl></div>

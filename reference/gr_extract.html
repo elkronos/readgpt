@@ -115,15 +115,17 @@ interrupted extraction resumes instead of restarting.</p></dd>
 <dd><p>What to do when two parts of one document give different values
 for the same field. <code>"first"</code> (default) takes the earlier one and records
 the disagreement in the <code>conflicts</code> column, costing nothing. <code>"model"</code>
-spends one extra call per disagreeing field to adjudicate.</p></dd>
+spends one extra call per disagreeing field to adjudicate; if that call
+fails, the first value is kept, as with <code>"first"</code>.</p></dd>
 
 
 <dt id="arg-require-quote">require_quote<a class="anchor" aria-label="anchor" href="#arg-require-quote"></a></dt>
-<dd><p>Discard any value the model could not tie to a verbatim
-span in the chunk it cited. Off by default: an extracted value is never
-thrown away without being asked for, and <code>n_unverified</code> makes the same
-problem visible without destroying anything. Turn it on for a protocol that
-says no quote, no datum.</p></dd>
+<dd><p>Discard any value that is not verified: one with no
+quote, a quote that is not verbatim in the chunk it cited, or a quote that
+does not state the value (see "Verifying it" below). Off by default: an
+extracted value is never thrown away without being asked for, and
+<code>n_unverified</code> makes the same problem visible without destroying anything.
+Turn it on for a protocol that says no quote, no datum.</p></dd>
 
 
 <dt id="arg-max-total-calls-trace">max_total_calls, trace<a class="anchor" aria-label="anchor" href="#arg-max-total-calls-trace"></a></dt>
@@ -147,7 +149,11 @@ cut into and therefore how many calls it costs.</p></dd>
     <p>An object of class <code>gr_extraction</code>:</p><dl><dt><code>table</code></dt>
 <dd><p>One row per document: <code>document</code>, one column per field in
 the schema and of that field's type, then <code>n_filled</code>, <code>n_unverified</code>,
-<code>conflicts</code>, <code>status</code>, <code>duplicate_of</code>, <code>error</code>. A document whose cleaned
+<code>conflicts</code>, <code>status</code>, <code>duplicate_of</code>, <code>error</code>. <code>status</code> is the run
+status from <code>summary</code>, except that a document some of whose extraction
+requests failed is <code>"incomplete"</code> (or <code>"failed"</code> if all did), and one
+whose extraction requests all succeeded is not <code>"failed"</code> for another
+request's failure; see the section on <code>NA</code> below. A document whose cleaned
 text repeats one already read is not read again (see
 <code><a href="gr_read_many.html">gr_read_many()</a></code>), so <code>subset(x$table, is.na(duplicate_of))</code> is the
 set of distinct documents.</p></dd>
@@ -181,6 +187,15 @@ that field, or because the document was never successfully read. The <code>statu
 column tells them apart, and it matters: "not reported" is a finding you can
 publish, and "failed" is a job you have to redo. Filtering an extraction table
 without checking <code>status</code> silently turns the second into the first.</p>
+<p>A document where some of the extraction requests failed is <code>"incomplete"</code>,
+with the count in <code>error</code>: the values it has are real, but an <code>NA</code> there may
+sit in a part of the document that was never read, so it is unknown rather
+than not reported. A document where every request failed is <code>"failed"</code>.
+A failed request outside extraction, such as the adjudication
+<code>resolve = "model"</code> asks for (the first value is then kept) or a
+<code>contextual</code> header (the excerpt is read without it), leaves the document
+<code>"ok"</code>: every excerpt was read. <code>error</code> names such a failure unless the
+pipeline recorded it as recovered.</p>
     </div>
     <div class="section level2">
     <h2 id="what-it-costs">What it costs<a class="anchor" aria-label="anchor" href="#what-it-costs"></a></h2>
@@ -197,12 +212,28 @@ unless a document contradicts itself. Cut the cost by segmenting more coarsely
 
 
 <p>Every filled cell is asked for the sentence it came from, and that sentence is
-checked against the text of the chunk it was attributed to. Nothing is ever
-discarded for failing: a paraphrase stays in <code>$evidence</code> with
-<code>verified = FALSE</code> and the fraction of it that did match in <code>match</code>.</p>
+checked against the text of the chunk it was attributed to (the document's
+own text, never a header or rewrite a model added to the chunk). It must
+also carry the value: a number must be one of the numbers the sentence
+states, the sentence must not start or end inside a word, and a one-word
+fragment supports only a value it spells. A number counts however the
+sentence writes it: "1,204", "1 204", "0,45", a middle-dot decimal point
+(U+00B7, as the Lancet prints "0.84"), "3.2 x 10^-5",
+"1.2 million", "54%" for 0.54, or English words ("Twenty-four", "three",
+"no" for zero). A quotation made of several passages (separate lines,
+bullets, "<a href="https://rdrr.io/r/base/dots.html" class="external-link">...</a>") is checked passage by passage. Nothing is ever discarded
+for failing: a paraphrase stays in <code>$evidence</code> with <code>verified = FALSE</code> and
+the fraction of it that did match in <code>match</code>, and a real sentence that does
+not carry the value shows <code>verified = FALSE</code> with <code>match = 1</code>. When several
+parts of a document give the same value, it is cited with the best quote
+any of them gave. A string field that comes back "None" or "N/A" is kept
+only when its quote verifies and says so itself ("Conflicts of interest:
+None."); otherwise it is the model reporting nothing, and so is not a
+value, and a real value from another part of the document replaces it.</p>
 <p><code>n_unverified</code> counts the cells in that row whose value could not be tied to a
 verbatim span, either because no quote was given, or because the quote is
-not in the chunk. That column is the one to look at before believing a table:
+not in the chunk or does not carry the value. That column is the one to look
+at before believing a table:
 <code>n_unverified</code> of zero means every value in the row can be pointed at in the
 document. A row where it is not zero is not wrong, but it is unaudited, and
 the answer is marked <code>partial</code> to say so. <code>require_quote = TRUE</code> turns the
@@ -253,14 +284,14 @@ the sentence it was taken from and a check that the sentence is really there.</p
 <span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/writeLines.html" class="external-link">writeLines</a></span><span class="op">(</span><span class="st">"We ran a randomised controlled trial. We enrolled 120 participants."</span>, <span class="va">f</span><span class="op">)</span></span></span>
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="va">x</span> <span class="op">&lt;-</span> <span class="fu">gr_extract</span><span class="op">(</span><span class="va">f</span>, <span class="va">fields</span>, client <span class="op">=</span> <span class="va">cl</span><span class="op">)</span></span></span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> [1/1] file1dcd487ec805.txt</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'file1dcd487ec805.txt' with the 'txt' extractor.</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> [1/1] file1ceb718599d1.txt</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'file1ceb718599d1.txt' with the 'txt' extractor.</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Ingested 1 block(s), ~22 tokens (0 chars removed by cleaning).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Segmenting with 'structural' (cap 900 tokens, overlap 90).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Reading with 'extract' (all|N+conflicts|none) over 1 chunk(s).</span>
 <span class="r-in"><span><span class="va">x</span><span class="op">$</span><span class="va">table</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"document"</span>, <span class="st">"design"</span>, <span class="st">"n"</span>, <span class="st">"n_unverified"</span>, <span class="st">"status"</span><span class="op">)</span><span class="op">]</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>               document                      design   n n_unverified status</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1 file1dcd487ec805.txt randomised controlled trial 120            0     ok</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1 file1ceb718599d1.txt randomised controlled trial 120            0     ok</span>
 <span class="r-in"><span><span class="va">x</span><span class="op">$</span><span class="va">evidence</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"field"</span>, <span class="st">"quote"</span>, <span class="st">"verified"</span><span class="op">)</span><span class="op">]</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>    field                                 quote verified</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 1 design We ran a randomised controlled trial.     TRUE</span>

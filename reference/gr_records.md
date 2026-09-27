@@ -43,9 +43,19 @@ gr_records(
 - dedupe:
 
   `"doi"` matches on DOI alone; `"doi+title"` (the default) falls back
-  to normalised title and year when a DOI is missing, which is what
-  catches the same conference paper indexed twice; `"none"` keeps
-  everything.
+  to normalised title and year when a DOI cannot settle it, which is
+  what catches the same conference paper indexed twice, or indexed once
+  with its DOI and once without. The title fallback also needs the first
+  author's surname to agree as a whole name ("Smith, J." and "Smith JA"
+  agree, "Li" and "Lin" do not), or, when a record has no authors, the
+  venue. It ignores titles shorter than 12 letters ("Reply",
+  "Editorial") and never merges records carrying two different DOIs. A
+  record without a DOI is merged with one that has a DOI, and a title
+  with fewer than 12 Latin letters or digits is merged at all, only when
+  the venues do not disagree, the first authors' initials do not differ,
+  and the author or the venue confirms it. The kept row takes any field
+  it lacks (the DOI, the journal) from the rows merged into it. `"none"`
+  keeps everything.
 
 ## Value
 
@@ -55,7 +65,10 @@ An object of class `gr_records`:
 
   One row per distinct work, with `duplicate_of` naming the row a
   dropped record repeats, `file` the document matched to it, and
-  `retrieved` whether one was found.
+  `retrieved` whether one was found. A duplicate's file path counts
+  towards the row it repeats, which is where the match is reported; a
+  second copy the duplicate's own path points to is shown on the
+  duplicate's row.
 
 - `counts`:
 
@@ -116,7 +129,7 @@ writeLines(c("TY  - JOUR", "AU  - Smith, J.", "TI  - A trial of spacing",
 recs <- gr_records(ris)
 recs
 #> <gr_records> 1 record(s) from 1 export(s)
-#>   file1dcd620c2057.ris 1
+#>   file1ceb16f3e1e8.ris 1
 #>   records identified       1
 #>   duplicates removed       0
 #>   records screened         1

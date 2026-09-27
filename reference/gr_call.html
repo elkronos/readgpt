@@ -118,7 +118,12 @@ models that reject it.</p></dd>
 <code>""</code> on failure. A successful HTTP call that returned no text (a refusal, a
 content filter) is reported as <code>ok = FALSE</code>, so an empty completion is never
 passed downstream as evidence. <code>$cached</code> is <code>TRUE</code> when the response came
-from a <code><a href="gr_cache.html">gr_cache()</a></code> or a <code><a href="gr_replay_client.html">gr_replay_client()</a></code> instead of the network.</p>
+from a <code><a href="gr_cache.html">gr_cache()</a></code> or a <code><a href="gr_replay_client.html">gr_replay_client()</a></code> instead of the network.
+A reply cut off at the output cap keeps <code>ok = TRUE</code>, since its text is what
+the model wrote, but always carries <code>finish_reason = "length"</code>, whatever the
+provider called it (<code>"max_tokens"</code>, <code>"MAX_TOKENS"</code>, a Responses API status
+of <code>"incomplete"</code>); check for it wherever a complete reply matters. Such a
+reply is not written to a <code><a href="gr_cache.html">gr_cache()</a></code>.</p>
     </div>
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>

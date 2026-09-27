@@ -16,19 +16,26 @@ gr_reference(
 \arguments{
 \item{screening}{A \code{gr_screening} from \code{\link[=gr_screen]{gr_screen()}}.}
 
-\item{n}{How many to draw. \code{Inf} takes the whole frame.}
+\item{n}{How many to draw: a whole number of at least 1. \code{Inf} takes the
+whole frame, as does any \code{n} larger than it.}
 
 \item{of}{Which rows to sample from: \code{"excluded"}, \code{"kept"} (include and
 unclear), or \code{"all"}.}
 
-\item{seed}{Passed to \code{\link[withr:with_seed]{withr::with_seed()}} so the draw is reproducible. A
-calibration sample is part of the method and has to be re-drawable.}
+\item{seed}{A seed for the draw, so it is reproducible: the sample is drawn
+after \code{set.seed(seed)} and your session's random number stream is put back
+afterwards. A calibration sample is part of the method and has to be
+re-drawable.}
 
 \item{path}{Where to write the CSV. \code{NULL} returns the frame without writing.}
 
 \item{blind}{Leave the model's decision and reason out of the file. On by
 default: a person shown the answer agrees with it, and the resulting figure
-measures nothing.}
+measures nothing. A blind sheet does not name its frame either, since
+"excluded" on every row says what the model decided: \code{sampled_from} holds
+an opaque key that \code{\link[=gr_calibrate]{gr_calibrate()}} reads back as the frame and its size.
+With \code{blind = FALSE} the file has \code{model_decision}, \code{model_reason}, and the
+frame in plain words (\code{sampled_from}, \code{frame_n}, \code{screened_n}).}
 }
 \value{
 A data frame of class \code{gr_reference_frame}, invisibly when written.
@@ -56,6 +63,15 @@ the screener kept, plus a sample of what it discarded: \code{of = "kept"} with
 \code{n = Inf}, and \code{of = "excluded"} with whatever hand-screening effort you have.
 \code{\link[=gr_calibrate]{gr_calibrate()}} knows which frame it was given and will not compute a
 corpus-wide figure from a sample that cannot support one.
+}
+
+\section{The file}{
+
+The CSV is written as UTF-8 with a byte-order mark, which is what makes
+Excel open accented names and titles correctly; save it back as "CSV UTF-8".
+\code{\link[=gr_calibrate]{gr_calibrate()}} reads it the same way in any locale, reads a sheet a
+spreadsheet re-saved as Windows-1252 as that, and matches a row whose name
+still does not agree by its \code{document_id}.
 }
 
 \examples{

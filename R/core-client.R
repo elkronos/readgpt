@@ -371,8 +371,9 @@ print.gr_client <- function(x, ...) {
 #' time it is called, so they appear in [gr_models()] afterwards. Its default
 #' handler returns plain text, so readers that need JSON-schema output
 #' (`rerank`, `iterative`) take their documented degraded path unless your
-#' handler returns valid JSON for those prompts. And its `embed_handler` is used
-#' by [gr_embed()] in preference to any registered embedder, reporting
+#' handler returns valid JSON for those prompts. And [gr_embed()] uses its
+#' `embed_handler` unless `gr_options(embedder =)` names a registered embedder
+#' (see the `embedder` argument of [gr_embed()]), reporting
 #' `embedding_source = "api"`, so an offline run gets semantic-shaped vectors
 #' rather than the lexical fallback. A mock embed handler that fails or returns
 #' the wrong number of rows is still caught and still degrades, like any other.
@@ -828,7 +829,9 @@ handler_result <- function(out, model, prompt_tokens) {
     # back, after the paid round trip. Recording 0 tokens made that spend
     # invisible to max_cost_usd, so the prompt is charged -- the direction that
     # keeps a spending limit honest, as settle_usage() does. The reply's
-    # tokens are unknown and not charged.
+    # tokens are unknown and not charged. (The ellmer adapter no longer raises
+    # for a reply it could not read: it returns the failure with the tokens
+    # ellmer recorded for the turn, and raises only when there was no turn.)
     return(gr_result(FALSE, error = repair_utf8(conditionMessage(out)), model = model,
                      usage = list(input = as_int1(prompt_tokens, 0L), output = 0L)))
   }

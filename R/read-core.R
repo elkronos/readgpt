@@ -327,7 +327,12 @@ partial_reasons <- function(x) {
       "no chunk shared a word with the question, so the candidates were an evenly spread sample",
     if (flag("embedding_fallback")) "embeddings fell back to word matching",
     if (flag("degraded")) "fell back to a simpler method",
-    if (identical(get("merge_ok"), FALSE)) "the answers could not be merged"
+    # `skim` merges no answers: what it consolidates is the evidence it
+    # extracted, and "could not be merged" sent a reader looking for answers.
+    if (identical(get("merge_ok"), FALSE)) {
+      if (identical(as_chr1(x$reader, ""), "skim")) "the evidence could not be consolidated"
+      else "the answers could not be merged"
+    }
   )
   err <- as_chr1(get("error"), "")
   # This answer's own steps: a trace shared with other runs holds their
@@ -343,6 +348,15 @@ partial_reasons <- function(x) {
     err <- as_chr1((if (length(open)) open else errs)[[1]]$error, "")
   }
   if (nzchar(err)) why <- c(why, sprintf("first error: %s", substr(err, 1, 120)))
+  # An ensemble member's own reason is in its notes, not these. Named, so a
+  # member that fell back or cut its text is not hidden behind a failure the
+  # ensemble happens to count, or behind an embeddings error a fallback
+  # recovered from; after the rest, which say what the ensemble itself saw.
+  members <- as.character(unlist(get("partial_members"), use.names = FALSE))
+  if (length(members)) {
+    why <- c(why, sprintf("member(s) %s returned a partial answer",
+                          paste(sprintf("'%s'", members), collapse = ", ")))
+  }
   if (!length(why) && is_nonblank(get("reason"))) why <- get("reason")
   why
 }
@@ -351,13 +365,46 @@ partial_reasons <- function(x) {
 #' @noRd
 is_recovered_error <- function(e) is.list(e) && isTRUE(e[["recovered", exact = TRUE]])
 
+#' The notes fields that list things: chunk ids, pages, member names, queries,
+#' field names. Counts (`dropped_chunks`, `skipped`) are numbers, not lists,
+#' and stay out. A new notes field that lists things belongs here too.
+#' @noRd
+.gr_answer_note_arrays <- c(
+  "cited_unknown", "cited_unparsed", "unread_pages", "queries",
+  "members", "signatures", "answered", "partial_members",
+  "not_reported", "unknown", "unsupported", "dropped_unverified", "unreadable", "unresolved")
+
+#' An answer's notes as as_json() writes them: an object, with each field that
+#' lists things an array at every length (json_arrays()), an ensemble's
+#' members' notes included.
+#' @noRd
+answer_notes_json <- function(notes) {
+  notes <- as.list(notes %||% list())
+  if (!length(notes)) return(structure(list(), names = character(0)))
+  notes <- json_arrays(notes, .gr_answer_note_arrays)
+  if (is.list(notes[["member_notes", exact = TRUE]])) {
+    notes$member_notes <- lapply(notes$member_notes, answer_notes_json)
+  }
+  if (is.list(notes[["collapsed_members", exact = TRUE]])) {
+    notes$collapsed_members <- lapply(notes$collapsed_members, function(g) I(as.character(g)))
+  }
+  notes
+}
+
 #' @export
 as_json.gr_answer <- function(x, pretty = TRUE, ...) {
   w <- x[["warnings", exact = TRUE]] %||% character(0)
+  used <- x$chunks_used %||% integer(0)
   as_json.default(list(
     answer = x$answer, reader = x$reader, question = x$question,
-    partial = x$partial, chunks_used = x$chunks_used, notes = x$notes,
-    evidence = x$evidence,
+    # Arrays at every length: `auto_unbox` wrote one chunk id as a number and
+    # two as an array, and no notes at all as `[]` rather than an object, so a
+    # consumer that iterated over them broke on the short case.
+    partial = x$partial,
+    chunks_used = I(if (is.numeric(used)) as.integer(used) else as.vector(used)),
+    notes = answer_notes_json(x$notes),
+    # No evidence is no rows, as a table with none is: `[]`, not `null`.
+    evidence = x$evidence %||% list(),
     # A list of pairs rather than a named vector: two warnings of one class would
     # otherwise become one JSON object with a repeated key.
     warnings = lapply(seq_along(w), function(i)
@@ -751,6 +798,12 @@ prompt_overhead <- function(question, system_prompt, restate = "auto") {
 #' an ellmer chat bills as the model it was built with, whatever the request
 #' names. NA when that model has no price, which gr_lapply() counts as the
 #' trace counts such a call, as nothing.
+#'
+#' The reply is priced at the cap the request is sent with, which for a
+#' reasoning model is raised to leave room for its reasoning
+#' (reasoning_output_cap()): priced at the cap asked for, a 90-token context
+#' line or a 200-token relevance score understated what each item can bill by
+#' up to about 1,850 tokens.
 #' @noRd
 batch_item_usd <- function(client, model, input_tokens, max_output) {
   m <- client_billed_model(client) %||% as_chr1(model, "")
@@ -759,7 +812,8 @@ batch_item_usd <- function(client, model, input_tokens, max_output) {
                                    error = function(e) NULL)
   info <- quiet(gr_model_info(m))
   if (is.null(info)) return(NA_real_)
-  out <- min(as_num1(max_output, 0), as_num1(info$max_output, Inf))
+  out <- reasoning_output_cap(min(as_num1(max_output, 0), as_num1(info$max_output, Inf)),
+                              info, input_tokens)
   as_num1(quiet(gr_estimate_cost(m, input_tokens, out)), NA_real_)
 }
 
@@ -859,10 +913,12 @@ evidence_table <- function(chunk_ids, texts, pages = NA_integer_, sections = NA_
 #' prompt itself can never exceed the context window.
 #'
 #' Besides the text, the result says how many findings were cut to fit a merge
-#' (`truncated`) and how many merge replies came back cut off at the output cap
-#' (`truncated_calls`). A reply cut off part way through a level is passed up as
-#' a finding like any other, so the final merge can be whole and still rest on
-#' one that was not.
+#' (`truncated`), how many merge replies came back cut off at the output cap
+#' (`truncated_calls`) and how many merge requests failed (`failed`). A reply
+#' cut off part way through a level is passed up as a finding like any other,
+#' so the final merge can be whole and still rest on one that was not. So is a
+#' group whose merge failed, joined unmerged: `ok` says whether the LAST merge
+#' worked, and `failed` counts every level, the last included.
 #' @noRd
 tree_merge <- function(client, question, pieces, spec, trace, label = "merge",
                        system_prompt = NULL, kind = "findings") {
@@ -873,13 +929,14 @@ tree_merge <- function(client, question, pieces, spec, trace, label = "merge",
   spec$model <- spec$model %||% as_chr1(client[["model", exact = TRUE]], gr_options("model"))
   pieces <- pieces[has_content(pieces)]
   if (!length(pieces)) return(list(text = .NOT_FOUND, ok = FALSE, levels = 0L,
-                                   truncated_calls = 0L))
+                                   truncated_calls = 0L, failed = 0L))
   if (length(pieces) == 1L) return(list(text = pieces[[1]], ok = TRUE, levels = 0L,
-                                        truncated_calls = 0L))
+                                        truncated_calls = 0L, failed = 0L))
 
   level <- 0L
   truncated <- 0L
   cut <- 0L
+  failed <- 0L
   prev_n <- length(pieces) + 1L
   repeat {
     level <- level + 1L
@@ -936,7 +993,7 @@ tree_merge <- function(client, question, pieces, spec, trace, label = "merge",
         # finding put together -- while the failure path two lines down was
         # carefully capped. Same degradation, same bound.
         return(list(text = merge_giveup(pieces, spec), ok = FALSE, levels = level,
-                    truncated = truncated, truncated_calls = cut,
+                    truncated = truncated, truncated_calls = cut, failed = failed,
                     error = paste(cap_name(trace), "reached before merging")))
       }
       res <- gr_call(client, list(
@@ -948,10 +1005,11 @@ tree_merge <- function(client, question, pieces, spec, trace, label = "merge",
       if (!res$ok) {
         # Concatenation is a documented, visible degradation -- not a silent one.
         return(list(text = merge_giveup(pieces, spec), ok = FALSE, levels = level,
-                    truncated = truncated, truncated_calls = cut, error = res$error))
+                    truncated = truncated, truncated_calls = cut, failed = failed + 1L,
+                    error = res$error))
       }
       return(list(text = res$text, ok = TRUE, levels = level, truncated = truncated,
-                  truncated_calls = cut + reply_cut_off(res)))
+                  truncated_calls = cut + reply_cut_off(res), failed = failed))
     }
 
     gr_msg(sprintf("Merge level %d: %d finding(s) -> %d group(s).", level, length(pieces), length(groups)))
@@ -962,8 +1020,10 @@ tree_merge <- function(client, question, pieces, spec, trace, label = "merge",
                             overhead + max_tokens_of(sizes[lengths(groups) > 1L]),
                             spec$max_answer_tokens)
     got <- gr_lapply(groups, function(g, trace) {
-      if (length(g) == 1L) return(list(text = g, cut = FALSE))
-      if (!trace_can_call(trace)) return(list(text = merge_giveup(g, spec), cut = FALSE))
+      if (length(g) == 1L) return(list(text = g, cut = FALSE, failed = FALSE))
+      if (!trace_can_call(trace)) {
+        return(list(text = merge_giveup(g, spec), cut = FALSE, failed = FALSE))
+      }
       body <- paste(sprintf("<%s>\n%s\n</%s>", kind, g, kind), collapse = "\n\n")
       res <- gr_call(client, list(
         list(role = "system", content = system_prompt),
@@ -971,22 +1031,26 @@ tree_merge <- function(client, question, pieces, spec, trace, label = "merge",
         list(role = "user", content = paste0("Question: ", question))
       ), model = spec$model, max_output = spec$max_answer_tokens, temperature = spec$temperature,
          trace = trace, label = paste0(label, ".level", level))
-      if (res$ok) list(text = res$text, cut = reply_cut_off(res))
-      else list(text = paste(g, collapse = "\n\n"), cut = FALSE)
+      # A failed group goes up unmerged, which keeps its findings and says
+      # nothing of the failure, so it is counted.
+      if (res$ok) list(text = res$text, cut = reply_cut_off(res), failed = FALSE)
+      else list(text = paste(g, collapse = "\n\n"), cut = FALSE, failed = TRUE)
     }, parallel = spec$parallel, label = "merge group", trace = trace,
        client = client, item_usd = worst)
     pieces <- vapply(got, function(x) as_chr1(x$text), character(1), USE.NAMES = FALSE)
     cut <- cut + sum(vapply(got, function(x) isTRUE(x$cut), logical(1)))
+    failed <- failed + sum(vapply(got, function(x) isTRUE(x$failed), logical(1)))
     pieces <- pieces[has_content(pieces)]
 
     # Progress guard. If a level did not shrink the pile, another level will not
     # either -- every input to it is the same. Stop now with a bounded answer
     # rather than burning six more rounds of calls to reach the same place.
     if (!length(pieces)) return(list(text = .NOT_FOUND, ok = FALSE, levels = level,
-                                     truncated = truncated, truncated_calls = cut))
+                                     truncated = truncated, truncated_calls = cut,
+                                     failed = failed))
     if (length(pieces) >= prev_n || level > 6L) {
       return(list(text = merge_giveup(pieces, spec), ok = FALSE, levels = level,
-                  truncated = truncated, truncated_calls = cut,
+                  truncated = truncated, truncated_calls = cut, failed = failed,
                   error = if (level > 6L) "merge depth cap reached" else "merge made no progress"))
     }
     prev_n <- length(pieces)

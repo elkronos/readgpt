@@ -7,8 +7,12 @@
 gr_replay_client(source, strict = TRUE)
 }
 \arguments{
-\item{source}{A \code{gr_trace}, a path to a file written by \code{\link[=gr_trace_save]{gr_trace_save()}}, or
-an already-parsed list in that shape.}
+\item{source}{A \code{gr_trace}; a path to a file written by \code{\link[=gr_trace_save]{gr_trace_save()}};
+the JSON text \code{\link[=as_json]{as_json()}} writes for a trace or for an answer (whose trace
+is used); or an already-parsed list in that shape. Parse a file yourself
+with \code{jsonlite::fromJSON(path, simplifyVector = FALSE)}: the default
+simplification turns the steps into a data frame, which loses what a
+replay needs, and is refused with a message that says so.}
 
 \item{strict}{If \code{TRUE} (default), a prompt with no recorded response raises
 a \code{gr_replay_miss} error. That is usually what you want: a miss means the
@@ -37,7 +41,17 @@ recording of exactly what went wrong.
 A response is matched on the exact prompt messages plus the model id the
 call asked for. That can differ from the model the trace records as
 answering: a \code{\link[=gr_ellmer_client]{gr_ellmer_client()}} answers with its chat's model whatever the
-recipe asked for, and its runs replay all the same. When a
+recipe asked for, and its runs replay all the same.
+
+The replay client's own model, which a read that names none asks for, is
+the model the recorded reads asked for. One trace can hold reads through
+clients built for different models, and a recording made by readgpt 0.5.0
+asked for \code{gr_options("model")} on a read and for the client's model
+everywhere else; a call that asks for the replay client's model and finds
+nothing under it is answered from the one other such model that holds the
+same prompt. A model the recorded settings named (\code{model}, \code{skim_model},
+\code{summary_model}) is never used that way, so a replay that leaves one out
+misses. When a
 run issued the same prompt more than once (which happens at a temperature
 above zero, and in readers that revisit a chunk), the recorded responses are
 returned in the order they were produced. Once they are exhausted the last
@@ -49,17 +63,37 @@ one repeats.
 A trace records each request to an embeddings endpoint (a step labelled
 \code{"embed.request"}, counted in \code{calls} and priced like any other request),
 but not the vectors that came back, so a replay has nothing to answer those
-requests with. Whether a replay reproduces a run's chunk \emph{ranking} therefore
-depends on how the run embedded, and that is checked rather than assumed.
-The ranking reproduces exactly when the recording used a \strong{deterministic}
-embedder and the replay uses the \strong{same} one; both conditions, because
-replaying an API-embedded run with a deterministic local embedder would
-compute vectors the original never saw while looking exact. Anything else
-falls back to hashed lexical vectors and warns with class
-\code{gr_replay_no_embeddings}; every recorded answer is still reproduced, but the
-ranking may differ. Record a run you intend to publish with
-\code{gr_options(embedder = "lexical")}, or with your own embedder registered as
-\code{deterministic = TRUE}.
+requests with. A run that embedded (the \code{semantic} segmenter, the
+\code{retrieve} and \code{iterative} readers, \code{rerank} when word overlap finds
+nothing, and so the \code{"needle"} recipe) therefore replays only when the
+recording used a \strong{deterministic} embedder and the replay uses the
+\strong{same} one: the vectors are then computed again, exactly. Both
+conditions, because replaying an API-embedded run with a deterministic
+local embedder would compute vectors the original never saw while looking
+exact. Anything else, including a run recorded with the default \code{"api"}
+embedder (or a \code{\link[=gr_mock_client]{gr_mock_client()}}'s embed handler), warns with class
+\code{gr_replay_no_embeddings} and falls back to hashed lexical vectors. Those
+place semantic cuts and rank chunks differently, so such a replay usually
+sends prompts the recording does not hold: a strict replay stops with
+\code{gr_replay_miss}, whose message names this cause, and a non-strict one gets
+failed calls for them and does not give the recorded answer. Record a run
+you intend to publish or replay with \code{gr_options(embedder = "lexical")}, or
+with your own embedder registered as \code{deterministic = TRUE}.
+}
+
+\section{Limits}{
+
+A saved trace says whether a limit cut the run short (\code{budget_stop},
+\code{stop_reason}), and a replay of such a run stops where it stopped when it
+runs under the limits it was recorded with. Replayed calls count against
+\code{max_calls} as they did when recorded. When the spending limit stopped the
+recorded run, each replayed call also counts what it cost when recorded
+against \code{max_cost_usd} (in the trace's \code{replayed_usd}; nothing is spent);
+for any other run it counts nothing, so a replay of an expensive run is not
+stopped by the replaying session's limit. A replay under a higher limit, or
+none, that asks for a call past the recorded stop gets a \code{gr_replay_miss}
+saying so, and one under a lower limit stops sooner, marked partial as the
+run would have been.
 }
 
 \section{The recipe "auto" chose}{

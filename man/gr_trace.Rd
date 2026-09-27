@@ -25,7 +25,7 @@ A \code{gr_trace}. It is an environment, so it accumulates by reference:
 pass the same trace to several calls and they all record into it. Fields:
 \code{run_id}, \code{started}, \code{meta}, \code{steps}, \code{calls}, \code{cached}, \code{tokens_in},
 \code{tokens_out}, \code{embed_tokens}, \code{errors}, \code{budget_stop}, \code{stop_reason},
-\code{spent_usd}.
+\code{spent_usd}, \code{replayed_usd}.
 \code{cached} counts the calls answered from a \code{\link[=gr_cache]{gr_cache()}} or a
 \code{\link[=gr_replay_client]{gr_replay_client()}} rather than the network, so \code{calls - cached} is what
 the run paid for. \code{calls} includes requests to an embeddings endpoint,
@@ -34,16 +34,31 @@ recorded as steps labelled \code{"embed.request"}. Their tokens are counted in
 the size of the model calls' prompts and replies.
 
 \code{errors} has one entry per request that failed: its \code{step}, \code{label} and
-\code{error}. A failure the run recovered from without losing any input, such
-as an embeddings request replaced by \code{\link[=gr_embed]{gr_embed()}}'s lexical fallback,
-also carries \code{recovered = TRUE}. The answer still says what the fallback
-cost it (it is marked partial), but the document was read in full.
+\code{error}. A failure the run recovered from without losing any input also
+carries \code{recovered = TRUE}: the document was read in full, and
+\code{\link[=gr_read_many]{gr_read_many()}} does not count it as failed. Only some fallbacks mark the
+answer partial. An embeddings request replaced by \code{\link[=gr_embed]{gr_embed()}}'s lexical
+fallback does when the vectors ranked the chunks a reader sent (the
+\code{retrieve}, \code{rerank} and \code{iterative} readers). The same fallback while
+\code{\link[=gr_segment]{gr_segment()}} made semantic cuts, and a proposition batch kept as
+written, leave the answer unmarked and say so in its \verb{$warnings}. A
+contextual header that could not be written leaves no mark on the answer
+at all, and this entry is the record of it.
 
 \code{budget_stop} is \code{TRUE} once a limit stopped the run, and \code{stop_reason}
 says which: \code{"calls"} for \code{max_calls}, \code{"cost"} for \code{max_cost_usd} (see
-\code{\link[=gr_options]{gr_options()}}). \code{spent_usd} is what the calls so far cost, the figure
-\code{max_cost_usd} is checked against. A call to a model with no registered
-price adds nothing to it, so \code{\link[=gr_trace_cost]{gr_trace_cost()}} is the full account.
+\code{\link[=gr_options]{gr_options()}}). \code{spent_usd} is what the calls so far cost. A call to a
+model with no registered price adds nothing to it, so \code{\link[=gr_trace_cost]{gr_trace_cost()}} is
+the full account. \code{replayed_usd} is what the calls a \code{\link[=gr_replay_client]{gr_replay_client()}}
+answered cost when they were recorded, counted when the spending limit
+stopped the recorded run: nothing was paid for them, but \code{max_cost_usd}
+is checked against \code{spent_usd + replayed_usd}, so the replay stops at the
+same call. A call answered from a \code{\link[=gr_cache]{gr_cache()}} adds to neither, so a
+re-run through a warm cache under the same limit reads further than the
+run that filled it.
+\code{\link[=as_json]{as_json()}} and \code{\link[=gr_trace_save]{gr_trace_save()}} write \code{budget_stop}, \code{stop_reason},
+\code{spent_usd} and \code{replayed_usd}, so a saved run says whether it was cut
+short.
 
 \code{as.data.frame()} on a trace returns one row per request; see below.
 }

@@ -23,7 +23,10 @@ gr_register_model(
 
 \item{max_output}{Maximum tokens the model will emit in one response.}
 
-\item{input_usd, output_usd}{Price per 1M tokens; used for cost estimates.}
+\item{input_usd, output_usd}{Price per 1M tokens; used for cost estimates.
+Give both or neither for a chat model: one without the other is an error,
+since a cost with half its price missing cannot be estimated. An embedding
+model needs only \code{input_usd}.}
 
 \item{reasoning}{Whether this is a reasoning model (affects prompt shape).}
 

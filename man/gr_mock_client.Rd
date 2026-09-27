@@ -29,8 +29,9 @@ Three things to know about the mock. It registers two model ids
 time it is called, so they appear in \code{\link[=gr_models]{gr_models()}} afterwards. Its default
 handler returns plain text, so readers that need JSON-schema output
 (\code{rerank}, \code{iterative}) take their documented degraded path unless your
-handler returns valid JSON for those prompts. And its \code{embed_handler} is used
-by \code{\link[=gr_embed]{gr_embed()}} in preference to any registered embedder, reporting
+handler returns valid JSON for those prompts. And \code{\link[=gr_embed]{gr_embed()}} uses its
+\code{embed_handler} unless \code{gr_options(embedder =)} names a registered embedder
+(see the \code{embedder} argument of \code{\link[=gr_embed]{gr_embed()}}), reporting
 \code{embedding_source = "api"}, so an offline run gets semantic-shaped vectors
 rather than the lexical fallback. A mock embed handler that fails or returns
 the wrong number of rows is still caught and still degrades, like any other.

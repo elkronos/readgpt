@@ -12,7 +12,8 @@ gr_outline(
   temperature = NULL,
   max_sections = 6L,
   closing = "What is missing",
-  trace = NULL
+  trace = NULL,
+  max_outline_tokens = NULL
 )
 }
 \arguments{
@@ -30,12 +31,24 @@ gr_outline(
 and anything unplaced. \code{NULL} for no closing section.}
 
 \item{trace}{A \code{\link[=gr_trace]{gr_trace()}} to record into.}
+
+\item{max_outline_tokens}{The reply limit for the outline call. The reply
+names every claim and writes a heading, brief and rationale per section,
+so by default it grows with both: \code{400 + 8} per claim \code{+ 60} per section,
+never below 1200, plus 4000 on a model registered as a reasoning model,
+which spends part of the same limit before it writes. Clamped to what the
+model can emit. A reply cut off at it puts every claim in one section,
+with a warning.}
 }
 \value{
 A named character vector shaped exactly like the \code{outline} argument of
 \code{\link[=gr_synthesise]{gr_synthesise()}} (headings as names, briefs as values), carrying
-\code{attr(, "claims")} (a \code{section}/\code{claim_id} frame), \code{attr(, "rationale")} and
-\code{attr(, "closing")}.
+\code{attr(, "claims")} (a \code{section}/\code{claim_id} frame), \code{attr(, "rationale")},
+\code{attr(, "closing")} and \code{attr(, "claims_fingerprint")}, a hash of the
+claims' numbers and texts. A claim number means something only within one
+\code{\link[=gr_claims]{gr_claims()}} result, so \code{\link[=gr_synthesise]{gr_synthesise()}} refuses the outline
+(\code{gr_claims_mismatch}) when the \code{claims} it is given are not the ones the
+outline was derived from: a re-run, or claims edited or reordered since.
 }
 \description{
 \code{\link[=gr_synthesise]{gr_synthesise()}} takes an \code{outline} fixed before the reading, which makes the

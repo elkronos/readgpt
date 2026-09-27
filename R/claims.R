@@ -191,6 +191,11 @@ gr_claims <- function(extraction, question = NULL, protocol = NULL, client = NUL
     check_protocol_edited(protocol, "draw claims against it")
     if (is.null(question)) question <- protocol$question
   }
+  # Labelled UTF-8 here, where it enters. Under a non-UTF-8 locale a question
+  # typed in a script is UTF-8 bytes marked "unknown"; it is kept on the
+  # result, and gr_outline() and gr_synthesise() paste it to labelled text,
+  # which paste() answers by escaping it to "<c3><a9>".
+  if (is.character(question)) question <- mark_utf8(question)
   if (!is_nonblank(question)) {
     gr_abort(paste0("`question` must be a non-empty string. A claim is a statement about the ",
                     "literature RELATIVE TO a question, and without one there is nothing for a ",
@@ -1016,8 +1021,12 @@ claim_order <- function(claims, support, weights) {
 #'   with a warning.
 #' @return A named character vector shaped exactly like the `outline` argument of
 #'   [gr_synthesise()] (headings as names, briefs as values), carrying
-#'   `attr(, "claims")` (a `section`/`claim_id` frame), `attr(, "rationale")` and
-#'   `attr(, "closing")`.
+#'   `attr(, "claims")` (a `section`/`claim_id` frame), `attr(, "rationale")`,
+#'   `attr(, "closing")` and `attr(, "claims_fingerprint")`, a hash of the
+#'   claims' numbers and texts. A claim number means something only within one
+#'   [gr_claims()] result, so [gr_synthesise()] refuses the outline
+#'   (`gr_claims_mismatch`) when the `claims` it is given are not the ones the
+#'   outline was derived from: a re-run, or claims edited or reordered since.
 #' @seealso [gr_claims()], [gr_synthesise()], [gr_gaps()]
 #' @export
 #' @examples
@@ -1048,7 +1057,12 @@ gr_outline <- function(claims, question = NULL, client = NULL, model = NULL,
     gr_abort("That gr_claims has no claims, so there is no structure to derive from it.",
              class = "gr_no_claims")
   }
-  question <- as_chr1(question %||% claims$question)
+  # Labelled UTF-8, as in gr_claims(). The closing heading most of all: it
+  # sits among headings read from the model, which are labelled, and
+  # gr_synthesise() pastes it to the claims and trims it with them -- which,
+  # typed with an accent under a C locale, stopped the write-up.
+  question <- mark_utf8(as_chr1(question %||% claims$question))
+  if (is.character(closing)) closing <- mark_utf8(closing)
   if (!is_nonblank(question)) gr_abort("`question` must be a non-empty string.")
   client <- client %||% gr_client(model = model %||% gr_options("model"))
   # The model first, because the default reply limit depends on it.
@@ -1069,9 +1083,12 @@ gr_outline <- function(claims, question = NULL, client = NULL, model = NULL,
   spec$max_answer_tokens <- min(as.integer(max_outline_tokens), as.integer(info$max_output))
   trace <- trace %||% claims$trace %||% gr_trace(meta = list(stage = "outline"))
 
-  listed <- paste(sprintf("%d. [%s] %s%s", cw$claim_id, cw$kind, cw$claim,
+  # Labelled, so that a claim edited by hand, unlabelled under a non-UTF-8
+  # locale, is not escaped by paste() for sitting beside the model's claims.
+  listed <- paste(sprintf("%d. [%s] %s%s", cw$claim_id, mark_utf8(cw$kind), mark_utf8(cw$claim),
                           ifelse(is.na(cw$moderator), "",
-                                 sprintf(" (contested; distinguished by %s)", cw$moderator))),
+                                 sprintf(" (contested; distinguished by %s)",
+                                         mark_utf8(cw$moderator)))),
                   collapse = "\n")
   msgs <- list(
     list(role = "system", content = .gr_prompts$outline_system),
@@ -1237,6 +1254,11 @@ finish_outline <- function(secs, cw, closing, max_sections) {
   attr(out, "claims") <- map
   attr(out, "rationale") <- stats::setNames(secs$rationale, secs$heading)
   attr(out, "closing") <- if (is_nonblank(closing)) as_chr1(closing) else NA_character_
+  # Which claims the numbers in `map` are. A claim number is a position in one
+  # gr_claims() result, so an outline made from a re-run, or from claims
+  # reordered since, names the same numbers for other claims; gr_synthesise()
+  # compares this with the claims it is given and stops on a difference.
+  attr(out, "claims_fingerprint") <- claims_fingerprint(cw)
   out
 }
 
@@ -1307,8 +1329,15 @@ gr_gaps <- function(claims, extraction = NULL, max_cells = 40L, min_reported = 0
                                           detail = detail, n = as.integer(n),
                                           stringsAsFactors = FALSE)
   }
+  # The table's values and the declared categories, labelled UTF-8 before they
+  # are compared. Under a non-UTF-8 locale a category typed in gr_fields() is
+  # unlabelled bytes, and a value the model returned is labelled, so an
+  # accented category never matched itself: it was reported as declared and
+  # unstudied, and every combination with it as unstudied, in a table where a
+  # study reports it -- gaps the closing section is told to state.
+  txt <- function(v) trimws(mark_utf8(as.character(v)))
   vals <- function(col) {
-    v <- trimws(as.character(st[[col]]))
+    v <- txt(st[[col]])
     v[!is.na(v) & nzchar(v) & v != "NA"]
   }
 
@@ -1321,7 +1350,7 @@ gr_gaps <- function(claims, extraction = NULL, max_cells = 40L, min_reported = 0
       f <- fields[[nm]]
       if (!identical(f$type, "enum") || !length(f$values)) next
       enums <- c(enums, nm)
-      absent <- setdiff(f$values, vals(nm))
+      absent <- setdiff(mark_utf8(as.character(f$values)), vals(nm))
       if (length(absent)) {
         add("declared but unstudied", nm, paste(absent, collapse = "; "), length(absent))
       }
@@ -1358,13 +1387,13 @@ gr_gaps <- function(claims, extraction = NULL, max_cells = 40L, min_reported = 0
     cells <- 0L
     pairs <- utils::combn(sort(enums), 2L, simplify = FALSE)
     for (pr in pairs) {
-      a <- fields[[pr[1]]]$values; b <- fields[[pr[2]]]$values
+      a <- mark_utf8(as.character(fields[[pr[1]]]$values))
+      b <- mark_utf8(as.character(fields[[pr[2]]]$values))
       # trimws(), because vals() trims and this did not: a cell holding " cohort"
       # counted as studied for rule 2 and as UNSTUDIED here, so the same table
       # produced "every study reports 'cohort'" and "design = 'cohort' with ...
       # unstudied" in one report.
-      seen <- unique(paste(trimws(as.character(st[[pr[1]]])),
-                           trimws(as.character(st[[pr[2]]])), sep = "\u0001"))
+      seen <- unique(paste(txt(st[[pr[1]]]), txt(st[[pr[2]]]), sep = "\u0001"))
       for (x in a) for (y in b) {
         if (cells >= max_cells) break
         if (!paste(x, y, sep = "\u0001") %in% seen) {
@@ -1439,5 +1468,11 @@ print.gr_gaps <- function(x, ...) {
 #' @noRd
 render_gaps <- function(gaps) {
   if (!is.data.frame(gaps) || !nrow(gaps)) return(NULL)
-  paste(sprintf("- %s (%s): %s", gaps$kind, gaps$dimension, gaps$detail), collapse = "\n")
+  # Labelled column by column before they are joined. A gap line quotes the
+  # table ("every study reports ...") or a claim, and one of those can be
+  # labelled UTF-8 while the other is not -- a table read in under a C locale
+  # -- and paste() then escaped the unlabelled lines to "<c3><a9>".
+  txt <- function(v) mark_utf8(as.character(v))
+  paste(sprintf("- %s (%s): %s", txt(gaps$kind), txt(gaps$dimension), txt(gaps$detail)),
+        collapse = "\n")
 }

@@ -153,17 +153,27 @@
 #'     `contextual` with `context_source = "llm"` bill, the pre-flight check and
 #'     the reader's requests), because each recipe is counted apart. Ingestion
 #'     and the other recipes are in the comparison's own trace, `cmp$trace`:
-#'     cost or save that one as the record of what the comparison did.}
+#'     cost or save that one as the record of what the comparison did. A trace
+#'     passed in with `trace =` is shared, not copied: this field is that trace
+#'     itself, which still holds every run recorded into it, those before this
+#'     one and those after it. `trace_steps` says which of its steps are this
+#'     run's.}
+#'   \item{`trace_steps`}{Integer `c(first, last)`: the steps of `trace` this
+#'     run made, or `NULL` when no trace was kept. [as_json()], `print()` and
+#'     the audit report ([gr_audit_report()]) use only these, so an answer read
+#'     with a trace shared across runs does not carry other runs' prompts,
+#'     calls or cost.}
 #'   \item{`recipe`, `document`, `segmentation`}{Added by [answer_document()] and
 #'     [gr_compare()]: the recipe name, the source and ingestion stats, and the
 #'     chunk statistics the reader saw.}
 #' }
 #'
 #' @section Methods:
-#' `print()` shows the answer, the calls, tokens and cost, where the evidence
-#' came from, and, when the answer is partial, why; [as_json()] serialises the
-#' answer together with every prompt and response in its `trace` (for an
-#' answer from [gr_compare()], its recipe's read alone; see `trace` above).
+#' `print()` shows the answer, this run's calls, tokens and cost, where the
+#' evidence came from, and, when the answer is partial, why; [as_json()]
+#' serialises the answer together with every prompt and response this run made
+#' (the steps of its `trace` that `trace_steps` names; for an answer from
+#' [gr_compare()], its recipe's read alone; see `trace` above).
 #' @seealso [answer_document()] and [gr_read()] which return one, [gr_compare()]
 #'   to compare several, [is_not_found()] to test the sentinel, [as_json()],
 #'   [new_answer()] to build one in a custom reader
@@ -204,7 +214,11 @@ NULL
 #'   \item{`spec`}{The [gr_segment_spec()] used.}
 #'   \item{`extra`}{Method-specific detail: `boundaries` and
 #'     `embedding_source` for `semantic`, `propositions` for `proposition`,
-#'     `cap_enforced` when oversized chunks had to be split.}
+#'     `context_source` for `contextual` (`"metadata"` or `"llm"`, the one that
+#'     ran, so `"metadata"` when `"llm"` was asked for without a client) and,
+#'     for `"llm"`, `blurbs_missing` (chunks left without a context line) and
+#'     `blurbs_at_limit` (of those, how many were skipped at the run's call or
+#'     cost limit), `cap_enforced` when oversized chunks had to be split.}
 #'   \item{`trace`}{Set only when [gr_segment()] was called without a `trace`
 #'     and so made its own: the [gr_trace] it recorded into, holding the
 #'     requests the segmenter made (embeddings for `semantic`, model calls for

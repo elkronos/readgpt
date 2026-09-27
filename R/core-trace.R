@@ -658,6 +658,14 @@ as_json.default <- function(x, pretty = TRUE, ..., digits = NA) {
 #' sits; and any other environment, a function, or a client (which holds the
 #' API key) becomes `null`, since none of them is data. `x` itself is left to
 #' the method that was called.
+#'
+#' Every string is labelled UTF-8 on the way (label_utf8()). jsonlite reads an
+#' unlabelled string as the session's encoding, so under a non-UTF-8 locale
+#' (LC_ALL=C in cron or a container) a question typed in a script, or read with
+#' readLines(), was written as "caf<c3><a9>": in a saved trace's meta, in the
+#' criteria a screening records, in a document label. Only the JSON changes;
+#' the objects are left as they are, since other code compares them with
+#' strings of the caller's that carry no label either.
 #' @noRd
 json_ready <- function(x, ...) {
   own <- new.env(parent = emptyenv())
@@ -674,6 +682,11 @@ json_ready <- function(x, ...) {
     # A client is not data either, and it carries the API key: written out, a
     # list that held one put the key in the JSON.
     if (is.function(v) || inherits(v, "gr_client")) return(NULL)
+    if (is.character(v)) return(label_utf8(v))
+    if (is.factor(v)) {
+      attr(v, "levels") <- label_utf8(attr(v, "levels", exact = TRUE))
+      return(v)
+    }
     if (!is.list(v) || !length(v)) return(v)
     cls <- attr(v, "class", exact = TRUE)
     if (depth > 0L && !is.null(cls) && any(vapply(cls, has_method, logical(1)))) {
@@ -686,9 +699,32 @@ json_ready <- function(x, ...) {
     # say: as.list() splits a POSIXlt into its times.
     out <- lapply(unclass(v), walk, depth = depth + 1L)
     attributes(out) <- attributes(v)
+    # The names are keys in the JSON: a list of answers is keyed by document.
+    nm <- attr(out, "names", exact = TRUE)
+    if (!is.null(nm)) attr(out, "names") <- label_utf8(nm)
     out
   }
   walk(x, 0L)
+}
+
+#' `x`, a character vector, with each string that is valid UTF-8 but carries
+#' no label labelled UTF-8, its names likewise, and nothing else changed.
+#'
+#' mark_utf8() keeping attributes (names, dim, I()), and leaving alone a string
+#' R has labelled latin1 or bytes, which jsonlite converts itself. ASCII is
+#' unaffected, as it always is.
+#' @noRd
+label_utf8 <- function(x) {
+  lab <- function(s) {
+    need <- !is.na(s) & Encoding(s) == "unknown" & validUTF8(s)
+    if (any(need)) { tmp <- s[need]; Encoding(tmp) <- "UTF-8"; s[need] <- tmp }
+    s
+  }
+  if (!length(x)) return(x)
+  x <- lab(x)
+  nm <- attr(x, "names", exact = TRUE)
+  if (!is.null(nm)) attr(x, "names") <- lab(nm)
+  x
 }
 
 #' Mark the fields of `x` named in `fields` as arrays, so as_json() writes

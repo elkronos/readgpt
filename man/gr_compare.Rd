@@ -55,8 +55,9 @@ A comparison is one run for the spending limit: \code{max_cost_usd} in
 \code{\link[=gr_options]{gr_options()}} is checked against what every recipe and every segmentation
 has spent so far, so a recipe that reaches it stops \code{partial} and the ones
 after it are refused and recorded as failed. \code{max_calls} is counted for
-each recipe on its own, so a recipe's answer does not depend on its
-position in the list.
+each recipe on its own, its segmentation included, so a recipe's answer
+does not depend on its position in the list. A segmentation that a limit
+cut short is not shared with a later recipe.
 }
 \examples{
 cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")

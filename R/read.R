@@ -192,7 +192,11 @@ gr_reader_signature <- function(reader) {
 #' @param cite Ask for chunk-level citations (`[chunk 3]`) in the answer. Map
 #'   those ids back to pages via `ans$evidence`. Forced off for `hierarchical`,
 #'   which answers from summaries: summaries carry no `[chunk N]` ids, so asking
-#'   for citations there asks the model to invent them.
+#'   for citations there asks the model to invent them. For `skim`, when its
+#'   evidence has to be consolidated to fit and no `[chunk N]` label survives
+#'   the consolidation, citations are not asked for either
+#'   (`notes$cite_dropped = TRUE`); when some survive, a citation is checked
+#'   against those.
 #' @param skim_model,summary_model Optional cheaper models for the per-chunk
 #'   stages. `skim_model` is used by `skim`'s extraction **and** `rerank`'s
 #'   relevance scoring; `summary_model` by `hierarchical`'s summarisation.
@@ -334,6 +338,11 @@ gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL
 #' rbind(run("retrieve", top_k = 2), run("map_reduce"))
 gr_read <- function(chunks, question, client, spec = NULL, trace = NULL) {
   if (!inherits(chunks, "gr_chunks")) gr_abort("`chunks` must come from gr_segment().")
+  # UTF-8, and labelled so, before anything pastes it next to the document's
+  # labelled text: a question in CP1252 stopped the token count with "invalid
+  # UTF-8", and one in UTF-8 without the label had its accented letters
+  # written out by paste() as "<c3><a9>" in a C locale.
+  if (is.character(question)) question <- to_utf8(question)
   if (!is_nonblank(question)) gr_abort("`question` must be a non-empty string.")
   if (!inherits(client, "gr_client")) gr_abort("`client` must come from gr_client() or gr_mock_client().")
   spec <- as_read_spec(spec)
@@ -358,12 +367,20 @@ gr_read <- function(chunks, question, client, spec = NULL, trace = NULL) {
     }, add = TRUE)
   }
   rec <- warning_recorder()
+  # Where this read's run starts: a trace passed in may hold other runs, and
+  # new_answer() cannot tell where this one began (answer_trace()).
+  from <- if (inherits(trace, "gr_trace")) read_run_start(trace)
   out <- withCallingHandlers({
     preflight(chunks, spec, trace, client = client, question = question, settings = settings)
     rd$fn(chunks, question, client, spec, trace)
   }, gr_warning = rec$record)
   if (!inherits(out, "gr_answer")) {
     gr_abort(sprintf("Reader '%s' did not return a gr_answer object.", spec$reader))
+  }
+  # Only for an answer on this trace: a custom reader that kept a trace of its
+  # own has steps numbered in that one.
+  if (inherits(trace, "gr_trace") && identical(out[["trace", exact = TRUE]], trace)) {
+    out$trace_steps <- c(first = from, last = length(trace$steps))
   }
   if (isTRUE(trace$budget_stop)) {
     out$partial <- TRUE
@@ -383,6 +400,25 @@ gr_read <- function(chunks, question, client, spec = NULL, trace = NULL) {
   out$warnings <- c(chunks[["warnings", exact = TRUE]] %||% character(0), rec$get())
   out$signature <- rd$signature
   out
+}
+
+#' The first step of the run a read about to start on `trace` belongs to, for
+#' its answer's `trace_steps` (answer_trace()).
+#'
+#' A trace is shared by reference. Where it already holds a read (that read's
+#' "preflight" step), it holds another run, and this read's record starts at
+#' its own first step, so no other run's prompts, calls or cost are in it.
+#' Where it holds none, what is on it is the work that led to this read: the
+#' document's ingestion and segmentation, on the trace gr_read_many() and
+#' gr_compare() keep for each document, or on one passed to gr_segment() and
+#' then to gr_read(). That stays in the record, as it always has.
+#' @noRd
+read_run_start <- function(trace) {
+  n <- length(trace$steps)
+  earlier <- vapply(trace$steps, function(st) {
+    is.list(st) && identical(as_chr1(st$label, ""), "preflight")
+  }, logical(1))
+  if (any(earlier)) n + 1L else 1L
 }
 
 #' Pre-flight cost and call-count guard.
@@ -540,8 +576,15 @@ preflight <- function(chunks, spec, trace, client = NULL, question = "",
   # max_answer_tokens, so using the per-chunk cap under-estimated output by
   # whatever ratio the user chose -- measured at 97x in one configuration.
   # This is the worst case, recorded below; it refuses only a parallel read.
-  est_out <- model_worst * max(spec$max_chunk_tokens, spec$max_answer_tokens,
-                               spec$max_summary_tokens)
+  # A reasoning model is sent a larger cap than that, with room for its
+  # reasoning (reasoning_output_cap()), and bills up to it: priced at the cap
+  # asked for, the bound understated every such request by up to the
+  # difference. Prompt tokens of 0 leave that room at its largest.
+  per_out <- max(spec$max_chunk_tokens, spec$max_answer_tokens, spec$max_summary_tokens)
+  est_out_for <- function(m) {
+    info <- tryCatch(quiet_model(gr_model_info(m)), error = function(e) NULL)
+    model_worst * (if (is.null(info)) per_out else reasoning_output_cap(per_out, info, 0))
+  }
   # An ellmer chat answers, and is billed, as the model it was built with,
   # whatever a request names, and the trace prices its calls by that model. So
   # that is the model to price: pricing the recipe's instead found a price,
@@ -554,7 +597,7 @@ preflight <- function(chunks, spec, trace, client = NULL, question = "",
   # the dear one.
   models <- billed %||% unique(c(spec$model, spec$skim_model, spec$summary_model))
   priced_worst <- vapply(models, function(m) as.numeric(quiet_model(
-    gr_estimate_cost(m, est_in, est_out))), numeric(1))
+    gr_estimate_cost(m, est_in, est_out_for(m)))), numeric(1))
   # The dearest PRICED model. One model without a price made max() NA, and the
   # parallel refusal below, which needs a number, was then skipped for the whole
   # run, the priced model that receives the batch included. Only a run with no
@@ -606,7 +649,10 @@ preflight <- function(chunks, spec, trace, client = NULL, question = "",
     }
     # What this run has spent already counts, as calls already made count
     # against the call cap: several readers on one trace are one run.
-    spent <- if (inherits(trace, "gr_trace")) as_num1(trace$spent_usd, 0) else 0
+    # budget_spent(): with what a replay's recorded calls cost, as
+    # trace_can_call() counts it, so a replay of a run the limit stopped makes
+    # the decisions here that the recording made.
+    spent <- budget_spent(trace)
     if (limit_reached(spent, budget)) {
       gr_abort(sprintf(paste0("This run has already spent $%s, which reaches the $%s limit. ",
                               "Raise it with gr_options(max_cost_usd = ...)."),
@@ -733,18 +779,22 @@ embed_requests <- function(client, readers, texts, question, spec) {
 #' level, until one merge takes everything that is left. A group of one is
 #' passed on without a request, and tree_merge() gives up after seven levels or
 #' a level that does not shrink the pile. NULL when the room is not known.
+#'
+#' Each finding is counted in the numbered tags tree_merge() sizes it in, with
+#' the blank line after it, so the bound holds for findings of any size.
 #' @noRd
 merge_tree_worst <- function(k, piece, answer, room) {
   if (length(room) != 1L || is.na(room) || room <= 0) return(NULL)
   if (k <= 1) return(list(calls = 0, input = 0))
+  tag <- gr_count_tokens("<findings 999>\n\n</findings 999>\n\n")
   calls <- 0
   input <- 0
   for (level in seq_len(7L)) {
-    per <- max(1, floor(room / max(piece, 1)))
-    if (k <= per) return(list(calls = calls + 1, input = input + k * piece))
+    per <- max(1, floor(room / max(piece + tag, 1)))
+    if (k <= per) return(list(calls = calls + 1, input = input + k * (piece + tag)))
     groups <- ceiling(k / per)
     if (per >= 2) calls <- calls + (k %/% per) + ((k %% per) >= 2)
-    input <- input + k * piece
+    input <- input + k * (piece + tag)
     if (groups >= k) break
     k <- groups
     piece <- answer

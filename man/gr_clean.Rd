@@ -16,7 +16,11 @@ argument this does \strong{not} accept preset names. Steps are reordered so ever
 given. This is what stops digit removal from running before the page and
 figure filters that need digits to match.}
 
-\item{opts}{Named list passed to every step.}
+\item{opts}{Named list passed to every step. Each step also finds in it
+\code{.blocks}, all the blocks as they stand before that step, for a step that
+decides by what the rest of the document says (as \code{hyphenation} and
+\code{headers_footers} do); and \code{.pages}, a page per block, where the caller
+gives one (\code{\link[=gr_ingest]{gr_ingest()}} does).}
 }
 \value{
 The cleaned character vector, with a \code{"gr_clean_log"} attribute

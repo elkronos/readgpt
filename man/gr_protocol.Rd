@@ -12,7 +12,8 @@ gr_protocol(
   fields = NULL,
   outline = NULL,
   recipe = "research",
-  description = ""
+  description = "",
+  search = NULL
 )
 }
 \arguments{
@@ -36,6 +37,10 @@ headings, values say what that section has to cover.}
 \item{recipe}{The reading pipeline to default to, as in \code{\link[=gr_extract]{gr_extract()}}.}
 
 \item{description}{One line, for \code{\link[=gr_protocols]{gr_protocols()}}.}
+
+\item{search}{A \code{\link[=gr_search]{gr_search()}}: how the search was run. Optional, and kept
+with the criteria so that a saved protocol states what was searched as
+well as what was eligible.}
 }
 \value{
 A \code{gr_protocol}.

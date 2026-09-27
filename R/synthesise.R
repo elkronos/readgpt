@@ -76,6 +76,13 @@
 #'   an arbitrary author list is a heuristic, and where it cannot be done
 #'   confidently the run falls back to markers rather than printing a name that
 #'   may be wrong.
+#'
+#'   Pass the same `bib` to [gr_claims()] and [gr_gaps()]. The claims model is
+#'   shown every column its own `bib` did not withhold, so a claim, and the
+#'   moderator it names, can carry a column this write-up withholds, and the
+#'   claims reach the writing prompts as they are. With `claims` drawn under
+#'   a `bib` that withheld less than this one, the run warns
+#'   (`gr_claims_bib_mismatch`) and names the columns.
 #' @param style A register instruction appended to the writing prompts, such as
 #'   `"formal academic; hedge claims; past tense for findings"`. It governs how
 #'   sections are written, never what they may say: the rules about citing every
@@ -84,9 +91,22 @@
 #'   three, `FALSE` for none, or any of `"structure"` (reorder and merge),
 #'   `"cut"` (remove repetition) and `"register"` (polish sentences) by name.
 #'   Each pass is forbidden from doing the others' job, and each is discarded
-#'   (with `$draft` kept) if it changed the citations, arrived truncated,
-#'   or strengthened a claim. Off by default: each is a call, and each is a
-#'   chance for a model to touch finished prose.
+#'   (with `$draft` kept, and the reason in `$coherence`) if it changed which
+#'   studies are cited, wrote a citation the check cannot read, cited a study
+#'   more often than the draft did, or took the citation marker off a claim
+#'   sentence that stays (each a `gr_coherence_rejected` warning); if it
+#'   arrived truncated (`gr_coherence_truncated`); or if it strengthened a
+#'   claim (`gr_revision_escalated`). Off by default: each is a call, and each
+#'   is a chance for a model to touch finished prose.
+#'
+#'   The check that refuses a revision which strengthens a claim reads English
+#'   hedges and boosters, so a draft it judges not to be in English is not
+#'   revised at all: a warning (`gr_revision_unguarded`) says so, no pass is
+#'   sent, and every pass is reported with `ran = FALSE` and that reason. The
+#'   judgment counts letters outside the Latin alphabet and common function
+#'   words, so a very short draft can be misjudged: an English one naming an
+#'   accented author left unrevised, or a sentence or two of a language that
+#'   has no accents taken for English.
 #' @param claims A [gr_claims()] result. With it each section argues that
 #'   section's claims and sees only the studies those claims rest on, rather
 #'   than being handed every study and writing a paragraph per row. Needs an
@@ -155,8 +175,13 @@
 #'       that open like a citation, such as `[studies 1 to 7]`, but cannot be
 #'       read as one, so the studies they name were not checked), `n_truncated` (replies,
 #'       including batch drafts and merges, that stopped at the reply limit),
+#'       `n_claims` and `claims_missed` (the claims it was given, and those it
+#'       did not write up), `lost_batches` (batches of studies whose call
+#'       failed), `capped_batches` (batches not sent because the run reached
+#'       its call or cost ceiling), `merge_failed` (its batch drafts could not
+#'       be merged, so it is those drafts joined end to end), and
 #'       `partial`. A section is partial when any of those counts is non-zero
-#'       (`n_cited` aside), when it came back empty, when a batch of studies
+#'       (`n_cited` and `n_claims` aside), when it came back empty, when a batch of studies
 #'       was lost or not read, when its batch drafts could not be merged or
 #'       one had to be cut to fit the merge, when (without `claims`) none of
 #'       the studies of a batch it was drafted from is cited in it, when it
@@ -171,6 +196,9 @@
 #'       its `$lost` names studies whose claims batch contributed nothing, the
 #'       run warns (`gr_claims_partial`), and print() and the audit report say
 #'       the review was written without them.}
+#'     \item{`claim_sections`}{With `claims`, which section each claim was
+#'       given to: a data frame of `section` and `claim_id`, the outline's
+#'       assignment. `NULL` without `claims`.}
 #'     \item{`trace`}{As [gr_extract()].}
 #'   }
 #'
@@ -238,6 +266,15 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
     if (is.null(outline)) outline <- protocol$outline
     if (is.null(question)) question <- protocol$question
   }
+  # Labelled UTF-8 before anything is pasted to them. Under a non-UTF-8 locale
+  # a question, heading or register typed in a script is UTF-8 bytes marked
+  # "unknown", and paste() joining it to labelled text -- the claims, or a
+  # heading gr_outline() read from the model -- escaped it to "<c3><a9>"
+  # before the request was built; trimws() over headings of both kinds
+  # stopped the run.
+  if (is.character(question)) question <- mark_utf8(question)
+  if (is.character(style)) style <- mark_utf8(style)
+  outline <- mark_outline(outline)
   # Read BEFORE outline_vector(), which rebuilds the vector with setNames() and
   # drops every attribute -- including the claim assignment gr_outline() put
   # there. Losing it silently would take every section back to writing from rows.
@@ -335,6 +372,25 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
                       length(lost), nrow(claims$studies)),
               class = "gr_claims_partial")
     }
+    # The writing prompts withhold the bibliographic columns (`rendered`
+    # below), but the claims reach them as gr_claims() drew them. Claims drawn
+    # under a `bib` that withheld less were drawn by a model shown those
+    # columns, so a claim, or the moderator it names, can carry one into every
+    # section that argues it -- a first author in the claim text, in front of
+    # a writer this run is keeping from naming one. `%||%` for a claims table
+    # made before it recorded what it withheld: it withheld the conventional
+    # names.
+    had <- claims$hidden %||% unlist(bib_columns(claims$studies), use.names = FALSE)
+    shown <- setdiff(unlist(bib_columns(used, bib), use.names = FALSE), had)
+    if (length(shown)) {
+      gr_warn(sprintf(paste0("These claims were drawn with %s shown to the model, which this ",
+                             "write-up withholds as bibliographic, so the claims' text and the ",
+                             "moderators they name may carry %s into the writing prompts. Pass ",
+                             "the same `bib` to gr_claims() as to gr_synthesise()."),
+                      paste0("'", shown, "'", collapse = ", "),
+                      if (length(shown) == 1L) "it" else "them"),
+              class = "gr_claims_bib_mismatch")
+    }
   }
 
   client <- client %||% gr_client(model = model %||% gr_options("model"))
@@ -375,6 +431,8 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
   # caller never has to know which. Lines of text are one block: as several
   # strings they were not "nonblank" and reached no section.
   if (inherits(gaps, "gr_gaps") || is.data.frame(gaps)) gaps <- render_gaps(gaps)
+  # Labelled, as the question is above: they are pasted to the section's brief.
+  if (is.character(gaps)) gaps <- mark_utf8(gaps)
   if (is.character(gaps) && length(gaps) > 1L) gaps <- as_chr1(gaps[nzchar(trimws(gaps))])
   if (!is_nonblank(gaps)) gaps <- NULL
   # Gaps reach exactly one section, the closing one gr_outline() marked: handing
@@ -524,6 +582,12 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
     question = question,
     outline = outline,
     claims = claims,
+    # The claim assignment, which outline_vector() dropped from `outline`
+    # above: without it nothing downstream, the audit report included, can
+    # say which section a claim was given to.
+    claim_sections = if (is.null(claims)) NULL else
+      data.frame(section = as.character(assign_map$section),
+                 claim_id = as.integer(assign_map$claim_id), stringsAsFactors = FALSE),
     gaps = gaps,
     cite_style = resolved,
     coherence = revised$report,
@@ -626,6 +690,33 @@ print.gr_synthesis <- function(x, ...) {
   "guess at findings. Write prose for the section only -- no heading, no preamble, no closing ",
   "summary of what you just wrote.")
 
+#' An outline with its headings and briefs labelled UTF-8, and the headings
+#' its claim assignment and closing section name, keeping every attribute.
+#'
+#' `x[] <-` and `names<-` rather than mark_utf8(x), whose as.character() drops
+#' the attributes, the claim assignment among them. A heading renamed by hand
+#' and the assignment row renamed with it are compared as the same heading only
+#' when both are labelled alike.
+#' @noRd
+mark_outline <- function(x) {
+  if (!length(x)) return(x)
+  nm <- names(x)
+  if (is.list(x)) {
+    x[] <- lapply(x, function(v) if (is.character(v)) mark_utf8(v) else v)
+  } else if (is.character(x)) {
+    x[] <- mark_utf8(x)
+  }
+  if (!is.null(nm)) names(x) <- mark_utf8(nm)
+  map <- attr(x, "claims")
+  if (is.data.frame(map) && !is.null(map$section)) {
+    map$section <- mark_utf8(as.character(map$section))
+    attr(x, "claims") <- map
+  }
+  closing <- attr(x, "closing")
+  if (is.character(closing)) attr(x, "closing") <- mark_utf8(closing)
+  x
+}
+
 #' Give a blank brief to the heading it belongs to, for each section the
 #' claim assignment names, so outline_vector() keeps the section. A heading
 #' is its own brief already when an outline is a bare vector.
@@ -686,7 +777,8 @@ synth_unwritten <- function(heading, brief, claim_ids, why) {
   list(row = data.frame(section = heading, brief = as_chr1(brief), text = "",
                         n_cited = 0L, n_unknown = 0L, n_unsupplied = 0L, n_unparsed = 0L,
                         n_truncated = 0L, n_claims = length(claim_ids),
-                        claims_missed = length(claim_ids), partial = TRUE,
+                        claims_missed = length(claim_ids), lost_batches = 0L,
+                        capped_batches = 0L, merge_failed = FALSE, partial = TRUE,
                         stringsAsFactors = FALSE),
        unsupplied = integer(0), citations = NULL)
 }
@@ -751,10 +843,19 @@ study_fields <- function(used, hide = character(0)) {
 #' @noRd
 render_studies <- function(used, hide = character(0)) {
   fields <- study_fields(used, hide)
+  # Every value and name labelled UTF-8, as gr_synthesise() labels the question
+  # and the headings these blocks are sent after. A table read in under a
+  # non-UTF-8 locale holds unlabelled bytes, and paste() joining them to
+  # labelled text -- another column, or the brief restated after the studies
+  # -- escaped them to "<c3><a9>".
+  txt <- vapply(fields, function(f) is.character(used[[f]]) || is.factor(used[[f]]), logical(1))
+  for (f in fields[txt]) used[[f]] <- mark_utf8(as.character(used[[f]]))
+  labels <- stats::setNames(mark_utf8(fields), fields)
   vapply(seq_len(nrow(used)), function(i) {
     vals <- vapply(fields, function(f) {
       v <- used[[f]][i]
-      if (is.na(v)) sprintf("%s: not reported", f) else sprintf("%s: %s", f, as_chr1(v))
+      if (is.na(v)) sprintf("%s: not reported", labels[[f]])
+      else sprintf("%s: %s", labels[[f]], as_chr1(v))
     }, character(1), USE.NAMES = FALSE)
     # The study NUMBER and nothing else. The filename used to be here, and
     # academic PDFs are routinely called "Smith2019_CognitiveLoad.pdf" -- which
@@ -1117,6 +1218,12 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
                      # nothing at all, is not a section anyone should paste into a
                      # manuscript unread.
                      n_claims = length(claim_ids), claims_missed = length(missed),
+                     # The causes the warnings above name, kept on the row so
+                     # the audit report can name them too: without them it
+                     # could say only that the section was marked partial.
+                     lost_batches = as.integer(lost_batches),
+                     capped_batches = as.integer(capped_batches),
+                     merge_failed = isTRUE(merge_failed),
                      # `capped_batches` counts here as well as `lost_batches`.
                      # Separating the two for the MESSAGE removed the only thing
                      # that marked the section partial, so a section that
@@ -1176,6 +1283,11 @@ trace_cut_off <- function(trace, from, prefix) {
 render_claims <- function(cw, support, weights, collapse = TRUE) {
   ord <- claim_order(cw, support, weights)
   cw <- cw[ord, , drop = FALSE]
+  # Labelled, as the brief they are pasted to is: a claim edited by hand under
+  # a non-UTF-8 locale is unlabelled bytes, which paste() would escape.
+  for (col in intersect(c("claim", "moderator", "scope"), names(cw))) {
+    if (is.character(cw[[col]])) cw[[col]] <- mark_utf8(cw[[col]])
+  }
   n <- nrow(cw)
   third <- max(1L, n %/% 3L)
   tier <- rep("one sentence", n)

@@ -97,6 +97,10 @@ ans$notes       # what: dropped_chunks, failed_calls, error, degraded_to_bm25
 print(ans$trace)          # calls, tokens, first error
 as_json(ans)              # every prompt and response from this one run
 }\if{html}{\out{</div>}}
+
+An answer taken from a \code{\link[=gr_compare]{gr_compare()}} carries its own recipe's segmentation
+and read only; the comparison's \code{cmp$trace} has the ingestion and every
+recipe.
 }
 
 \section{Extending it}{

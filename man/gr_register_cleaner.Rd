@@ -16,7 +16,8 @@ gr_register_cleaner(
 \arguments{
 \item{name}{Step name.}
 
-\item{fn}{Function of \verb{(text, opts)} returning cleaned text.}
+\item{fn}{Function of \verb{(text, opts)} returning cleaned text. \code{opts} holds
+what \code{\link[=gr_clean]{gr_clean()}} was given, and \code{.blocks}, the whole document's blocks.}
 
 \item{stage}{\code{"early"} (structure-preserving, e.g. boilerplate removal) or
 \code{"late"} (destructive normalisation, e.g. digit stripping). Early steps

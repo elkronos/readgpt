@@ -337,9 +337,20 @@ gr_ellmer_client <- function(chat, embed = NULL, model = NULL) {
       # the reconcile, the outline and the iterative step told the caller the
       # call "failed" instead of to raise the reply limit. Nothing of the reply
       # survives, so it stays a failure, but one that says why. Any other error
-      # is re-raised and handled exactly as before.
+      # is a failure too, charged below as ellmer recorded it.
       fr <- ellmer_error_finish_reason(one, txt)
-      if (!identical(normalise_finish_reason(fr), "length")) stop(txt)
+      if (!identical(normalise_finish_reason(fr), "length")) {
+        # A reply ellmer could not read (chat_structured() found no JSON in
+        # it, or JSON of the wrong shape) came back from a paid round trip,
+        # and ellmer kept the turn and its token counts. Raised, it was
+        # charged as the local count of the prompt and no reply at all. So a
+        # call the chat holds a turn for fails with what ellmer says it cost;
+        # one it holds none for (the request itself failed) is re-raised,
+        # and charged its prompt as before.
+        if (is.null(tryCatch(one$last_turn(), error = function(e) NULL))) stop(txt)
+        return(gr_result(FALSE, error = conditionMessage(txt), model = model,
+                         usage = ellmer_usage(one, params, ""), finish_reason = fr))
+      }
       usage <- ellmer_usage(one, params, "")
       # A reply cut at the cap was billed for the whole cap: the limit this
       # chat sent, which is this call's cap unless the chat could not take

@@ -11,9 +11,22 @@ gr_ingest(source, spec = NULL, cache = NULL, trace = NULL)
 string of raw text. An address starting \verb{http://} or \verb{https://} is
 downloaded and read with the extractor for what came back: a specific type
 the server declares, else the extension in the address, else the file's
-first bytes. A download that fails is an error (\code{gr_url_error}), one no
-extractor reads is refused (\code{gr_unsupported_format}), and the document's
-\code{source} is the address. A one-line string ending in an
+first bytes. The charset the server declares is used for HTML and text. A
+download that fails is an error (\code{gr_url_error}), one past 512 MB is
+refused (\code{gr_too_large}, which is also a \code{gr_url_error}), and one no
+extractor reads is refused (\code{gr_unsupported_format}). An address on this
+machine or a private network (localhost, 10.x, 172.16/12, 192.168.x,
+169.254.x, the IPv6 local ranges), and a host name that resolves to one,
+is refused (\code{gr_url_error}), after a redirect too, unless
+\code{options(readgpt.allow_local_urls = TRUE)}; behind a proxy that looks
+names up itself, a name that cannot be looked up here is not checked. The
+request uses the address in full, but the document's \code{source}, the
+messages and the errors show it without a user name and password and with
+its query replaced by a short fingerprint (\verb{[query hidden 1a2b3c]}), since
+a presigned link carries its credentials there; two addresses that differ
+only in the query keep different fingerprints. A Word file, fetched or on
+disk, whose text parts would unpack to more than 512 MB is refused
+(\code{gr_too_large}). A one-line string ending in an
 extension some extractor claims is taken as a path, and is an error
 (\code{gr_file_not_found}) when no such file exists. Any other string is read as
 text; one that looks like a path (a directory separator and an extension no
@@ -24,7 +37,11 @@ extractor claims) also raises a \code{gr_path_as_text} warning.}
 \item{cache}{Use the session document cache. The cache key includes the file's
 size and mtime plus every ingestion option; for a web address, the address,
 so it is downloaded once a session. Registering a cleaner or extractor the
-ingestion uses again (as when fixing it) starts a new cache entry.}
+ingestion uses again (as when fixing it) starts a new cache entry. The
+cache lives in memory for the session, is shared by everything running in
+the R process (every Shiny session of one app, say), and holds about
+256 MB of documents; past that the documents used least recently are
+dropped, and read again when next asked for.}
 
 \item{trace}{Optional \code{gr_trace}.}
 }

@@ -442,9 +442,14 @@ server <- function(input, output, session) {
         question = e$question, asked_at = e$asked_at, document = e$document,
         answers = e$plain, summary = e$summary,
         trace = jsonlite::fromJSON(e$trace_json, simplifyVector = FALSE)))
-      writeLines(as.character(jsonlite::toJSON(h, pretty = TRUE, auto_unbox = TRUE,
-                                               null = "null", na = "null", force = TRUE)),
-                 file)
+      # The bytes as they are. writeLines() to a path re-encodes to the
+      # session's encoding, so in a C or single-byte locale a question or an
+      # answer with a character that has no place there (a "greater than or
+      # equal" sign, an accented name) was saved as "<U+2265>". The helper is
+      # internal, but this app ships inside the package, as why_partial() says.
+      readgpt:::write_utf8_lines(as.character(jsonlite::toJSON(
+        h, pretty = TRUE, auto_unbox = TRUE, null = "null", na = "null", force = TRUE)),
+        file)
     })
 }
 

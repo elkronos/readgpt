@@ -90,9 +90,22 @@ gr_ingest_spec <- function(clean = "standard", ocr = c("auto", "always", "never"
 #'   string of raw text. An address starting `http://` or `https://` is
 #'   downloaded and read with the extractor for what came back: a specific type
 #'   the server declares, else the extension in the address, else the file's
-#'   first bytes. A download that fails is an error (`gr_url_error`), one no
-#'   extractor reads is refused (`gr_unsupported_format`), and the document's
-#'   `source` is the address. A one-line string ending in an
+#'   first bytes. The charset the server declares is used for HTML and text. A
+#'   download that fails is an error (`gr_url_error`), one past 512 MB is
+#'   refused (`gr_too_large`, which is also a `gr_url_error`), and one no
+#'   extractor reads is refused (`gr_unsupported_format`). An address on this
+#'   machine or a private network (localhost, 10.x, 172.16/12, 192.168.x,
+#'   169.254.x, the IPv6 local ranges), and a host name that resolves to one,
+#'   is refused (`gr_url_error`), after a redirect too, unless
+#'   `options(readgpt.allow_local_urls = TRUE)`; behind a proxy that looks
+#'   names up itself, a name that cannot be looked up here is not checked. The
+#'   request uses the address in full, but the document's `source`, the
+#'   messages and the errors show it without a user name and password and with
+#'   its query replaced by a short fingerprint (`[query hidden 1a2b3c]`), since
+#'   a presigned link carries its credentials there; two addresses that differ
+#'   only in the query keep different fingerprints. A Word file, fetched or on
+#'   disk, whose text parts would unpack to more than 512 MB is refused
+#'   (`gr_too_large`). A one-line string ending in an
 #'   extension some extractor claims is taken as a path, and is an error
 #'   (`gr_file_not_found`) when no such file exists. Any other string is read as
 #'   text; one that looks like a path (a directory separator and an extension no
@@ -216,8 +229,16 @@ gr_ingest <- function(source, spec = NULL, cache = NULL, trace = NULL) {
 
   if (is_path || url) {
     path <- source
+    # A web address is kept and shown as url_shown() shows it, without the
+    # credentials a presigned link carries in its query; the request and the
+    # cache key above use it in full. `label` is what messages and the trace
+    # call the document: a file by its name, an address in full, since its host
+    # is half of what names it (and basename() warns past PATH_MAX, which a
+    # presigned address can pass).
+    src <- if (url) url_shown(source) else normalizePath(source, winslash = "/", mustWork = FALSE)
+    label <- if (url) src else basename(src)
     if (url) {
-      gr_msg(sprintf("Fetching '%s'.", source))
+      gr_msg(sprintf("Fetching '%s'.", label))
       path <- fetch_url(source)
       on.exit(unlink(path), add = TRUE)
     }
@@ -231,18 +252,26 @@ gr_ingest <- function(source, spec = NULL, cache = NULL, trace = NULL) {
                class = "gr_unsupported_format")
     }
     gr_msg(sprintf("Extracting '%s' with the '%s' extractor.",
-                   if (url) source else basename(source), ex$name))
+                   if (url) label else basename(source), ex$name))
     raw <- withCallingHandlers(ex$fn(path, spec), gr_warning = rec$record)
     unread <- attr(raw, "gr_unread_pages", exact = TRUE)
+    # How many pages the file has, when the extractor says (extract_pdf does).
+    # Read before as_blocks(), which keeps no attributes. Anything but one
+    # finite number of at least one is ignored, as if nobody had said.
+    npages <- attr(raw, "gr_pages", exact = TRUE)
+    npages <- if (is.numeric(npages) && length(npages) == 1L) as_int1(npages, NA_integer_)
+              else NA_integer_
+    if (!is.na(npages) && npages < 1L) npages <- NA_integer_
     blocks <- as_blocks(raw)
     blocks$text <- to_utf8(blocks$text)
-    src <- if (url) source else normalizePath(source, winslash = "/", mustWork = FALSE)
   } else {
     txt <- paste(vapply(source, as_chr1, character(1), USE.NAMES = FALSE), collapse = "\n\n")
     txt <- to_utf8(txt)
     blocks <- as_blocks(data.frame(text = paragraphs_of(txt), stringsAsFactors = FALSE))
     unread <- NULL
+    npages <- NA_integer_
     src <- "<inline text>"
+    label <- src
   }
   unread <- sort(unique(as.integer(unread[!is.na(unread)])))
 
@@ -265,7 +294,7 @@ gr_ingest <- function(source, spec = NULL, cache = NULL, trace = NULL) {
                             "The file may be empty, image-only with OCR disabled, or your ",
                             "cleaning steps may be too aggressive: %d characters were removed ",
                             "by cleaners: %s."),
-                     sum(nchar(blocks$text)), basename(src), spec$min_chars,
+                     sum(nchar(blocks$text)), label, spec$min_chars,
                      raw_chars - sum(nchar(blocks$text)),
                      paste(vapply(clean_log, function(l) sprintf("%s(-%d)", l$step, l$chars_removed),
                                   character(1)), collapse = " ")),
@@ -283,15 +312,18 @@ gr_ingest <- function(source, spec = NULL, cache = NULL, trace = NULL) {
                  tokens = sum(gr_count_tokens(blocks$text)),
                  # A trailing page that never became text is still a page of the
                  # document; counting only pages with blocks under-reported it.
-                 pages = if (all(is.na(blocks$page)) && !length(unread)) NA_integer_
-                         else as.integer(max(c(blocks$page, unread), na.rm = TRUE)),
+                 # So is one whose blocks the cleaner took out (a references
+                 # page, a page of furniture), which only the extractor's own
+                 # count of pages knows about.
+                 pages = if (all(is.na(c(blocks$page, unread, npages)))) NA_integer_
+                         else as.integer(max(c(blocks$page, unread, npages), na.rm = TRUE)),
                  clean_steps = steps, clean_log = clean_log,
                  unread_pages = unread),
     warnings = rec$get()
   ), class = "gr_document")
 
   if (cache) doc_cache_put(key, doc)
-  trace_note(trace, "ingest", list(cached = FALSE, source = basename(src),
+  trace_note(trace, "ingest", list(cached = FALSE, source = label,
                                    blocks = nrow(blocks), tokens = doc$stats$tokens,
                                    clean_steps = steps))
   gr_msg(sprintf("Ingested %d block(s), ~%d tokens (%d chars removed by cleaning).",
@@ -414,6 +446,9 @@ print.gr_document <- function(x, ...) {
 
 #' @export
 as_json.gr_document <- function(x, pretty = TRUE, ...) {
-  as_json.default(list(source = x$source, stats = x$stats,
+  # Arrays whatever their length: unboxed, one cleaning step or one unread page
+  # was written as a string or a number where other documents have a list.
+  as_json.default(list(source = x$source,
+                       stats = json_arrays(x$stats, c("clean_steps", "unread_pages")),
                        blocks = x$blocks), pretty = pretty, ...)
 }

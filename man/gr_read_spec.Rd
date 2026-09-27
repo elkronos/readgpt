@@ -109,7 +109,11 @@ at two recipes differing only in this and find out.}
 \item{cite}{Ask for chunk-level citations (\verb{[chunk 3]}) in the answer. Map
 those ids back to pages via \code{ans$evidence}. Forced off for \code{hierarchical},
 which answers from summaries: summaries carry no \verb{[chunk N]} ids, so asking
-for citations there asks the model to invent them.}
+for citations there asks the model to invent them. For \code{skim}, when its
+evidence has to be consolidated to fit and no \verb{[chunk N]} label survives
+the consolidation, citations are not asked for either
+(\code{notes$cite_dropped = TRUE}); when some survive, a citation is checked
+against those.}
 
 \item{skim_model, summary_model}{Optional cheaper models for the per-chunk
 stages. \code{skim_model} is used by \code{skim}'s extraction \strong{and} \code{rerank}'s

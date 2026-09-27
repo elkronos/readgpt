@@ -24,26 +24,48 @@ gr_segment_spec(
 
 \item{max_tokens}{Hard cap on chunk size, in tokens. Always enforced: a
 segmenter cannot emit an oversized chunk, which the old \code{chunk_text_semantic()}
-routinely did.}
+routinely did. An oversized chunk is re-split, down to single characters
+if it has to be; if the active tokenizer counts even one character as more
+than the cap, \code{\link[=gr_segment]{gr_segment()}} stops with an error of class
+\code{"gr_cap_unenforceable"} rather than pass the chunk on.}
 
 \item{overlap_tokens}{Tokens of trailing context copied into the start of the
 next chunk. Overlap is what stops an answer straddling a boundary from being
 lost by both chunks. Honoured by every segmenter except \code{page} (a page is
-the unit) and \code{proposition} (propositions are already self-contained).}
+the unit) and \code{proposition} (propositions are already self-contained).
+It is cut at sentences, then words; text written without spaces (Chinese,
+Japanese, Thai) is cut by characters. A chunk's page, section and block
+count the overlap it opens with, so one that carries a sentence from the
+page before reports \code{NA} rather than the page it goes on to.}
 
 \item{min_tokens}{A chunk smaller than this is merged \strong{backward} into the
 chunk before it. Ignored by \code{page} and \code{fixed}.}
 
-\item{separators}{For \code{method = "recursive"}: the cascade, strongest first.}
+\item{separators}{For \code{method = "recursive"}: the cascade, strongest first.
+Each piece keeps the separator it was cut at; past the last one, text is
+cut at sentence ends, then whitespace, then characters, the same way. With
+no overlap, the chunks joined end to end are the document text exactly.}
 
-\item{prefix_section}{For \code{method = "structural"}: prepend the heading.}
+\item{prefix_section}{For \code{method = "structural"}: prepend the heading.
+When the extractor supplies no sections, headings are found inline: a
+markdown \verb{#} line, or a short line that is numbered and starts with a
+capital of any script (or a letter of a script without case), or is in
+capitals.}
 
 \item{semantic_window, semantic_percentile}{For \code{method = "semantic"}: how many
 sentences to embed together, and how extreme a distance counts as a
 boundary (higher = fewer, larger chunks).}
 
 \item{context_source}{For \code{method = "contextual"}: \code{"metadata"} (free) or
-\code{"llm"} (one call per chunk).}
+\code{"llm"} (one call per chunk). Room for the context line is held back from
+each chunk's text before packing -- 90 tokens for \code{"llm"}, the longest
+header the document could need for \code{"metadata"}, never more than half of
+\code{max_tokens} -- so no chunk is cut again once its header is added, and a
+header that still does not fit is shortened, never the text. Under
+\code{"llm"}, a chunk whose call failed or was skipped at the run's limits
+keeps its text without a context line; \verb{$extra$blurbs_missing} counts
+them and a \code{"gr_segment_fallback"} warning says so, which also reaches
+the answer's warnings.}
 
 \item{proposition_batch_tokens}{For \code{method = "proposition"}: batch size.}
 

@@ -8,8 +8,12 @@ as_json(x, pretty = TRUE, ...)
 }
 \arguments{
 \item{x}{Object to serialise. Methods exist for \link{gr_answer}, \code{gr_trace},
-\link{gr_chunks} and \link{gr_document}; anything else falls back to a plain
-\code{jsonlite} conversion.}
+\link{gr_chunks} and \link{gr_document}; anything else (a review stage such as a
+screening or an extraction, a corpus, a comparison, a list of answers)
+falls back to a plain \code{jsonlite} conversion, in which a trace, answer,
+chunk set or document found at any depth is written as its own method
+writes it, and any other environment, a function, or a client (which
+holds the API key), none of which is data, is written as \code{null}.}
 
 \item{pretty}{Whether to indent.}
 
@@ -21,7 +25,10 @@ A \code{json}-classed character string. \code{NULL} fields are written as
 significant digits as it takes to read back as the same number: 15 for
 most, 16 or 17 for the few that need them (\code{jsonlite::toJSON()} on its own
 rounds to four decimal places, and its \code{digits = NA} keeps 15 significant
-digits). Pass \code{digits} to round them.
+digits). Pass \code{digits} to round them. Otherwise a vector of length one is
+written as a scalar, except in the fields of a trace that list things (a
+comparison's \code{recipes}, the scores a ranking kept, the cleaning steps an
+ingest ran), which are arrays at every length.
 }
 \description{
 A generic so traces, answers, chunk sets and documents all serialise

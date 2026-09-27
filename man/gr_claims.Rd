@@ -13,7 +13,8 @@ gr_claims(
   temperature = NULL,
   max_claim_tokens = 1600L,
   include_unclear = FALSE,
-  trace = NULL
+  trace = NULL,
+  bib = NULL
 )
 }
 \arguments{
@@ -36,6 +37,13 @@ for fewer, larger batches.}
 same as \code{\link[=gr_synthesise]{gr_synthesise()}}.}
 
 \item{trace}{A \code{\link[=gr_trace]{gr_trace()}} to record into.}
+
+\item{bib}{Which columns carry bibliographic identity, as in
+\code{\link[=gr_synthesise]{gr_synthesise()}}: a named list of \code{citation}, \code{authors}, \code{year}, \code{title},
+\code{venue}, \code{doi}. Those columns are withheld from the model, so a claim
+cannot attribute a finding to a name, and cannot be moderated by one.
+Omitted, only the conventional names are withheld. Pass the same \code{bib} to
+\code{\link[=gr_synthesise]{gr_synthesise()}} and \code{\link[=gr_gaps]{gr_gaps()}}.}
 }
 \value{
 An object of class \code{gr_claims}:
@@ -50,6 +58,9 @@ An object of class \code{gr_claims}:
 their batch was cut off at the reply limit, failed, or was not sent
 for a call or cost limit.}
 \item{\code{lost}}{The study numbers of those studies.}
+\item{\code{unmerged}}{\code{TRUE} when claims from several batches could not be
+reconciled, so one finding may appear as more than one claim.}
+\item{\code{hidden}}{The columns withheld from the model as bibliographic.}
 }
 }
 \description{
@@ -65,9 +76,12 @@ Every study number a claim names is verified against the table, exactly as a
 claim was drawn from: a claim may only name studies its call was shown. A
 number that fails either is dropped and counted rather than trusted, a claim
 left with no supporting study is dropped entirely, and a \code{moderator} naming a
-column the table does not have is cleared: it is an invented explanation for
-a real disagreement. \verb{$dropped} records all of it, so a claims table that
-looks thin can be told apart from a literature that is.
+column the model was not shown is cleared: it is an invented explanation for
+a real disagreement. So is a moderator that does not tell the two sides of a
+contested claim apart by counting: a column the table does not report for
+the studies on one side, a value reported on both sides, or numbers whose
+ranges overlap. \verb{$dropped} records all of it, so a claims table that looks
+thin can be told apart from a literature that is.
 
 The study numbers are the same ones \code{\link[=gr_synthesise]{gr_synthesise()}} cites, because both
 derive them from one function. A claim resting on study 3 and a sentence
@@ -81,7 +95,18 @@ further call that sees only the claim TEXTS. Without it a claim holding across
 the whole corpus comes back once per batch with disjoint support, which reads
 as several narrow claims instead of one broad one. The reconcile pass may only
 group claims that already exist: every claim it fails to place stays on its
-own rather than disappearing.
+own rather than disappearing. When it cannot run -- a call or cost limit, a
+failed or cut-off reply, a reply that is not a list of groups, or more claims
+than fit one prompt -- the claims are kept unmerged, with a warning, and
+\verb{$unmerged} is \code{TRUE}.
+
+What the reconcile pass cannot check is MEANING. A merged claim keeps one
+member's wording and the union of every member's studies, so if the model
+groups two claims that say different things, the studies behind one are
+listed as supporting the other's wording. Such a merge is not detectable by
+counting; the merged claim's \code{note} names every other wording it absorbed so
+that it can be seen, and a group mixing claims of different \code{kind} is warned
+about.
 
 A batch is limited by the reply as well as by the context window, because the
 reply names every study it uses: with the default \code{max_claim_tokens} a batch

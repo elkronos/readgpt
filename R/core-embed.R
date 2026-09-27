@@ -208,10 +208,8 @@ embed_api <- function(texts, params) {
   out <- vector("list", length(texts))
   todo <- seq_along(texts)
   if (cache) {
-    hit <- vapply(keys, function(k) !is.null(gr_state$embed_cache[[k]]), logical(1),
-                  USE.NAMES = FALSE)
-    for (i in which(hit)) out[[i]] <- gr_state$embed_cache[[keys[i]]]
-    todo <- which(!hit)
+    out <- embed_cache_get(keys)
+    todo <- which(vapply(out, is.null, logical(1)))
   }
 
   if (length(todo)) {
@@ -258,10 +256,11 @@ embed_api <- function(texts, params) {
       }
       for (j in seq_along(idx)) {
         v <- got$vectors[[j]]
-        v <- v / sqrt(sum(v^2))
-        out[[idx[j]]] <- v
-        if (cache) gr_state$embed_cache[[keys[idx[j]]]] <- v
+        out[[idx[j]]] <- v / sqrt(sum(v^2))
       }
+      # Every key of this call is kept, the ones it found as well as the ones
+      # it stores, so a call never pushes out what it is about to return.
+      if (cache) embed_cache_put(keys[idx], out[idx], keep = keys)
     }
   }
   # One vector space. Rows of different lengths (a cached vector from before
@@ -444,6 +443,64 @@ embed_cache_key <- function(embedder, model, text, endpoint = "") {
   # field over, where a cosine similarity is meaningless and looks fine.
   gr_hash(list("readgpt-embed-v2", as_chr1(embedder, "?"), as_chr1(model, "?"),
                as_chr1(endpoint, ""), key_text(as_chr1(text))))
+}
+
+#' How much the session's embedding cache holds, in bytes, before the vectors
+#' used least recently are dropped from it. About 10,000 vectors of 1,536
+#' dimensions.
+#' @noRd
+.gr_embed_cache_bytes <- 128 * 1024^2
+
+#' The session's embedding cache, kept within .gr_embed_cache_bytes.
+#'
+#' It kept every vector the "api" embedder returned for the life of the R
+#' process, so a long session, or a Shiny server that ranks the chunks of one
+#' document after another, only ever grew. The vectors used least recently are
+#' now dropped once the ones held come to more than the budget, as the document
+#' cache drops documents (doc_cache_put()). Dropping one costs an embeddings
+#' request again, never a wrong vector: the key is unchanged. The order of use
+#' and the sizes are kept in the cache itself, under names ls() does not list,
+#' so gr_flush_caches() clears them with it.
+#' @return A list with the cached vector for each key, NULL where there is none.
+#' @noRd
+embed_cache_get <- function(keys) {
+  cache <- gr_state$embed_cache
+  out <- lapply(keys, function(k) cache[[k]])
+  hit <- unique(keys[!vapply(out, is.null, logical(1))])
+  if (length(hit)) cache$.order <- c(setdiff(cache$.order %||% character(0), hit), hit)
+  out
+}
+
+#' Store `vectors` under `keys`, then drop the vectors used least recently
+#' until what is held fits `budget`. Nothing in `keep` is dropped (the call
+#' storing these passes every key it is about to return), so one call larger
+#' than the budget is kept whole and trimmed by the next.
+#' @noRd
+embed_cache_put <- function(keys, vectors, keep = keys, budget = .gr_embed_cache_bytes) {
+  cache <- gr_state$embed_cache
+  for (i in seq_along(keys)) assign(keys[i], vectors[[i]], envir = cache)
+  order <- c(setdiff(cache$.order %||% character(0), keys), unique(keys))
+  sizes <- cache$.sizes %||% numeric(0)
+  # A vector stored some other way has its size taken here, so it is counted.
+  measure <- unique(c(keys, setdiff(order, names(sizes))))
+  sizes[measure] <- vapply(measure, function(k) as.numeric(utils::object.size(cache[[k]])),
+                           numeric(1))
+  sizes <- sizes[order]
+  over <- sum(sizes) - budget
+  if (over > 0) {
+    old <- which(!order %in% keep)
+    n <- match(TRUE, cumsum(sizes[old]) >= over, nomatch = length(old))
+    if (n > 0L) {
+      gone <- order[old[seq_len(n)]]
+      rm(list = gone[vapply(gone, exists, logical(1), envir = cache, inherits = FALSE)],
+         envir = cache)
+      order <- order[-old[seq_len(n)]]
+      sizes <- sizes[order]
+    }
+  }
+  cache$.order <- order
+  cache$.sizes <- sizes
+  invisible(NULL)
 }
 
 #' @noRd

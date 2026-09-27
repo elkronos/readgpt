@@ -40,8 +40,12 @@ either meets or does not.}
 start of the document. Leaving it unset shows as much as the model's context
 allows. Setting it to a few hundred is title-and-abstract screening, done
 deliberately: cheaper, and closer to what a human screener sees at this
-stage. Either way the \code{truncated} and \code{seen_tokens} columns say what was
-actually read.}
+stage. The opening is whole chunks while they fit; when the first chunk is
+longer than the cap on its own (a structural chunk of title, abstract and
+introduction can be), it is cut to the cap and that is what is screened. A
+cap too small to show any of the document at all fails the document, with
+an \code{error} naming \code{screen_tokens}. Either way the \code{truncated} and
+\code{seen_tokens} columns say what was actually read.}
 
 \item{max_total_calls, trace}{As \code{\link[=gr_read_many]{gr_read_many()}}. Pass the same \code{trace} to
 \code{\link[=gr_extract]{gr_extract()}} and \code{\link[=gr_synthesise]{gr_synthesise()}} and it accumulates the whole review,
@@ -53,8 +57,9 @@ while each stage keeps its own for its own cost and its own ceiling.}
 An object of class \code{gr_screening}:
 \describe{
 \item{\code{table}}{One row per document: \code{document}, \code{document_id},
-\code{decision}, \code{reason}, \code{criterion}, \code{quote}, \code{verified}, \code{seen_tokens},
-\code{document_tokens}, \code{truncated}, \code{status}, \code{duplicate_of}, \code{error}.}
+\code{decision}, \code{reason}, \code{criterion}, \code{criterion_valid}, \code{quote},
+\code{verified}, \code{seen_tokens}, \code{document_tokens}, \code{truncated}, \code{status},
+\code{duplicate_of}, \code{error}.}
 \item{\code{included}}{The distinct sources whose decision was \code{"include"}
 (the paths, not the display labels). Duplicates are left out; they are
 the same study, and \code{table} still has their rows. \code{gr_extract()} takes
@@ -86,13 +91,33 @@ not the JSON asked for: no model judged it, so it is not "unclear" either.
 \code{error} says what happened, and with a \code{store} the next run screens it again.
 }
 
+\section{The criterion is checked}{
+
+\code{criterion} is the criterion the model said decided it, in the protocol's
+own words when it matches one of \code{include} or \code{exclude} (case, spacing, a
+leading list marker, surrounding quotes and closing punctuation aside);
+\code{criterion_valid} says whether it did, and is \code{NA} when the model named
+none. An exclusion has to name one of the protocol's criteria: an exclusion
+criterion it meets, or an inclusion criterion it fails. One that names
+another criterion, or none, is recorded as \code{"unclear"} so that a person
+decides, with \code{criterion_valid = FALSE} (or \code{NA}) and a \code{reason} saying
+so. The match is on the wording, so a paraphrased criterion is held back
+too; that costs a person a look, where accepting an invented one would cost
+a study.
+
+The quote is checked against the excerpt the model was shown and attributed
+to the chunk that contains it; a quote spanning two chunks, or one that does
+not verify, has no chunk.
+}
+
 \section{Reporting it}{
 
 \code{table(x$table$decision)} is the screening result and
-\code{table(x$table$criterion)} is the breakdown by exclusion criterion, which is
-what a flow diagram asks for. Duplicates were removed before screening, so
-\code{sum(!is.na(x$table$duplicate_of))} is the "duplicates removed" count and
-every one of them still has a row; see \code{\link[=gr_read_many]{gr_read_many()}}.
+\code{table(x$table$criterion[x$table$decision \%in\% "exclude"])} is the
+breakdown of exclusions by criterion, which is what a flow diagram asks for;
+every one names a criterion of the protocol. Duplicates were removed before
+screening, so \code{sum(!is.na(x$table$duplicate_of))} is the "duplicates
+removed" count and every one of them still has a row; see \code{\link[=gr_read_many]{gr_read_many()}}.
 }
 
 \examples{

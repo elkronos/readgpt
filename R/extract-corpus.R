@@ -320,7 +320,11 @@ print.gr_extraction <- function(x, ...) {
     cat(sprintf(paste0("  %d document(s) read only in part: a request failed, so an empty ",
                        "cell there is unknown, not unreported\n"), inc))
   }
-  unver <- sum(tab$n_unverified, na.rm = TRUE)
+  # Distinct documents only, as gr_flow() counts "values unsupported": a
+  # duplicate's row carries its first copy's values and count, and summed
+  # with them the same unverified values were counted twice.
+  own <- is.na(tab$duplicate_of %||% rep(NA_character_, nrow(tab)))
+  unver <- sum(tab$n_unverified[own], na.rm = TRUE)
   # Not "no verbatim span": a sentence that is in the chunk word for word but
   # does not state the value is unverified too (verified = FALSE, match = 1).
   if (unver) {
@@ -331,6 +335,13 @@ print.gr_extraction <- function(x, ...) {
   cnf <- sum(!is.na(tab$conflicts))
   if (cnf) cat(sprintf("  %d document(s) contradicted themselves on at least one field\n", cnf))
   ev <- x$evidence
+  # And the spans of distinct documents: extraction_evidence() repeats a
+  # duplicate's first copy's spans under the duplicate's name, as the audit
+  # report leaves them out.
+  if (is.data.frame(ev) && !is.null(ev[["document"]]) && !is.null(tab[["document"]])) {
+    ev <- ev[!as.character(ev[["document"]]) %in% as.character(tab[["document"]][!own]), ,
+             drop = FALSE]
+  }
   if (!is.null(ev) && nrow(ev)) {
     # "Verbatim" is the span score, `match`; `verified` also asks that the span
     # state the value, so the two are reported apart.

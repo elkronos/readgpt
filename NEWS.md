@@ -695,8 +695,8 @@
     model, says so, and no longer calls itself free.
   - `gr_compare()` holds the whole comparison to `max_cost_usd`. Each recipe
     started from zero, so four recipes could spend four times the limit.
-  - Requests to an embeddings endpoint count toward `max_calls` and
-    `max_cost_usd`, are priced in the trace and `gr_trace_cost()`, and are
+  - Requests to an embeddings endpoint count toward `max_calls`,
+    `max_cost_usd` and `gr_read_many()`'s `max_total_calls`, are priced in the trace and `gr_trace_cost()`, and are
     included in the pre-flight estimate. They used to be sent outside every
     limit, even `max_calls = 0`. Their tokens are counted apart, in
     `embed_tokens` (and `embed_calls` in `gr_trace_summary()`), so `tokens_in`
@@ -771,22 +771,34 @@
     quotation of "25%", nor "82" of "482", nor "200" of "1 200" grouped with a
     thin or no-break space. Chinese, Japanese and Thai put no spaces between
     words, so a quoted clause may start and end anywhere in them. An em dash, a
-    superscript reference glued to a word and a footnote number after a year do
-    not make a faithful quote fail.
+    superscript reference glued to a word, a footnote number after a year, a
+    decimal without its leading zero (".45"), combining accents, full-width
+    digits, guillemets and corner brackets do not make a faithful quote fail. A
+    number or word that continues a range or compound broken at a line end
+    ("aged 18-" then "65 years") is not a quotation of "65 years".
   - An extracted value is verified only when its quote states it, in digits or
-    in words and in the notations papers use ("Twenty-four", "1 204", "0,45",
-    "0·84", "3.2 x 10^-5", "1.2 million"), and `gr_verify_evidence()` agrees with
-    the extract reader. A placeholder such as "N/A" is never taken over a real
-    value.
+    in words and in the notations papers use ("Twenty-four", "two and a half",
+    "1 204", "0,45", "0·84", "3.2 x 10^-5", "1.2 million", "$1.2 bn"), with the
+    number words of Spanish, Portuguese, French, Italian, German and Dutch read
+    too; a count word verifies a value only where it counts something. A quote
+    in a script whose number words are not read, and that states no readable
+    number, is only checked for being in the chunk. `gr_verify_evidence()` agrees
+    with the extract reader, and a placeholder such as "N/A" is never taken over
+    a real value.
   - Quotes are checked against a chunk's new `source_text` column when a
     segmenter recorded one, so text a model wrote (a `contextual` header, a
     `proposition` rewrite) no longer verifies as the document's.
   - A quotation made of several passages (paragraphs, a list, separate quote
     marks, or passages joined by "...") is checked passage by passage, in
     `gr_extract()` too; faithful extractions like these used to fail. A line
-    break inside a sentence is a line wrap, the parts either side of an elision
-    must come in order, and an elision may not drop a "not". Markdown bold is not
-    text, in the quotation or the document.
+    break inside a sentence is a line wrap, even before a capital; passages the
+    quotation separates may not leave words out of one source sentence; the
+    parts either side of an elision must come in order; and an elision may not
+    drop a negation, in the major European languages, Russian, Greek, Turkish,
+    Arabic, Hebrew, Hindi and Bengali, or in Chinese, Japanese, Korean and Thai
+    by the characters and endings that negate. An elision within a sentence in a
+    script none of these cover is refused. Markdown bold is not text, in the
+    quotation or the document.
   - Citation checks read lists and ranges as models write them
     (`[studies 1, 2, and 7]`, `[studies 1-7]`), so a made-up id in those forms no
     longer passes. A citation bracket that cannot be read makes an answer or
@@ -795,7 +807,10 @@
     the call that wrote it was never shown makes the section partial. It is
     counted in `$sections$n_unsupplied`, flagged in the audit report, left as a
     `[study N]` marker (in revised text too) and kept out of the reference
-    list.
+    list, while an honest citation of the same study elsewhere is still
+    rendered. Where a revision makes the two impossible to tell apart, the
+    honest one is left too, listed in `$unrendered` and warned about
+    (`gr_synth_unrendered`).
   - When several chunks give the same extracted value, the best quote any of
     them gave is used, so `require_quote = TRUE` no longer deletes a supported
     value.
@@ -806,20 +821,26 @@
     letters, including in text set in capitals and at Windows line ends.
   - Document-wide cleaners (the `scan` and `academic` presets) remove only the
     lines they target, not every block they touch. A cleaner of your own that
-    cuts the text short, even inside a line, keeps what comes before the cut.
+    removes lines and cuts the text short, even inside a line, keeps the rest of
+    each block.
   - Running-foot removal no longer deletes the edge rows of a table that runs
-    across pages, and still removes page numbers and section-page feet
-    ("Page 2-3").
+    across pages, nor a source or note line set under two tables or charts of a
+    short paper, and still removes page numbers and section-page feet ("Page
+    2-3").
   - HTML is read in full: text directly in `<div>` or `<span>`, table headers,
-    `<h5>`/`<h6>`, one block per row of a data table, and no doubled nested
-    blocks. A table used to lay out a page is read as the page, headings and
-    paragraphs included.
+    `<h5>`/`<h6>`, one block per row of a data table (even when its cells hold
+    headings or paragraphs), and no doubled nested blocks. A table used to lay
+    out a page (the page in one cell, or a banner row, a navigation-and-content
+    row and a footer row) is read as the page, headings and paragraphs included;
+    a grid layout with no heading cell is still read row by row.
   - Two-column PDFs: most full-width tables are read row by row, rows set one
     space apart are split, columns are found when their rows do not line up,
-    and more running heads are removed, while reference lists and code listings
-    are no longer glued across the gutter. A full-width table of two plain text
-    columns, and pages where pdftotext moves the right column within the page,
-    are still read imperfectly.
+    and more running heads are removed, while reference lists, most code
+    listings and two tables set side by side are no longer glued across the
+    gutter, and full-width abstracts, author blocks and headings keep their
+    place. A full-width table of two plain text columns, two blocks of code with
+    no figures set on the same rows of both columns, and pages where pdftotext
+    moves the right column within the page, are still read imperfectly.
   - OCR works with `parallel = TRUE`, and a page whose OCR fails keeps its text
     layer.
   - `structural` groups blocks by unbroken runs of a section, so two sections
@@ -844,7 +865,7 @@
     `gr_ellmer_client()` keep full numeric precision; a p-value of 0.00003 was
     written as 0.
   - A replay asks for the model the recorded read asked for, so a run that used
-    `skim_model` or `summary_model` replays.
+    `skim_model` or `summary_model` replays, including one recorded by 0.5.0.
 
 * **Word matching works in every script.** The `rerank` prefilter, BM25 and the
   `lexical` embedder dropped every letter outside A-Z, so a Russian, Greek,
@@ -856,9 +877,11 @@
 * **Reference records are matched and de-duplicated correctly.**
   - The title fallback keeps letters in every script, never merges titles under
     12 letters on title alone, and requires the first authors' surnames to agree
-    as whole names ("Li" is not "Lin"), read from the first author alone so a
-    group author later in the list does not hide it. "PPARα" and "PPARγ" merged,
-    and different Chinese titles reduced to "2".
+    as whole names ("Li" is not "Lin") and their first initials not to differ
+    ("Wang, L." is not "Wang, H."), read from the first author alone so a group
+    author later in the list does not hide it. An organisation agrees with its
+    acronym (WHO and World Health Organization). "PPARα" and "PPARγ" merged, and
+    different Chinese titles reduced to "2".
   - A record without a DOI is recognised as a duplicate of the same paper
     exported with one, and the kept record takes the DOI, journal and other
     fields it lacks from its copies.
@@ -867,7 +890,8 @@
     decoded, and a bare value keeps all its words.
   - Files are matched across the whole export, strongest route first, with
     surnames as whole words (McKay2019.pdf is not Kay's); a file two works match
-    goes to neither. A document attached only to a duplicate counts for the kept
+    goes to the one whose title or author list the filename shows, and otherwise
+    to neither. A document attached only to a duplicate counts for the kept
     record, and a record and its duplicate that each carry a copy keep theirs.
   - `gr_calibrate()` refuses samples stacked with `rbind()` as mixed frames, and
     samples whose rows the run did not exclude (or keep).
@@ -879,18 +903,173 @@
   rule that files an accented Latin letter with its base letter; same-author,
   same-year papers are lettered by title.
 
-* **Author names are cited correctly or not at all.** Vancouver/PubMed lists
-  ("Smith JA, Okafor AB"), APA lists with ", &" and short first names are cited
-  by the right surnames, a list ending "et al." is cited as et al., an
-  organisation's acronym (WHO, NICE) is cited as its name, degrees in a byline
-  are dropped, and a list that cannot be read with confidence falls back to
-  `[study N]` markers instead of printing "(JA & AB, 2019)".
+* **Author names are cited correctly, or the review falls back to markers.**
+  Vancouver/PubMed lists ("Smith JA, Okafor AB"), APA lists with ", &" and short
+  first names are cited by the right surnames; a list ending "et al." (however
+  spelt) or cut off with an ellipsis is cited as et al.; one organisation or
+  several by acronym ("WHO and UNICEF") are cited by name; degrees in a byline
+  are dropped; and a list that cannot be read with confidence falls back to
+  `[study N]` markers instead of printing "(JA & AB, 2019)". A few shapes cannot
+  be told apart without a list of given names: "Smith, Okafor" reads as one
+  author, as "Chen, Wei" must.
 
 * **Workspace functions work in parallel workers.** A backend or mock handler,
   or a tokenizer, that calls your own helpers used to fail on every chunk with
   "could not find function". What they need is now sent along, once. A batch
   larger than `options(future.globals.maxSize =)` runs sequentially with a
   `gr_parallel_unavailable` warning instead of aborting the run.
+
+* **Readers say when they read less than all of it.**
+  - `ensemble` is partial when a member it adjudicated was, and names the
+    member; `hierarchical` counts a failed summary at every level and carries
+    that group's text up instead of dropping it; `map_reduce` counts a merge
+    request that failed below the final level; `skim` is partial when its
+    consolidation fails or is cut short, and checks citations against the
+    labels that survived it.
+  - `iterative` no longer returns an empty answer, or a confident
+    `NOT_IN_DOCUMENT`, when the model says it can answer and gives none; it
+    ranks a query whose embedding fell back in the same space as the chunks;
+    and it asks for citations on the step that usually writes the answer.
+  - `rerank` is partial when relevant chunks did not fit, `retrieve` over no
+    chunks returns `NOT_IN_DOCUMENT` without asking the model, and `preview`
+    fits its whole prompt, skimmed evidence included, and flags citations of
+    sections its plan skipped.
+  - `is_not_found()` recognises the sentinel followed by an explanation or
+    decorated with another script's punctuation, and `skim` and `preview` do
+    the same for NONE.
+  - `mmr` below 1 picks the same chunks whatever the length of the vectors an
+    embed function returns.
+  - `gr_compare()` keeps the spend of a recipe that failed after making
+    requests, counts each recipe's segmentation against that recipe alone, and
+    its summary names a recipe's first failure.
+  - The v1 `gpt_read_*()` shims read chunk text as given, never as a source to
+    open or fetch.
+
+* **An answer, a trace and a report describe their own run.** `as_json()`,
+  `print()` and the audit report on an answer count only that answer's
+  requests when a trace is shared, `answer_document(trace = )` records its whole
+  run, and `as_json()` writes list fields as arrays at every length and works on
+  every result class. A saved trace records whether a limit cut the run short,
+  and a replay of a run the spending limit stopped stops at the same call,
+  including in `gr_compare()` and `gr_read_many()`. `gr_replay_client()` accepts
+  JSON text and says how to read a file jsonlite simplified.
+
+* **The client, models and prices.**
+  - Malformed or cut-off structured replies are not saved in the response
+    cache. A key with a trailing newline works; one with a line break inside is
+    refused. Chat content sent as a list of parts is read. A broken character
+    in a reply no longer crashes the run.
+  - Short internal calls to a reasoning model are sent with room for its
+    reasoning, and spending bounds price them at the cap they are sent with.
+  - A model registered with one price but not the other is refused, and
+    `unknown_model_action = "error"` also stops on an id that only matches a
+    family pattern. Aliases use your registered correction of their target.
+    Backend and ellmer calls that fail after reaching the provider are billed.
+  - Out-of-quota errors are not retried. `gr_call(max_output = NA)` warns and
+    uses the model's limit instead of capping the reply at one token.
+    `gr_cache(dir = "")` stops instead of pointing at the filesystem root.
+
+* **Text in any encoding and locale.** Questions, criteria, field
+  descriptions, headings and prompts reach the model and the saved trace intact
+  under a C locale; CP1252 questions and token counts no longer fail with
+  "invalid UTF-8"; UTF-16 text files, Windows-1252 web pages, record exports and
+  inventories, and Arabic-Indic, Persian and full-width digits are read.
+
+* **Embeddings.** Requests are retried after a rate limit or server error,
+  matched to their texts by the index the API returns, and a degenerate reply
+  (missing, empty or zero vectors) falls back instead of being used. An error in
+  one item of a parallel batch no longer discards the others' records, and
+  `parallel = TRUE` no longer moves the session's random number stream.
+
+* **Segmentation and cleaning.**
+  - The token cap always holds, overlap works for text without spaces and no
+    longer repeats sentences after a runt merge, and chunks that run across a
+    page break report no single page. `fixed` keeps its last window and is fast
+    with large caps, `recursive` no longer glues words together, `page` keeps
+    blocks without a page number, `contextual` holds room for its header and
+    warns when chunks were left without one, and `structural` finds headings
+    written in any script.
+  - Sentence splitting recognises sentence ends in Cyrillic, Greek, Arabic,
+    Chinese and Japanese text and before accented capitals.
+  - The `page_numbers` cleaner keeps a number that ends a sentence on a line of
+    its own; `captions` removes caption lines only, not sentences that begin
+    "Table 2 shows"; `headers_footers` finds running heads by where they stand
+    on the page; `hyphenation` keeps the hyphen of a compound the document
+    writes whole elsewhere; `ligatures` keeps en and em dashes. A line of
+    no-break or ideographic spaces separates paragraphs.
+
+* **Extraction and corpora.** An empty array for a field no longer fails the
+  document; booleans and numbers that could be read more than one way are left
+  empty and counted in `n_unverified`; conflicts that differ only in case or a
+  trailing full stop cost nothing; a rejected or failed adjudication is marked
+  as such; `reader =` is refused. A store is found when a run resumes in another
+  time zone, a file rewritten in the same second is read again, documents
+  already stored are restored after a ceiling is reached, and a restored row is
+  never a duplicate of a document outside the run.
+
+* **Screening and calibration.** An exclusion that names a criterion outside
+  the protocol is "unclear" for a person to decide (new `criterion_valid`
+  column), a quote is attributed to the chunk that holds it, and a tiny
+  `screen_tokens` screens the first chunk cut to fit. `gr_reference()` writes a
+  blind sheet whose frame is an opaque key, as UTF-8 with a byte-order mark,
+  reads `n` as a number and no longer needs withr; `gr_calibrate()` reads
+  decisions case-insensitively, treats unread rows as unread, validates `of`,
+  judges a one-stratum sample by its interval, and refuses a document judged
+  twice with different decisions.
+
+* **Claims, synthesis and the audit report.**
+  - `gr_claims()` gains `bib`, reports batches it could not reconcile
+    (`$unmerged`), keeps distinct claims apart when a reconcile reply is flat,
+    clears a moderator that does not separate the two sides, and notes the
+    wordings a merged claim absorbed. `gr_outline()` gains
+    `max_outline_tokens` and records the claims it was drawn from.
+  - `gr_synthesise()` stops with a clear message when claims or an outline do
+    not match its table, writes a section whose claims do not fit a few at a
+    time, marks batched sections partial when a draft was cut or a batch lost,
+    records `$claim_sections`, and writes the closing section from the gaps
+    alone. A coherence pass is discarded if it cites a study more often or takes
+    a citation off a claim, and a draft not in English is not revised
+    (`gr_revision_unguarded`). Columns named date, source, url, published or
+    publication are findings unless `bib` names them, a `citation` key starts
+    its reference entry, and keys that do not end in a year are lettered.
+  - `gr_gaps()` gains `bib` and no longer reports bibliographic columns as
+    gaps.
+  - The audit report checks the protocol against what the run recorded, shows
+    the published text of a kept revision and its draft, flags partial sections
+    and why, redacts credentials in web addresses, counts claims and outline
+    calls in its cost, and no longer calls a failed request "not found" or a
+    duplicate's evidence twice.
+
+* **Records, protocols and inventories.** `gr_records()` reads PubMed's .nbib
+  export and Windows-1252 files, keeps a wrapped abstract line that looks like
+  a RIS tag, keeps a double-braced corporate author whole, reads a folder among
+  export paths, is fast on large BibTeX libraries, and gives a numbered download
+  such as `2.pdf` to no record. `gr_protocol()` gains `search`, and protocols are
+  saved and read as UTF-8. `gr_inventory()` samples PDF pages across the
+  document, extracts only the pages it samples, labels files relative to their
+  common folder and adds a `path` column.
+
+* **Web addresses and Word files are handled safely.** A download is limited to
+  512 MB, and addresses on this machine or a private network are refused,
+  including after a redirect (`options(readgpt.allow_local_urls = TRUE)` allows
+  an intranet server). A presigned address keeps its credentials out of
+  `source`, messages, errors, traces, labels and the audit report, shown as
+  `[query hidden 1a2b3c]`. A Word file unpacks only the parts it reads and is
+  refused past 512 MB; its equations are read. Markdown headings followed by
+  text are found, and `#` comments in code chunks are not headings.
+
+* **Caches in memory are bounded.** The document cache (about 256 MB) and the
+  embedding cache (128 MB) drop what was used least recently, and the new
+  `gr_flush_caches()` clears both. Two clients made in the same millisecond no
+  longer share an identity.
+
+* **The Shiny app, the demo and the tooling.** The app ignores a second click
+  on Ask while a run is going, keeps the session's spending limit when the cost
+  field is cleared, applies no cleaning when every step is unticked, says why an
+  answer is partial, refuses a crafted path before touching the filesystem and
+  no longer offers the extract and screen readers. The offline demo runs to the
+  end, `run-tests.sh` installs everything it needs, and CI's vignette check fails
+  when a vignette's chunks error.
 
 * **A missing API key no longer looks like an answer.** Without a key every
   request failed on its own, and the answer came back as `NOT_IN_DOCUMENT`
@@ -1170,6 +1349,23 @@
   extraction). Neither is used by `gr_synthesise()` or `gr_claims()`.
 * Answers that were cut off at the output cap, or that quote text a model wrote,
   are now partial where they were not before.
+* URL ingestion refuses addresses on this machine or a private network, and
+  downloads over 512 MB; set `options(readgpt.allow_local_urls = TRUE)` for an
+  intranet server. A corpus read from presigned addresses labels its documents
+  without their credentials, so store entries for such sources are read again
+  once.
+* A screening exclusion that names a criterion outside the protocol is now
+  "unclear", and screening tables gain a `criterion_valid` column.
+* In `gr_synthesise()`, columns named date, source, url, published or
+  publication are no longer taken as bibliographic by name, so a table that
+  relied on them for author-year citations falls back to markers unless `bib`
+  names them. A draft not in English is no longer revised.
+* The `ligatures` cleaner keeps en and em dashes, and the `headers_footers` and
+  `captions` cleaners remove less, so the text of documents cleaned with them
+  changes and the document cache is refilled once.
+* Extracted numbers and booleans that could be read more than one way are now
+  left empty and counted in `n_unverified` rather than stored.
+* A chat model registered with only one of its two prices is refused.
 
 # readgpt 0.5.0
 

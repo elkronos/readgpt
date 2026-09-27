@@ -346,7 +346,9 @@ best_supported_hit <- function(hits) {
 }
 
 #' The most one extraction request can cost: `input_tokens` of prompt and a
-#' reply at `max_output`, priced at the model that is billed for it.
+#' reply at `max_output` (at most the model's ceiling; for a reasoning model,
+#' the larger cap the request is sent with), priced at the model that is billed
+#' for it.
 #'
 #' That is the model the request names, except through a client that bills
 #' every call as its own model whatever the request names (an ellmer chat;
@@ -361,7 +363,11 @@ extract_item_usd <- function(client, model, input_tokens, max_output) {
                                    error = function(e) NULL)
   info <- quiet(gr_model_info(billed))
   if (is.null(info)) return(NA_real_)
-  out <- min(as_num1(max_output, 0), as_num1(info$max_output, Inf))
+  # Priced at the cap the request is sent with: a reasoning model is sent
+  # room to reason above a short cap (reasoning_output_cap()), and is billed
+  # for what it spends there.
+  out <- reasoning_output_cap(min(as_num1(max_output, 0), as_num1(info$max_output, Inf)),
+                              info, input_tokens)
   as_num1(quiet(gr_estimate_cost(billed, input_tokens, out)), NA_real_)
 }
 

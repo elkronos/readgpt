@@ -13,19 +13,27 @@ gr_calibrate(
 )
 }
 \arguments{
-\item{screening}{A \code{gr_screening} from \code{\link[=gr_screen]{gr_screen()}}.}
+\item{screening}{A \code{gr_screening} from \code{\link[=gr_screen]{gr_screen()}}, or a data frame shaped
+like its \verb{$table}, for instance read back from a CSV. Its \code{decision} must
+be \code{"include"}, \code{"exclude"}, \code{"unclear"} or empty (never read), in any
+case; a row whose \code{status} says it was not read counts as never read.}
 
 \item{reference}{The completed frame from \code{\link[=gr_reference]{gr_reference()}}, a path to the
 filled-in CSV, or any data frame with \code{document} and \code{human_decision}.}
 
-\item{positive}{Which human decision counts as eligible.}
+\item{positive}{Which human decision counts as eligible: \code{"include"} or
+\code{"exclude"}.}
 
-\item{min_positives}{Below this many eligible studies in the sample, the
-sensitivity estimate is reported but marked inadequate.}
+\item{min_positives}{For an \code{"all"} sample: below this many eligible studies
+the sensitivity estimate is reported but marked inadequate. A sample of
+one stratum is judged by its interval instead; see "What a small sample
+cannot do".}
 
 \item{of}{Which part of the screening run the reference was drawn from:
-\code{"excluded"}, \code{"kept"} or \code{"all"}. Normally recovered from the file
-\code{\link[=gr_reference]{gr_reference()}} wrote; give it explicitly for a reference built by hand.}
+\code{"excluded"}, \code{"kept"} or \code{"all"}; anything else is an error. Normally
+recovered from the file \code{\link[=gr_reference]{gr_reference()}} wrote; give it explicitly for a
+reference built by hand. Given over a file that records a different
+frame, it wins with a warning, and the file's frame size is not used.}
 }
 \value{
 An object of class \code{gr_calibration}:
@@ -36,7 +44,12 @@ An object of class \code{gr_calibration}:
 themselves, because a list of the misses says more than a rate.}
 \item{\code{disagreements}}{Every row where the two differ, in either
 direction.}
-\item{\code{adequate}}{Whether the sample supports a sensitivity claim.}
+\item{\code{adequate}}{Whether the sample supports a claim from its frame's
+headline rate: sensitivity in an \code{"all"} sample, the frame's own rate
+in an \code{"excluded"} or \code{"kept"} one.}
+\item{\code{adequacy}}{How that was judged: \code{rule} (\code{"positives"},
+\code{"interval"} or \code{"whole frame"}), \code{bar}, \code{width}, and \code{note}, a
+sentence saying why the sample fell short (\code{NA} when it did not).}
 \item{\code{frame}}{Which rows the sample was drawn from, and how many.}
 }
 }
@@ -77,6 +90,30 @@ estimate it from two observations, and "1.00" from two observations is not a
 finding. The intervals are Wilson score intervals, which stay sensible at
 zero and one where the textbook interval collapses to a point, and
 \verb{$adequate} says whether there was enough to support a claim at all.
+
+What "enough" means depends on the frame, because what the headline rate
+rests on does. In an \code{"all"} sample it is sensitivity, estimated from the
+eligible studies alone, so the sample needs \code{min_positives} of them. In an
+\code{"excluded"} or \code{"kept"} sample the headline rate ("eligible among the
+excluded", "eligible among those kept") is taken over every row sampled, so
+a sample of 500 clean exclusions is a good one, not one resting on no
+observations. There the sample is adequate when that rate's interval is at
+most 10 percentage points wide, or when every record in the stratum was
+judged (nothing is left to sample, and the rate is a count for this run).
+The bar is a floor, not a verdict: 10 points is wide for an omission rate
+near zero across a large pile of exclusions, and the projected count of lost
+studies, printed with its interval, is the figure to judge that by.
+\verb{$adequacy$note} says in a sentence why a sample fell short.
+}
+
+\section{One row per document}{
+
+The reference is matched to the screening by document name, compared as
+UTF-8 whatever the session's locale, and by \code{document_id} for a row whose
+name still does not match. A document judged twice (two reviewers' sheets
+stacked, say) is counted once when the copies agree, with a warning, and is
+refused when they disagree: reconcile dual screening into one consensus
+decision per document first.
 }
 
 \examples{

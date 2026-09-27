@@ -92,8 +92,14 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims 
     # none can come to more than "extracted from".
     own <- is.na(t$duplicate_of %||% rep(NA, nrow(t)))
     add("extracted from", nrow(t) - dup)
+    # And no value given that went unverified: a row with nothing filled can
+    # still have had values, unreadable as their field's type, rejected, or
+    # dropped under require_quote. Those are counted under "values
+    # unsupported" below, and were also said here to be absent from the
+    # document. An unknown count (NA, or no column) is not a zero either.
+    nu <- t[["n_unverified"]] %||% rep(NA_integer_, nrow(t))
     add("  reported nothing", sum(t$status %in% c("ok", "restored") & !is.na(t$n_filled) &
-                                    t$n_filled == 0L & own),
+                                    t$n_filled == 0L & nu %in% 0L & own),
         "read successfully; none of the fields are in the document")
     # "incomplete" has values, so it is not a failed read: counted there, it
     # was described as having none and a table of real values looked empty.
@@ -120,6 +126,11 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims 
     # before the field existed.
     add("studies lost to a claims batch", length(claims$lost %||% integer(0)),
         "their claims batch was cut off at the reply limit, failed or not sent; see $lost")
+    # 1 when the claims of several batches were never reconciled into one
+    # list, so the counts below may count one finding more than once.
+    # isTRUE() for a claims table saved before the field existed.
+    add("claims not reconciled across batches", as.integer(isTRUE(claims$unmerged)),
+        "the reconcile pass could not run; one finding may appear as more than one claim")
     add("claims drawn", nrow(cw), "statements about the literature, each attached to studies")
     add("  contested", sum(cw$n_contradict > 0L), "studies on both sides")
     add("  unexplained", sum(cw$n_contradict > 0L & is.na(cw$moderator)),
@@ -242,15 +253,17 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims 
 #' request, is cut to the text around what is highlighted, with each cut shown
 #' as "\[...\]".
 #' Last comes one row per request, from `as.data.frame()` on the answer's
-#' trace (see [gr_trace()]), without the prompts and replies.
+#' trace (see [gr_trace()]), without the prompts and replies. Where the answer
+#' records which steps of a trace shared with other runs are its own, the
+#' requests, the rows and the cost are those steps only.
 #'
 #' A `gr_corpus` gives one row per document, then each document's answer and
 #' passages. Answers are there only if the run kept them (`keep_answers`).
 #'
 #' "Not partial" is said only when the reader did not mark the answer partial
 #' and no request on its trace failed. A failed request is flagged even when
-#' the reader did not count it; a trace shared with other runs flags theirs
-#' too, because the report cannot tell the runs on one trace apart. An answer
+#' the reader did not count it; a trace shared with other runs flags their
+#' failures too, because an error cannot always be put in one run. An answer
 #' that is "not found" because the request that would have given it failed is
 #' shown as no answer, not as a finding about the document.
 #'
@@ -518,8 +531,11 @@ protocol_outline <- function(outline, label = "Write-up outline") {
 #' @noRd
 protocol_drift <- function(protocol, screening = NULL, extraction = NULL, synthesis = NULL) {
   checked <- character(0); differ <- character(0); shown <- character(0)
-  same_set <- function(a, b) setequal(criteria_vector(a, ""), criteria_vector(b, ""))
-  words <- function(q) gsub("[[:space:]]+", " ", trimws(as_chr1(q, "")))
+  # Labelled UTF-8 on both sides first: the entry points label what they are
+  # given, and a protocol typed in a C locale may not be, so the same bytes
+  # compared unequal and a faithful run was reported as drifting.
+  same_set <- function(a, b) setequal(to_utf8(criteria_vector(a, "")), to_utf8(criteria_vector(b, "")))
+  words <- function(q) gsub("[[:space:]]+", " ", trimws(to_utf8(as_chr1(q, ""))))
   same_q <- function(q) is.null(q) || identical(words(q), words(protocol$question))
   if (inherits(screening, "gr_screening")) {
     checked <- c(checked, "the screening")
@@ -610,7 +626,11 @@ audit_flow <- function(screening, extraction, records = NULL, claims = NULL) {
 audit_screening <- function(screening) {
   if (is.null(screening)) return(NULL)
   t <- screening$table
-  keep <- c("document", "decision", "criterion", "reason", "quote", "verified", "error")
+  # `criterion_valid` FALSE is a criterion the protocol does not list: an
+  # exclusion on one was held back for a person, and the report showed the
+  # criterion with nothing to say it was not the protocol's.
+  keep <- c("document", "decision", "criterion", "criterion_valid", "reason", "quote",
+            "verified", "error")
   c("<h2>Screening decisions</h2>",
     sprintf("<p class='sub'>One model call per document.%s</p>",
             if (any(t$truncated, na.rm = TRUE))
@@ -618,6 +638,7 @@ audit_screening <- function(screening) {
             else ""),
     html_table(t[, intersect(keep, names(t)), drop = FALSE],
                flag = list(decision = function(v) v %in% c("unclear", NA),
+                           criterion_valid = function(v) !is.na(v) & !v,
                            verified = function(v) !is.na(v) & !v)))
 }
 
@@ -713,6 +734,14 @@ audit_claims <- function(synthesis, claims = NULL) {
     "written from these claims, rests on them (study %s).</p>"),
     length(lost), nrow(cm$studies),
     paste(c(utils::head(lost, 20L), if (length(lost) > 20L) "..."), collapse = ", "))
+  # Claims drawn in several batches and never reconciled: the table read as
+  # one list of distinct findings, and the counts below as counts of them.
+  # isTRUE() for a claims table saved before the field existed.
+  unmerged_note <- if (isTRUE(cm$unmerged)) paste0(
+    "<p class='flag'>The claims from different batches of studies were not reconciled: the ",
+    "reconcile pass could not run, so one finding may appear below as more than one claim, ",
+    "each resting on fewer studies than the finding does, and the counts of claims, of ",
+    "contested claims and of claims on one study may count it more than once.</p>")
   if (!nrow(cm$claims)) {
     if (!length(lost)) return(NULL)
     return(c("<h2>What the review claims, and what each claim rests on</h2>",
@@ -746,6 +775,7 @@ audit_claims <- function(synthesis, claims = NULL) {
             else "<span class='ok'>each with a distinguishing field named</span>",
             lone),
     lost_note,
+    unmerged_note,
     if (!is.null(synthesis) && !sec_ok)
       paste0("<p class='sub'>Which section each claim was given to was not recorded with this ",
              "synthesis, so it is not shown.</p>"),
@@ -923,6 +953,9 @@ synthesis_published <- function(synthesis) {
 #' @noRd
 audit_cost <- function(screening = NULL, extraction = NULL, synthesis = NULL, reading = NULL,
                        claims = NULL) {
+  # One answer's own run (answer_trace()), as its summary and request table
+  # count it: from a trace shared across runs, the row was every run's.
+  if (inherits(reading, "gr_answer")) reading <- list(trace = answer_trace(reading))
   # Named for the reader, not after the class. "gr_screening" is what the object
   # is called in the code and means nothing to the person the report is for.
   stages <- list(screening = screening, extraction = extraction,
@@ -1064,12 +1097,24 @@ audit_calibration <- function(calibration) {
   head <- sprintf(paste0("<p class='sub'>%d record(s) screened by hand, %d of them eligible, ",
                          "sampled from: %s.</p>"),
                   calibration$n, calibration$n_positives, esc(as_chr1(calibration$frame$of, "all")))
-  warn <- if (!isTRUE(calibration$adequate)) sprintf(
-    paste0("<p class='flag'>Only %d eligible record(s) in the sample, below the %s this ",
-           "calibration asks for. The intervals are too wide to conclude much.</p>"),
-    # %s and format(), not %d: min_positives is a double now, and may be Inf --
-    # "never adequate" -- which %d refuses outright, taking the report with it.
-    calibration$n_positives, format(calibration$min_positives))
+  # The calibration's own sentence for why the sample fell short. Adequacy is
+  # judged per frame: a sample of one stratum by its interval, not by how many
+  # eligible records it holds, and one short on that was reported as "Only 0
+  # eligible record(s) ... below the 10", a bar it was never held to. The
+  # count sentence is kept for a calibration saved before the note existed.
+  note <- if (is.list(calibration$adequacy)) calibration$adequacy[["note", exact = TRUE]]
+  warn <- if (!isTRUE(calibration$adequate)) {
+    if (is.character(note) && length(note) == 1L && !is.na(note)) {
+      sprintf("<p class='flag'>%s</p>", esc(note))
+    } else {
+      sprintf(paste0("<p class='flag'>Only %d eligible record(s) in the sample, below the %s this ",
+                     "calibration asks for. The intervals are too wide to conclude much.</p>"),
+              # %s and format(), not %d: min_positives is a double now, and may be
+              # Inf -- "never adequate" -- which %d refuses outright, taking the
+              # report with it.
+              calibration$n_positives, format(calibration$min_positives))
+    }
+  }
   kap <- if (!is.na(calibration$kappa))
     sprintf("<p><b>Cohen's kappa:</b> %.2f</p>", calibration$kappa)
   proj <- if (!is.null(calibration$projected)) {
@@ -1144,9 +1189,12 @@ answer_has_quotes <- function(x) {
 audit_answer <- function(x) {
   if (inherits(x, "gr_corpus")) return(audit_corpus(x))
   if (!inherits(x, "gr_answer")) return(NULL)
+  # This run's requests only (answer_trace()): with a trace the caller shared
+  # across runs, the table listed every other run's requests, prompts' costs
+  # and errors under this answer.
   c("<h2>The answer</h2>", answer_summary(x),
     "<h2>Where it came from</h2>", answer_passages(x),
-    "<h2>Every request</h2>", request_table(x$trace))
+    "<h2>Every request</h2>", request_table(answer_trace(x)))
 }
 
 #' A document's name for the report: the file name, not the folders above it,
@@ -1233,10 +1281,13 @@ fact_table <- function(labels, values) {
 #' is larger, since the two overlap, and not the ones a fallback recovered.
 #'
 #' `answer_error` is the reader's record that its answering request failed or
-#' was never sent (`notes$error`), and `any_ok` whether any model request on
-#' the trace came back at all. The trace may hold other runs when the caller
-#' shared one; their failures are counted too, since nothing on it says which
-#' run a step belonged to, and a false flag is the safe side of that doubt.
+#' was never sent (`notes$error`), and `any_ok` whether any model request of
+#' this run (answer_trace()) came back at all. The trace may hold other runs
+#' when the caller shared one; their failures are counted too, since an error
+#' recorded without its step cannot be put in either run, and a false flag is
+#' the safe side of that doubt. Their successful requests are not: counted,
+#' one other run's reply said a run whose every request failed had read
+#' something, and its "not found" was reported as a finding.
 #' @noRd
 answer_failures <- function(x) {
   n <- as.list(x$notes %||% list())
@@ -1245,9 +1296,10 @@ answer_failures <- function(x) {
   errs <- if (is.null(tr)) list() else tr$errors
   open <- Filter(Negate(is_recovered_error), errs)
   err <- as_chr1(n[["error", exact = TRUE]], "")
-  steps <- if (is.null(tr)) list() else
+  own <- answer_trace(x)
+  steps <- if (!inherits(own, "gr_trace")) list() else
     Filter(function(st) !identical(st$kind, "local") && !identical(st$kind, "embedding") &&
-             !is.null(st$tokens), tr$steps)
+             !is.null(st$tokens), own$steps)
   list(failed = max(num("failed_calls") + num("scoring_failures") + num("failed_summaries") +
                       isTRUE(n[["failed_call", exact = TRUE]]), length(open)),
        recovered = length(errs) - length(open),
@@ -1262,6 +1314,11 @@ answer_failures <- function(x) {
 #' @noRd
 answer_summary <- function(x, listed = TRUE) {
   f <- answer_failures(x)
+  # The requests and cost are this run's own (answer_trace()); the failures
+  # are counted over the whole trace by answer_failures(), the safe side of
+  # not knowing which run an error belonged to. `shared` when the two differ.
+  tr <- answer_trace(x)
+  shared <- inherits(tr, "gr_trace") && !identical(tr, x$trace)
   # "Not found" is a finding about the document only when something was read.
   # When the request that would have answered failed or was never sent, the
   # reader's sentinel is no answer at all, and the page said "Not found in the
@@ -1287,7 +1344,10 @@ answer_summary <- function(x, listed = TRUE) {
             format(f$failed, scientific = FALSE),
             if (nzchar(f$first)) esc(sprintf(" (first error: %s)",
                                              report_url_text(substr(f$first, 1, 200)))) else "",
-            if (listed) " Each request is listed below." else "")
+            if (!listed) ""
+            else if (shared) paste0(" The requests of this run are listed below. The failures ",
+                                    "are counted over the whole trace, which other runs share.")
+            else " Each request is listed below.")
   } else if (f$recovered > 0) {
     sprintf(paste0("<p class='ok'>Not partial: the reader reported nothing it chose to read as ",
                    "left out, and the %d request(s) that failed were recovered by a ",
@@ -1296,7 +1356,6 @@ answer_summary <- function(x, listed = TRUE) {
     paste0("<p class='ok'>Not partial: no request failed, and the reader reported nothing it ",
            "chose to read as left out.</p>")
   }
-  tr <- x$trace
   recipe <- as_chr1(x$recipe, NA_character_)
   auto <- as.list(x$notes %||% list())[["auto_recipe", exact = TRUE]]
   if (!is.na(recipe) && !is.null(auto)) recipe <- sprintf("%s (chosen by \"auto\")", recipe)
@@ -1386,8 +1445,12 @@ evidence_card <- function(rows, cited, nums) {
   passage <- if (any(quoted & !is.na(src))) src[quoted & !is.na(src)][1]
              else if (any(kind == "verbatim")) text[kind == "verbatim"][1]
              else NA_character_
-  # One encoding for the searches and the cuts made at the positions they find.
-  if (!is.na(passage)) passage <- to_utf8(passage)
+  # One encoding for the searches and the cuts made at the positions they find,
+  # and accents composed, as normalise_for_match() composes them: folded one
+  # character for one (normalised_with_map()), a decomposed passage never held
+  # the composed quotation the check had found in it, and a verified quote was
+  # listed as "not placed". The composed text looks the same.
+  if (!is.na(passage)) passage <- compose_marks(to_utf8(passage))
   spans <- list()
   unplaced <- character(0)
   if (any(quoted)) {
@@ -1436,10 +1499,13 @@ evidence_card <- function(rows, cited, nums) {
 #' `passage` folded the way normalise_for_match() folds text, with a map from
 #' each folded character back to the character it came from.
 #'
-#' Folding keeps each character one character, and a run of space becomes one
-#' space whose place is the run's first character. So a quotation found in the
-#' folded text by an exact search is found exactly where gr_verify_evidence()
-#' found it, and the map gives its place in the original.
+#' `passage` is composed already (compose_marks(), which evidence_card()
+#' applies): composing is the one step of normalise_for_match() that changes
+#' the number of characters. Folding keeps each character one character, and
+#' a run of space becomes one space whose place is the run's first character.
+#' So a quotation found in the folded text by an exact search is found exactly
+#' where gr_verify_evidence() found it, and the map gives its place in the
+#' original.
 #' @noRd
 normalised_with_map <- function(passage) {
   ch <- strsplit(to_utf8(passage), "", fixed = TRUE)[[1]]

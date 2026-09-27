@@ -111,18 +111,27 @@ read_map_reduce <- function(chunks, question, client, spec, trace) {
   n_failed <- sum(!ok & !capped)
 
   if (!any(useful)) {
-    return(new_answer(.NOT_FOUND, "map_reduce", question, d$chunk_id, trace,
+    # No chunk contributed, so none is listed as used (the gr_answer contract):
+    # listing every chunk id said the answer rested on chunks that had
+    # answered "not in this excerpt", or on requests that never came back.
+    # What was sent is what a citation is checked against. A run with nothing
+    # back is not a run that found nothing, and the reason says which it was.
+    why <- if (!nrow(d)) "there are no chunks to read"
+           else if (any(ok)) "no chunk yielded an answer"
+           else if (n_failed == 0L) "a limit stopped every request"
+           else if (any(capped)) "every request that was sent failed"
+           else "every request failed"
+    return(new_answer(.NOT_FOUND, "map_reduce", question, integer(0), trace,
+                      chunks_sent = d$chunk_id[!capped],
                       partial = n_failed > 0 || any(capped),
-                      notes = list(chunks = nrow(d), failed_calls = n_failed,
-                                   reason = "no chunk yielded an answer")))
+                      notes = list(chunks = nrow(d), failed_calls = n_failed, reason = why)))
   }
-  from <- length(trace$steps) + 1L
   merged <- tree_merge(client, question, texts[useful], spec, trace, label = "reduce")
   cut <- cut + merged$truncated_calls
   # A merge request that failed below the last level passes its group up
   # unmerged and leaves `merged$ok` alone, and a finding cut to fit a merge
   # lost its end; both are part of what the answer rests on.
-  merge_failed <- merge_failures(trace, from, "reduce")
+  merge_failed <- as.integer(as_num1(merged$failed, 0))
   merge_cut <- as.integer(as_num1(merged$truncated, 0))
   new_answer(merged$text, "map_reduce", question, d$chunk_id[useful], trace,
              chunks_sent = d$chunk_id,
@@ -138,24 +147,6 @@ read_map_reduce <- function(chunks, question, client, spec, trace) {
                           merge_failures = merge_failed,
                           truncated_calls = cut, truncations = merge_cut,
                           merge_levels = merged$levels, merge_ok = merged$ok))
-}
-
-#' How many requests recorded from step `from` on, under a label starting with
-#' `prefix`, failed.
-#'
-#' tree_merge() returns its text and whether the LAST merge worked. A group
-#' merge that fails at a level below that passes the group's findings up
-#' unmerged, which keeps them but says nothing, so a run with a failed request
-#' reported failed_calls = 0 and partial = FALSE. The trace records every
-#' request, a parallel level's included (see trace_cut_off()), so the count
-#' comes from there.
-#' @noRd
-merge_failures <- function(trace, from, prefix) {
-  if (!inherits(trace, "gr_trace") || from > length(trace$steps)) return(0L)
-  steps <- trace$steps[seq.int(from, length(trace$steps))]
-  sum(vapply(steps, function(st) {
-    !identical(st$kind, "local") && !isTRUE(st$ok) && startsWith(as_chr1(st$label, ""), prefix)
-  }, logical(1)))
 }
 
 # ---------------------------------------------------------------------------
@@ -258,7 +249,10 @@ read_skim <- function(chunks, question, client, spec, trace) {
   # Not sent is not failed; see map_reduce.
   capped <- vapply(res, function(r) isTRUE(r$capped), logical(1))
   txt <- vapply(res, function(r) as_chr1(r$text), character(1))
-  keep <- ok & !grepl("^[\"'`*_ ]*NONE[\"'`*_. ]*$", trimws(txt), ignore.case = TRUE) & has_content(txt)
+  # is_none_reply(): NONE decorated in any script. The ASCII-only pattern kept
+  # "NONE" with an ideographic full stop as a passage, which then failed to
+  # verify and marked a complete read partial.
+  keep <- ok & !is_none_reply(txt) & has_content(txt)
   # Evidence cut off at the output cap is kept, and is part of what was there.
   cut <- sum(keep & vapply(res, function(r) isTRUE(r$cut), logical(1)))
   if (!any(keep)) {
@@ -288,7 +282,6 @@ read_skim <- function(chunks, question, client, spec, trace) {
     # Evidence itself can exceed the window on a large document. Consolidate it
     # tree-wise rather than truncating blind. Each passage keeps its label, so
     # a consolidation that carries one forward says where it came from.
-    from <- length(trace$steps) + 1L
     m <- tree_merge(client, question, pieces, spec, trace, label = "skim.consolidate",
                     system_prompt = .gr_prompts$summarise_system, kind = "evidence")
     body <- m$text
@@ -299,7 +292,7 @@ read_skim <- function(chunks, question, client, spec, trace) {
     # either way the answer is written from part of the evidence.
     merge_ok <- isTRUE(m$ok)
     merge_error <- m$error
-    merge_failed <- merge_failures(trace, from, "skim.consolidate")
+    merge_failed <- as.integer(as_num1(m$failed, 0))
     merge_cut <- as.integer(as_num1(m$truncated, 0))
     # Only the labels still in the text are in front of the model. Checked
     # against every chunk, a citation it invented for a consolidation that
@@ -1187,9 +1180,14 @@ preview_outline <- function(d, units, budget) {
     lines <- vapply(seq_along(units), function(i) {
       rows <- units[[i]]
       pg <- d$page[rows]; pg <- pg[!is.na(pg)]
+      # page_text(), not "%d": a segmenter may record page labels ("iv") or a
+      # fractional page, and "%d" failed on both. Labels have no order to take
+      # the least and greatest of, so the first and the last stand for them.
+      pages <- if (!length(pg)) "" else if (is.numeric(pg))
+        sprintf("pp. %s-%s | ", page_text(min(pg)), page_text(max(pg)))
+      else sprintf("pp. %s-%s | ", page_text(pg[1]), page_text(pg[length(pg)]))
       sprintf("[%d] %s | chunks %d-%d | %stokens %d\n    opens: %s\n    ends: %s",
-              i, preview_label(d, rows), min(rows), max(rows),
-              if (length(pg)) sprintf("pp. %d-%d | ", min(pg), max(pg)) else "",
+              i, preview_label(d, rows), min(rows), max(rows), pages,
               sum(d$tokens[rows]),
               first_words(d$text[rows[1]], w),
               first_words(d$text[rows[length(rows)]], w))
@@ -1339,8 +1337,8 @@ read_preview <- function(chunks, question, client, spec, trace) {
     failed <- sum(!ok & !capped)
     not_sent <- sum(capped)
     skim_sent <- as.integer(unlist(lapply(res[!capped], function(r) r$rows), use.names = FALSE))
-    keep <- ok & !grepl("^[\"'`*_ ]*NONE[\"'`*_. ]*$", trimws(txt), ignore.case = TRUE) &
-      has_content(txt)
+    # NONE in any script's decoration; see skim.
+    keep <- ok & !is_none_reply(txt) & has_content(txt)
     # Evidence cut off at the output cap; see skim.
     cut <- sum(keep & vapply(res, function(r) isTRUE(r$cut), logical(1)))
     if (any(keep)) {
@@ -1473,7 +1471,7 @@ register_builtin_readers <- function() {
     cost_calls = "up to 2 x max_rounds",
     description = "Agentic loop: the model names what it still needs and that drives the next retrieval.")
   gr_register_reader("extract", read_extract, signature = "all|N+conflicts|none",
-    cost_calls = "N + one per disagreeing field",
+    cost_calls = "N (+1 per conflict with resolve = 'model')",
     description = "Fill a typed schema from every chunk, then reconcile. Needs `fields`.")
   gr_register_reader("screen", read_screen, signature = "head|1|none", cost_calls = "1",
     description = paste0("Decide whether one document meets a review's criteria, from its ",

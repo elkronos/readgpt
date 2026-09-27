@@ -14,6 +14,16 @@ A data frame with \code{name}, \code{stage}, \code{scope}, \code{default_on} and
 \code{default_on} marks the steps the \code{"standard"} preset runs. Steps are always
 applied \code{"early"} stage first, whatever order you list them in.
 }
+\details{
+Two steps can only judge by what the document shows them. \code{hyphenation}
+cannot tell a word split at a line end from a compound broken at its own
+hyphen ("placebo-" / "controlled"); it keeps the hyphen when the document
+writes the compound whole somewhere, and otherwise joins the two halves.
+\code{headers_footers} finds running heads by where they stand on their pages
+(a PDF's, form feeds in text, or \code{.pages} given to \code{\link[=gr_clean]{gr_clean()}}); without
+pages it takes a short line with a letter in it repeated at the edge of its
+block, so a label that is a block of its own and recurs can go with them.
+}
 \examples{
 gr_cleaners()
 # The steps the "standard" preset runs:

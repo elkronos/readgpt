@@ -456,9 +456,16 @@ mark_utf8 <- function(x) {
 #' has a case. Both map one character to one character, so a long UTF-8
 #' string is lowered one distinct code point at a time instead (lower_long()):
 #' the same result, at the cost of the few letters that have a case.
+#'
+#' The text is labelled UTF-8 first where its bytes are UTF-8. In a C locale
+#' chartr() reads an unlabelled string as native bytes and rewrote the bytes
+#' of a Greek or accented letter into something that is not UTF-8 at all, so
+#' the lowered text matched nothing and broke whatever printed it. The names
+#' and other attributes stay as they were.
 #' @noRd
 lower_text <- function(x) {
   if (!is.character(x)) return(lower_chars(x))
+  if (length(x)) x[] <- mark_utf8(x)
   long <- which(!is.na(x) & nchar(x, type = "bytes") > 512L)
   if (!length(long)) return(lower_chars(x))
   out <- lower_chars(replace(x, long, ""))

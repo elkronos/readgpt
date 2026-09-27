@@ -35,6 +35,38 @@ is_url <- function(x) {
   !grepl("[\r\n]", x) && grepl("^https?://[^[:space:]/]", x, ignore.case = TRUE)
 }
 
+#' A web address as readgpt shows and keeps it: in messages and errors, as a
+#' document's `source`, in the trace and in a corpus's labels.
+#'
+#' The request needs the address in full, but a presigned or tokenised link
+#' (S3, GCS and Azure signatures, download tokens) carries its credentials in
+#' the query, and a user name and password can sit ahead of the host. Both
+#' were copied into the "Fetching" line, the fetch errors, the document's
+#' source, the trace, and a corpus's summary, answers and store rows. So the
+#' user name and password are dropped and the query (and a fragment) replaced
+#' by a short fingerprint, as report_url() shows an address in the audit
+#' report and with the same fingerprint, so two addresses that differ only in
+#' the query stay apart.
+#'
+#' The fingerprint follows a space where report_url() writes a "?": that
+#' function hides whatever follows a "?", so an address shown here and shown
+#' again by the report got a second fingerprint (of the first one), and in
+#' error text, where it takes the address to end at the space, a garbled one.
+#' Written this way, report_url(), report_url_text() and this function leave
+#' it as it is. The cache key and the store key are made from the address
+#' itself, hashed, and do not depend on this.
+#' @noRd
+url_shown <- function(x) {
+  sub("?[query hidden ", " [query hidden ", report_url(x), fixed = TRUE)
+}
+
+#' `x` with every web address in it shown as url_shown() shows one: for the
+#' reason a request failed, which may quote the address.
+#' @noRd
+url_shown_text <- function(x) {
+  gsub("?[query hidden ", " [query hidden ", report_url_text(x), fixed = TRUE)
+}
+
 #' Types that say nothing about the format: plain text is what servers call
 #' anything they do not recognise, and the rest mean "some bytes".
 #' @noRd
@@ -125,6 +157,10 @@ url_charset <- function(type) {
 #'     `options(readgpt.allow_local_urls = TRUE)` lifts this for a document
 #'     server on your own network. Behind a proxy that looks names up itself,
 #'     a name that cannot be looked up here is fetched unchecked.
+#'
+#' Its errors show each address as url_shown() does, the one a redirect
+#' pointed to included: a redirect to a presigned link is how most storage
+#' services hand out a download.
 #' @noRd
 url_download <- function(url, dest, max_bytes = .gr_max_download_bytes,
                          allow_local = isTRUE(getOption("readgpt.allow_local_urls")),
@@ -133,14 +169,14 @@ url_download <- function(url, dest, max_bytes = .gr_max_download_bytes,
                                           error = function(e) "dev"))
   too_big <- function() {
     gr_abort(sprintf(paste0("'%s' is larger than %s, the most readgpt downloads. Download it ",
-                            "yourself and pass its path."), url, format_bytes(max_bytes)),
+                            "yourself and pass its path."), url_shown(url), format_bytes(max_bytes)),
              class = c("gr_too_large", "gr_url_error"))
   }
   refuse <- function(where) {
     gr_abort(sprintf(paste0("Refusing to fetch '%s': %s on this machine or a private network. ",
                             "Download the file yourself and pass its path, or set ",
                             "options(readgpt.allow_local_urls = TRUE) to fetch such addresses."),
-                     url, where), class = "gr_url_error")
+                     url_shown(url), where), class = "gr_url_error")
   }
   for (hop in 0:10) {
     cfg <- list(followlocation = 0L, maxfilesize_large = max_bytes)
@@ -198,13 +234,18 @@ url_download <- function(url, dest, max_bytes = .gr_max_download_bytes,
     if (!status %in% c(301L, 302L, 303L, 307L, 308L) || !nzchar(to)) {
       return(list(status = status, type = as_chr1(httr::headers(res)[["content-type"]], "")))
     }
+    from <- url
     url <- url_resolve(to, url)
     if (!grepl("^https?://", url, ignore.case = TRUE)) {
-      gr_abort(sprintf("'%s' redirected to '%s', which is not a web address.", url, to),
+      # Named by its scheme alone: url_shown() hides the credentials of a web
+      # address and would pass another kind through whole. And the address
+      # that redirected, not the one it pointed to, which this named twice.
+      gr_abort(sprintf("'%s' redirected to an address that is not a web address ('%s:').",
+                       url_shown(from), sub(":.*$", "", url)),
                class = "gr_url_error")
     }
   }
-  gr_abort(sprintf("'%s' redirected more than 10 times.", url), class = "gr_url_error")
+  gr_abort(sprintf("'%s' redirected more than 10 times.", url_shown(url)), class = "gr_url_error")
 }
 
 #' The most a download may be: 512 MB.
@@ -355,9 +396,12 @@ ipv6_is_local <- function(x) {
 }
 
 #' Download an address to a temporary file whose extension says how to read it.
+#'
+#' The errors show the address as url_shown() does; see there.
 #' @noRd
 fetch_url <- function(url) {
   url <- trimws(url)
+  shown <- url_shown(url)
   dest <- tempfile("readgpt_url_")
   # A space in an address is not allowed on the wire. Encoded here, and left
   # alone when the address is encoded already.
@@ -366,14 +410,15 @@ fetch_url <- function(url) {
     unlink(dest)
     # A refusal (too large, a private address) already says what to do.
     if (inherits(got, "gr_url_error")) stop(got)
-    gr_abort(sprintf("Could not fetch '%s': %s", url, conditionMessage(got)),
+    # The reason is curl's, and it can quote the address it was given.
+    gr_abort(sprintf("Could not fetch '%s': %s", shown, url_shown_text(conditionMessage(got))),
              class = "gr_url_error")
   }
   status <- as_int1(got$status, NA_integer_)
   if (is.na(status) || status >= 400L) {
     unlink(dest)
     gr_abort(sprintf(paste0("Fetching '%s' returned HTTP %s. Check the address, or download ",
-                            "the file yourself and pass its path."), url,
+                            "the file yourself and pass its path."), shown,
                      if (is.na(status)) "with no status" else status),
              class = "gr_url_error")
   }
@@ -382,7 +427,7 @@ fetch_url <- function(url) {
     unlink(dest)
     gr_abort(sprintf(paste0("'%s' served %s, which no registered extractor reads. Registered ",
                             "extensions: %s. Add one with gr_register_extractor()."),
-                     url, if (nzchar(trimws(as_chr1(got$type, "")))) sprintf("a file of type '%s'",
+                     shown, if (nzchar(trimws(as_chr1(got$type, "")))) sprintf("a file of type '%s'",
                        trimws(as_chr1(got$type, ""))) else "a file of unknown type",
                      paste(sort(unique(unlist(lapply(gr_state$extractors, `[[`, "extensions")))),
                            collapse = ", ")),

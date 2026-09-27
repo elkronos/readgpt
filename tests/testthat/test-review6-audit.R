@@ -177,12 +177,13 @@ test_that("a corpus read from presigned links does not put the links' secrets in
             "https://bucket.example.org/denied.txt?X-Amz-Signature=SECRETSIG2")
   co <- quiet(gr_read_many(urls, "What was revenue?", "fast",
                            client = gr_mock_client(function(m, p) "Revenue was 45.2 million.")))
-  # The objects still hold the addresses (that is for the ingest and corpus
-  # code to change); the report does not show them.
-  expect_true(any(grepl("SECRETSIG", co$summary$document, fixed = TRUE)))
+  # The objects no longer hold the secrets either: the corpus labels a fetched
+  # document, and the ingest keeps its source, with the query as a fingerprint
+  # set off by a space (see url_shown()), which the report shows as it is.
+  expect_false(any(grepl("SECRETSIG", co$summary$document, fixed = TRUE)))
   h <- r6_page(answer = co)
   expect_false(grepl("SECRETSIG|AKIAKEYID", h))
-  expect_match(h, "bucket.example.org/p.txt?[query hidden", fixed = TRUE)
+  expect_match(h, "bucket.example.org/p.txt [query hidden", fixed = TRUE)
   expect_match(h, "HTTP 403", fixed = TRUE)
 })
 
@@ -408,12 +409,16 @@ test_that("a section missing a batch of studies is flagged", {
                              model = "small-merge6", max_section_tokens = 300))
   expect_true(syn$sections$partial)
   expect_identical(syn$sections$n_unknown + syn$sections$n_unsupplied, 0L)
-  h <- r6_page(synthesis = syn)
+  # A synthesis made before the batch counts were recorded on the section.
+  old <- syn
+  old$sections[c("lost_batches", "capped_batches", "merge_failed")] <- NULL
+  h <- r6_page(synthesis = old)
   expect_match(h, "<p class='flag'>This section is marked partial: a batch of the studies",
                fixed = TRUE)
 
-  # When the synthesis records the batch counts, the cause is named.
-  syn$sections$lost_batches <- 1L
+  # When the synthesis records the batch counts, as gr_synthesise() now does,
+  # the cause is named.
+  expect_identical(syn$sections$lost_batches, 1L)
   h2 <- r6_page(synthesis = syn)
   expect_match(h2, "1 batch(es) of studies failed, so the studies in them are not in this section.",
                fixed = TRUE)

@@ -60,8 +60,12 @@ gr_field <- function(description, type = "string", values = NULL) {
                     "gets for that field, so a bare name is not enough."),
              class = "gr_bad_field")
   }
-  structure(list(description = as_chr1(description), type = type,
-                 values = if (length(values)) as.character(values) else NULL),
+  # Labelled UTF-8, as a message is. Under a non-UTF-8 locale a description or
+  # value typed in a script is UTF-8 bytes marked "unknown": the schema then
+  # went out with "r<c3><a9>duit" as the permitted value, and a reply that
+  # gave the value as declared did not match it and was recorded as unreadable.
+  structure(list(description = mark_utf8(as_chr1(description)), type = type,
+                 values = if (length(values)) mark_utf8(as.character(values)) else NULL),
             class = "gr_field")
 }
 

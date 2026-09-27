@@ -29,7 +29,11 @@ supplied, or \code{"page->paragraph"} for a source with no page provenance.}
 \item{\code{spec}}{The \code{\link[=gr_segment_spec]{gr_segment_spec()}} used.}
 \item{\code{extra}}{Method-specific detail: \code{boundaries} and
 \code{embedding_source} for \code{semantic}, \code{propositions} for \code{proposition},
-\code{cap_enforced} when oversized chunks had to be split.}
+\code{context_source} for \code{contextual} (\code{"metadata"} or \code{"llm"}, the one that
+ran, so \code{"metadata"} when \code{"llm"} was asked for without a client) and,
+for \code{"llm"}, \code{blurbs_missing} (chunks left without a context line) and
+\code{blurbs_at_limit} (of those, how many were skipped at the run's call or
+cost limit), \code{cap_enforced} when oversized chunks had to be split.}
 \item{\code{trace}}{Set only when \code{\link[=gr_segment]{gr_segment()}} was called without a \code{trace}
 and so made its own: the \link{gr_trace} it recorded into, holding the
 requests the segmenter made (embeddings for \code{semantic}, model calls for

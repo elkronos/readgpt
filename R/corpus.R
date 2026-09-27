@@ -388,6 +388,11 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
                          keep_answers = TRUE, recursive = FALSE, trace = NULL, ...) {
   on_error <- match.arg(on_error)
   if (!is_nonblank(question)) gr_abort("`question` must be a non-empty string.")
+  # Labelled UTF-8 when it is, before anything keeps or pastes it. A question
+  # read from a file without an encoding is marked "unknown", and in a C
+  # locale the traces wrote it to JSON as "caf<c3><a9>", as paste() writes it
+  # beside document text.
+  question <- mark_utf8(question)
   sources <- corpus_sources(sources, recursive = recursive)
   if (!length(sources)) {
     below <- attr(sources, "below") %||% character(0)
@@ -483,6 +488,13 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
   # `max_total_usd` is held to when the only models without a price made
   # embeddings requests. See corpus_cost().
   spent_priced <- 0
+  # What the calls a replay answered from a recording cost when they were
+  # recorded. Nothing is spent on them, so it is in neither figure above, but
+  # it counts against `max_total_usd` as it counts against max_cost_usd (see
+  # budget_spent()): otherwise a replay of a run the ceiling stopped never
+  # reached it, went past the document the run stopped at, and asked for calls
+  # the recording does not hold. It is non-zero only when replaying such a run.
+  replayed <- 0
   unpriced_embed <- character(0)
   unpriced_chat <- character(0)
   stopped <- FALSE
@@ -646,6 +658,7 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
     cost <- doc_cost$usd
     spent <- spent + cost
     spent_priced <- spent_priced + doc_cost$priced
+    replayed <- replayed + as_num1(sub$replayed_usd, 0)
     unpriced_chat <- union(unpriced_chat, doc_cost$unpriced)
     unpriced_embed <- setdiff(union(unpriced_embed, doc_cost$unpriced_embed), unpriced_chat)
 
@@ -733,15 +746,22 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
                       if (length(unpriced_embed) == 1L) "its" else "their", unpriced_embed[[1]]),
               class = "gr_corpus_cost_floor")
     }
-    if (enforced && spent_priced >= max_total_usd) {
+    if (enforced && spent_priced + replayed >= max_total_usd) {
       stopped <- TRUE
       if (i < length(sources)) {
-        gr_warn(sprintf(paste0("Stopped after %d of %d documents: the run has spent %s ",
+        # On the run's trace, as a limit that stops a read is on the read's: a
+        # saved corpus trace then says the run was cut short, and a replay of
+        # it counts its replayed calls (above) and stops at this document too.
+        trace$budget_stop <- TRUE
+        trace$stop_reason <- "cost"
+        gr_warn(sprintf(paste0("Stopped after %d of %d documents: the run has %s ",
                                "$%.4f, at or above the $%.4f `max_total_usd` ceiling. The ",
                                "remaining documents are marked 'skipped', except those ",
                                "restored from `store`, which costs nothing."),
-                        i, length(sources), if (length(unpriced_embed)) "at least" else "about",
-                        spent_priced, max_total_usd),
+                        i, length(sources),
+                        if (replayed > 0) "counted what the replayed calls cost when recorded,"
+                        else if (length(unpriced_embed)) "spent at least" else "spent about",
+                        spent_priced + replayed, max_total_usd),
                 class = "gr_corpus_cost_cap")
       }
     }
@@ -808,8 +828,13 @@ print.gr_corpus <- function(x, ...) {
 corpus_label <- function(source, inline = "<inline text>", root = NULL) {
   if (!is.character(source) || length(source) != 1L || is.na(source)) return(inline)
   # The address without its scheme: a file name alone would make two sites'
-  # report.pdf one label.
-  if (is_url(source)) return(sub("^https?://", "", trimws(source), ignore.case = TRUE))
+  # report.pdf one label. And as url_shown() shows it, without a user name and
+  # password and with the query as a fingerprint: the label is summary$document,
+  # the name in `answers` and in every table built on them, and a presigned
+  # link's query holds its credentials. Two links that differ only in the
+  # query keep different fingerprints, so their rows stay apart. The store is
+  # keyed by the address itself (corpus_key()), not by this.
+  if (is_url(source)) return(sub("^https?://", "", url_shown(trimws(source)), ignore.case = TRUE))
   if (grepl("\n", source, fixed = TRUE)) return(inline)
   if (nchar(source, type = "bytes") >= 1000L) return(inline)
   if (file.exists(source)) {

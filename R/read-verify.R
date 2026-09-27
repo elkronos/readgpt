@@ -236,20 +236,37 @@ lower_cp <- function(cp) {
 #' it was: an em or en dash, which folds to a hyphen and then reads as a minus
 #' sign ("cohort<em dash>42"), a no-break or thin space, which folds to a space
 #' and then hides a digit group ("1 200" as SI and French typography write
-#' it), and case. `kind` is char_kind() of each. Both are padded, two zeros
-#' before and five after (0 is no character), so the characters around any
-#' occurrence can be read without a bounds check: character `i` of `text` is
-#' element `i + 2`. `memo` holds what is worked out from the source once and
-#' read many times (sentence_marks()).
+#' it), case, and a line break after a hyphen or an en dash, which is a line
+#' feed (10) in `cp` and a space in `text`. A range or a compound broken at
+#' the end of a line ("aged 18-" and "65 years" on the next), which the
+#' cleaner keeps as it is, read as "18- 65", and "65 years" verified as a
+#' number of its own (boundaries_ok()). `kind` is char_kind() of each. Both
+#' are padded, two zeros before and five after (0 is no character), so the
+#' characters around any occurrence can be read without a bounds check:
+#' character `i` of `text` is element `i + 2`. `memo` holds what is worked
+#' out from the source once and read many times (sentence_marks()).
 #' @noRd
 match_source <- function(x) {
   marks <- fold_for_match(compose_marks(to_utf8(as_chr1(x, ""))), keep = TRUE)
+  # A run of spacing with a line break in it, after a hyphen or an en dash,
+  # held as one character through the collapsing below and then made a line
+  # feed. The one it is held as, U+FDD0, is a noncharacter: Unicode reserves
+  # it for a program's own use, so no text carries it.
+  lf <- "[\n\r\f\u000b\u0085\u2028\u2029]"
+  broken <- grepl(paste0("[-\u2013][[:space:]\u00a0\u2007\u2009\u202f]*", lf), marks, perl = TRUE)
+  if (broken) {
+    marks <- gsub(paste0("(?<=[-\u2013])[[:space:]\u00a0\u2007\u2009\u202f]*", lf,
+                         "[[:space:]\u00a0\u2007\u2009\u202f]*"),
+                  "\ufdd0", marks, perl = TRUE)
+  }
   # One character for every run of spacing, as normalise_for_match() collapses
   # it, except that a lone grouping space stays what it was; then none at
   # either end.
   marks <- gsub("[[:space:]\u00a0\u2007\u2009\u202f]{2,}|[[:space:]]", " ", marks, perl = TRUE)
+  if (broken) marks <- gsub("\ufdd0", "\n", marks, fixed = TRUE)
   cp <- utf8ToInt(marks)
-  spacing <- function(x) x == 32L | x == 0xa0L | x == 0x2007L | x == 0x2009L | x == 0x202fL
+  spacing <- function(x) x == 32L | x == 10L | x == 0xa0L | x == 0x2007L | x == 0x2009L |
+    x == 0x202fL
   n <- length(cp)
   from <- 1L + (n > 0L && spacing(cp[1L]))
   to <- n - (n > 1L && spacing(cp[n]))
@@ -268,6 +285,7 @@ match_source <- function(x) {
     low[low == 0x2013L | low == 0x2014L | low == 0x2015L] <- 45L
     low[low != 32L & spacing(low)] <- 32L
   }
+  if (broken) low[low == 10L] <- 32L
   low <- lower_cp(low)
   # `lc` is `text` as code points, for reading a stretch of it far into a
   # long source (gap_text()).
@@ -413,6 +431,11 @@ char_kind <- function(cp) {
 #' * after a number, a decimal or thousands separator and a digit ("45.2"), or
 #'   a grouping space and a digit group.
 #'
+#' A hyphen or an en dash at the end of a line is beside what starts the next
+#' one, as if the line did not break there: "Anglo-" and "Saxon" on the next
+#' line are one word, and "aged 18-" and "65 years" on the next are a range,
+#' so neither "Saxon" nor "65 years" is found there.
+#'
 #' And what does not: an em dash, written as one or as "--", or an en dash
 #' between words, is punctuation ("the cohort<em dash>42 patients"); so is a
 #' hyphen after a word of five lower-case letters or more before a number of
@@ -444,13 +467,21 @@ boundaries_ok <- function(at, sc, src) {
   # Code points: 45 hyphen, 44 comma, 46 full stop, 0x2013 en dash, and the
   # no-break, figure, thin and narrow no-break spaces that group digits.
   group <- function(x) x == 0xa0L | x == 0x2007L | x == 0x2009L | x == 0x202fL
-  b1 <- cp[at + 1L]
-  k1 <- kind[at + 1L]
-  k2 <- kind[at]
+  # A line break after a hyphen or an en dash (a line feed in `cp`; see
+  # match_source()) does not part the dash from what follows it: "18-" at a
+  # line end and "65 years" on the next are the range 18-65, not a number 65.
+  # So the character read as the one before the span is then the dash, and
+  # `q` is where the one before that is.
+  q <- at
+  lf <- cp[at + 1L] == 10L & (cp[at] == 45L | cp[at] == 0x2013L)
+  q[lf] <- at[lf] - 1L
+  b1 <- cp[q + 1L]
+  k1 <- kind[q + 1L]
+  k2 <- kind[q]
   # Before a number: nothing that carries it on, or signs it.
   number_starts <- function(dash_ok = FALSE) {
-    k1 == 0L & !(b1 == 45L & cp[at] != 45L & !dash_ok) & !(b1 == 0x2013L & k2 != 1L) &
-      !(b1 == 44L & k2 == 2L) & !(b1 == 46L & k2 != 1L & cp[at] != 46L)
+    k1 == 0L & !(b1 == 45L & cp[q] != 45L & !dash_ok) & !(b1 == 0x2013L & k2 != 1L) &
+      !(b1 == 44L & k2 == 2L) & !(b1 == 46L & k2 != 1L & cp[q] != 46L)
   }
 
   if (ends[1L] == 1L) {
@@ -459,10 +490,10 @@ boundaries_ok <- function(at, sc, src) {
     three <- n >= 3L && all(kind[at[1L] + 2:4] == 2L) && (n == 3L || kind[at[1L] + 5L] != 2L)
     # "--" is an em dash as plain text writes it, and as the ligatures
     # cleaner writes it too, so never a minus sign.
-    dash_ok <- b1 == 45L & cp[at] != 45L
+    dash_ok <- b1 == 45L & cp[q] != 45L
     if (any(dash_ok)) {
       long <- grepl("^[0-9]{3}|^[0-9]{1,3},[0-9]{3}", intToUtf8(sc[seq_len(min(n, 7L))]), perl = TRUE)
-      dash_ok[dash_ok] <- long & vapply(at[dash_ok], function(a)
+      dash_ok[dash_ok] <- long & vapply(q[dash_ok], function(a)
         a >= 7L && grepl("^\\p{Ll}{5}$", intToUtf8(cp[(a - 4L):a]), perl = TRUE), logical(1))
     }
     ok <- number_starts(dash_ok) & !(group(b1) & k2 == 2L & three)
@@ -475,6 +506,10 @@ boundaries_ok <- function(at, sc, src) {
     a1 <- cp[e + 1L]
     k1 <- kind[e + 1L]
     k2 <- kind[e + 2L]
+    # A hyphen and then a line break: the word carries on past both, as
+    # "Anglo" does into "Saxon" on the next line.
+    lf <- a1 == 45L & cp[e + 2L] == 10L
+    k2[lf] <- kind[e[lf] + 3L]
     ok <- ok & if (ends[2L] == 1L) {
       fine <- k1 != 1L & !(a1 == 45L & k2 == 1L)
       hangul <- function(x) x >= 0xAC00L & x <= 0xD7A3L
@@ -814,7 +849,7 @@ gap_text <- function(src, prev, at) {
   if (!is.null(lc)) return(intToUtf8(lc[(prev + 1L):(at - 1L)]))
   x <- src$cp[(prev + 3L):(at + 1L)]
   x[x == 0x2013L | x == 0x2014L | x == 0x2015L] <- 45L
-  x[x == 0xa0L | x == 0x2007L | x == 0x2009L | x == 0x202fL] <- 32L
+  x[x == 10L | x == 0xa0L | x == 0x2007L | x == 0x2009L | x == 0x202fL] <- 32L
   intToUtf8(lower_cp(x))
 }
 
@@ -1389,6 +1424,12 @@ passage_score <- function(pieces, src) {
 #' bold, and taking its markers out made the package's own verbatim text fail
 #' to match itself.
 #'
+#' A quotation that writes a compound with a hyphen the source does not have
+#' is found by hyphens_rejoined(): the default cleaner joins a word broken at
+#' a line end ("investigator-" and "blinded" on the next line) unless the
+#' document writes the compound whole somewhere, and a faithful quotation
+#' of "investigator-blinded" then failed.
+#'
 #' @return `list(verified, match)`. `match` is 1 for an exact quotation and
 #'   otherwise, for the weakest passage, the fraction of its words carried by
 #'   its longest consecutive run in the source -- so 0.9 is a quotation with a
@@ -1404,14 +1445,52 @@ span_match <- function(span, source, whole = FALSE) {
   r <- quote_reading(q$raw, q$join, src, q$items)
   if (r$verified) return(list(verified = TRUE, match = 1))
   # The bold-free reading, built only when the one as written fails.
-  if (!whole && (!is.null(q$plain) || grepl("**", txt, fixed = TRUE))) {
+  bold <- !whole && (!is.null(q$plain) || grepl("**", txt, fixed = TRUE))
+  if (bold) {
     plain <- match_source(strip_bold(txt))
     p <- quote_reading(q$plain %||% q$raw, q$join, plain, q$plain_items %||% q$items)
     if (p$verified) return(list(verified = TRUE, match = 1))
-    return(list(verified = FALSE,
-                match = round(max(reading_score(r, src), reading_score(p, plain)), 3)))
   }
-  list(verified = FALSE, match = round(reading_score(r, src), 3))
+  if (!whole && hyphens_rejoined(span, txt)) return(list(verified = TRUE, match = 1))
+  score <- reading_score(r, src)
+  if (bold) score <- max(score, reading_score(p, plain))
+  list(verified = FALSE, match = round(score, 3))
+}
+
+#' `x` with every hyphen between two letters taken out: "investigator-blinded"
+#' as "investigatorblinded". Letters only, so a sign, a range and a compound
+#' with a number in it ("-12%", "20-30", "COVID-19") are left as they are.
+#' @noRd
+join_hyphens <- function(x) {
+  gsub("(?<=[\\p{L}\\p{M}])[-\u2010\u2011](?=\\p{L})", "", x, perl = TRUE)
+}
+
+#' Is a quotation that joins two letters with a hyphen in the source once the
+#' hyphens between letters are taken out of both?
+#'
+#' The default cleaner joins a word the document broke at a line end
+#' ("investigator-" and "blinded" on the next line) unless the document writes
+#' the compound whole somewhere, so a quotation that writes the compound with
+#' its hyphen is not in the cleaned text. Only a quotation of one passage with
+#' no elision in it: it is then found in one place, whole words and whole
+#' numbers as ever, and the letters are the source's, in its order. Where
+#' there are two, what lies between them is read for a negation
+#' (gap_negated()), and joined, "non-inferior" is not the word "non" any
+#' more. A hyphen the source has and the quotation leaves out is not looked
+#' for: only the cleaner's joining is.
+#' @noRd
+hyphens_rejoined <- function(span, txt) {
+  s <- to_utf8(as_chr1(span, ""))
+  joined <- join_hyphens(s)
+  if (identical(joined, s)) return(FALSE)
+  q <- quote_passages(joined)
+  if (length(q$raw) != 1L || length(q$raw[[1L]]) != 1L) return(FALSE)
+  t <- join_hyphens(to_utf8(as_chr1(txt, "")))
+  if (found_whole(q$raw[[1L]], match_source(t))) return(TRUE)
+  # Bold out of both sides, as span_match() takes it, never out of one.
+  if (is.null(q$plain) && !grepl("**", t, fixed = TRUE)) return(FALSE)
+  plain <- (q$plain %||% q$raw)[[1L]]
+  length(plain) == 1L && found_whole(plain, match_source(strip_bold(t)))
 }
 
 #' @noRd
@@ -1608,7 +1687,11 @@ cited_chunks <- function(text) cited_ids(text, "chunk")
 #' letter is encoded is reported unverified, never verified by mistake.
 #' It has to match whole words and whole numbers: "5%" is not found in "25%",
 #' nor "12%" in "-12%", nor "20" in "200", nor "200" in "1 200" written with a
-#' thin space, nor ".45" in "1.45". Chinese, Japanese and Thai put no spaces
+#' thin space, nor ".45" in "1.45", nor "65 years" in a range broken across
+#' two lines ("aged 18-" at the end of one). A hyphen between two letters that
+#' the quotation writes and the document does not, as where the cleaner joined
+#' a word broken at a line end ("investigator-blinded"), is not a difference
+#' in a quotation of one passage. Chinese, Japanese and Thai put no spaces
 #' between words, so a clause quoted from them may start and end anywhere;
 #' numbers in them are still whole, and a circled list number before one is
 #' not part of it. That includes ending inside a word: a quotation that stops
@@ -1767,7 +1850,10 @@ gr_verify_evidence <- function(answer, chunks = NULL) {
 #'
 #' Matching uses `normalise_for_match()`, the same rule `span_match()` verifies
 #' with, so a span that verified against its chunk cannot fail to locate against
-#' the document for a difference in whitespace or quote characters.
+#' the document for a difference in whitespace or quote characters. A span
+#' found nowhere as it is written, which writes a compound with a hyphen, is
+#' looked for as span_match() finds it (hyphens_rejoined()): with the hyphens
+#' between letters taken out of it and of the blocks.
 #'
 #' A span found on several pages -- a repeated heading, a running footer -- is
 #' left alone: the first hit would be a guess dressed as a fact. So is a span
@@ -1804,39 +1890,64 @@ resolve_evidence_pages <- function(evidence, blocks) {
   }
   if (all(skip)) return(evidence)
 
-  norm <- normalise_for_match(blocks$text)
+  text <- to_utf8(as.character(blocks$text))
+  norm <- normalise_for_match(text)
   # A block's match_source(), made the first time a span is found in it, and
   # once for all the blocks with the same text (a running header, a footer).
+  # `joined` is the same with the hyphens between letters taken out, for a
+  # quotation span_match() found that way (hyphens_rejoined()), made only
+  # when one needs it.
   same <- match(norm, norm)
-  src <- vector("list", length(norm))
-  whole_in <- function(s, b) {
-    if (is.null(src[[b]])) src[[b]] <<- match_source(blocks$text[[b]])
-    found_whole(s, src[[b]])
+  src <- list(plain = vector("list", length(norm)), joined = vector("list", length(norm)))
+  norm_joined <- NULL
+  whole_in <- function(s, b, how) {
+    if (is.null(src[[how]][[b]])) {
+      src[[how]][[b]] <<- match_source(if (how == "joined") join_hyphens(text[[b]]) else text[[b]])
+    }
+    found_whole(s, src[[how]][[b]])
   }
   page <- blocks$page
   section <- blocks$section
   if (!is.null(section) && all(is.na(section))) section <- NULL
-  for (i in which(!skip)) {
-    s <- trim_quote_edges(normalise_for_match(evidence$text[[i]]))
-    if (!nzchar(s)) next
+  # The pages, and the sections when `want_section`, of the blocks that hold
+  # `s` whole, from `texts` (normalised) read as `how`.
+  locate <- function(s, texts, how, want_section) {
     # The substring test first, over every block at once; the boundary test
     # only where it finds the span.
-    hit <- which(nzchar(norm) & grepl(s, norm, fixed = TRUE))
-    if (!length(hit)) next
-    want_section <- !is.null(section) && !is.null(evidence$section) &&
-      is.na(evidence$section[[i]])
+    hit <- which(nzchar(texts) & grepl(s, texts, fixed = TRUE))
     pg <- NULL
     sc <- NULL
+    found <- FALSE
     for (at in split(hit, same[hit])) {
-      if (!whole_in(s, at[1L])) next
+      if (!whole_in(s, at[1L], how)) next
+      found <- TRUE
       pg <- unique(c(pg, page[at][!is.na(page[at])]))
       if (want_section) sc <- unique(c(sc, section[at][!is.na(section[at])]))
       # Two pages settle the page, and two sections the section: a common
       # phrase need not be looked for in every block that has it.
       if (length(pg) > 1L && (!want_section || length(sc) > 1L)) break
     }
-    if (length(pg) == 1L) evidence$page[[i]] <- pg
-    if (length(sc) == 1L) evidence$section[[i]] <- sc
+    list(pg = pg, sc = sc, found = found)
+  }
+  for (i in which(!skip)) {
+    quote <- to_utf8(as_chr1(evidence$text[[i]], ""))
+    s <- trim_quote_edges(normalise_for_match(quote))
+    if (!nzchar(s)) next
+    want_section <- !is.null(section) && !is.null(evidence$section) &&
+      is.na(evidence$section[[i]])
+    got <- locate(s, norm, "plain", want_section)
+    # Found nowhere as it is written: a compound the quotation writes with its
+    # hyphen and the cleaned text without, found as span_match() finds it.
+    if (!got$found) {
+      joined <- join_hyphens(quote)
+      if (!identical(joined, quote)) {
+        if (is.null(norm_joined)) norm_joined <- normalise_for_match(join_hyphens(text))
+        got <- locate(trim_quote_edges(normalise_for_match(joined)), norm_joined, "joined",
+                      want_section)
+      }
+    }
+    if (length(got$pg) == 1L) evidence$page[[i]] <- got$pg
+    if (length(got$sc) == 1L) evidence$section[[i]] <- got$sc
   }
   evidence
 }

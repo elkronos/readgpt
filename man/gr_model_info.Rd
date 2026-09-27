@@ -23,6 +23,13 @@ regex, then a conservative default. The returned list always carries
 \code{certain}, which is \code{FALSE} when the answer came from a regex or the default.
 Treat that as "verify before trusting for cost control".
 }
+\details{
+An alias (\code{"chatgpt-4o-latest"}, say) takes the entry of the model it names,
+a registered override of that model included, and reports the alias as its
+\code{id}. A family-regex match and the default both warn with class
+\code{gr_unknown_model}; under \code{gr_options(unknown_model_action = "error")} both
+stop instead, because neither id is in the registry.
+}
 \examples{
 gr_model_info("gpt-4o")[c("context_window", "max_output", "certain")]
 

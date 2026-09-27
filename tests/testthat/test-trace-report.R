@@ -601,6 +601,10 @@ test_that("a trace from before requests were timed says the times are not record
   a <- answer_with(ev)
   gr_call(gr_mock_client(function(m, p) "x"), "hi", trace = a$trace)
   a$trace$steps <- lapply(a$trace$steps, function(s) { s$seconds <- NULL; s })
+  # An answer that old also predates `trace_steps`, so its whole trace is its
+  # own. Kept, the field says the step above came after the answer, which
+  # makes it another run's (answer_trace()), and the report lists none.
+  a$trace_steps <- NULL
   h <- read_page(answer = a)
   expect_match(h, "1 request(s), their times were not recorded.", fixed = TRUE)
 })

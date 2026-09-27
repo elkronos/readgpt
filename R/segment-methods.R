@@ -469,9 +469,9 @@ seg_semantic <- function(doc, spec, client, trace) {
 }
 
 #' The most one segmentation request can cost: `input_tokens` of prompt and a
-#' reply at `max_output`, or the model's own ceiling if lower, at the client
-#' model's price. NA when the model has no price, which the trace cannot count
-#' either.
+#' reply at `max_output`, or the model's own ceiling if lower (for a reasoning
+#' model, the larger cap the request is sent with), at the client model's price.
+#' NA when the model has no price, which the trace cannot count either.
 #' @noRd
 seg_call_usd <- function(client, input_tokens, max_output) {
   model <- as_chr1(client$model, "unknown")
@@ -480,7 +480,11 @@ seg_call_usd <- function(client, input_tokens, max_output) {
                                    error = function(e) NULL)
   info <- quiet(gr_model_info(model))
   if (is.null(info)) return(NA_real_)
-  out <- min(as_num1(max_output, 0), as_num1(info$max_output, Inf))
+  # Priced at the cap the request is sent with: a reasoning model is sent
+  # room to reason above a short cap (reasoning_output_cap()), and is billed
+  # for what it spends there.
+  out <- reasoning_output_cap(min(as_num1(max_output, 0), as_num1(info$max_output, Inf)),
+                              info, input_tokens)
   as_num1(quiet(gr_estimate_cost(model, input_tokens, out)), NA_real_)
 }
 

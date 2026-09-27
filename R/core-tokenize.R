@@ -122,7 +122,7 @@ gr_count_tokens <- function(text, model = NULL) {
     switch(which,
       heuristic = tok_heuristic(text),
       words     = vapply(text, function(x) length(words_of(x)), integer(1), USE.NAMES = FALSE),
-      chars     = as.integer(ceiling(nchar(text, type = "chars") / 4)),
+      chars     = as.integer(ceiling(nchar_or_bytes(text) / 4)),
       tiktoken  = tok_tiktoken(text, model),
       gr_abort(sprintf("Unknown tokenizer '%s'.", which))
     )
@@ -133,6 +133,31 @@ gr_count_tokens <- function(text, model = NULL) {
   out[is.na(out) | out < 0L] <- 0L
   as.integer(out)
 }
+
+#' Characters in each string, or bytes where the string cannot be read as
+#' characters.
+#'
+#' `nchar(type = "chars")` stops with "invalid multibyte string" on bytes in
+#' another encoding (a CP1252 string in a UTF-8 session), so the "chars"
+#' tokenizer failed the call on text the heuristic counts by its bytes. A
+#' character is at least one byte, so counting bytes never counts fewer.
+#' @noRd
+nchar_or_bytes <- function(x) {
+  n <- nchar(x, type = "chars", allowNA = TRUE)
+  bad <- is.na(n) & !is.na(x)
+  if (any(bad)) n[bad] <- nchar(x[bad], type = "bytes")
+  n
+}
+
+#' Whether each string has a character other than ASCII white space, asked of
+#' its bytes.
+#'
+#' The question `nzchar(trimws(x))` asks, without the regular expression that
+#' stops with "input string 1 is invalid UTF-8" on bytes in another encoding.
+#' Only ASCII white space is blank here, as it was: a line of no-break spaces
+#' costs tokens, and a count must not come in under.
+#' @noRd
+has_nonspace_bytes <- function(x) !is.na(x) & grepl("[^ \t\r\n]", x, useBytes = TRUE)
 
 #' Conservative script-aware token estimate.
 #'
@@ -152,7 +177,10 @@ tok_heuristic <- function(text) {
   # tokens labelled versus 24 unlabelled, for identical bytes.
   text <- mark_utf8(text)
   vapply(text, function(x) {
-    if (is.na(x) || !nzchar(trimws(x))) return(0L)
+    # Asked of the bytes: trimws() is a regular expression, and it stopped the
+    # count of a CP1252 string in a UTF-8 session with "invalid UTF-8" before
+    # the byte fallback below could count it.
+    if (!has_nonspace_bytes(x)) return(0L)
     # Work on code points, so multibyte text is measured rather than its byte
     # length. The byte fallback now fires only for genuinely undecodable input.
     cp <- tryCatch(utf8ToInt(x), error = function(e) NULL)
@@ -281,6 +309,11 @@ tiktoken_available <- function() {
 #' @noRd
 tok_tiktoken <- function(text, model = NULL) {
   if (!tiktoken_available()) gr_abort("tiktoken backend unavailable.")
+  # Python is handed text, and bytes in another encoding (a CP1252 string in a
+  # UTF-8 session) are not text to it; they are transcoded the way ingestion
+  # does, a character for each byte, so the count does not come in under.
+  bad <- !validUTF8(text)
+  if (any(bad)) text[bad] <- to_utf8(text[bad])
   counts <- lapply(tiktoken_encodings(model), function(enc) {
     vapply(text, function(x) {
       if (!nzchar(x)) return(0L)

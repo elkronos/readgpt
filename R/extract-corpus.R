@@ -112,15 +112,27 @@
 #' own text, never a header or rewrite a model added to the chunk). It must
 #' also carry the value: a number must be one of the numbers the sentence
 #' states, the sentence must not start or end inside a word, and a one-word
-#' fragment supports only a value it spells. A number counts however the
-#' sentence writes it: "1,204", "1 204", "0,45", a middle-dot decimal point
-#' (U+00B7, as the Lancet prints "0.84"), "3.2 x 10^-5",
-#' "1.2 million", "54%" for 0.54, or English words ("Twenty-four", "three",
-#' "no" for zero). A quotation made of several passages (separate lines,
-#' bullets, "[...]") is checked passage by passage. Nothing is ever discarded
-#' for failing: a paraphrase stays in `$evidence` with `verified = FALSE` and
-#' the fraction of it that did match in `match`, and a real sentence that does
-#' not carry the value shows `verified = FALSE` with `match = 1`. When several
+#' fragment supports only a value it spells. A number counts when the
+#' sentence writes it in one of these forms: "1,204", "1 204", "0,45", a
+#' middle-dot decimal point (U+00B7, as the Lancet prints "0.84"),
+#' "3.2 x 10^-5", "1.2 million" or
+#' "$1.2 bn", "54%" or "Fifty-four percent" for 0.54, "a quarter", "one in
+#' five", "two and a half", and English number words ("Twenty-four",
+#' "three"). A word that is not a numeral counts only where it counts
+#' something: "no deaths" and "none" state zero, "no difference" does not,
+#' and "the first visit" states no 1. A quotation in Spanish, Portuguese,
+#' French, Italian, German or Dutch is read with that language's number words
+#' instead ("veinticuatro", "vierundzwanzig", "1,2 millions"). The one
+#' exception to all of this: a quotation in a script whose number words are
+#' not read (Cyrillic, Greek, Arabic and the like) that states no number
+#' that can be read is only checked for being in the chunk. A quotation made
+#' of several passages (separate lines, bullets, "[...]") is checked passage
+#' by passage, and what an elision leaves out, or what lies between two
+#' passages that follow each other within one sentence, may not be a
+#' negation. Nothing is ever discarded for failing: a paraphrase stays in
+#' `$evidence` with `verified = FALSE` and the fraction of it that did match in
+#' `match`, and a real sentence that does not carry the value shows
+#' `verified = FALSE` with `match = 1`. When several
 #' parts of a document give the same value, it is cited with the best quote
 #' any of them gave. A string field that comes back "None" or "N/A" is kept
 #' only when its quote verifies and says so itself ("Conflicts of interest:

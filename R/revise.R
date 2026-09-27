@@ -82,6 +82,47 @@ split_sentences <- function(txt) {
   parts[nzchar(parts)]
 }
 
+#' Words too common to say which sentence a reworded one came from.
+#'
+#' For render_revised(), which compares the words of a reworded sentence with
+#' the sentences it may have come from. Words under three letters are ignored
+#' there already.
+#' @noRd
+.gr_revise_stopwords <- c("the", "and", "with", "was", "were", "for", "that", "this",
+                          "from", "but", "not", "are", "its", "than", "also", "which",
+                          "has", "had", "have", "been", "their", "these", "those", "there",
+                          "into", "who", "whom", "all", "one", "more", "less", "our")
+
+#' Sentences with nothing dropped between them: pasting them back gives `txt`.
+#'
+#' For render_revised(), which decides sentence by sentence and has to hand
+#' back every character it was given. Cut as split_sentences() cuts, after a
+#' full stop, question or exclamation mark that is not part of an abbreviation
+#' or inside a bracket ("[study 3 p. 4]" is one citation), and also at every
+#' line break, so a heading is a piece of its own. The space after a sentence
+#' stays with it.
+#' @noRd
+sentence_spans <- function(txt) {
+  txt <- as_chr1(txt)
+  n <- nchar(txt)
+  if (!n) return(character(0))
+  # Masked character for character, so a position in `masked` is the same
+  # position in `txt`.
+  masked <- txt
+  for (a in .gr_abbrev) {
+    masked <- gsub(paste0("\\b", gsub(".", "\\.", a, fixed = TRUE)),
+                   gsub(".", "\u0001", a, fixed = TRUE), masked, perl = TRUE)
+  }
+  br <- gregexpr("\\[[^][\n]*\\]", masked, perl = TRUE)
+  regmatches(masked, br) <- lapply(regmatches(masked, br),
+                                   function(v) gsub("[.!?]", "\u0001", v))
+  m <- gregexpr("(?<=[.!?])[[:space:]]+|[ \t]*\n[[:space:]]*", masked, perl = TRUE)[[1]]
+  if (m[1] < 0L) return(txt)
+  ends <- as.integer(m) + attr(m, "match.length") - 1L
+  ends <- unique(ends[ends < n])
+  substring(txt, c(1L, ends + 1L), c(ends, n))
+}
+
 #' The sentences in a draft that make a claim.
 #'
 #' A claim-bearing sentence is one carrying a citation marker. The HEDGE rate is
@@ -225,12 +266,14 @@ revise_passes <- function(coherence) {
 #'
 #' Each pass is independent: a pass that fails its guards is discarded and the
 #' next runs on the text that survived, so one bad revision costs that pass
-#' rather than the document.
+#' rather than the document. `steps` is each kept pass's text in order, which
+#' render_revised() follows one pass at a time.
 #' @noRd
 synth_revise <- function(drafted, question, client, spec, trace, style = NULL,
                          passes = .gr_revise_passes) {
   text <- as_chr1(drafted)
   report <- list()
+  steps <- character(0)
   for (pass in passes) {
     step <- revise_once(text, question, client, spec, trace, style, pass)
     report[[length(report) + 1L]] <- data.frame(
@@ -240,14 +283,18 @@ synth_revise <- function(drafted, question, client, spec, trace, style = NULL,
       # none of that.
       lost = as_chr1(step$lost, NA_character_), added = as_chr1(step$added, NA_character_),
       reason = as_chr1(step$reason, NA_character_), stringsAsFactors = FALSE)
-    if (isTRUE(step$kept)) text <- step$text
+    if (isTRUE(step$kept)) {
+      text <- step$text
+      steps <- c(steps, text)
+    }
   }
   rep_df <- if (length(report)) do.call(rbind, report) else
     data.frame(pass = character(0), ran = logical(0), kept = logical(0),
                lost = character(0), added = character(0), reason = character(0),
                stringsAsFactors = FALSE)
   rownames(rep_df) <- NULL
-  list(text = if (identical(text, as_chr1(drafted))) NULL else text, report = rep_df)
+  list(text = if (identical(text, as_chr1(drafted))) NULL else text, report = rep_df,
+       steps = steps)
 }
 
 #' Every provider's spelling of "stopped at the output limit".

@@ -1215,9 +1215,9 @@ an answer. A miss means the replay has diverged from the recording, and a
 result that looks like the original but is not is worse than no replay at all.
 Pass `strict = FALSE` to run a partial recording anyway.
 
-Embeddings are not model calls, so a trace does not contain them. Whether a
-replay can reproduce a run's chunk *ranking* therefore depends on how the run
-embedded, and the answer is checked rather than assumed: the replay reproduces
+A trace records each embeddings request and what it cost, but not the vectors
+that came back. Whether a replay can reproduce a run's chunk *ranking* therefore
+depends on how the run embedded, and the answer is checked rather than assumed: the replay reproduces
 the ranking exactly when the recording used a **deterministic** embedder and the
 replay uses the **same** one. Both conditions, not either: replaying an
 API-embedded run with a deterministic local embedder would compute vectors the

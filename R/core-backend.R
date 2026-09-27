@@ -474,11 +474,25 @@ ellmer_finish_reason <- function(chat) {
 #' keeps the turn; otherwise the reason is read from ellmer's own message for
 #' the two truncations it names. A message that says neither gives NA, which
 #' the caller treats as the plain failure it always was.
+#'
+#' ellmer raises it through cli, which wraps the message to the console width
+#' when it is formatted, so in a console narrower than the sentence (a narrow
+#' RStudio pane, a split terminal) a line break stood where the patterns had a
+#' space, and a truncated reply was reported as a plain failure with no stop
+#' reason. The message is formatted unwrapped (cli.condition_width = Inf, the
+#' setting testthat runs under, which is why no test saw a wrapped one), and
+#' any run of white space, a line break and its indent included, is read as
+#' one space.
 #' @noRd
 ellmer_error_finish_reason <- function(chat, e) {
   fr <- ellmer_finish_reason(chat)
   if (!is.na(fr)) return(fr)
+  old <- options(width = 10000L, cli.width = 10000L, cli.condition_width = Inf)
+  on.exit(options(old), add = TRUE)
   msg <- gsub("\033\\[[0-9;]*m", "", as_chr1(tryCatch(conditionMessage(e), error = function(x) "")))
+  msg <- tryCatch(gsub("[[:space:]]+", " ", gsub("\u00a0", " ", msg, fixed = TRUE, useBytes = TRUE),
+                       useBytes = TRUE),
+                  error = function(x) msg)
   if (grepl("truncated because it hit the \\W*max_tokens\\W* limit", msg, perl = TRUE)) {
     return("max_tokens")
   }
@@ -496,9 +510,15 @@ ellmer_error_finish_reason <- function(chat, e) {
 #' distinct, `[[1],[2],[3]]`, came back as `[1,2,3]`, was read as a single
 #' group, and merged every claim into one. Unconverted, the value is the
 #' provider's JSON parsed as lists, where an array stays a list and so stays an
-#' array. `digits = NA` because jsonlite's default of four decimals wrote a
-#' p-value of 0.00003 into the extraction table as 0. A chat whose
-#' `$chat_structured()` takes no `convert` (not ellmer's) is called as before.
+#' array. Written back through as_json(), which writes each number with as
+#' many significant digits as it takes to read back as the same number.
+#' jsonlite's default of four decimals wrote a p-value of 0.00003 into the
+#' extraction table as 0, and its `digits = NA` is 15 significant digits, which
+#' wrote a 16-digit identifier, 1234567890123456, as 1.23456789012346e+15 and
+#' so put 1234567890123460 in the table, with the quote check none the wiser.
+#' The built-in client reads the provider's text itself and keeps both. A chat
+#' whose `$chat_structured()` takes no `convert` (not ellmer's) is called as
+#' before.
 #' @noRd
 ellmer_structured_text <- function(one, user, type) {
   f <- one$chat_structured
@@ -508,7 +528,7 @@ ellmer_structured_text <- function(one, user, type) {
   } else {
     f(user, type = type, echo = "none")
   }
-  as.character(jsonlite::toJSON(value, auto_unbox = TRUE, null = "null", digits = NA))
+  as.character(as_json.default(value, pretty = FALSE))
 }
 
 #' Does this chat's provider send an optional field as a required, nullable one?

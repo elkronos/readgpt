@@ -112,12 +112,19 @@
 #'       `pass` (which of `"structure"`, `"cut"`, `"register"`), `ran`, `kept`,
 #'       `lost` and `added` (citations, if the revision changed them), and
 #'       `reason` for anything discarded.}
+#'     \item{`unrendered`}{Studies a section cited honestly that `text` still
+#'       shows as `[study N]` somewhere, because a kept revision moved or
+#'       reworded a citation of the same study that another section made
+#'       without being given it, and the two could no longer be told apart.
+#'       Leaving both is the safe side of that doubt; `$draft` renders each
+#'       section's own citations. Empty when nothing was in doubt.}
 #'     \item{`sections`}{One row per section: `section`, `brief`, `text`,
 #'       `n_cited`, `n_unknown` (citations to a row that does not exist),
 #'       `n_unsupplied` (citations to a study that exists but was not given to
 #'       the call that wrote them: with `claims`, a study not behind that
 #'       section's claims; for a section written in batches, a study outside
-#'       that batch. They are left as markers and kept out of the reference
+#'       that batch, or one the merge of the batch drafts cited that no draft
+#'       did. They are left as markers and kept out of the reference
 #'       list, with one exception: once batch drafts are merged, a study that
 #'       another batch of the same section was given and cited cannot be told
 #'       apart, so it is rendered, and still counted), `n_unparsed` (brackets
@@ -349,15 +356,31 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
   # exceptions; rendering the joined document is the same text otherwise.
   drafted <- synth_document(sections)
   # A kept revision is one text rather than sections, so the markers to leave
-  # are found in it again by heading (see render_revised()). `left` is the
-  # studies no marker was rendered for anywhere.
+  # are found in it again by heading and by sentence, pass by pass (see
+  # render_revised()). `left` is the studies no marker was rendered for
+  # anywhere.
+  unrendered <- integer(0)
   if (is.null(revised$text)) {
     published <- drafted
     left <- setdiff(unlist(unsupplied), citations$study)
   } else {
-    rr <- render_revised(final_marked, sections$section, sections$text_marked, unsupplied, render)
+    # Each kept pass's text, followed one at a time; the last is `final_marked`.
+    steps <- if (length(revised$steps)) revised$steps else final_marked
+    rr <- render_revised(steps, sections$section, sections$text_marked, unsupplied, render)
     published <- rr$text
     left <- rr$left
+    # An honest citation left as a marker is the safe side of a doubt, and
+    # still a citation the reader loses: said here, by print() and in
+    # `$unrendered`, since no section's own counts describe the revision.
+    unrendered <- rr$unrendered
+    if (length(unrendered) && !identical(resolved, "marker")) {
+      gr_warn(sprintf(paste0("The kept revision moved or reworded a citation of study %s that a ",
+                             "section made without being given it, so where an honest citation ",
+                             "of it could no longer be told from that one it is left as a marker ",
+                             "(see `$unrendered`; `$draft` renders each section's own)."),
+                      paste(unrendered, collapse = ", ")),
+              class = "gr_synth_unrendered")
+    }
   }
 
   # The reference list follows what the FINISHED text cites, not what the
@@ -383,6 +406,7 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
     gaps = gaps,
     cite_style = resolved,
     coherence = revised$report,
+    unrendered = if (identical(resolved, "marker")) integer(0) else unrendered,
     trace = trace
   ), class = "gr_synthesis")
 }
@@ -443,6 +467,12 @@ print.gr_synthesis <- function(x, ...) {
   }
   if (any(cut > 0L)) {
     cat("  a section cut off at the reply limit stops mid-thought; those sections are partial\n")
+  }
+  unr <- x$unrendered %||% integer(0)
+  if (length(unr)) {
+    cat(sprintf(paste0("  study %s: cited honestly, but left as a marker in the revised text where ",
+                       "the revision made that citation impossible to tell from the one the check ",
+                       "reported; see $draft\n"), paste(unr, collapse = ", ")))
   }
   lost <- x$claims$lost %||% integer(0)
   if (length(lost)) {
@@ -591,8 +621,9 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
   # section ending "However, the trial" came back complete.
   cut_off <- 0L
   merge_failed <- FALSE
-  # Studies a batch draft cited without being in its batch, and studies a batch
-  # cited that it was given. Only written in the batch path without claims.
+  # Studies a batch draft cited without being in its batch (or the merge cited
+  # without any draft citing them), and studies a batch cited that it was
+  # given. Only written in the batch path without claims.
   batch_stray <- integer(0)
   batch_honest <- integer(0)
   text <- if (!trace_can_call(trace)) {
@@ -691,7 +722,19 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
     # m$text on failure carries tree_merge()'s own "[merge failed; findings
     # above are truncated]" marker. Throwing it away for a raw paste() of the
     # parts discarded the one thing that said the section was incomplete.
-    if (isTRUE(m$ok)) m$text else as_chr1(m$text, paste(parts[nzchar(parts)], collapse = "\n\n"))
+    merged <- if (isTRUE(m$ok)) m$text else
+      as_chr1(m$text, paste(parts[nzchar(parts)], collapse = "\n\n"))
+    # The merge is a call too, and it is shown `ask` and the drafts and no row
+    # of the table. A study it cites that no draft cited and the ask does not
+    # name is one it never saw, by the same rule as a batch draft's. Unchecked,
+    # "Also seen in [study 7]" added by the merge passed as known, was rendered
+    # and went into the reference list, with the section complete.
+    if (!by_claims) {
+      in_drafts <- unique(unlist(lapply(parts, cited_ids, word = "study"), use.names = FALSE))
+      batch_stray <- c(batch_stray, setdiff(intersect(cited_ids(merged, "study"), used$study),
+                                            union(in_drafts, in_ask)))
+    }
+    merged
   }
 
   cited <- cited_ids(text, "study")
@@ -713,7 +756,8 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
   # counting only what survived the merge into the section's text. A study
   # another batch of this section cited honestly cannot be told apart once the
   # drafts are merged, so it is rendered, but counted and marked partial; one
-  # no batch was given stays a marker, as `unsupplied` does.
+  # no batch was given, or one the merge cited and no draft did, stays a
+  # marker, as `unsupplied` does.
   stray <- intersect(unique(batch_stray), cited)
   leave <- union(unsupplied, setdiff(stray, batch_honest))
   unsupplied <- union(unsupplied, stray)
@@ -887,70 +931,223 @@ synth_document <- function(sections) {
 #'
 #' A revision is one text, and the check that caught a section citing a study
 #' it was never given ran on the sections. Leaving only the studies that NO
-#' section was given, as this used to, rendered the fabricated citation as an
+#' section was given, as this once did, rendered the fabricated citation as an
 #' author-year fact wherever another section had cited the same study honestly
 #' -- which, with claims, is nearly every study -- while print() said the
 #' marker had been left.
 #'
-#' So the sections are found again by the `## ` headings the draft was
-#' assembled with, and each is rendered with its own exceptions. Where that
-#' cannot be trusted, a study is left as a marker in more places rather than
-#' fewer: text under no heading of the draft (a preamble, a renamed or merged
-#' section) leaves every reported study, and a study whose markers moved --
-#' more of them under a heading that was given it, or fewer under one that was
-#' not -- is left in the whole text, since the reported marker may be among
-#' them. The cost is an honest citation left as a marker, in a section already
-#' marked partial; the alternative is a fabrication printed as a fact.
+#' So every sentence citing a reported study is followed from the draft
+#' through each kept pass in turn. In the draft it is honest if its section was
+#' given the study and reported if not. In each pass's text the sections are
+#' found again by the `## ` headings the draft was assembled with, and a
+#' sentence citing the study is
 #'
-#' `headings`, `marked` and `unsupplied` are per section: its heading, its
-#' marked text, and the studies its check reported. `render(x, leave)` renders
-#' one piece of text. Returns the rendered `text`, and `left`: the reported
-#' studies no marker was rendered for anywhere, which the reference list omits.
+#'   * honest if it is, word for word, a sentence only an honest one was,
+#'     wherever it now stands;
+#'   * reported under the heading of a section that reported the study, or
+#'     under no heading of the draft (a preamble, a renamed section);
+#'   * under the heading of a section given the study: honest or reported as
+#'     the sentence it repeats word for word, and a reworded or new sentence is
+#'     honest only if nothing says a reported marker could be in it -- the
+#'     pass kept every reported marker where it can be seen (none deleted, none
+#'     reworded away, no honest sentence taken into a reporting section), the
+#'     section has no more such sentences than it lost honest ones, and the
+#'     sentence has no more words in common with the reported sentences than
+#'     with the honest ones it may replace.
+#'
+#' A marker is rendered only in an honest sentence. Following the passes one at
+#' a time is what tells a cut that deleted the reported clause, then a
+#' register pass that polished the honest one, from a pass that wrote the
+#' reported clause into the honest sentence. Counting markers per section, as
+#' this did before, took the deletion for a move and left the honest citation
+#' as a marker with its reference dropped; and counts that did not change let
+#' two sections trade claims unseen. Where this cannot tell, it leaves the
+#' marker and says so in `unrendered`.
+#'
+#' `texts` is each kept pass's text in order, the last one published (one text
+#' will do). `headings`, `marked` and `unsupplied` are per section: its
+#' heading, its marked text, and the studies its check reported. `render(x,
+#' leave)` renders one piece of text. Returns the rendered `text`; `left`, the
+#' reported studies no marker was rendered for anywhere, which the reference
+#' list omits; and `unrendered`, the studies a section cited honestly that are
+#' left somewhere for want of telling that citation from the reported one.
 #' @noRd
-render_revised <- function(text, headings, marked, unsupplied, render) {
+render_revised <- function(texts, headings, marked, unsupplied, render) {
+  texts <- as.character(texts)
+  text <- texts[length(texts)]
   reported <- unique(as.integer(unlist(unsupplied)))
-  if (!length(reported)) return(list(text = render(text, integer(0)), left = integer(0)))
-  # Cut before every heading line; pasting the pieces back gives `text` exactly.
-  at <- gregexpr("(?m)^##[ \t]+[^\n]*", text, perl = TRUE)[[1]]
-  at <- if (at[1] > 0L) as.integer(at) else integer(0)
-  starts <- unique(c(1L, at))
-  pieces <- substring(text, starts, c(starts[-1] - 1L, nchar(text)))
-  first <- sub("(?s)\n.*$", "", pieces, perl = TRUE)
-  head_of <- ifelse(starts %in% at,
-                    trimws(sub("[ \t]+#+[ \t]*$", "", sub("^##[ \t]+", "", first))), NA_character_)
-  # How many markers cite each reported study.
-  counts <- function(x) {
-    m <- regmatches(x, gregexpr(cite_grammar("study")$marker, x, perl = TRUE,
-                                ignore.case = TRUE))[[1]]
-    ids <- unlist(lapply(m, function(k) unique(cite_marker_ids(k, "study"))), use.names = FALSE)
-    vapply(reported, function(s) sum(ids == s), integer(1))
+  if (!length(reported)) {
+    return(list(text = render(text, integer(0)), left = integer(0), unrendered = integer(0)))
   }
   secs <- unique(headings)
   own <- lapply(secs, function(h) unique(as.integer(unlist(unsupplied[headings == h]))))
-  before <- lapply(secs, function(h) counts(paste(marked[headings == h], collapse = "\n\n")))
-  n_piece <- lapply(pieces, counts)
-  after <- lapply(secs, function(h) {
-    k <- which(head_of %in% trimws(h))
-    if (length(k)) Reduce(`+`, n_piece[k]) else integer(length(reported))
+  reports <- function(i, j) !is.na(i) && j %in% own[[i]]
+
+  # Per sentence: the reported studies it cites, once per marker as the check
+  # reads them (read once per distinct marker: a long review repeats a few
+  # hundred); the sentence with its spacing evened out, which is what "word for
+  # word" compares; and its words, for comparing a reworded one.
+  grammar <- cite_grammar("study")$marker
+  seen <- new.env(parent = emptyenv())
+  marker_ids <- function(k) seen[[k]] %||% (seen[[k]] <- unique(cite_marker_ids(k, "study")))
+  ids_of <- function(spans) lapply(spans, function(x) {
+    if (!grepl("[", x, fixed = TRUE)) return(integer(0))
+    mk <- regmatches(x, gregexpr(grammar, x, perl = TRUE, ignore.case = TRUE))[[1]]
+    ids <- unlist(lapply(mk, marker_ids), use.names = FALSE)
+    ids[ids %in% reported]
   })
-  moved <- vapply(seq_along(reported), function(j) {
-    any(vapply(seq_along(secs), function(i) {
-      if (reported[j] %in% own[[i]]) after[[i]][j] < before[[i]][j]
-      else after[[i]][j] > before[[i]][j]
-    }, logical(1)))
-  }, logical(1))
-  everywhere <- reported[moved]
-  leave <- lapply(head_of, function(h) {
-    i <- match(h, trimws(secs))
-    if (is.na(i)) reported else union(own[[i]], everywhere)
+  norm <- function(x) gsub("[[:space:]]+", " ", trimws(x))
+  said <- new.env(parent = emptyenv())
+  words <- function(x) {
+    x <- unique(x[nzchar(x)])
+    new <- x[!vapply(x, exists, logical(1), envir = said, inherits = FALSE)]
+    if (length(new)) {
+      low <- lower_text(to_utf8(gsub(grammar, " ", new, perl = TRUE, ignore.case = TRUE)))
+      for (q in seq_along(new)) {
+        w <- strsplit(low[q], "[^\\p{L}\\p{N}]+", perl = TRUE)[[1]]
+        assign(new[q], unique(w[(nchar(w) >= 3L | grepl("[0-9]", w)) &
+                                  !w %in% .gr_revise_stopwords]), envir = said)
+      }
+    }
+    unique(unlist(mget(x, envir = said), use.names = FALSE))
+  }
+  # How many of `a` are not matched in `b`, counting repeats.
+  missing_from <- function(a, b) {
+    if (!length(a)) return(0L)
+    ta <- table(a)
+    sum(pmax(0L, as.integer(ta) - as.integer(table(factor(b, levels = names(ta))))))
+  }
+  # Which sentences cite each study, once per marker: by study, the positions.
+  by_study <- function(ids) split(rep(seq_along(ids), lengths(ids)), unlist(ids))
+  sentences <- function(span, sec) {
+    out <- list(span = span, sec = sec, key = norm(span), ids = ids_of(span))
+    # Every sentence that may need comparing, in one call rather than many.
+    words(out$key[lengths(out$ids) > 0L])
+    out
+  }
+  # A pass's text, cut before every heading line and then into sentences, so
+  # pasting the spans back gives the text exactly.
+  read_text <- function(x) {
+    at <- gregexpr("(?m)^##[ \t]+[^\n]*", x, perl = TRUE)[[1]]
+    at <- if (at[1] > 0L) as.integer(at) else integer(0)
+    starts <- unique(c(1L, at))
+    pieces <- substring(x, starts, c(starts[-1] - 1L, nchar(x)))
+    first <- sub("(?s)\n.*$", "", pieces, perl = TRUE)
+    head_of <- ifelse(starts %in% at,
+                      trimws(sub("[ \t]+#+[ \t]*$", "", sub("^##[ \t]+", "", first))), NA_character_)
+    sp <- lapply(pieces, sentence_spans)
+    sentences(unlist(sp, use.names = FALSE), rep(match(head_of, trimws(secs)), lengths(sp)))
+  }
+
+  # The draft: every sentence citing a reported study, honest or reported.
+  d_span <- lapply(secs, function(h) sentence_spans(paste(trimws(marked[headings == h]),
+                                                          collapse = "\n\n")))
+  state <- sentences(unlist(d_span, use.names = FALSE), rep(seq_along(secs), lengths(d_span)))
+  state$status <- lapply(seq_along(state$key), function(s) {
+    u <- unique(state$ids[[s]])
+    stats::setNames(ifelse(vapply(u, reports, logical(1), i = state$sec[s]), "reported", "honest"),
+                    u)
   })
-  rendered_somewhere <- vapply(seq_along(reported), function(j) {
-    any(vapply(seq_along(pieces), function(p) {
-      n_piece[[p]][j] > 0L && !reported[j] %in% leave[[p]]
-    }, logical(1)))
-  }, logical(1))
-  list(text = paste(unlist(Map(render, pieces, leave), use.names = FALSE), collapse = ""),
-       left = reported[!rendered_somewhere])
+  cited_honestly <- unique(unlist(lapply(state$status, function(st) names(st)[st == "honest"])))
+  # The words of every sentence citing a study that has not been honest, in
+  # the draft or any pass since. A pass sees only the text before it, but what
+  # it rewords may have been reported a pass or two earlier.
+  suspect_words <- list()
+  remember <- function(st) {
+    for (s in seq_along(st$key)) {
+      for (jc in names(st$status[[s]])[st$status[[s]] != "honest"]) {
+        suspect_words[[jc]] <<- union(suspect_words[[jc]], words(st$key[s]))
+      }
+    }
+  }
+  remember(state)
+
+  # One kept pass: the statuses of `new`'s sentences, from `prev`'s.
+  follow <- function(prev, new) {
+    status <- lapply(new$ids, function(v) {
+      u <- unique(v)
+      stats::setNames(rep("honest", length(u)), u)
+    })
+    at_prev <- by_study(prev$ids)
+    at_new <- by_study(new$ids)
+    for (jc in intersect(names(at_new), as.character(reported))) {
+      j <- as.integer(jc)
+      pi <- at_prev[[jc]] %||% integer(0)
+      pu <- unique(pi)
+      pst <- vapply(pu, function(s) prev$status[[s]][[jc]], character(1))
+      hon <- prev$key[pu][pst == "honest"]
+      sus <- prev$key[pu][pst != "honest"]
+      hon_only <- setdiff(hon, sus)
+      # A sentence repeated word for word keeps its status; "unsure" wins over
+      # "reported", so a doubt already declared is not forgotten.
+      as_before <- function(key) {
+        st <- pst[pst != "honest" & prev$key[pu] == key]
+        if ("unsure" %in% st) "unsure" else "reported"
+      }
+      ni <- at_new[[jc]]
+      nu <- unique(ni)
+      cls <- vapply(nu, function(s) {
+        key <- new$key[s]; i <- new$sec[s]
+        if (key %in% hon_only) return("honest")
+        if (is.na(i)) return(if (key %in% sus) as_before(key) else "unsure")
+        if (j %in% own[[i]]) {
+          if (key %in% sus) return(as_before(key))
+          # Reworded under a reporting heading is the reported sentence --
+          # unless an honest one had been standing there to be reworded.
+          return(if (any(prev$sec[pu][pst == "honest"] %in% i)) "unsure" else "reported")
+        }
+        if (key %in% hon) return("honest")
+        if (key %in% sus) return(as_before(key))
+        "pending"
+      }, character(1))
+      # Whether a reported marker may have gone into a reworded sentence: fewer
+      # markers are accounted for than the pass was given, or a reporting
+      # section took in a sentence only an honest one wrote, which is what a
+      # trade of claims leaves.
+      kept <- sum(ni %in% nu[cls %in% c("reported", "unsure")])
+      moved <- kept < sum(pi %in% pu[pst != "honest"]) ||
+        any(vapply(nu[cls == "honest"], function(s) reports(new$sec[s], j), logical(1)))
+      if (any(cls == "pending")) w_sus <- union(suspect_words[[jc]], words(sus))
+      for (i in unique(new$sec[nu[cls == "pending"]])) {
+        mine <- nu[cls == "pending" & new$sec[nu] %in% i]
+        was <- prev$key[pu][pst == "honest" & prev$sec[pu] %in% i]
+        now <- new$key[nu[new$sec[nu] %in% i]]
+        ok <- !moved && length(mine) <= missing_from(was, now)
+        w_was <- words(was)
+        cls[match(mine, nu)] <- vapply(mine, function(s) {
+          if (!ok) return("unsure")
+          # Reworded: honest only if it reads no more like the reported
+          # sentences than like the honest ones it may replace.
+          w <- words(new$key[s])
+          k <- sum(w %in% w_sus)
+          if (k > 0L && k >= sum(w %in% w_was)) "unsure" else "honest"
+        }, character(1))
+      }
+      for (q in seq_along(nu)) status[[nu[q]]][[jc]] <- cls[q]
+    }
+    new$status <- status
+    new
+  }
+  for (x in texts) {
+    state <- follow(state, read_text(x))
+    remember(state)
+  }
+
+  leave <- lapply(state$status, function(st) as.integer(names(st)[st != "honest"]))
+  rendered <- unique(unlist(lapply(state$status, function(st) names(st)[st == "honest"])))
+  unsure <- unique(unlist(lapply(state$status, function(st) names(st)[st == "unsure"])))
+  spans <- state$span
+  if (!length(spans)) return(list(text = text, left = reported, unrendered = integer(0)))
+  # Consecutive sentences leaving the same studies are rendered together, which
+  # is every sentence of a text with nothing to leave.
+  sig <- vapply(leave, function(v) paste(sort(v), collapse = ","), character(1))
+  run <- cumsum(c(TRUE, sig[-1L] != sig[-length(sig)]))
+  out <- vapply(split(seq_along(spans), run), function(ix) {
+    render(paste(spans[ix], collapse = ""), leave[[ix[1L]]])
+  }, character(1), USE.NAMES = FALSE)
+  list(text = paste(out, collapse = ""),
+       left = setdiff(reported, as.integer(rendered)),
+       unrendered = sort(as.integer(intersect(unsure, cited_honestly))))
 }
 
 #' @noRd

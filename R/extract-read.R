@@ -168,6 +168,14 @@ reconcile_fields <- function(got, fields, d, client, spec, trace) {
   ev_chunk <- integer(0); ev_quote <- character(0); ev_field <- character(0)
   resolve <- match.arg(as_chr1(spec[["resolve"]] %||% "first"), c("first", "model"))
   src <- extract_verbatim_source(d)
+  # Whether a quote is verbatim in a chunk does not depend on the field it is
+  # cited for, and a model often quotes one sentence for several fields.
+  seen <- new.env(parent = emptyenv())
+  verbatim <- function(q, i) {
+    key <- paste0(i, "\r", q)
+    if (is.null(seen[[key]])) assign(key, isTRUE(span_match(q, src[i])$verified), envir = seen)
+    seen[[key]]
+  }
 
   for (nm in names(fields)) {
     hits <- list()
@@ -180,8 +188,7 @@ reconcile_fields <- function(got, fields, d, client, spec, trace) {
       # carries the value (see read_extract()).
       # quote_backs_value() first: it is the cheaper test, and when it passes
       # every passage is in the chunk, so span_match() takes its fast path.
-      backs <- quote_backs_value(v, q, src[g$chunk], fields[[nm]]) &&
-        isTRUE(span_match(q, src[g$chunk])$verified)
+      backs <- quote_backs_value(v, q, src[g$chunk], fields[[nm]]) && verbatim(q, g$chunk)
       # "None" or "N/A" in a string field is usually the model saying it found
       # nothing -- often Python's None, spelled out -- and it often fills the
       # quote the same way. It is the answer only when the document itself
@@ -327,24 +334,38 @@ extract_verbatim_source <- function(d) {
 #' * scientific notation: "3.2 x 10^-5", with a multiplication sign (U+00D7)
 #'   and a superscript exponent (U+207B U+2075), and "3.2 x 10-5" as a PDF
 #'   text layer flattens the superscript;
-#' * a scale word or suffix ("1.2 million", "$3bn", 3 followed by U+4E07) and a
-#'   percentage as
-#'   a proportion ("54%" is also 0.54);
-#' * English number words (word_numbers()), Chinese numerals (han_numbers())
-#'   and a Roman numeral after a word such as "phase" (roman_numbers()).
+#' * a scale word or suffix ("1.2 million", "$3bn", "$1.2 bn", 3 followed by
+#'   U+4E07), in the other languages read below too ("1,2 millions", "1,2
+#'   Millionen", "1,2 millones", "1,2 Mio."), and a percentage as a proportion
+#'   ("54%", "54 per cent" and "Fifty-four percent" are also 0.54);
+#' * "one in five" and "1 in 5" (0.2), "two and a half" (2.5), "a quarter",
+#'   "two thirds" and the vulgar fraction signs (U+00BD and the like);
+#' * English number words (word_numbers()) or, in a quotation written in
+#'   Spanish, Portuguese, French, Italian, German or Dutch (quote_language()),
+#'   that language's number words instead (foreign_numbers()); Chinese
+#'   numerals (han_numbers()) and a Roman numeral after a word such as "phase"
+#'   (roman_numbers()).
 #'
 #' Signs are dropped because a hyphen before a number is as often a range
 #' ("20-30") or a name ("COVID-19") as a minus.
+#'
+#' `lang` is quote_language() of the whole quotation, when `s` is one piece
+#' of it: an elided piece can be too short to tell its language by.
 #' @noRd
-quote_numbers <- function(s) {
+quote_numbers <- function(s, lang = NULL) {
   s <- fold_numerals(as_chr1(s, ""))
   if (!nzchar(s)) return(numeric(0))
+  if (is.null(lang)) lang <- quote_language(s, folded = TRUE)
   # A middle dot (U+00B7) is a decimal point in Lancet style, between two
   # digits, and a multiplication sign before a power of ten.
   times <- gsub("\u00b7(?=\\s*10)", " x ", s, perl = TRUE)
   forms <- c(gsub("(?<=[0-9])\u00b7(?=[0-9])", ".", s, perl = TRUE),
              if (!identical(times, s)) times)
-  out <- unlist(lapply(forms, function(f) c(digit_numbers(f), word_numbers(f), han_numbers(f),
+  # English words are not read in another language: its "no" and "once" are
+  # not 0 and 1, nor Dutch "ten" 10.
+  foreign <- all(lang %in% names(.gr_numeral_languages))
+  words <- if (foreign) function(f) foreign_numbers(f, lang) else word_numbers
+  out <- unlist(lapply(forms, function(f) c(digit_numbers(f), words(f), han_numbers(f),
                                              roman_numbers(f))),
                 use.names = FALSE)
   unique(abs(out[is.finite(out)]))
@@ -352,22 +373,53 @@ quote_numbers <- function(s) {
 
 #' Digits of other scripts as ASCII, superscripts as a caret, and the spaces
 #' and minus signs normalise_for_match() folds, folded here too, so the
-#' readers below see one spelling. Lower case, as a normalised quote is.
+#' readers below see one spelling. Lower case, as a normalised quote is, and
+#' Latin letters without their accents ("veintidos", "funf", "dreissig"),
+#' as the number words below are spelled, whether the accent is one code
+#' point or a combining mark.
 #' @noRd
 fold_numerals <- function(s) {
   s <- to_utf8(s)
+  # Everything below but the case is a character outside ASCII.
+  if (!grepl("[^\\x01-\\x7f]", s, perl = TRUE)) return(tolower(s))
   # Full-width, Arabic-Indic (both), Devanagari and Bengali digits, then the
   # full-width and Arabic decimal and thousands separators and percent sign.
   from <- intToUtf8(c(0xFF10:0xFF19, 0x0660:0x0669, 0x06F0:0x06F9, 0x0966:0x096F,
                       0x09E6:0x09EF, 0xFF0E, 0xFF0C, 0x066B, 0x066C, 0xFF05))
   s <- chartr(from, paste0(strrep("0123456789", 5L), ".,.,%"), s)
   sup <- "\u2070\u00b9\u00b2\u00b3\u2074\u2075\u2076\u2077\u2078\u2079\u207a\u207b"
-  m <- gregexpr(paste0("[", sup, "]+"), s, perl = TRUE)
-  regmatches(s, m) <- lapply(regmatches(s, m), function(x)
-    if (length(x)) paste0("^", chartr(sup, "0123456789+-", x)) else x)
+  # A minus sign on the line before a superscript is the exponent's own sign:
+  # "10" U+2212 U+00B9 U+2070 is 10^-10.
+  m <- gregexpr(paste0("[-\u2212]?[", sup, "]+"), s, perl = TRUE)
+  regmatches(s, m) <- lapply(regmatches(s, m), function(x) {
+    if (!length(x)) return(x)
+    sign <- ifelse(grepl("^[-\u2212]", x, perl = TRUE), "-", "")
+    paste0("^", sign, chartr(sup, "0123456789+-", sub("^[-\u2212]", "", x, perl = TRUE)))
+  })
   s <- gsub("[\u00a0\u2007\u2009\u202f]", " ", s, perl = TRUE)
-  lower_text(gsub("\u2212", "-", s, fixed = TRUE))
+  s <- lower_text(gsub("\u2212", "-", s, fixed = TRUE))
+  s <- gsub("(?<=\\p{Latin})\\p{M}+", "", s, perl = TRUE)
+  s <- chartr(.gr_accent_fold$from, .gr_accent_fold$to, s)
+  gsub("\u00df", "ss", gsub("\u00e6", "ae", gsub("\u0153", "oe", s, fixed = TRUE),
+                            fixed = TRUE), fixed = TRUE)
 }
+
+#' Lower-case Latin letters with a diacritic, and the letter each is without
+#' it, for fold_numerals(): Latin-1 and Latin Extended-A.
+#' @noRd
+.gr_accent_fold <- list(
+  from = intToUtf8(c(0xE0:0xE5, 0xE7:0xEF, 0xF0:0xF6, 0xF8:0xFD, 0xFF,
+                     0x101, 0x103, 0x105, 0x107, 0x109, 0x10B, 0x10D, 0x10F, 0x111,
+                     0x113, 0x115, 0x117, 0x119, 0x11B, 0x11D, 0x11F, 0x121, 0x123,
+                     0x125, 0x127, 0x129, 0x12B, 0x12D, 0x12F, 0x131, 0x135, 0x137,
+                     0x13A, 0x13C, 0x13E, 0x140, 0x142, 0x144, 0x146, 0x148,
+                     0x14D, 0x14F, 0x151, 0x155, 0x157, 0x159, 0x15B, 0x15D, 0x15F,
+                     0x161, 0x163, 0x165, 0x167, 0x169, 0x16B, 0x16D, 0x16F, 0x171,
+                     0x173, 0x175, 0x177, 0x17A, 0x17C, 0x17E)),
+  to = paste0("aaaaaa", "ceeeeiiii", "dnooooo", "ouuuuy", "y",
+              "aaaccccdd", "eeeeegggg", "hhiiiiijk",
+              "llllln", "nn", "ooorrrsss",
+              "stttuuuuu", "uwyzzz"))
 
 #' Every number written in digits, in each of the forms quote_numbers() lists.
 #' @noRd
@@ -386,17 +438,21 @@ digit_numbers <- function(s) {
   # As written: digits, comma thousands, a decimal point, an exponent.
   out <- num(gsub(",", "", grab("(?:[0-9][0-9,]*(?:\\.[0-9]+)?|\\.[0-9]+)(?:e[-+]?[0-9]+)?"),
                   fixed = TRUE))
-  # Thousands grouped by spaces or apostrophes: every run of two groups or
-  # more, since a table row "120 118" is two numbers as well as a grouping.
+  # Thousands grouped by spaces or apostrophes: every run of two to five
+  # groups, since a table row "120 118" is two numbers as well as a grouping.
+  # Five groups reach 999 trillion; a longer run is a row of a table, and
+  # reading every stretch of one made a quoted table of counts take minutes.
   for (g in grab("(?<![0-9.,])[1-9][0-9]{0,2}(?:[ '][0-9]{3})+(?:[.,][0-9]+)?(?![0-9])")) {
     dec <- regmatches(g, regexpr("[.,][0-9]+$", g, perl = TRUE))
     parts <- strsplit(if (length(dec)) substr(g, 1L, nchar(g) - nchar(dec)) else g,
                       "[ ']", perl = TRUE)[[1]]
     k <- length(parts)
-    for (i in seq_len(k - 1L)) for (j in (i + 1L):k) {
-      out <- c(out, num(paste0(paste(parts[i:j], collapse = ""),
-                               if (j == k && length(dec)) paste0(".", substring(dec, 2L)))))
-    }
+    ends <- lapply(seq_len(k - 1L), function(i) seq.int(i + 1L, min(k, i + 4L)))
+    runs <- unlist(lapply(seq_len(k - 1L), function(i) vapply(ends[[i]], function(j)
+      paste0(paste(parts[i:j], collapse = ""),
+             if (j == k && length(dec)) paste0(".", substring(dec, 2L)) else ""),
+      character(1))), use.names = FALSE)
+    out <- c(out, num(runs))
   }
   # Dots for thousands with a decimal comma, and a decimal comma alone.
   eur <- grab("(?<![0-9.,])[1-9][0-9]{0,2}(?:\\.[0-9]{3})+(?:,[0-9]+)?(?![0-9]|\\.[0-9])")
@@ -413,29 +469,87 @@ digit_numbers <- function(s) {
   # Scale words, suffixes and percentages.
   # setNames(), not `"\u5343" = 1e3`: a name written in a call is made a
   # symbol in the native encoding, and under LC_ALL=C that mangles it.
+  # A space before "bn" and "mn" ("$1.2 bn", "3 mn"), which name nothing
+  # else; none before "k" and "m", which after a space are as often a unit
+  # ("2.5 K" of potassium, "1.2 m" of height). The plurals and the other
+  # languages' words for a million and a billion, after a figure only: the
+  # English "billion", which in French and German is 1e12, is read as 1e9.
   scale <- stats::setNames(c(1e2, 1e3, 1e6, 1e9, 1e12, 1e5, 1e7, 1e3, 1e6, 1e6, 1e9,
                              1e3, 1e4, 1e4, 1e8, 1e8),
                            c("hundred", "thousand", "million", "billion", "trillion", "lakh",
                              "crore", "k", "m", "mn", "bn",
                              "\u5343", "\u4e07", "\u842c", "\u4ebf", "\u5104"))
-  for (g in c(groups(paste0(fig, "\\s*(hundred|thousand|million|billion|trillion|lakh|crore)",
-                            "(?![a-z])")),
-              groups(paste0(fig, "(k|mn|m|bn)(?![a-z])")),
+  scale <- c(scale, .gr_foreign_scale)
+  words <- paste(c("hundred", "thousands?", "millions?", "billions?", "trillions?", "lakhs?",
+                   "crores?", names(.gr_foreign_scale)), collapse = "|")
+  for (g in c(groups(paste0(fig, "\\s*(", words, ")(?![a-z])")),
+              groups(paste0(fig, "(k|m)(?![a-z])")),
+              groups(paste0(fig, "\\s?(mn|bn)(?![a-z])")),
               groups(paste0(fig, "\\s*([\u5343\u4e07\u842c\u4ebf\u5104])")))) {
-    out <- c(out, figure(g[1]) * scale[[g[2]]])
+    # A plural ("millions") is the word's own scale.
+    key <- if (g[2] %in% names(scale)) g[2] else sub("s$", "", g[2])
+    out <- c(out, figure(g[1]) * scale[[key]])
   }
-  for (g in groups(paste0(fig, "\\s*(?:%|per ?cent(?![a-z]))"))) out <- c(out, figure(g[1]) / 100)
+  pct <- paste0("\\s*(?:%|per ?cent(?![a-z])|per ?cento|por ?cie?nto|pour ?cent|prozent|",
+                "procent)")
+  for (g in groups(paste0(fig, pct))) out <- c(out, figure(g[1]) / 100)
+  # "1 in 5" is 0.2; "2 and a half" and "2" followed by a fraction sign
+  # (U+00BD and the like) are 2.5.
+  for (g in groups("(?<![0-9.,])([1-9][0-9]{0,2}) in ([1-9][0-9]{0,2}|1000)(?![0-9]|[.,][0-9])")) {
+    if (num(g[1]) < num(g[2])) out <- c(out, num(g[1]) / num(g[2]))
+  }
+  out <- c(out, num(unlist(groups("(?<![0-9.,])([0-9]+) and a half(?![a-z])"))) + 0.5)
+  signs <- paste(names(.gr_fraction_signs), collapse = "")
+  for (g in groups(paste0("(?<![0-9.,])([0-9]*)([", signs, "])"))) {
+    out <- c(out, fraction_readings(if (nzchar(g[1])) num(g[1]) else 0,
+                                    .gr_fraction_signs[[g[2]]]))
+  }
   out
 }
+
+#' A fraction as the numbers a paper may round it to: 2/3 is 0.667 and 0.67
+#' as well. `whole` is added to it, for "2 and a half".
+#' @noRd
+fraction_readings <- function(whole, frac) {
+  x <- whole + frac
+  unique(c(x, round(x, 2), round(x, 3)))
+}
+
+#' The vulgar fraction signs, U+00BC to U+00BE and U+2153 to U+215E.
+#' @noRd
+.gr_fraction_signs <- stats::setNames(
+  c(1 / 4, 1 / 2, 3 / 4, 1 / 3, 2 / 3, 1 / 5, 2 / 5, 3 / 5, 4 / 5, 1 / 6, 5 / 6,
+    1 / 8, 3 / 8, 5 / 8, 7 / 8),
+  strsplit(intToUtf8(c(0xBC, 0xBD, 0xBE, 0x2153:0x215E)), "")[[1]])
+
+#' The words for a million and a billion in the languages foreign_numbers()
+#' reads, as a figure is followed by them ("1,2 millions", "1,2 Mio."),
+#' spelled as fold_numerals() leaves them.
+#' @noRd
+.gr_foreign_scale <- c(millones = 1e6, millon = 1e6, milhoes = 1e6, milhao = 1e6,
+                       millionen = 1e6, milioni = 1e6, milione = 1e6, miljoen = 1e6,
+                       miljoenen = 1e6, mio = 1e6, milliards = 1e9, milliard = 1e9,
+                       milliarden = 1e9, milliarde = 1e9, miliardi = 1e9, miliardo = 1e9,
+                       miljard = 1e9, miljarden = 1e9, mrd = 1e9)
 
 #' English number words.
 #'
 #' APA and AMA style spell out a number that starts a sentence and, in APA,
 #' most numbers below ten, so "Twenty-four patients were enrolled" and
-#' "randomised to three arms" are how a count is often quoted. Cardinals and
-#' ordinals to the trillions, joined by spaces, hyphens and "and" ("one
-#' hundred and twenty"), and the words that state a count without a numeral:
-#' "no" and "none" for zero, "both" and "twice" for two.
+#' "randomised to three arms" are how a count is often quoted. Cardinals to
+#' the trillions, joined by spaces, hyphens and "and" ("one hundred and
+#' twenty"), a compound ordinal ("twenty-first"), a percentage ("Fifty-four
+#' percent" is 0.54 too), "two and a half", a fraction ("a quarter", "two
+#' thirds") and "one in five".
+#'
+#' A word that does not name a number is read only where it counts
+#' something, because nearly every sentence has one and the value check is
+#' there to catch an invented 0, 1 or 2: "no" is 0 before a counted noun ("no
+#' deaths", "No participants died"), never before "difference", "significant"
+#' or "effect"; "none", "nobody" and "no one" are 0; "both" and "twice" are 2.
+#' A bare ordinal ("the first visit", "the second author"), "one of" and
+#' "once" or "single" are not counts, and "half" is 0.5 only as "a half",
+#' "one half" or "half of".
 #' @noRd
 word_numbers <- function(s) {
   m <- gregexpr("[a-z]+", s, perl = TRUE)[[1]]
@@ -443,40 +557,62 @@ word_numbers <- function(s) {
   toks <- regmatches(s, list(m))[[1]]
   from <- as.integer(m)
   to <- from + attr(m, "match.length") - 1L
-  out <- unname(.gr_count_words[toks[toks %in% names(.gr_count_words)]])
-  small <- c(.gr_number_words, .gr_ordinal_words)
-  total <- 0; cur <- 0; last <- ""
-  close <- function() {
-    if (nzchar(last)) out <<- c(out, total + cur)
-    total <<- 0; cur <<- 0; last <<- ""
+  n <- length(toks)
+  # glue[i]: token i runs on from token i - 1, across a space or hyphen and
+  # never across punctuation.
+  glue <- c(FALSE, if (n > 1L) grepl("^[ -]+$", substring(s, to[-n] + 1L, from[-1L] - 1L)))
+  # The k-th token after token i, when every step to it is glued; else "".
+  after <- function(i, k = 1L) {
+    j <- i + k
+    if (j > n || !all(glue[(i + 1L):j])) "" else toks[j]
   }
-  # A number runs on across a space or hyphen, never across punctuation.
-  joined <- function(i) grepl("^[ -]+$", substr(s, to[i - 1L] + 1L, from[i] - 1L))
-  then <- function(i, set) i < length(toks) && toks[i + 1L] %in% set && joined(i + 1L)
-  for (i in seq_along(toks)) {
+  before <- function(i) if (i > 1L && glue[i]) toks[i - 1L] else ""
+  small <- c(.gr_number_words, .gr_ordinal_words)
+
+  # Runs of number words: value, first and last token, and whether the run is
+  # a lone ordinal, which is a position rather than a count.
+  rv <- numeric(0); rf <- integer(0); rl <- integer(0); rb <- logical(0)
+  total <- 0; cur <- 0; last <- ""; start <- 1L; end <- 1L; card <- FALSE
+  close <- function() {
+    if (nzchar(last)) {
+      rv <<- c(rv, total + cur); rf <<- c(rf, start); rl <<- c(rl, end); rb <<- c(rb, !card)
+    }
+    total <<- 0; cur <<- 0; last <<- ""; card <<- FALSE
+  }
+  then <- function(i, set) after(i) %in% set
+  for (i in seq_len(n)) {
     t <- toks[i]
-    if (i > 1L && !joined(i)) close()
-    if (t %in% names(small)) {
+    if (i > 1L && !glue[i]) close()
+    if (t == "one" && (then(i, c("of", "another")) || before(i) == "no")) {
+      close()
+    } else if (t %in% names(small)) {
       v <- small[[t]]
       kind <- if (v < 10) "unit" else if (v < 20) "teen" else "tens"
       # "twenty four" is one number; "two three" and "twenty thirty" are two.
       if (last %in% c("unit", "teen") || (last == "tens" && kind != "unit")) close()
+      if (!nzchar(last)) start <- i
       cur <- cur + v
       last <- kind
-      if (t %in% names(.gr_ordinal_words)) close()
+      end <- i
+      if (t %in% names(.gr_ordinal_words)) close() else card <- TRUE
     } else if (t %in% c("hundred", "dozen") && nzchar(last) && last != "hundred") {
       cur <- (if (cur > 0) cur else 1) * (if (t == "hundred") 100 else 12)
       last <- "hundred"
+      end <- i
+      card <- TRUE
     } else if (t %in% names(.gr_scale_words) && nzchar(last)) {
       # Only after a number: the "million" of "1.2 million" is not 1e6 on its
       # own (digit_numbers() reads that one), and "a million" set `last`.
       total <- total + (if (cur > 0) cur else 1) * .gr_scale_words[[t]]
       cur <- 0
       last <- "scale"
+      end <- i
+      card <- TRUE
     } else if (t == "and" && last %in% c("hundred", "scale") && then(i, names(small))) {
       next
     } else if (t == "a" && then(i, c("hundred", "dozen", names(.gr_scale_words)))) {
       close()
+      start <- i
       cur <- 1
       last <- "a"
     } else {
@@ -484,6 +620,46 @@ word_numbers <- function(s) {
     }
   }
   close()
+
+  count <- !rb
+  out <- rv[count]
+  for (r in which(count)) {
+    e <- rl[r]
+    if (grepl("^\\s*(?:%|per ?cent(?![a-z]))", substr(s, to[e] + 1L, to[e] + 12L), perl = TRUE)) {
+      out <- c(out, rv[r] / 100)
+    }
+    if (after(e) == "and" && after(e, 2L) == "a" && after(e, 3L) == "half") {
+      out <- c(out, rv[r] + 0.5)
+    }
+    nx <- which(rf == e + 2L & count)
+    if (after(e) == "in" && length(nx) && rv[r] >= 1 && rv[nx[1]] > rv[r]) {
+      out <- c(out, rv[r] / rv[nx[1]])
+    }
+  }
+  # A fraction: its numerator is the run of number words just before, or "a"
+  # where a fraction of something follows ("a quarter of", "a half.") and
+  # not a position ("a third arm", "a half-hour").
+  for (i in which(toks %in% names(.gr_fraction_words))) {
+    num <- NA_real_
+    if (glue[i] && length(r <- which(rl == i - 1L & count))) {
+      num <- rv[r[1]]
+    } else if ((before(i) == "a" && (after(i) %in% c("", "of"))) ||
+               (toks[i] == "half" && then(i, c("of", "the")) &&
+                !before(i) %in% c(names(.gr_ordinal_words), "the", "last", "other"))) {
+      num <- 1
+    }
+    if (!is.na(num) && num >= 1 && num < 100) {
+      out <- c(out, fraction_readings(0, num / .gr_fraction_words[[toks[i]]]))
+    }
+  }
+  # Words that state a count without being a numeral, where they count.
+  for (i in which(toks %in% names(.gr_count_words))) {
+    if (toks[i] == "no" && after(i) != "one") {
+      nxt <- c(after(i), after(i, 2L), after(i, 3L))
+      if (!any(nxt %in% .gr_counted_nouns) || any(nxt %in% .gr_uncounted_words)) next
+    }
+    out <- c(out, .gr_count_words[[toks[i]]])
+  }
   out
 }
 
@@ -507,10 +683,49 @@ word_numbers <- function(s) {
 .gr_scale_words <- c(thousand = 1e3, million = 1e6, billion = 1e9, trillion = 1e12,
                      lakh = 1e5, crore = 1e7)
 
-#' Words that state a count without being a numeral.
+#' Words that state a count without being a numeral; "no" only before a
+#' counted noun (see word_numbers()).
 #' @noRd
-.gr_count_words <- c(no = 0, none = 0, nil = 0, nobody = 0, nought = 0, once = 1,
-                     single = 1, twice = 2, both = 2, thrice = 3, half = 0.5)
+.gr_count_words <- c(no = 0, none = 0, nil = 0, nobody = 0, nought = 0, twice = 2, both = 2,
+                     thrice = 3)
+
+#' The denominators of a fraction written in words.
+#' @noRd
+.gr_fraction_words <- c(half = 2, halves = 2, third = 3, thirds = 3, quarter = 4, quarters = 4,
+                        fourth = 4, fourths = 4, fifth = 5, fifths = 5, sixth = 6, sixths = 6,
+                        seventh = 7, sevenths = 7, eighth = 8, eighths = 8, ninth = 9,
+                        ninths = 9, tenth = 10, tenths = 10)
+
+#' What "no" counts when it is 0: "no deaths", "No participants died", "no
+#' serious adverse events". Within three words of it, and with none of
+#' .gr_uncounted_words there: "no difference in deaths" counts nothing.
+#' @noRd
+.gr_counted_nouns <- c(
+  "patient", "patients", "participant", "participants", "subject", "subjects", "person",
+  "persons", "people", "individual", "individuals", "adult", "adults", "child", "children",
+  "infant", "infants", "neonate", "neonates", "baby", "babies", "woman", "women", "man", "men",
+  "volunteer", "volunteers", "respondent", "respondents", "case", "cases", "death", "deaths",
+  "died", "event", "events", "fatality", "fatalities", "withdrawal", "withdrawals", "dropout",
+  "dropouts", "loss", "losses", "relapse", "relapses", "recurrence", "recurrences",
+  "complication", "complications", "infection", "infections", "hospitalisation",
+  "hospitalisations", "hospitalization", "hospitalizations", "admission", "admissions",
+  "readmission", "readmissions", "fracture", "fractures", "fall", "falls", "stroke", "strokes",
+  "reaction", "reactions", "toxicity", "toxicities", "site", "sites", "centre", "centres",
+  "center", "centers", "hospital", "hospitals", "clinic", "clinics", "study", "studies", "trial",
+  "trials", "arm", "arms", "cohort", "cohorts", "record", "records", "article", "articles")
+
+#' Words that make "no" a verdict rather than a count: "no difference", "no
+#' significant effect", "no evidence", "no one".
+#' @noRd
+.gr_uncounted_words <- c(
+  "difference", "differences", "different", "significant", "significantly", "significance",
+  "statistically", "statistical", "evidence", "effect", "effects", "association",
+  "associations", "associated", "change", "changes", "changed", "correlation", "relationship",
+  "role", "impact", "influence", "benefit", "benefits", "increase", "increased", "decrease",
+  "decreased", "reduction", "improvement", "longer", "more", "less", "fewer", "further",
+  "other", "one", "clear", "major", "substantial", "relevant", "meaningful", "history",
+  "prior", "previous", "known", "data", "information", "sign", "signs", "trend", "risk",
+  "interaction", "heterogeneity", "bias", "conflict", "conflicts", "competing", "need")
 
 #' Chinese (and Japanese) numerals: U+4E09 U+7EC4 is "three groups", U+4E00
 #' U+767E U+4E8C U+5341 is 120, and a year may be written digit by digit.
@@ -566,37 +781,383 @@ roman_numbers <- function(s) {
   as.numeric(out[!is.na(out)])
 }
 
-#' Could a quotation state its number in words quote_numbers() cannot read?
+#' Which language a quotation's number words are in.
 #'
-#' English number words and Chinese numerals are read; "veinticuatro" or
-#' Russian's "dvadtsat' chetyre" are not. A quote in such a language whose number is
-#' spelled out would fail as if it stated no number, where the span check
-#' this replaced verified it, so for such a quote -- and only when no number
-#' at all can be read from it -- the span check stands. Letters outside
-#' English's alphabet (other than Han, kana and the ligatures a PDF text layer
-#' writes) or a common function word of another European language mark one.
+#' English and Chinese number words are read in any quotation (word_numbers(),
+#' han_numbers()). One written in Spanish, Portuguese, French, Italian, German
+#' or Dutch is read with that language's words instead (foreign_numbers()):
+#' its "veinticuatro" is 24, and its "no", "once" and "ten" are not the
+#' English 0, 1 and 10. A quotation is in one of those languages when it holds
+#' none of the commonest English words (.gr_english_words) and at least two
+#' words of that language, one of them a word English prose does not use
+#' (.gr_numeral_languages). So "SE", "de novo", "en bloc", "von Willebrand",
+#' a Greek letter or an accented name leave an English sentence English.
+#'
+#' A quotation most of whose letters are of a script other than Latin, Han
+#' and kana (Cyrillic, Greek, Arabic, Hangul and the like) is "script": no
+#' reader here knows its number words (see pieces_back_value()).
+#'
+#' `folded` says `s` has been through fold_numerals() already.
+#' @return "en", "script", or the codes of the languages it is in (more than
+#'   one only on a tie).
 #' @noRd
-numerals_unreadable <- function(s) {
-  if (grepl("(?=\\p{L})[^\\p{Latin}\\p{Han}\\p{Hiragana}\\p{Katakana}]", s, perl = TRUE)) return(TRUE)
-  if (grepl("(?=\\p{Latin})[^a-z\ufb00-\ufb06]", s, perl = TRUE)) return(TRUE)
-  any(regmatches(s, gregexpr("[a-z]+", s, perl = TRUE))[[1]] %in% .gr_other_language_words)
+quote_language <- function(s, folded = FALSE) {
+  if (!folded) s <- fold_numerals(as_chr1(s, ""))
+  count <- function(pat) {
+    m <- gregexpr(pat, s, perl = TRUE)[[1]]
+    if (m[1] < 0L) 0L else length(m)
+  }
+  if (grepl("[^\\x01-\\x7f]", s, perl = TRUE)) {
+    other <- count("(?=\\p{L})[^\\p{Latin}\\p{Han}\\p{Hiragana}\\p{Katakana}]")
+    if (other > 0L && 2L * other > count("\\p{L}")) return("script")
+  }
+  toks <- unique(regmatches(s, gregexpr("[a-z]+", s, perl = TRUE))[[1]])
+  if (!length(toks) || any(toks %in% .gr_english_words)) return("en")
+  score <- vapply(.gr_numeral_languages, function(L) {
+    # A number word counts as a word of the language when English has no
+    # such word: "veinticuatro" and "vierundzwanzig" do, "once" and "cent"
+    # do not.
+    cand <- toks[nchar(toks) >= 4L & !toks %in% c(L$one, .gr_numeral_false_friends) &
+                   grepl(L$pattern, toks, perl = TRUE)]
+    strong <- sum(toks %in% L$strong) +
+      sum(vapply(cand, function(t) !is.null(numeral_parts(t, L)), logical(1)))
+    weak <- sum(toks %in% L$weak)
+    if (strong >= 1L && strong + weak >= 2L) strong + weak else 0L
+  }, integer(1))
+  if (max(score) == 0L) return("en")
+  names(score)[score == max(score)]
 }
 
-#' Common function words of Spanish, French, German, Portuguese, Italian,
-#' Dutch and the Scandinavian languages. Not ones English quotes use too
-#' ("et" of "et al.", "die", "a", "e" of "e.g.", "un" of "UN"): a word here
-#' only ever loosens the check back to what it was, but it should not do that
-#' for English.
+#' Words English quotations are nearly all written with and none of the
+#' languages quote_language() tells apart uses. One of them makes a quotation
+#' English, whatever else it holds.
 #' @noRd
-.gr_other_language_words <- c(
-  "de", "la", "el", "los", "las", "del", "en", "se", "que", "con", "por", "para",
-  "fueron", "una",
-  "le", "les", "des", "du", "dans", "avec", "sont", "une", "ont", "qui",
-  "der", "das", "und", "mit", "wurden", "eine", "einer", "von", "zu", "bei", "den", "dem",
-  "os", "com", "foram", "uma", "dos", "em",
-  "il", "di", "gli", "della", "sono", "stati", "nel", "dei", "che",
-  "het", "een", "werden", "zijn",
-  "och", "og", "blev", "ble")
+.gr_english_words <- c("the", "and", "with", "were", "which", "from", "this", "that", "these",
+                       "those", "been", "are", "has", "have", "their", "they", "we", "our",
+                       "than", "into", "during", "between", "after", "who", "there", "it", "its")
+
+#' Number words of the languages below that are English words too, or common
+#' in English prose: not evidence that a quotation is in another language.
+#' @noRd
+.gr_numeral_false_friends <- c("once", "cent", "cents", "sept", "seize", "zero", "otto", "tres",
+                               "nove", "venti", "null", "mille", "mila", "twee", "tien", "million",
+                               "millions")
+
+#' One language for foreign_numbers(), from space-separated lists.
+#'
+#' `words` is "word value" pairs of the cardinals below a thousand spelled as
+#' one word; `one` the words for one, which are articles too and so count
+#' only inside a larger number; `hundred` the words for a hundred, which
+#' multiply the number before them; `scale` "word value" pairs for a thousand
+#' and more; `alone` the ones of those that are a number with nothing before
+#' them ("mil pacientes"); `join` the word for "and" inside a number.
+#' `compound` for a language that writes a number as one word
+#' ("vierundzwanzig", "centoventi"); `inner` the forms of such a language that
+#' occur only inside one ("vent" of "ventotto"); `reversed` for one that puts
+#' the unit before the tens ("vier und zwanzig"); `french` for the tens of
+#' French ("soixante-dix", "dix-sept"); `prepare` a function run on the text
+#' first; `idioms` two-word phrases in which a number word is not a number
+#' (German "ausser acht", disregarded). `strong` and `weak` are the language's
+#' common words, those English does not use and those it does, for
+#' quote_language().
+#' @noRd
+numeral_language <- function(words, one, hundred, scale, alone, join, strong, weak,
+                             compound = FALSE, reversed = FALSE, french = FALSE, inner = "",
+                             prepare = NULL, idioms = character(0)) {
+  sp <- function(x) {
+    x <- strsplit(x, " ", fixed = TRUE)[[1]]
+    x[nzchar(x)]
+  }
+  pairs <- function(x) {
+    x <- sp(x)
+    stats::setNames(as.numeric(x[c(FALSE, TRUE)]), x[c(TRUE, FALSE)])
+  }
+  words <- pairs(words)
+  scale <- pairs(scale)
+  all <- unique(c(names(words), sp(one), sp(hundred), names(scale), sp(join)))
+  # Longest first, so a split tries "dieci" before "die" and "cento" before
+  # "cent" -- and, failing, the shorter.
+  morphemes <- all[order(-nchar(all), all)]
+  alt <- paste(morphemes, collapse = "|")
+  list(words = words, one = sp(one), hundred = sp(hundred), scale = scale, alone = sp(alone),
+       join = sp(join), strong = sp(strong), weak = sp(weak), compound = compound,
+       reversed = reversed, french = french, inner = sp(inner), prepare = prepare,
+       idioms = idioms, morphemes = morphemes,
+       pattern = if (compound) paste0("^(?:", alt, ")+$") else paste0("^(?:", alt, ")$"))
+}
+
+#' The languages whose number words foreign_numbers() reads, spelled without
+#' accents as fold_numerals() leaves them.
+#' @noRd
+.gr_numeral_languages <- list(
+  es = numeral_language(
+    words = paste("cero 0 dos 2 tres 3 cuatro 4 cinco 5 seis 6 siete 7 ocho 8 nueve 9 diez 10",
+                  "once 11 doce 12 trece 13 catorce 14 quince 15 dieciseis 16 diecisiete 17",
+                  "dieciocho 18 diecinueve 19 veinte 20 veintiuno 21 veintiuna 21 veintiun 21",
+                  "veintidos 22 veintitres 23 veinticuatro 24 veinticinco 25 veintiseis 26",
+                  "veintisiete 27 veintiocho 28 veintinueve 29 treinta 30 cuarenta 40",
+                  "cincuenta 50 sesenta 60 setenta 70 ochenta 80 noventa 90 doscientos 200",
+                  "doscientas 200 trescientos 300 trescientas 300 cuatrocientos 400",
+                  "cuatrocientas 400 quinientos 500 quinientas 500 seiscientos 600",
+                  "seiscientas 600 setecientos 700 setecientas 700 ochocientos 800",
+                  "ochocientas 800 novecientos 900 novecientas 900"),
+    one = "un uno una", hundred = "cien ciento", scale = "mil 1e3 millon 1e6 millones 1e6",
+    alone = "mil", join = "y",
+    strong = paste("el los las que por una unos unas fueron fue eran entre sus como tras",
+                   "durante hubo han sido pacientes estudio grupo grupos mujeres hombres",
+                   "tratamiento incluyeron incluidos"),
+    weak = "de la en se y al del con para no lo"),
+  pt = numeral_language(
+    words = paste("zero 0 dois 2 duas 2 tres 3 quatro 4 cinco 5 seis 6 sete 7 oito 8 nove 9",
+                  "dez 10 onze 11 doze 12 treze 13 catorze 14 quatorze 14 quinze 15",
+                  "dezesseis 16 dezasseis 16 dezessete 17 dezassete 17 dezoito 18 dezenove 19",
+                  "dezanove 19 vinte 20 trinta 30 quarenta 40 cinquenta 50 sessenta 60",
+                  "setenta 70 oitenta 80 noventa 90 duzentos 200 duzentas 200 trezentos 300",
+                  "trezentas 300 quatrocentos 400 quatrocentas 400 quinhentos 500",
+                  "quinhentas 500 seiscentos 600 seiscentas 600 setecentos 700 setecentas 700",
+                  "oitocentos 800 oitocentas 800 novecentos 900 novecentas 900"),
+    one = "um uma", hundred = "cem cento", scale = "mil 1e3 milhao 1e6 milhoes 1e6",
+    alone = "mil", join = "e",
+    strong = paste("foram foi eram uma pelo pela pelos pelas seus suas ao aos nao sao tambem",
+                   "entre durante estudo pacientes grupo grupos mulheres homens tratamento",
+                   "incluidos das nas nos"),
+    weak = "de da do dos os as no na em com e um que se para por"),
+  fr = numeral_language(
+    words = paste("zero 0 deux 2 trois 3 quatre 4 cinq 5 six 6 sept 7 huit 8 neuf 9 dix 10",
+                  "onze 11 douze 12 treize 13 quatorze 14 quinze 15 seize 16 vingt 20",
+                  "vingts 20 trente 30 quarante 40 cinquante 50 soixante 60 septante 70",
+                  "huitante 80 octante 80 nonante 90 quatrevingt 80"),
+    one = "un une", hundred = "cent cents",
+    scale = "mille 1e3 million 1e6 millions 1e6 milliard 1e9 milliards 1e9",
+    alone = "mille", join = "et",
+    strong = paste("les des du dans avec sont une ont qui aux ete etait etaient sur pour leur",
+                   "leurs chez ces cette apres selon ainsi etude groupe groupes traitement",
+                   "femmes hommes ans inclus"),
+    weak = "le la de en se et au par plus est un",
+    french = TRUE,
+    # "quatre-vingts" is 80, not 4 and 20.
+    prepare = function(s) gsub("quatre[- ]vingts?(?![a-z])", "quatrevingt", s, perl = TRUE)),
+  it = numeral_language(
+    words = paste("zero 0 due 2 tre 3 quattro 4 cinque 5 sei 6 sette 7 otto 8 nove 9 dieci 10",
+                  "undici 11 dodici 12 tredici 13 quattordici 14 quindici 15 sedici 16",
+                  "diciassette 17 diciotto 18 diciannove 19 venti 20 vent 20 trenta 30",
+                  "trent 30 quaranta 40 quarant 40 cinquanta 50 cinquant 50 sessanta 60",
+                  "sessant 60 settanta 70 settant 70 ottanta 80 ottant 80 novanta 90",
+                  "novant 90"),
+    one = "uno un una", hundred = "cento cent",
+    scale = "mille 1e3 mila 1e3 milione 1e6 milioni 1e6 miliardo 1e9 miliardi 1e9",
+    alone = "mille", join = "",
+    strong = paste("il gli della delle dello degli dei sono stati stato state nel nella nelle",
+                   "nei negli che una tra fra sul sulla alla alle ai agli anni pazienti gruppo",
+                   "gruppi trattamento donne uomini inclusi erano essere anche dopo durante",
+                   "secondo ogni"),
+    weak = "di con per e ed del al la le un uno era studio",
+    compound = TRUE,
+    inner = "vent trent quarant cinquant sessant settant ottant novant cent"),
+  de = numeral_language(
+    words = paste("null 0 eins 1 zwei 2 zwo 2 drei 3 vier 4 funf 5 fuenf 5 sechs 6 sieben 7",
+                  "acht 8 neun 9 zehn 10 elf 11 zwolf 12 zwoelf 12 dreizehn 13 vierzehn 14",
+                  "funfzehn 15 fuenfzehn 15 sechzehn 16 siebzehn 17 achtzehn 18 neunzehn 19",
+                  "zwanzig 20 dreissig 30 vierzig 40 funfzig 50 fuenfzig 50 sechzig 60",
+                  "siebzig 70 achtzig 80 neunzig 90"),
+    one = "ein eine", hundred = "hundert",
+    scale = "tausend 1e3 million 1e6 millionen 1e6 milliarde 1e9 milliarden 1e9",
+    alone = "tausend", join = "und",
+    strong = paste("der das und mit wurden wurde eine einer einem einen eines zu bei dem im ist",
+                   "sind nach auf fur aus nicht sich zum zur je oder wie als auch durch uber",
+                   "unter zwischen jahre jahren patienten studie gruppe gruppen behandlung",
+                   "frauen manner eingeschlossen insgesamt umfasste"),
+    weak = "die den des von in es war an so",
+    compound = TRUE, reversed = TRUE,
+    idioms = c("ausser acht", "acht lassen", "acht gelassen", "acht nehmen", "acht genommen",
+               "acht geben", "acht gegeben")),
+  nl = numeral_language(
+    words = paste("nul 0 twee 2 drie 3 vier 4 vijf 5 zes 6 zeven 7 acht 8 negen 9 tien 10",
+                  "elf 11 twaalf 12 dertien 13 veertien 14 vijftien 15 zestien 16 zeventien 17",
+                  "achttien 18 negentien 19 twintig 20 dertig 30 veertig 40 vijftig 50",
+                  "zestig 60 zeventig 70 tachtig 80 negentig 90"),
+    one = "een", hundred = "honderd",
+    scale = "duizend 1e3 miljoen 1e6 miljoenen 1e6 miljard 1e9 miljarden 1e9",
+    alone = "duizend", join = "en",
+    strong = paste("het een werden werd zijn met bij voor naar uit niet dat ook door tussen",
+                   "jaar jaren patienten studie groep groepen behandeling vrouwen mannen",
+                   "ingesloten totaal opzichte"),
+    weak = "de en van in is op te ten er als dan na of",
+    compound = TRUE, reversed = TRUE,
+    idioms = c("acht nemen", "acht genomen", "acht neemt", "acht nam", "acht slaan",
+               "acht geslagen")))
+
+#' Number words of the languages quote_language() names, read as
+#' word_numbers() reads English ones.
+#'
+#' "veinticuatro", "vinte e quatro", "vingt-quatre", "ventiquattro",
+#' "vierundzwanzig" and "vierentwintig" are each 24; "ciento veinte", "cent
+#' vingt" and "hundertzwanzig" 120; "dos mil" 2000 and "un millon" 1e6; and
+#' "cincuenta por ciento" 0.5 as well as 50. A word for one alone ("un",
+#' "ein", "een") is an article as often as a number, so it counts only inside
+#' a larger number ("veintiuno", "un millon"). Where two languages tie, a
+#' common word of the other is not read as a number ("dos" is "of the" in
+#' Portuguese).
+#' @noRd
+foreign_numbers <- function(s, langs) {
+  out <- numeric(0)
+  for (code in langs) {
+    L <- .gr_numeral_languages[[code]]
+    avoid <- unlist(lapply(.gr_numeral_languages[setdiff(langs, code)],
+                           function(o) c(o$strong, o$weak)), use.names = FALSE)
+    out <- c(out, read_numerals(if (is.null(L$prepare)) s else L$prepare(s), L, avoid))
+  }
+  out
+}
+
+#' foreign_numbers() for one language `L` (see numeral_language()).
+#' @noRd
+read_numerals <- function(s, L, avoid = character(0)) {
+  m <- gregexpr("[a-z]+", s, perl = TRUE)[[1]]
+  if (m[1] < 0L) return(numeric(0))
+  toks <- regmatches(s, list(m))[[1]]
+  from <- as.integer(m)
+  to <- from + attr(m, "match.length") - 1L
+  n <- length(toks)
+  # A number runs on across a space or hyphen, never across punctuation.
+  glue <- c(FALSE, if (n > 1L) grepl("^[ -]+$", substring(s, to[-n] + 1L, from[-1L] - 1L)))
+  parts <- vector("list", n)
+  for (i in which(grepl(L$pattern, toks, perl = TRUE) & !toks %in% avoid)) {
+    idiom <- (glue[i] && paste(toks[i - 1L], toks[i]) %in% L$idioms) ||
+      (i < n && glue[i + 1L] && paste(toks[i], toks[i + 1L]) %in% L$idioms)
+    if (!idiom) parts[i] <- list(numeral_parts(toks[i], L))
+  }
+  if (all(vapply(parts, is.null, logical(1)))) return(numeric(0))
+
+  out <- numeric(0)
+  total <- 0; cur <- 0; big <- Inf; end <- 0L
+  started <- FALSE; strong <- FALSE; joined <- FALSE
+  emit <- function() {
+    if (strong) {
+      v <- total + cur
+      out <<- c(out, v)
+      if (grepl("^\\s*(?:%|por ?cie?nto|por ?cento|pour ?cent|per ?cento|prozent|procent)",
+                substr(s, to[end] + 1L, to[end] + 16L), perl = TRUE)) {
+        out <<- c(out, v / 100)
+      }
+    }
+    total <<- 0; cur <<- 0; big <<- Inf
+    started <<- FALSE; strong <<- FALSE; joined <<- FALSE
+  }
+  add <- function(i, weak = FALSE) {
+    started <<- TRUE
+    if (!weak) strong <<- TRUE
+    joined <<- FALSE
+    end <<- i
+  }
+  step <- function(mm, i) {
+    if (mm %in% L$join) {
+      if (started) joined <<- TRUE
+    } else if (mm %in% names(L$scale)) {
+      sv <- L$scale[[mm]]
+      if (started && sv < big) {
+        total <<- total + max(cur, 1) * sv
+        cur <<- 0
+      } else {
+        # "millones" alone is not a number; "mil" alone is 1000.
+        emit()
+        if (!mm %in% L$alone) return(invisible())
+        total <<- sv
+      }
+      big <<- sv
+      add(i)
+    } else if (mm %in% L$hundred) {
+      if (cur >= 10) emit()
+      cur <<- max(cur, 1) * 100
+      add(i)
+    } else {
+      weak <- mm %in% L$one
+      v <- if (weak) 1 else L$words[[mm]]
+      if (v == 0) {
+        emit()
+        out <<- c(out, 0)
+        return(invisible())
+      }
+      if (!numeral_fits(cur, v, joined, L)) emit()
+      cur <<- cur + v
+      add(i, weak)
+    }
+    invisible()
+  }
+  for (i in seq_len(n)) {
+    if (i > 1L && !glue[i]) emit()
+    p <- parts[[i]]
+    # The hundred of "por ciento", "pour cent" or "per cento" says per cent.
+    if (is.null(p) || (toks[i] %in% L$hundred && glue[i] &&
+                       toks[i - 1L] %in% c("por", "pour", "per"))) {
+      emit()
+      next
+    }
+    for (mm in p) step(mm, i)
+  }
+  emit()
+  out
+}
+
+#' The words a number word of language `L` is made of: itself, or for a
+#' language that writes a number as one word, its parts ("vier", "und",
+#' "zwanzig"). NULL when it is not one number: a compound that opens or
+#' closes on "and" ("vieren", "tienen"), an inner form on its own ("vent"),
+#' or parts that are not one number together (Italian "undue", 1 and 2).
+#' @noRd
+numeral_parts <- function(tok, L) {
+  if (!L$compound) return(tok)
+  split <- function(rest) {
+    if (!nzchar(rest)) return(character(0))
+    for (m in L$morphemes) {
+      if (startsWith(rest, m)) {
+        tail <- split(substring(rest, nchar(m) + 1L))
+        if (!is.null(tail)) return(c(m, tail))
+      }
+    }
+    NULL
+  }
+  p <- split(tok)
+  if (is.null(p) || p[1L] %in% L$join || p[length(p)] %in% L$join ||
+      (length(p) == 1L && p %in% L$inner)) return(NULL)
+  if (length(p) == 1L) return(p)
+  cur <- 0; big <- Inf; joined <- FALSE
+  for (m in p) {
+    if (m %in% L$join) {
+      joined <- TRUE
+      next
+    }
+    if (m %in% names(L$scale)) {
+      if (L$scale[[m]] >= big) return(NULL)
+      big <- L$scale[[m]]
+      cur <- 0
+    } else if (m %in% L$hundred) {
+      if (cur >= 10) return(NULL)
+      cur <- max(cur, 1) * 100
+    } else {
+      v <- if (m %in% L$one) 1 else L$words[[m]]
+      if (v == 0 || !numeral_fits(cur, v, joined, L)) return(NULL)
+      cur <- cur + v
+    }
+    joined <- FALSE
+  }
+  p
+}
+
+#' Can a word worth `v` (below a thousand) carry on a number whose part below
+#' a thousand is `cur`, in language `L`? "treinta y dos" is one number and
+#' "tres cuatro" two, as in word_numbers(); so are "vier und zwanzig" (`joined`
+#' by "und", in a language that puts the unit first), and "soixante-dix" and
+#' "dix-sept" in French.
+#' @noRd
+numeral_fits <- function(cur, v, joined, L) {
+  low <- cur %% 100
+  if (v >= 100) return(cur == 0)
+  if (v >= 20 && v %% 10 == 0) return(low == 0 || (L$reversed && joined && low %in% 1:9))
+  if (v >= 20) return(low == 0)
+  if (v >= 10) return(low == 0 || (L$french && low %in% c(60, 80)))
+  low == 0 || (low >= 20 && low %% 10 == 0) || (L$french && low == 10)
+}
 
 #' Is `x` among the numbers a quotation states?
 #' @noRd
@@ -621,6 +1182,9 @@ value_among <- function(x, got) {
 #'   states, in whatever form it states them (quote_numbers()). A real
 #'   sentence paired with an invented number was the worst case
 #'   numeric_token() describes -- a figure certified that the paper never gives.
+#'   The one exception is a quotation in a script whose number words nothing
+#'   here reads, that states no number that can be read (see
+#'   pieces_back_value()); ?gr_extract says so.
 #' * Anything else cannot be looked for in its quote (TRUE is not written in
 #'   "funded by Pfizer"), so the quote has to be a passage rather than a word
 #'   that occurs anywhere: two words at least, or long enough to be specific in
@@ -650,82 +1214,99 @@ quote_backs_value <- function(value, quote, source, field) {
   # Bold is emphasis, in the quotation or the source: try the quotation as
   # written and, failing that, with bold taken out of both sides, as
   # span_match() does -- never out of one side only.
-  if (pieces_back_value(value, unlist(q$raw, use.names = FALSE), src, field)) return(TRUE)
+  if (pieces_back_value(value, q$raw, src, field)) return(TRUE)
   if (is.null(q$plain) && !grepl("**", txt, fixed = TRUE)) return(FALSE)
-  pieces_back_value(value, unlist(q$plain %||% q$raw, use.names = FALSE),
-                    match_source(strip_bold(txt)), field)
+  pieces_back_value(value, q$plain %||% q$raw, match_source(strip_bold(txt)), field)
 }
 
-#' quote_backs_value() for one reading of the quotation: `pieces`, normalised,
-#' in the order they are quoted, and `src`, a match_source() of the chunk.
+#' quote_backs_value() for one reading of the quotation: `passages`, as
+#' quote_passages() gives them (each the pieces an elision splits it into,
+#' normalised), and `src`, a match_source() of the chunk.
 #' @noRd
-pieces_back_value <- function(value, pieces, src, field) {
+pieces_back_value <- function(value, passages, src, field) {
+  pieces <- unlist(passages, use.names = FALSE)
   if (!length(pieces)) return(FALSE)
   if (!all(vapply(pieces, found_whole, logical(1), src = src))) return(FALSE)
-  if (!passage_gaps_ok(pieces, src$text)) return(FALSE)
+  if (!passage_gaps_ok(passages, src)) return(FALSE)
   passage <- any(vapply(pieces, function(p) {
     length(regmatches(p, gregexpr("[\\p{L}\\p{N}]+", p, perl = TRUE))[[1]]) >= 2L ||
       nchar(p) >= 12L
   }, logical(1)))
   if (field$type %in% c("integer", "number")) {
-    got <- unlist(lapply(pieces, quote_numbers), use.names = FALSE)
+    lang <- quote_language(paste(pieces, collapse = " "))
+    got <- unlist(lapply(pieces, quote_numbers, lang = lang), use.names = FALSE)
     if (value_among(abs(as.numeric(value)), got)) return(TRUE)
-    # A passage that states no number this can read, in a language whose
-    # number words it does not know, is checked as it was before: by span.
-    return(!length(got) && passage && numerals_unreadable(paste(pieces, collapse = " ")))
+    # A passage in a script whose number words nothing here reads (Cyrillic,
+    # Greek, Arabic, Hangul), which states no number that can be read, is
+    # checked as it was before: by span. Never one in the Latin script: its
+    # languages are read, or it is English, and an English sentence with
+    # "de novo", "SE" or an accented name in it states no number.
+    return(!length(got) && passage && identical(lang, "script"))
   }
   if (passage) return(TRUE)
   v <- normalise_for_match(as_chr1(value, ""))
   nzchar(v) && any(vapply(pieces, function(p) found_whole(v, p), logical(1)))
 }
 
-#' Do the passages of a quotation leave out only what a faithful elision may?
+#' Do the passages of a quotation leave out only what a faithful quotation
+#' may?
 #'
-#' Each passage verifies on its own, but the quotation also asserts that they
-#' belong together, and two ways of joining them change what the document
-#' says. Within one sentence, the words left out must not include a negation:
-#' "the drug did ... reduce mortality" against "the drug did not reduce
-#' mortality" reverses it. Across a sentence boundary, or out of the
-#' document's order, the passage after the join must start a sentence, or
-#' "Revenue ... rose 30%" is quoted from "Revenue fell 12%. Costs rose 30%.".
-#' A pair that fails is treated as the quote was before it was split: not
-#' verified. `pieces` and `src` are normalised.
+#' Each passage verifies on its own, and two ways of putting them together
+#' can still change what the document says.
+#'
+#' Within a passage, the pieces an elision ("...") separates must occur in
+#' order, and what the elision leaves out must be something one may: no
+#' negation within a sentence ("the drug did ... reduce mortality" from "the
+#' drug did not reduce mortality"), and across a sentence end, the next piece
+#' must start a sentence ("Revenue ... rose 30%" from "Revenue fell 12%. Costs
+#' rose 30%."). That is span_match()'s own test (found_in_order(), which
+#' reads each gap with elision_gap_ok()).
+#'
+#' Separate passages -- lines, bullets, paragraphs, each in its own quote
+#' marks -- are separate quotations, and each may start anywhere in a
+#' sentence: "- The trial enrolled adults.\n- 240 patients were randomised."
+#' quotes "... adults. In total, 240 patients were randomised." faithfully.
+#' But two that follow each other within one sentence of the document are an
+#' elision with no marker, and are held to elision_gap_ok() the same way:
+#' "- the drug did\n- reduce mortality" does not verify against "the drug did
+#' not reduce mortality". `src` is a match_source().
 #' @noRd
-passage_gaps_ok <- function(pieces, src) {
-  if (length(pieces) < 2L) return(TRUE)
-  where <- function(p) {
-    at <- gregexpr(p, src, fixed = TRUE)[[1]]
-    if (at[1] < 0L) integer(0) else as.integer(at)
-  }
-  boundary <- "[.!?;:][\"')\\]]*(?:\\s|$)"
-  starts_sentence <- function(at) {
-    before <- sub("[\\s\"'(\\[]*$", "", substr(rep(src, length(at)), 1L, at - 1L), perl = TRUE)
-    !nzchar(before) | grepl("[.!?;:][\"')\\]]*$", before, perl = TRUE)
-  }
-  negated <- function(gap) {
-    w <- regmatches(gap, gregexpr("[\\p{L}']+", gap, perl = TRUE))[[1]]
-    any(w %in% .gr_negation_words | grepl("n't$", w))
-  }
-  for (i in seq_len(length(pieces) - 1L)) {
-    a <- where(pieces[i]); b <- where(pieces[i + 1L])
-    a_end <- a + nchar(pieces[i]) - 1L
-    ok <- FALSE
-    for (j in seq_along(a)) {
-      nxt <- b[b > a_end[j]]
-      if (!length(nxt)) next
-      gap <- substr(src, a_end[j] + 1L, nxt[1] - 1L)
-      ok <- if (!grepl(boundary, gap, perl = TRUE)) !negated(gap) else starts_sentence(nxt[1])
-      if (ok) break
-    }
-    # Out of the document's order, the later passage has to stand as its own
-    # sentence.
-    if (!ok) ok <- any(starts_sentence(b))
-    if (!ok) return(FALSE)
+passage_gaps_ok <- function(passages, src) {
+  for (p in passages) if (length(p) > 1L && !found_in_order(p, src)) return(FALSE)
+  if (length(passages) < 2L) return(TRUE)
+  for (i in seq_len(length(passages) - 1L)) {
+    a <- passages[[i]][length(passages[[i]])]
+    b <- passages[[i + 1L]][1L]
+    if (!unmarked_join_ok(a, b, src)) return(FALSE)
   }
   TRUE
 }
 
-#' Words that negate what follows them, for passage_gaps_ok().
+#' Two consecutive passages, the last piece `a` of one and the first `b` of
+#' the next: can `b` be read as a quotation of its own, or, where it follows
+#' `a` within one sentence, as an elision that leaves out nothing it may not?
+#' Every place `b` occurs is tried, against the nearest `a` before it.
+#' @noRd
+unmarked_join_ok <- function(a, b, src) {
+  a_end <- found_every(a, src) + nchar(a) - 1L
+  for (at in found_every(b, src)) {
+    prev <- a_end[a_end < at]
+    if (!length(prev)) return(TRUE)
+    prev <- max(prev)
+    gap <- substr(src$text, prev + 1L, at - 1L)
+    if (grepl(.gr_sentence_end, gap, perl = TRUE) || elision_gap_ok(src, prev, at)) return(TRUE)
+  }
+  FALSE
+}
+
+#' Where a sentence ends, as elision_gap_ok() finds one: a full stop,
+#' question or exclamation mark, colon or semicolon (past any closing quote
+#' mark or bracket) before a space or the end, or a full-width mark of
+#' Chinese or Japanese.
+#' @noRd
+.gr_sentence_end <- "[.!?;:][\"')\\]]*(?:\\s|$)|[\u3002\uff01\uff1f\uff1b\uff1a]"
+
+#' Words that negate what follows them, for elision_gap_ok().
 #' @noRd
 .gr_negation_words <- c("not", "no", "never", "neither", "nor", "none", "nobody", "nothing",
                         "without", "cannot", "non", "failed", "fail", "fails", "unable",

@@ -226,10 +226,13 @@ bib_fields <- function(body) {
   if (!n) return(list())
   step <- (ch == "{") - (ch == "}")
   depth <- cumsum(step) - step                  # depth before each character
-  # Quotes that open or close a value. A backslash before one makes it text:
+  # Quotes that open or close a value. An umlaut written `\"` makes it text:
   # counting `author="M\"uller, J."` as three quotes flipped the parity for the
-  # rest of the entry, and its title and year were lost.
-  q <- ch == "\"" & depth == 0L & c("", ch[-n]) != "\\"
+  # rest of the entry, and its title and year were lost. Only when a letter or
+  # a brace follows, as one does an accent: a value that ends in a backslash
+  # ("... a line break\\") still closes at its quote.
+  q <- ch == "\"" & depth == 0L &
+    !(c("", ch[-n]) == "\\" & grepl("^[[:alpha:]{]$", c(ch[-1L], "")))
   inq <- (cumsum(q) - q) %% 2L == 1L
   top <- depth == 0L & !inq & !q
   ws <- grepl("^[[:space:]]$", ch)
@@ -288,40 +291,52 @@ bib_fields <- function(body) {
 
 #' LaTeX accent commands, each with the letters it composes with.
 #'
-#' `from` and `to` are the plain letters and what each becomes under that
-#' accent, from Unicode's canonical compositions. An accent on a letter that
-#' has no composed form keeps the combining mark after it.
+#' `from` and `to` are the letters and what each becomes under that accent,
+#' from Unicode's canonical compositions. The letters include ones that already
+#' carry an accent, so the second of two stacked accents composes as well: a
+#' Vietnamese letter has two ("Nguy{\\~{\\^e}}n" is "Nguy\u1ec5n"), and so does
+#' Pinyin's u-umlaut with a tone. An accent on a letter that has no composed
+#' form keeps the combining mark after it.
 #' @noRd
 .gr_tex_accents <- local({
+  # The Vietnamese letters that take a second accent.
+  viet <- "\u00e2\u00ea\u00f4\u0103\u01a1\u01b0\u00c2\u00ca\u00d4\u0102\u01a0\u01af"
   acc <- list(
-    list(cmd = "'", mark = "\u0301", from = "acegiklmnoprsuwyzACEGIKLMNOPRSUWYZ",
+    list(cmd = "'", mark = "\u0301",
+         from = paste0("acegiklmnoprsuwyzACEGIKLMNOPRSUWYZ", viet, "\u00fc\u00dc\u00e7\u00c7"),
          to = paste0("\u00e1\u0107\u00e9\u01f5\u00ed\u1e31\u013a\u1e3f\u0144\u00f3\u1e55\u0155",
                      "\u015b\u00fa\u1e83\u00fd\u017a\u00c1\u0106\u00c9\u01f4\u00cd\u1e30\u0139",
-                     "\u1e3e\u0143\u00d3\u1e54\u0154\u015a\u00da\u1e82\u00dd\u0179")),
-    list(cmd = "`", mark = "\u0300", from = "aeinouwyAEINOUWY",
+                     "\u1e3e\u0143\u00d3\u1e54\u0154\u015a\u00da\u1e82\u00dd\u0179",
+                     "\u1ea5\u1ebf\u1ed1\u1eaf\u1edb\u1ee9\u1ea4\u1ebe\u1ed0\u1eae\u1eda\u1ee8",
+                     "\u01d8\u01d7\u1e09\u1e08")),
+    list(cmd = "`", mark = "\u0300", from = paste0("aeinouwyAEINOUWY", viet, "\u00fc\u00dc"),
          to = paste0("\u00e0\u00e8\u00ec\u01f9\u00f2\u00f9\u1e81\u1ef3\u00c0\u00c8\u00cc\u01f8",
-                     "\u00d2\u00d9\u1e80\u1ef2")),
-    list(cmd = "^", mark = "\u0302", from = "aceghijosuwyzACEGHIJOSUWYZ",
+                     "\u00d2\u00d9\u1e80\u1ef2",
+                     "\u1ea7\u1ec1\u1ed3\u1eb1\u1edd\u1eeb\u1ea6\u1ec0\u1ed2\u1eb0\u1edc\u1eea",
+                     "\u01dc\u01db")),
+    list(cmd = "^", mark = "\u0302",
+         from = paste0("aceghijosuwyzACEGHIJOSUWYZ", "\u1ea1\u1eb9\u1ecd\u1ea0\u1eb8\u1ecc"),
          to = paste0("\u00e2\u0109\u00ea\u011d\u0125\u00ee\u0135\u00f4\u015d\u00fb\u0175\u0177",
                      "\u1e91\u00c2\u0108\u00ca\u011c\u0124\u00ce\u0134\u00d4\u015c\u00db\u0174",
-                     "\u0176\u1e90")),
+                     "\u0176\u1e90", "\u1ead\u1ec7\u1ed9\u1eac\u1ec6\u1ed8")),
     list(cmd = "\"", mark = "\u0308", from = "aehiotuwxyAEHIOUWXY",
          to = paste0("\u00e4\u00eb\u1e27\u00ef\u00f6\u1e97\u00fc\u1e85\u1e8d\u00ff\u00c4\u00cb",
                      "\u1e26\u00cf\u00d6\u00dc\u1e84\u1e8c\u0178")),
-    list(cmd = "~", mark = "\u0303", from = "aeinouvyAEINOUVY",
+    list(cmd = "~", mark = "\u0303", from = paste0("aeinouvyAEINOUVY", viet),
          to = paste0("\u00e3\u1ebd\u0129\u00f1\u00f5\u0169\u1e7d\u1ef9\u00c3\u1ebc\u0128\u00d1",
-                     "\u00d5\u0168\u1e7c\u1ef8")),
-    list(cmd = "=", mark = "\u0304", from = "aegiouyAEGIOUY",
+                     "\u00d5\u0168\u1e7c\u1ef8",
+                     "\u1eab\u1ec5\u1ed7\u1eb5\u1ee1\u1eef\u1eaa\u1ec4\u1ed6\u1eb4\u1ee0\u1eee")),
+    list(cmd = "=", mark = "\u0304", from = "aegiouyAEGIOUY\u00fc\u00dc",
          to = paste0("\u0101\u0113\u1e21\u012b\u014d\u016b\u0233\u0100\u0112\u1e20\u012a\u014c",
-                     "\u016a\u0232")),
+                     "\u016a\u0232\u01d6\u01d5")),
     list(cmd = ".", mark = "\u0307", from = "cegzCEGIZ",
          to = "\u010b\u0117\u0121\u017c\u010a\u0116\u0120\u0130\u017b"),
-    list(cmd = "u", mark = "\u0306", from = "aegiouAEGIOU",
-         to = "\u0103\u0115\u011f\u012d\u014f\u016d\u0102\u0114\u011e\u012c\u014e\u016c"),
-    list(cmd = "v", mark = "\u030c", from = "acdeghijklnorstuzACDEGHIKLNORSTUZ",
+    list(cmd = "u", mark = "\u0306", from = "aegiouAEGIOU\u1ea1\u1ea0",
+         to = "\u0103\u0115\u011f\u012d\u014f\u016d\u0102\u0114\u011e\u012c\u014e\u016c\u1eb7\u1eb6"),
+    list(cmd = "v", mark = "\u030c", from = "acdeghijklnorstuzACDEGHIKLNORSTUZ\u00fc\u00dc",
          to = paste0("\u01ce\u010d\u010f\u011b\u01e7\u021f\u01d0\u01f0\u01e9\u013e\u0148\u01d2",
                      "\u0159\u0161\u0165\u01d4\u017e\u01cd\u010c\u010e\u011a\u01e6\u021e\u01cf",
-                     "\u01e8\u013d\u0147\u01d1\u0158\u0160\u0164\u01d3\u017d")),
+                     "\u01e8\u013d\u0147\u01d1\u0158\u0160\u0164\u01d3\u017d\u01da\u01d9")),
     list(cmd = "H", mark = "\u030b", from = "ouOU", to = "\u0151\u0171\u0150\u0170"),
     list(cmd = "c", mark = "\u0327", from = "cegklnrstCEGKLNRST",
          to = paste0("\u00e7\u0229\u0123\u0137\u013c\u0146\u0157\u015f\u0163\u00c7\u0228\u0122",
@@ -329,12 +344,18 @@ bib_fields <- function(body) {
     list(cmd = "k", mark = "\u0328", from = "aeiouAEIOU",
          to = "\u0105\u0119\u012f\u01eb\u0173\u0104\u0118\u012e\u01ea\u0172"),
     list(cmd = "r", mark = "\u030a", from = "auAU", to = "\u00e5\u016f\u00c5\u016e"),
-    list(cmd = "d", mark = "\u0323", from = "adehiklmnorstuyzADEHIKLMNORSTUYZ",
+    list(cmd = "d", mark = "\u0323", from = paste0("adehiklmnorstuyzADEHIKLMNORSTUYZ", viet),
          to = paste0("\u1ea1\u1e0d\u1eb9\u1e25\u1ecb\u1e33\u1e37\u1e43\u1e47\u1ecd\u1e5b\u1e63",
                      "\u1e6d\u1ee5\u1ef5\u1e93\u1ea0\u1e0c\u1eb8\u1e24\u1eca\u1e32\u1e36\u1e42",
-                     "\u1e46\u1ecc\u1e5a\u1e62\u1e6c\u1ee4\u1ef4\u1e92"))
+                     "\u1e46\u1ecc\u1e5a\u1e62\u1e6c\u1ee4\u1ef4\u1e92",
+                     "\u1ead\u1ec7\u1ed9\u1eb7\u1ee3\u1ef1\u1eac\u1ec6\u1ed8\u1eb6\u1ee2\u1ef0")),
+    # The hook above, from the vietnam package.
+    list(cmd = "h", mark = "\u0309", from = paste0("aeiouyAEIOUY", viet),
+         to = paste0("\u1ea3\u1ebb\u1ec9\u1ecf\u1ee7\u1ef7\u1ea2\u1eba\u1ec8\u1ece\u1ee6\u1ef6",
+                     "\u1ea9\u1ec3\u1ed5\u1eb3\u1edf\u1eed\u1ea8\u1ec2\u1ed4\u1eb2\u1ede\u1eec"))
   )
-  base <- "(\\\\[ij](?![A-Za-z])|[A-Za-z])"
+  # Any letter, so an accent over one that already has one is read too.
+  base <- "(\\\\[ij](?![A-Za-z])|\\p{L})"
   lapply(acc, function(a) {
     cmd <- a$cmd
     # A symbol accent may be followed by its letter directly (\'a); a letter
@@ -344,17 +365,20 @@ bib_fields <- function(body) {
     } else {
       sprintf("\\\\\\%s[[:space:]]*(?:\\{[[:space:]]*%s[[:space:]]*\\}|%s)", cmd, base, base)
     }
-    list(re = re, mark = a$mark, from = strsplit(a$from, "")[[1]],
-         to = strsplit(a$to, "")[[1]])
+    from <- strsplit(a$from, "")[[1]]
+    to <- strsplit(a$to, "")[[1]]
+    stopifnot(length(from) == length(to))
+    list(re = re, mark = a$mark, from = from, to = to)
   })
 })
 
 #' LaTeX commands that are letters in their own right.
 #' @noRd
 .gr_tex_letters <- list(
-  cmd = c("ss", "ae", "AE", "oe", "OE", "aa", "AA", "o", "O", "l", "L", "i", "j"),
+  cmd = c("ss", "ae", "AE", "oe", "OE", "aa", "AA", "o", "O", "l", "L", "i", "j",
+          "ohorn", "OHORN", "uhorn", "UHORN"),
   to = c("\u00df", "\u00e6", "\u00c6", "\u0153", "\u0152", "\u00e5", "\u00c5", "\u00f8",
-         "\u00d8", "\u0142", "\u0141", "\u0131", "\u0237"))
+         "\u00d8", "\u0142", "\u0141", "\u0131", "\u0237", "\u01a1", "\u01a0", "\u01b0", "\u01af"))
 
 #' Turn LaTeX accents in a BibTeX value into the letters they spell.
 #'
@@ -364,22 +388,32 @@ bib_fields <- function(body) {
 #' its key "dvovrak" matched neither the database's record nor a filename. The
 #' symbol accents (\\" and \\') vanished from keys by luck; the letter ones
 #' (\\v, \\c, \\H, \\k, \\u) left a stray letter inside the surname.
+#'
+#' The passes repeat until nothing changes, so stacked accents are read from
+#' the inside out: one pass left "Nguy\\~\u00ean". A letter command ends at a
+#' non-letter; the space after it is dropped ("Stra\\ss e") unless an empty
+#' group ended it ("Pawe\\l{} Nowak"), which in LaTeX keeps the space. Eating
+#' that one too stored "Pawe\u0142Nowak", and "Wei\\ss{} and Smith" as one author.
 #' @noRd
 bib_unlatex <- function(v) {
   if (is.na(v) || !grepl("\\", v, fixed = TRUE)) return(v)
-  for (a in .gr_tex_accents) {
-    m <- gregexpr(a$re, v, perl = TRUE)
-    if (m[[1]][1] == -1L) next
-    regmatches(v, m) <- list(vapply(regmatches(v, m)[[1]], function(s) {
-      b <- sub(a$re, "\\1\\2", s, perl = TRUE)
-      b <- sub("^\\\\", "", b)                  # \i and \j are the dotless letters
-      k <- match(b, a$from)
-      if (is.na(k)) paste0(b, a$mark) else a$to[k]
-    }, character(1), USE.NAMES = FALSE))
-  }
-  for (k in seq_along(.gr_tex_letters$cmd)) {
-    v <- gsub(sprintf("\\\\%s(?![A-Za-z])(?:\\{\\})?[[:space:]]*", .gr_tex_letters$cmd[k]),
-              .gr_tex_letters$to[k], v, perl = TRUE)
+  for (pass in 1:4) {
+    before <- v
+    for (a in .gr_tex_accents) {
+      m <- gregexpr(a$re, v, perl = TRUE)
+      if (m[[1]][1] == -1L) next
+      regmatches(v, m) <- list(vapply(regmatches(v, m)[[1]], function(s) {
+        b <- sub(a$re, "\\1\\2", s, perl = TRUE)
+        b <- sub("^\\\\", "", b)                  # \i and \j are the dotless letters
+        k <- match(b, a$from)
+        if (is.na(k)) paste0(b, a$mark) else a$to[k]
+      }, character(1), USE.NAMES = FALSE))
+    }
+    for (k in seq_along(.gr_tex_letters$cmd)) {
+      v <- gsub(sprintf("\\\\%s(?![A-Za-z])(?:\\{\\}|[[:space:]]*)", .gr_tex_letters$cmd[k]),
+                .gr_tex_letters$to[k], v, perl = TRUE)
+    }
+    if (identical(v, before) || !grepl("\\", v, fixed = TRUE)) break
   }
   mark_utf8(v)
 }
@@ -498,11 +532,11 @@ finish_records <- function(df) {
     l = "\u1e37\u1e39\u1e3b\u1e3d", L = "\u1e36\u1e38\u1e3a\u1e3c",
     m = "\u1e3f\u1e41\u1e43", M = "\u1e3e\u1e40\u1e42",
     n = "\u01f9\u1e45\u1e47\u1e49\u1e4b", N = "\u01f8\u1e44\u1e46\u1e48\u1e4a",
-    o = paste0("\u01a1\u01d2\u01eb\u01ed\u020d\u020f\u022b\u022d\u022f\u0231\u1e4d\u1e4f",
-               "\u1e51\u1e53\u1ecd\u1ecf\u1ed1\u1ed3\u1ed5\u1ed7\u1ed9\u1edb\u1edd\u1edf",
+    o = paste0("\u01a1\u01d2\u01eb\u01ed\u01ff\u020d\u020f\u022b\u022d\u022f\u0231",
+               "\u1e4d\u1e4f\u1e51\u1e53\u1ecd\u1ecf\u1ed1\u1ed3\u1ed5\u1ed7\u1ed9\u1edb\u1edd\u1edf",
                "\u1ee1\u1ee3"),
-    O = paste0("\u01a0\u01d1\u01ea\u01ec\u020c\u020e\u022a\u022c\u022e\u0230\u1e4c\u1e4e",
-               "\u1e50\u1e52\u1ecc\u1ece\u1ed0\u1ed2\u1ed4\u1ed6\u1ed8\u1eda\u1edc\u1ede",
+    O = paste0("\u01a0\u01d1\u01ea\u01ec\u01fe\u020c\u020e\u022a\u022c\u022e\u0230",
+               "\u1e4c\u1e4e\u1e50\u1e52\u1ecc\u1ece\u1ed0\u1ed2\u1ed4\u1ed6\u1ed8\u1eda\u1edc\u1ede",
                "\u1ee0\u1ee2"),
     p = "\u1e55\u1e57", P = "\u1e54\u1e56",
     r = "\u0211\u0213\u1e59\u1e5b\u1e5d\u1e5f", R = "\u0210\u0212\u1e58\u1e5a\u1e5c\u1e5e",
@@ -518,16 +552,30 @@ finish_records <- function(df) {
     y = "\u0233\u1e8f\u1e99\u1ef3\u1ef5\u1ef7\u1ef9", Y = "\u0232\u1e8e\u1ef2\u1ef4\u1ef6\u1ef8",
     z = "\u1e91\u1e93\u1e95", Z = "\u1e90\u1e92\u1e94")
   # Compatibility characters, which are one character spelled another way: a
-  # superscript or subscript digit, a full-width letter from a CJK input
-  # method, the micro sign (which NFKC makes the Greek letter). The iconv step
-  # folded most of these, so "m\u00b2" and "m2" were one title; the table has to
-  # say so itself. (No "-" anywhere in these strings: chartr() reads it as a range.)
+  # superscript or subscript digit or letter, a full-width letter from a CJK
+  # input method, a Roman numeral or circled digit from the same, the script
+  # small l of "m\u2113", the ordinal indicators of "1\u00ba ano", the micro sign
+  # (which NFKC makes the Greek letter). The iconv step folded most of these,
+  # so "m\u00b2" and "m2" were one title, and so were "Phase \u2161" and "Phase II";
+  # the table has to say so itself. (No "-" anywhere in these strings: chartr()
+  # reads it as a range.)
   compat_from <- paste0("\u2070\u00b9\u00b2\u00b3\u2074\u2075\u2076\u2077\u2078\u2079",
                         "\u2080\u2081\u2082\u2083\u2084\u2085\u2086\u2087\u2088\u2089",
-                        intToUtf8(c(0xFF10:0xFF19, 0xFF21:0xFF3A, 0xFF41:0xFF5A)), "\u00b5")
+                        intToUtf8(c(0xFF10:0xFF19, 0xFF21:0xFF3A, 0xFF41:0xFF5A)), "\u00b5",
+                        "\u2071\u207f\u2090\u2091\u2092\u2093\u2095\u2096\u2097\u2098\u2099",
+                        "\u209a\u209b\u209c\u02b0\u02b2\u02b3\u02b7\u02b8\u02e1\u02e2\u02e3",
+                        "\u2160\u2164\u2169\u216c\u216d\u216e\u216f",
+                        "\u2170\u2174\u2179\u217c\u217d\u217e\u217f",
+                        intToUtf8(c(0x24EA, 0x2460:0x2468, 0x24B6:0x24CF, 0x24D0:0x24E9)),
+                        "\u2113\u210e\u210a\u212f\u2134\u212a\u212b\u00aa\u00ba")
   compat_to <- paste0("0123456789", "0123456789", "0123456789",
-                      paste(LETTERS, collapse = ""), paste(letters, collapse = ""), "\u03bc")
-  list(from = paste0(paste(one, collapse = ""), paste(ext, collapse = ""), compat_from),
+                      paste(LETTERS, collapse = ""), paste(letters, collapse = ""), "\u03bc",
+                      "inaeoxhklmnpsthjrwylsx", "IVXLCDM", "ivxlcdm",
+                      "0123456789",
+                      paste(LETTERS, collapse = ""), paste(letters, collapse = ""),
+                      "lhgeoKAao")
+  roman <- c("II", "III", "IV", "VI", "VII", "VIII", "IX", "XI", "XII")
+  out <- list(from = paste0(paste(one, collapse = ""), paste(ext, collapse = ""), compat_from),
        to = paste0(paste(rep(names(one), nchar(one)), collapse = ""),
                    paste(rep(names(ext), nchar(ext)), collapse = ""), compat_to),
        # Two vectors, not a named one: a name is a symbol, and a symbol is
@@ -535,12 +583,29 @@ finish_records <- function(df) {
        # into "<U+00DF>" and folded nothing. Ligatures come from PDF metadata
        # ("E\ufb03cacy"), and a vulgar fraction was "1/2" to the iconv step.
        multi_from = c("\u00df", "\u1e9e", "\u00e6", "\u00c6", "\u0153", "\u0152",
-                      "\u00fe", "\u00de", "\u0133", "\u0132",
+                      "\u00fe", "\u00de", "\u0133", "\u0132", "\u01fd", "\u01fc",
                       "\ufb00", "\ufb01", "\ufb02", "\ufb03", "\ufb04", "\ufb05", "\ufb06",
-                      "\u00bc", "\u00bd", "\u00be", "\u2153", "\u2154", "\u2155", "\u215b"),
-       multi_to = c("ss", "SS", "ae", "AE", "oe", "OE", "th", "TH", "ij", "IJ",
+                      "\u00bc", "\u00bd", "\u00be", "\u2153", "\u2154", "\u2155", "\u215b",
+                      "\u2150", "\u2151", "\u2152", "\u2156", "\u2157", "\u2158", "\u2159",
+                      "\u215a", "\u215c", "\u215d", "\u215e", "\u2189", "\u215f",
+                      intToUtf8(c(0x2161:0x2163, 0x2165:0x2168, 0x216A, 0x216B), multiple = TRUE),
+                      intToUtf8(c(0x2171:0x2173, 0x2175:0x2178, 0x217A, 0x217B), multiple = TRUE),
+                      intToUtf8(0x2469:0x2473, multiple = TRUE),
+                      intToUtf8(0x2474:0x2487, multiple = TRUE),
+                      intToUtf8(0x2488:0x249B, multiple = TRUE),
+                      intToUtf8(0x249C:0x24B5, multiple = TRUE)),
+       multi_to = c("ss", "SS", "ae", "AE", "oe", "OE", "th", "TH", "ij", "IJ", "ae", "AE",
                     "ff", "fi", "fl", "ffi", "ffl", "st", "st",
-                    "1/4", "1/2", "3/4", "1/3", "2/3", "1/5", "1/8"))
+                    "1/4", "1/2", "3/4", "1/3", "2/3", "1/5", "1/8",
+                    "1/7", "1/9", "1/10", "2/5", "3/5", "4/5", "1/6",
+                    "5/6", "3/8", "5/8", "7/8", "0/3", "1/",
+                    roman, tolower(roman), as.character(10:20),
+                    sprintf("(%d)", 1:20), sprintf("%d.", 1:20), sprintf("(%s)", letters)))
+  stopifnot(nchar(out$from) == nchar(out$to), length(out$multi_from) == length(out$multi_to),
+            !anyDuplicated(strsplit(out$from, "")[[1]]))
+  # One character class of them all, to find the strings that need the loop.
+  out$multi_class <- paste0("[", paste(out$multi_from, collapse = ""), "]")
+  out
 })
 
 #' Fold Latin diacritics to plain letters, leaving every other letter alone.
@@ -552,8 +617,14 @@ finish_records <- function(df) {
 fold_latin <- function(x) {
   x <- mark_utf8(as.character(x))
   x <- chartr(.gr_latin_fold$from, .gr_latin_fold$to, x)
-  for (k in seq_along(.gr_latin_fold$multi_from)) {
-    x <- gsub(.gr_latin_fold$multi_from[k], .gr_latin_fold$multi_to[k], x, fixed = TRUE)
+  # Only the strings that hold one of them go through the hundred replacements.
+  hit <- grepl(.gr_latin_fold$multi_class, x, perl = TRUE)
+  if (any(hit)) {
+    y <- x[hit]
+    for (k in seq_along(.gr_latin_fold$multi_from)) {
+      y <- gsub(.gr_latin_fold$multi_from[k], .gr_latin_fold$multi_to[k], y, fixed = TRUE)
+    }
+    x[hit] <- y
   }
   gsub("\\p{M}+", "", x, perl = TRUE)
 }
@@ -610,14 +681,18 @@ title_key <- function(x) {
 #'   what catches the same conference paper indexed twice, or indexed once with
 #'   its DOI and once without. The title fallback also needs the first author's
 #'   surname to agree as a whole name ("Smith, J." and "Smith JA" agree, "Li" and
-#'   "Lin" do not), or, when a record has no authors, the venue. It ignores
-#'   titles shorter than 12 letters ("Reply", "Editorial") and never merges
-#'   records carrying two different DOIs. A record without a DOI is merged with
-#'   one that has a DOI, and a title with fewer than 12 Latin letters or digits
-#'   is merged at all, only when the venues do not disagree, the first authors'
-#'   initials do not differ, and the author or the venue confirms it. The kept row takes
-#'   any field it lacks (the DOI, the journal) from the rows merged into it.
-#'   `"none"` keeps everything.
+#'   "Lin" do not) and the first initials not to differ ("Wang, L." and
+#'   "Wang, H." are two people), or, when a record has no authors, the venue. An
+#'   organisation agrees with its acronym ("WHO" and "World Health
+#'   Organization"). Between two records without DOIs, a surname that is the
+#'   other record's given name ("Li, W." and "Li Wei") also agrees when the
+#'   initial bears it out and the venues do not disagree. It ignores titles
+#'   shorter than 12 letters ("Reply", "Editorial") and never merges records
+#'   carrying two different DOIs. A record without a DOI is merged with one that
+#'   has a DOI, and a title with fewer than 12 Latin letters or digits is merged
+#'   at all, only when the venues do not disagree and the surname (not a given
+#'   name) or the venue confirms it. The kept row takes any field it lacks (the
+#'   DOI, the journal) from the rows merged into it. `"none"` keeps everything.
 #' @return An object of class `gr_records`:
 #'   \describe{
 #'     \item{`records`}{One row per distinct work, with `duplicate_of` naming the
@@ -768,10 +843,11 @@ read_export <- function(path) {
 #' RECOVERY Collaborative Group") or an acronym, and with it the author check
 #' on duplicates and the author-year route to a file.
 #'
-#' The shapes: "Smith, J." and "van der Berg, P." (surname before the comma);
-#' "Smith JA" and "SMITH J" (Vancouver: surname, then initials); "John Smith"
-#' (the last word); "WHO" (one word is the name); and an organisation, kept
-#' whole.
+#' The shapes: "Smith, J.", "van der Berg, P." and "VAN DAM, P" (surname before
+#' the comma, whatever its case); "King, Jr., Robert" (BibTeX's suffix in the
+#' middle); "Smith JA", "SMITH J" and "LE ROUX J" (Vancouver: surname, then
+#' initials); "John Smith" (the last word); "WHO" (one word is the name); and an
+#' organisation, kept whole.
 #' @noRd
 record_first_author <- function(authors) {
   a <- mark_utf8(as.character(authors))
@@ -799,25 +875,55 @@ record_first_author <- function(authors) {
     comma <- grepl(",", e, fixed = TRUE)
     head <- if (comma) trimws(sub(",.*$", "", e)) else e
     rest <- if (comma) trimws(sub("^[^,]*,", "", e)) else ""
+    # BibTeX's three-part "King, Jr., Robert": the suffix is the middle part,
+    # and its "J" is not the initial.
+    rest <- sub("^(?:(?i:jr|sr)|II|III|IV|2nd|3rd|4th)\\.?[[:space:]]*(?:,|$)[[:space:]]*", "", rest,
+                perl = TRUE)
     w <- strsplit(head, "[[:space:]]+")[[1]]
-    w <- w[nzchar(w) & !grepl("^(Jr|Sr|II|III|IV)\\.?$", w)]
+    # A suffix is not the surname ("Wallace RB 3rd"). Before a comma "JR" can
+    # only be one; without a comma "SMITH JR" is Smith with the initials J R.
+    sfx <- if (comma) "^(?:(?i:jr|sr)|II|III|IV|2nd|3rd|4th)\\.?$"
+           else "^(?:Jr|Sr|II|III|IV|2nd|3rd|4th)\\.?$"
+    w <- w[nzchar(w) & !grepl(sfx, w, perl = TRUE)]
     if (!length(w)) next
     ini <- is_ini(w)
     if (length(w) == 1L) {
       s <- w; g <- rest
-    } else if (all(ini)) {
-      # "LI WS", "KIM S": all capitals, so every word looks like initials. The
-      # longest is the surname, and the first on a tie, as Vancouver writes it.
-      len <- nchar(gsub("[^[:alpha:]]", "", w))
-      s <- w[which.max(len)]; g <- paste(w[-which.max(len)], collapse = " ")
-    } else if (ini[length(w)]) {
+    } else if (all(ini) && !comma) {
+      # "LI WS", "KIM S", "LE ROUX J": all capitals and no comma, so every word
+      # looks like initials. Vancouver writes the surname first and the
+      # initials last: the last word, and any single letters before it. A
+      # particle belongs to the word after it ("LE ROUX", not "ROUX"), and a
+      # lone letter first is a given name ("J LI"). With a comma the part
+      # before it is the whole surname, however short its words: "VAN DAM, P"
+      # was read as surname "VAN", initial "D".
+      bare <- tolower(gsub("[^\\p{L}]", "", w, perl = TRUE))
+      len <- nchar(bare)
+      np <- 0L
+      while (np < length(w) - 1L && bare[np + 1L] %in% .gr_rec_particles) np <- np + 1L
+      # ...but "LE T" is the surname Le and the initial T.
+      if (np && len[np + 1L] < 2L) np <- 0L
+      m <- length(w) - 1L
+      while (m > 1L && len[m] == 1L) m <- m - 1L
+      m <- min(length(w), max(m, np + 1L))
+      if (all(len[seq_len(m)] == 1L)) {
+        s <- w[length(w)]; g <- paste(w[-length(w)], collapse = " ")
+      } else {
+        s <- paste(w[seq_len(m)], collapse = " "); g <- paste(w[-seq_len(m)], collapse = " ")
+      }
+    } else if (ini[length(w)] && !all(ini)) {
       last <- max(which(!ini))
       s <- paste(w[seq_len(last)], collapse = " ")
       g <- paste(w[-seq_len(last)], collapse = " ")
     } else if (comma) {
       s <- paste(w, collapse = " "); g <- rest
     } else {
-      s <- w[length(w)]; g <- w[1]
+      # The given name first: the surname is the last word, with the particles
+      # in lower case before it ("Jan van Leeuwen", BibTeX's "von" part). A
+      # capitalised one is a given name as often as not ("Bin Li", "Le Wang").
+      f <- length(w)
+      while (f > 1L && w[f - 1L] %in% .gr_rec_particles) f <- f - 1L
+      s <- paste(w[f:length(w)], collapse = " "); g <- if (f > 1L) w[1] else ""
     }
     s <- gsub("^[^\\p{L}\\p{N}]+|[^\\p{L}\\p{N}]+$", "", s, perl = TRUE)
     if (!grepl("\\p{L}", s, perl = TRUE)) next
@@ -878,9 +984,24 @@ record_venue_words <- function(v) {
 #' in "Sleep Medicine", and neither is the same journal -- and keeps the same
 #' spelling, a word-for-word abbreviation ("J Educ Psychol" of "Journal of
 #' Educational Psychology"), or an acronym ("BMJ", "JAMA").
+#'
+#' Two spellings the databases use are read as what they are, not as a longer
+#' name: an acronym written with its expansion ("JAMA - Journal of the American
+#' Medical Association", "BMJ-British Medical Journal" in Web of Science and
+#' Scopus) is that journal, and "of the United States of America" after the
+#' PNAS title adds a country, not a journal. "BMJ Open" is neither.
 #' @noRd
 record_venue_match <- function(wa, wb, loose = TRUE) {
   if (!length(wa) || !length(wb)) return(NA)
+  country <- function(w) {
+    n <- length(w)
+    for (tail in list(c("united", "states", "america"), c("u", "s", "a"), "usa")) {
+      k <- length(tail)
+      if (n - k >= 2L && identical(w[(n - k + 1L):n], tail)) return(w[seq_len(n - k)])
+    }
+    w
+  }
+  wa <- country(wa); wb <- country(wb)
   ka <- paste(wa, collapse = ""); kb <- paste(wb, collapse = "")
   if (identical(ka, kb)) return(TRUE)
   if (loose && (grepl(ka, kb, fixed = TRUE) || grepl(kb, ka, fixed = TRUE))) return(TRUE)
@@ -893,7 +1014,16 @@ record_venue_match <- function(wa, wb, loose = TRUE) {
       all(mapply(function(x, y) abbrev(x, y) || abbrev(y, x), wa, wb))) return(TRUE)
   acronym <- function(s, l) length(s) == 1L && length(l) >= 2L &&
     identical(s, paste(substr(l, 1, 1), collapse = ""))
-  acronym(wa, wb) || acronym(wb, wa)
+  if (acronym(wa, wb) || acronym(wb, wa)) return(TRUE)
+  # An acronym first and the words it spells after it: the name is either.
+  spelled <- function(w) length(w) >= 3L && acronym(w[1], w[-1])
+  for (sw in list(list(wa, wb), list(wb, wa))) {
+    a <- sw[[1]]; b <- sw[[2]]
+    if (spelled(a) && !spelled(b)) {
+      return(isTRUE(record_venue_match(a[1], b, loose)) || isTRUE(record_venue_match(a[-1], b, loose)))
+    }
+  }
+  FALSE
 }
 
 #' Which rows repeat an earlier one.
@@ -961,39 +1091,79 @@ dedupe_records <- function(recs, how) {
     # thin: "Wang, L." and "Wang, H." wrote different papers, and so did two
     # authors of one name in two journals.
     latin <- !is.na(tk) & nchar(gsub("[^a-z0-9]", "", tk)) >= 12L
-    authors_agree <- function(i, j, strict) {
+    # "Organisation" and "Organization", "Centre" and "Center": one name.
+    corp_key <- vapply(forms, function(f) if (length(f)) f[1] else NA_character_, character(1))
+    corp_key <- gsub("tre", "ter", gsub("z", "s", corp_key, fixed = TRUE), fixed = TRUE)
+    # An author that is one word in capitals may be an organisation's acronym.
+    acro <- ifelse(!fa$corporate & grepl("^(?:\\p{Lu}\\.?){2,8}$", fa$entry, perl = TRUE),
+                   tolower(fold_latin(gsub("[^\\p{L}]", "", fa$entry, perl = TRUE))), NA_character_)
+    # "WHO" is the World Health Organization, "CDC" the Centers for Disease
+    # Control and Prevention and "NICE" the National Institute for Health and
+    # Care Excellence: the acronym's letters are the initials of the name's
+    # words, in order, from the first, with at most two words left out. The
+    # whole name, "and" included, as the export wrote it.
+    first_full <- mark_utf8(trimws(sub(";.*$", "", recs$authors)))
+    acronym_of <- function(p, g) {
+      a <- acro[p]
+      if (is.na(a) || is.na(first_full[g])) return(FALSE)
+      w <- strsplit(tolower(fold_latin(first_full[g])), "[^\\p{L}]+", perl = TRUE)[[1]]
+      w <- w[nchar(w) > 1L & !w %in% c("of", "for", "and", "the", "on", "in", "to", "at", "de",
+                                       "la", "du", "des", "et", "y")]
+      ini <- paste(substr(w, 1, 1), collapse = "")
+      nchar(ini) >= nchar(a) && nchar(ini) - nchar(a) <= 2L &&
+        substr(a, 1, 1) == substr(ini, 1, 1) &&
+        grepl(paste0("^", paste(strsplit(a, "")[[1]], collapse = ".*")), ini)
+    }
+    raw_words <- lapply(tolower(fold_latin(fa$entry)), function(v) {
+      if (is.na(v)) character(0) else strsplit(v, "[^\\p{L}\\p{N}]+", perl = TRUE)[[1]]
+    })
+    ini_lc <- tolower(fa$initial)
+    # Row i's surname is a given name in row j's entry, and row i's initial is
+    # the first letter of another word there: "Li, W." read against "Li Wei".
+    # "Li, W." against "Zhang, Li" fails the second half, as W is not Zhang.
+    swapped <- function(i, j) {
+      if (is.na(ini_lc[i]) || !any(words[[i]] %in% entry_words[[j]])) return(FALSE)
+      other <- raw_words[[j]][nzchar(raw_words[[j]]) & !raw_words[[j]] %in% words[[i]]]
+      ini_lc[i] %in% substr(other, 1, 1)
+    }
+    authors_agree <- function(i, j) {
       if (is.na(fa$surname[i]) || is.na(fa$surname[j])) return(NA)
       if (fa$corporate[i] || fa$corporate[j]) {
         if (fa$corporate[i] && fa$corporate[j]) {
-          a <- forms[[i]][1]; b <- forms[[j]][1]
+          a <- corp_key[i]; b <- corp_key[j]
           return(if (grepl(a, b, fixed = TRUE) || grepl(b, a, fixed = TRUE)) "yes" else "no")
         }
         # A group first in one export and a person first in the other is one
-        # work when either names the other somewhere in its author list.
+        # work when either names the other somewhere in its author list, or
+        # the person is the group's acronym.
         g <- if (fa$corporate[i]) i else j
         p <- if (fa$corporate[i]) j else i
         hit <- (!is.na(all_key[p]) && grepl(forms[[g]][1], all_key[p], fixed = TRUE)) ||
-          any(words[[p]] %in% all_words[[g]])
+          any(words[[p]] %in% all_words[[g]]) || acronym_of(p, g)
         return(if (hit) "yes" else "no")
       }
       if (any(forms[[i]] %in% forms[[j]]) || any(words[[i]] %in% words[[j]])) {
-        if (strict && !is.na(fa$initial[i]) && !is.na(fa$initial[j]) &&
+        # Two initials that differ are two people of one surname, whatever the
+        # title: "Wang, L." and "Wang, H." each wrote a "Letter to the editor".
+        if (!is.na(fa$initial[i]) && !is.na(fa$initial[j]) &&
             fa$initial[i] != fa$initial[j]) return("no")
         return("yes")
       }
       # "Li Wei" in one export and "Li, W." in the other: a given name first.
-      if (any(words[[i]] %in% entry_words[[j]]) || any(words[[j]] %in% entry_words[[i]])) {
-        return("order")
-      }
+      # Only when each reading bears the other out.
+      if (swapped(i, j) || swapped(j, i)) return("order")
       "no"
     }
     venue_words <- record_venue_words(recs$venue)
     same_work <- function(i, j, strict) {
-      a <- authors_agree(i, j, strict)
+      a <- authors_agree(i, j)
       if (identical(a, "no")) return(FALSE)
-      if (!strict && !is.na(a)) return(TRUE)
+      # Name order is a reading, not a match: it never joins a record to one
+      # with a DOI (the DOI, and its file, would go to the other paper), and
+      # it needs the venues not to disagree.
+      if (strict && identical(a, "order")) return(FALSE)
       v <- record_venue_match(venue_words[[i]], venue_words[[j]], loose = !strict)
-      if (!strict) return(!isFALSE(v))
+      if (!strict) return(identical(a, "yes") || !isFALSE(v))
       # Nothing may contradict it, and something beyond the title must confirm it.
       !isFALSE(v) && (identical(a, "yes") || isTRUE(v))
     }
@@ -1152,13 +1322,28 @@ match_files <- function(recs, files) {
   # one: "McKay2019" is not Kay's, "DeWitt" not Witt's. An all-lower
   # "smithj2019" is left unmatched rather than guessed at, since "chenl" cannot
   # be told from "cheng".
+  #
+  # Nor is the end of a longer surname one: not after an apostrophe
+  # ("O'Connor" is not Connor's) or a particle ("De Souza", "van der Berg",
+  # "Mc Kay"), and not on either side of a hyphen that joins two capitalised
+  # names ("Garcia-Lopez" is neither Garcia's nor Lopez's). Each of these gave
+  # a record whose own file was missing the file of the longer name, and a
+  # file that both records matched went to neither. The record's own capitals
+  # mark its parts, so "DeWitt" also finds "De Witt" and "OBrien" "O'Brien".
   sur_f <- fold_latin(sur)
+  particle <- paste0("(?i:(?<!\\p{L})", c(.gr_rec_particles, "mc", "mac"), ")[ _.\\-]")
+  # The apostrophe and hyphen as characters, not as \x{...}: an all-ASCII
+  # pattern and folder are matched in PCRE's byte mode, which rejects those.
+  before <- paste0("(?<!\\p{L})(?<!\\p{L}['\u2019])(?:(?<!\\p{L}[\\-\u2010])|(?=\\p{Ll}))",
+                   "(?<!", paste(c(particle, "(?i:(?<!\\p{L})st\\.)[ _]"), collapse = "|"), ")")
+  after <- paste0("(?:(?:[^\\p{L}\\p{N}]*(?i:et[^\\p{L}\\p{N}]*al))?(?!\\p{L}|[\\-\u2010]\\p{Lu})",
+                  "|(?<=\\p{Ll})(?=\\p{Lu}))")
   sur_re <- vapply(seq_len(n), function(i) {
     if (is.na(ay[i])) return(NA_character_)
-    w <- tolower(regmatches(sur_f[i], gregexpr("[\\p{L}\\p{N}]+", sur_f[i], perl = TRUE))[[1]])
+    parts <- gsub("(\\p{Ll})(\\p{Lu})|(\\p{Lu})(\\p{Lu}\\p{Ll})", "\\1\\3 \\2\\4", sur_f[i], perl = TRUE)
+    w <- tolower(regmatches(parts, gregexpr("[\\p{L}\\p{N}]+", parts, perl = TRUE))[[1]])
     if (!length(w)) return(NA_character_)
-    after <- "(?:(?i:et[^\\p{L}\\p{N}]*al)?(?!\\p{L})|(?<=\\p{Ll})(?=\\p{Lu}))"
-    paste0("(?<!\\p{L})(?i:", paste(w, collapse = "[^\\p{L}\\p{N}]*"), ")", after)
+    paste0(before, "(?i:", paste(w, collapse = "[^\\p{L}\\p{N}]*"), ")", after)
   }, character(1))
 
   cand_all <- ifelse(is.na(recs$file), NA_character_,
@@ -1202,35 +1387,83 @@ match_files <- function(recs, files) {
     # "Smith 2019 - Cognitive Load.pdf" -- and without it the routes above match
     # almost nothing in a real folder. Both parts are required and the match
     # must be unique, so two Smith papers from 2019 match neither rather than
-    # attributing one paper's findings to the other. `pos` is where the surname
-    # starts in the filename, which says whose file "Kim and Lee 2020" is.
+    # attributing one paper's findings to the other. `pos` and `len` are where
+    # the surname starts in the filename and how long it runs there, which with
+    # the author list says whose file "Kim and Lee 2020" is (running(), below).
+    # They do not change while the route is run again, so they are found once
+    # per row, in `r4`.
     function(i) {
       if (is.na(sur_re[i])) return(NULL)
-      at <- regexpr(sur_re[i], fstem, perl = TRUE)
-      j <- which(!taken & at > 0L & grepl(recs$year[i], base, fixed = TRUE))
-      structure(j, pos = as.integer(at[j]))
+      if (is.null(r4[[i]])) {
+        at <- regexpr(sur_re[i], fstem, perl = TRUE)
+        j <- which(at > 0L & grepl(recs$year[i], base, fixed = TRUE))
+        r4[[i]] <<- list(j = j, pos = as.integer(at[j]), len = attr(at, "match.length")[j])
+      }
+      keep <- !taken[r4[[i]]$j]
+      structure(r4[[i]]$j[keep], pos = r4[[i]]$pos[keep], len = r4[[i]]$len[keep])
     }
   )
+  r4 <- vector("list", n)
   # What one work offers a route: `pick`, the files of the first of its rows
   # that points anywhere (the kept row's own recorded path beats a duplicate's,
   # so two copies of one paper, each with its own PDF, are not an ambiguity);
   # `want`, everything any of its rows points to, which is what it contests;
   # and each row's own files, for the copies a route-1 claim also accounts for.
   offer <- function(g, route) {
-    pick <- integer(0); want <- integer(0); pos <- integer(0); by_row <- list()
+    pick <- integer(0); want <- integer(0); pos <- integer(0); len <- integer(0); by_row <- list()
     for (i in members[[as.character(g)]]) {
       j <- hits[[route]](i)
       if (is.null(j)) next
       by_row[[as.character(i)]] <- as.integer(j)
       if (!length(pick)) pick <- as.integer(j)
       p <- attr(j, "pos") %||% rep(0L, length(j))
+      l <- attr(j, "len") %||% rep(0L, length(j))
       for (k in seq_along(j)) {
         m <- match(j[k], want)
-        if (is.na(m)) { want <- c(want, j[k]); pos <- c(pos, p[k]) }
-        else pos[m] <- min(pos[m], p[k])
+        if (is.na(m)) {
+          want <- c(want, j[k]); pos <- c(pos, p[k]); len <- c(len, l[k])
+        } else if (p[k] < pos[m]) {
+          pos[m] <- p[k]; len[m] <- l[k]
+        }
       }
     }
-    list(pick = pick, want = want, pos = pos, by_row = by_row)
+    list(pick = pick, want = want, pos = pos, len = len, by_row = by_row)
+  }
+
+  # Which of the works that want one file at route 4 are in the running for
+  # it. One whose title's opening words are in the filename as well is the
+  # one. Otherwise a filename names its first author first, so a work named
+  # earlier in it rules out one named later -- but only when that is what the
+  # name shows: the later surname is among the earlier work's authors ("Kim and
+  # Lee 2020" is Kim's paper, not Lee's), or lies inside the earlier match. A
+  # surname that merely comes first proves nothing: "Early Intervention in
+  # Psychiatry - 2020 - Smith - Screening..." is Smith's paper,
+  # "jama_smith_2019" is a Smith's and not a Jama's, and "Young adults exercise
+  # - Smith 2019" is not Young's. When nothing tells them apart, the file goes
+  # to none of them and is listed as unmatched.
+  work_of <- function(g, x) unique(unlist(x[members[[as.character(g)]]], use.names = FALSE))
+  sur_w <- record_name_words(sur)
+  au_w <- record_name_words(recs$authors)
+  running <- function(g, what, pos, len) {
+    front <- rep(TRUE, length(what))
+    for (f in unique(what[duplicated(what)])) {
+      k <- which(what == f)
+      titled <- vapply(k, function(x) {
+        t <- work_of(g[x], ttl_key)
+        t <- t[!is.na(t)]
+        !is.na(stem[f]) && length(t) > 0L && any(vapply(t, grepl, logical(1), x = stem[f], fixed = TRUE))
+      }, logical(1))
+      if (sum(titled) == 1L) {
+        front[k] <- titled
+        next
+      }
+      behind <- vapply(k, function(a) any(vapply(k, function(b) {
+        pos[b] < pos[a] &&
+          (pos[a] + len[a] <= pos[b] + len[b] || any(work_of(g[a], sur_w) %in% work_of(g[b], au_w)))
+      }, logical(1))), logical(1))
+      front[k] <- !behind
+    }
+    front
   }
 
   # One route at a time across ALL records, strongest first -- not every route
@@ -1246,9 +1479,9 @@ match_files <- function(recs, files) {
   #
   # A route is run again while it still settles something: once a work has
   # claimed its file, a work that wanted that file and one other now wants only
-  # the other. And at route 4 a file naming two surnames is claimed by the one
-  # it names first, as a filename names its first author first: "Kim and Lee
-  # 2020" is Kim's, and it no longer stops Lee's record taking "Lee 2020".
+  # the other. And at route 4 a file naming two surnames goes to the one the
+  # name shows is its first author (running() above): "Kim and Lee 2020" is
+  # Kim's, and it no longer stops Lee's record taking "Lee 2020".
   pending <- which(kept & !is.na(owner))
   for (route in seq_along(hits)) {
     repeat {
@@ -1257,8 +1490,10 @@ match_files <- function(recs, files) {
       who <- rep(seq_along(offers), vapply(offers, function(o) length(o$want), integer(1)))
       what <- unlist(lapply(offers, `[[`, "want"))
       if (!length(what)) break
-      pos <- unlist(lapply(offers, `[[`, "pos"))
-      front <- pos == stats::ave(pos, what, FUN = min)
+      front <- if (route == 4L) {
+        running(pending[who], what, unlist(lapply(offers, `[[`, "pos")),
+                unlist(lapply(offers, `[[`, "len")))
+      } else rep(TRUE, length(what))
       wanted <- tabulate(what[front], nbins = length(paths))
       win <- vapply(seq_along(offers), function(w) {
         p <- offers[[w]]$pick

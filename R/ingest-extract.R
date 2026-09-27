@@ -260,24 +260,83 @@ html_blocks <- function(doc) {
     segs$take(" ")
   }
 
-  # A table that lays out a page rather than holding data: a heading in it
-  # (outside a header cell or the caption), or a single row or column holding
-  # headings, paragraphs, lists, divs or other tables. Pages built on a layout
-  # table -- older sites, HTML e-mail, generated reports -- put the whole
-  # article in one cell, and reading that row by row made it one "table" block
-  # with no headings, no sections and no paragraph breaks. A data table's cells
-  # hold values, and keep the row format even when a value is written as a <p>
-  # or two.
-  heading_xpath <- paste0(".//*[self::h1 or self::h2 or self::h3 or self::h4 or self::h5 ",
-                          "or self::h6][not(ancestor::th) and not(ancestor::caption)]")
-  block_xpath <- paste0(".//*[self::p or self::div or self::ul or self::ol or self::dl or ",
-                        "self::blockquote or self::pre or self::table or self::section or ",
-                        "self::article or self::h1 or self::h2 or self::h3 or self::h4 or ",
-                        "self::h5 or self::h6][not(ancestor::caption)]")
-  is_layout <- function(tbl, cells) {
-    if (length(find(tbl, heading_xpath))) return(TRUE)
-    one_line <- length(cells) == 1L || all(lengths(cells) <= 1L)
-    one_line && length(find(tbl, block_xpath)) > 0L
+  # A table that lays out a page rather than holding data. Pages built on a
+  # layout table -- older sites, HTML e-mail, generated reports -- put the
+  # whole article in one cell, and reading that row by row made it one "table"
+  # block with no headings, no sections and no paragraph breaks. A data
+  # table's cells hold values, and keep the row format even when a value is
+  # written as a <p> or two, or a cell holds a heading.
+  #
+  # What a cell holds is counted in paragraphs: the innermost block elements
+  # in it, with a list or a table inside it counted as one. A cell of two or
+  # more holds page content. A layout is then:
+  #   * a table of one cell holding anything -- but not a lone heading when
+  #     the table sits in a cell of a data table, where it is a value too;
+  #   * a stack of rows -- at most one of them split into several cells, and
+  #     no header cells -- with a cell of page content, or with a layout table
+  #     (a heading beside other content in one cell) inside one of its cells:
+  #     a banner row, a navigation and content row, and a footer row;
+  #   * a grid (any other table) only when one cell holds a heading beside
+  #     other content and at least half of the table's text: the article.
+  # A heading on its own in a cell -- a header row styled as headings, the
+  # label of a group of rows -- is a value. Taking any heading for a layout
+  # split such data tables into one block per cell, a value apart from its
+  # label, and made the last header cell the section of the page after the
+  # table; a single row whose cells each held one <p> was split the same way.
+  # Headings in the header cells, the caption, or a table inside a cell of a
+  # grid say nothing about the table around them.
+  #
+  # A grid laid out without such a heading (a logo and a search box above a
+  # navigation and content row, say) is still read row by row: it cannot be
+  # told from a data table whose cells hold paragraphs.
+  heading_names <- paste0("h", 1:6)
+  unit_names <- c("p", "div", "section", "article", "center", "header", "main", "aside", "figure",
+                  "form", "fieldset", "address", "blockquote", "pre", heading_names)
+  whole_names <- c("ul", "ol", "dl", "table")
+  any_of <- function(nm) paste0("self::", nm, collapse = " or ")
+  # The paragraphs of a cell of the table at nesting `%1$d`, relative to the
+  # cell: its innermost blocks, not inside a list, and a list or a table
+  # inside it whole.
+  cell_paras <- paste0(
+    ".//*[", any_of(c(unit_names, whole_names)), "][count(ancestor::table) = %1$d]",
+    "[not(ancestor::*[", any_of(c("ul", "ol", "dl")), "][count(ancestor::table) = %1$d])]",
+    "[", any_of(whole_names), " or not(.//*[", any_of(c(unit_names, whole_names)), "])]")
+  # The cells, at that nesting, that hold two paragraphs or more; and the data
+  # cells among them with a heading.
+  crowded_xpath <- paste0(".//*[self::td or self::th][count(ancestor::table) = %1$d]",
+                          "[count(", cell_paras, ") > 1]")
+  crowded_heading_xpath <- paste0(".//td[count(ancestor::table) = %1$d]",
+                                  "[.//*[", any_of(heading_names), "][count(ancestor::table) = %1$d]]",
+                                  "[count(", cell_paras, ") > 1]")
+  deep_heading_xpath <- paste0(".//*[", any_of(heading_names), "][count(ancestor::table) > %d]")
+  block_xpath <- paste0(".//*[", any_of(c(setdiff(unit_names, heading_names), whole_names)),
+                        "][not(ancestor::caption)]")
+  any_heading_xpath <- paste0(".//*[", any_of(heading_names), "][not(ancestor::caption)]")
+  text_size <- function(node) nchar(gsub("\\s+", "", xml2::xml_text(node), perl = TRUE))
+  # Each query below is a single pass over the table. Grouping the paragraphs
+  # by the path of their cell instead was quadratic in the number of rows:
+  # libxml2 finds a node's path by counting the siblings before it.
+  is_layout <- function(tbl, cells, level, in_data) {
+    n_cells <- sum(lengths(cells))
+    if (!n_cells) return(FALSE)
+    if (n_cells == 1L) {
+      return(length(find(tbl, block_xpath)) > 0L ||
+               length(find(tbl, sprintf(crowded_xpath, level))) > 0L ||
+               (!in_data && length(find(tbl, any_heading_xpath)) > 0L))
+    }
+    if (sum(lengths(cells) > 1L) <= 1L &&
+        !length(find(tbl, sprintf(".//th[count(ancestor::table) = %d]", level)))) {
+      if (length(find(tbl, sprintf(crowded_xpath, level)))) return(TRUE)
+      # A layout table in one of the cells: a heading in a table inside it,
+      # beside other content in its cell.
+      deep <- find(tbl, sprintf(deep_heading_xpath, level))
+      for (lv in sort(unique(xml2::xml_find_num(deep, "count(ancestor::table)")))) {
+        if (length(find(tbl, sprintf(crowded_heading_xpath, lv)))) return(TRUE)
+      }
+      return(FALSE)
+    }
+    held <- find(tbl, sprintf(crowded_heading_xpath, level))
+    length(held) > 0L && any(2L * text_size(held) >= text_size(tbl))
   }
 
   stray_xpath <- paste0(
@@ -289,7 +348,7 @@ html_blocks <- function(doc) {
     "[not(self::text()) or normalize-space(.) != '']",
     "[not(.//*[(self::tr or self::td or self::th) and count(ancestor::table) = %d])]")
 
-  read_table <- function(tbl) {
+  read_table <- function(tbl, in_data = FALSE) {
     # Rows and cells of THIS table, however thead/tbody wrap them, and not
     # those of a table nested in one of its cells.
     level <- length(find(tbl, "ancestor-or-self::table"))
@@ -301,7 +360,7 @@ html_blocks <- function(doc) {
       kids <- xml2::xml_children(row)
       if (all(tolower(xml2::xml_name(kids)) %in% c("td", "th"))) kids else find(row, cell_xpath)
     })
-    if (is_layout(tbl, cells)) return(walk(tbl))
+    if (is_layout(tbl, cells, level, in_data)) return(walk(tbl))
     # Markup that is in the table but in none of its rows or cells -- a <p>
     # before the first row, a div after the last -- is not dropped: a browser
     # shows it before the table, and so it is read there. (A table in a row
@@ -318,7 +377,7 @@ html_blocks <- function(doc) {
       if (any(nzchar(vals))) emit(paste(vals, collapse = " | "), "table")
       if (!has_nested) next
       for (inner in find(rows[[r]], sprintf(".//table[count(ancestor::table) = %d]", level))) {
-        read_table(inner)
+        read_table(inner, in_data = TRUE)
       }
     }
   }

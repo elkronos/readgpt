@@ -74,7 +74,17 @@ gr_trace_save <- function(trace, path) {
 #' A response is matched on the exact prompt messages plus the model id the
 #' call asked for. That can differ from the model the trace records as
 #' answering: a [gr_ellmer_client()] answers with its chat's model whatever the
-#' recipe asked for, and its runs replay all the same. When a
+#' recipe asked for, and its runs replay all the same.
+#'
+#' The replay client's own model, which a read that names none asks for, is
+#' the model the recorded reads asked for. One trace can hold reads through
+#' clients built for different models, and a recording made by readgpt 0.5.0
+#' asked for `gr_options("model")` on a read and for the client's model
+#' everywhere else; a call that asks for the replay client's model and finds
+#' nothing under it is answered from the one other such model that holds the
+#' same prompt. A model the recorded settings named (`model`, `skim_model`,
+#' `summary_model`) is never used that way, so a replay that leaves one out
+#' misses. When a
 #' run issued the same prompt more than once (which happens at a temperature
 #' above zero, and in readers that revisit a chunk), the recorded responses are
 #' returned in the order they were produced. Once they are exhausted the last
@@ -162,20 +172,26 @@ gr_replay_client <- function(source, strict = TRUE) {
   # and a wrong one when a cheaper skim_model or summary_model made most of
   # them: the replay then asked for that model on the answer call, found
   # nothing recorded under it and stopped with gr_replay_miss. A recording
-  # without the notes, or whose reads asked for different models, falls back
-  # to the guess.
-  default_model <- replay_read_model(source)
-  if (is.na(default_model)) {
-    models <- vapply(steps, function(s) as_chr1(s$model, NA_character_), character(1))
-    models <- models[!is.na(models)]
-    default_model <- if (length(models)) names(sort(table(models), decreasing = TRUE))[1] else "replay"
-  }
+  # without the notes falls back to the guess.
+  #
+  # One client's model cannot be every model a recording needs when its reads
+  # followed clients built for different models, or when it was made by 0.5.0,
+  # whose reads asked for gr_options("model") and whose segmenters, extraction
+  # and claims asked for the client's model. The others are kept apart, and
+  # answer only a call that asked for this client's model and found nothing
+  # under it. See replay_default_models().
+  models <- vapply(steps, function(s) as_chr1(s$model, NA_character_), character(1))
+  models <- models[!is.na(models)]
+  defaults <- replay_default_models(source, models)
+  default_model <- if (!is.na(defaults$read)) defaults$read
+                   else if (length(models)) replay_most_frequent(models) else "replay"
 
   structure(list(
     model = default_model, api = "replay", base_url = "replay://",
     embedding_model = "replay-embed", max_retries = 0L, retry_pause_base = 0,
     timeout = 1, extra_body = list(),
     strict = isTRUE(strict), .idx = idx,
+    .alt_models = defaults$alts,
     # Derived from the recording, not from this object: two replays of the same
     # trace are the same thing and should share a store, while replays of
     # DIFFERENT recordings must not -- without this a corpus store served one
@@ -295,27 +311,80 @@ replay_source_list <- function(source) {
   if (is.list(obj)) obj else NULL
 }
 
-#' The model the recorded reads asked for when they named none, or NA.
+#' The model a replay client stands for, and the others a recording needs.
 #'
-#' gr_read() notes it on every pre-flight (`detail$model`). A read whose
-#' settings name a model asks for that model again when it is replayed, so only
-#' the reads that followed the client say what the replay client's own model
-#' has to be. NA when no note says, or when the notes name more than one model
-#' (a corpus read through several clients), so the caller falls back to the
-#' model most calls asked for.
+#' gr_read() notes on every pre-flight the model the read asked for
+#' (`detail$model`). A read whose settings name a model asks for that model
+#' again when it is replayed, so only the reads that followed their client say
+#' what the replay client's own model has to be: `read` is that model, and NA
+#' when no note says (a recording with no read), so the caller falls back to
+#' the model most calls asked for.
+#'
+#' `alts` are the other models calls that followed a client asked for, which
+#' replay_lookup() tries, one prompt at a time, for a call that asked for the
+#' replay client's model and found nothing under it:
+#'
+#' - Reads through clients built for different models (one trace passed to
+#'   both): `read` is the noted model most calls asked for, and the other
+#'   noted models are `alts`.
+#' - A recording made by 0.5.0, whose notes do not name the model. Its reads
+#'   asked for gr_options("model") whatever the client, and its segmenters,
+#'   extraction and claims asked for the client's own model; its replay asked
+#'   for gr_options("model") on every read and for the model most calls asked
+#'   for everywhere else, so its recordings of a read with a cheaper
+#'   skim_model or summary_model replayed. `read` is gr_options("model") when
+#'   the recording holds calls under it, as that version assumed, or else the
+#'   only model left, or the one most of them asked for; `alts` is the model
+#'   most of the rest asked for.
+#'
+#' A model any note names as a setting (`model`, `skim_model`,
+#' `summary_model`) is never in `alts`, nor a 0.5.0 recording's `read`: the
+#' calls that followed a client did not ask for it, and a replay that leaves
+#' out a recorded skim_model has to miss, as it did in 0.5.0, rather than be
+#' answered from the calls that setting made.
 #' @noRd
-replay_read_model <- function(source) {
+replay_default_models <- function(source, models) {
+  none <- list(read = NA_character_, alts = character(0))
   obj <- replay_source_list(source)
-  if (is.null(obj)) return(NA_character_)
-  m <- unlist(lapply(obj$steps %||% list(), function(st) {
-    if (!is.list(st) || !identical(as_chr1(st$label, ""), "preflight")) return(NULL)
-    d <- if (is.list(st$detail)) st$detail else list()
-    settings <- if (is.list(d$settings)) d$settings else list()
-    if (!is.null(settings[["model", exact = TRUE]])) return(NULL)
-    as_chr1(d[["model", exact = TRUE]], NA_character_)
-  }), use.names = FALSE)
-  m <- unique(m[!is.na(m) & nzchar(m)])
-  if (length(m) == 1L) m else NA_character_
+  if (is.null(obj) || !length(models)) return(none)
+  notes <- Filter(function(st) is.list(st) && identical(as_chr1(st$label, ""), "preflight"),
+                  obj$steps %||% list())
+  if (!length(notes)) return(none)
+  details <- lapply(notes, function(st) if (is.list(st$detail)) st$detail else list())
+  settings <- lapply(details, function(d) if (is.list(d$settings)) d$settings else list())
+  followed <- vapply(settings, function(s) is.null(s[["model", exact = TRUE]]), logical(1))
+  if (!any(followed)) return(none)
+  named <- unlist(lapply(settings, function(s) vapply(
+    c("model", "skim_model", "summary_model"),
+    function(k) as_chr1(s[[k, exact = TRUE]], NA_character_), character(1))), use.names = FALSE)
+  named <- unique(named[!is.na(named) & nzchar(named)])
+  noted <- vapply(details[followed], function(d) as_chr1(d[["model", exact = TRUE]], NA_character_),
+                  character(1))
+  noted <- unique(noted[!is.na(noted) & nzchar(noted)])
+
+  if (length(noted)) {
+    if (length(noted) == 1L) return(list(read = noted, alts = character(0)))
+    under <- models[models %in% noted]
+    read <- if (length(under)) replay_most_frequent(under) else noted[1]
+    return(list(read = read, alts = setdiff(noted, c(read, named))))
+  }
+  # Every note that followed a client is silent about its model: 0.5.0.
+  if (any(vapply(details, function(d) !is.null(d[["model", exact = TRUE]]), logical(1)))) {
+    return(none)
+  }
+  pool <- models[!models %in% named]
+  if (!length(pool)) return(none)
+  opt <- as_chr1(gr_options("model"), "")
+  cand <- unique(pool)
+  read <- if (opt %in% cand) opt else if (length(cand) == 1L) cand else replay_most_frequent(pool)
+  rest <- pool[pool != read]
+  list(read = read, alts = if (length(rest)) replay_most_frequent(rest) else character(0))
+}
+
+#' The model most of `models` name. Ties go to the first in sorted order.
+#' @noRd
+replay_most_frequent <- function(models) {
+  names(sort(table(models), decreasing = TRUE))[1]
 }
 
 #' Which embedder produced the vectors in the recorded run, if any.
@@ -392,6 +461,20 @@ replay_lookup <- function(client, messages, model, params) {
   idx <- client$.idx
   kf <- replay_key(messages, model)
   recorded <- idx$full[[kf]]
+  # The recording's other models that calls following a client asked for (see
+  # replay_default_models()), for a call that asked for this client's model.
+  # Only when exactly one holds the prompt: two would be a guess between two
+  # recorded answers, and that is reported as the miss it is.
+  alts <- as.character(client[[".alt_models", exact = TRUE]] %||% character(0))
+  if (is.null(recorded) && length(alts) &&
+      identical(as_chr1(model, ""), as_chr1(client$model, ""))) {
+    ka <- vapply(alts, function(a) replay_key(messages, a), character(1))
+    ka <- ka[vapply(ka, function(k) !is.null(idx$full[[k]]), logical(1))]
+    if (length(ka) == 1L) {
+      kf <- ka[[1]]
+      recorded <- idx$full[[kf]]
+    }
+  }
 
   if (is.null(recorded)) {
     other <- idx$prompt[[replay_key(messages, NULL)]]

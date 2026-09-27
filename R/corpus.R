@@ -248,7 +248,11 @@ format_trace_cost <- function(trace) {
 #'   the model and says how to register it. `cost_usd` stays `NA` either way,
 #'   since what those documents cost in full is not known.
 #' @param max_total_calls Stop *before* a document once the run has made this
-#'   many model calls, marking the rest `"skipped"`. The counterpart to
+#'   many requests, marking the rest `"skipped"`. Requests are counted as
+#'   `gr_options(max_calls =)` counts them: model calls and requests to an
+#'   embeddings endpoint alike, so a document read with `"needle"` through an
+#'   API embedder spends more of it than its model calls alone, and more than
+#'   the "model calls" a printed trace shows. The counterpart to
 #'   `max_total_usd` for runs whose model has no registered price, and the only
 #'   ceiling that bounds the run rather than each document:
 #'   `gr_options(max_calls =)` is per document, so a corpus can make
@@ -302,7 +306,12 @@ format_trace_cost <- function(trace) {
 #' error, the partial answer is in `answers`, and a resumed run reads it again
 #' rather than restoring what the failure left. A request the pipeline recovered
 #' from does not count: an embeddings request that failed and was replaced by
-#' lexical vectors leaves the document `"ok"`, with `partial` set. A row that a
+#' lexical vectors leaves the document `"ok"` and stored. `partial` is set when
+#' those vectors ranked the chunks the reader sent (`retrieve`, `rerank`,
+#' `iterative`), but not when they only placed a semantic segmenter's cuts;
+#' that, like a proposition batch kept as written, shows in `warnings`, and a
+#' contextual header that could not be written only in the trace's `errors`
+#' (see [gr_trace()]). A row that a
 #' limit or a failed request stopped keeps `document_id`, `reader` and the chunk
 #' counts, since the text was read; only `answer` and `not_found` are left `NA`.
 #' A restored row keeps the numbers from when that document was first read, so
@@ -486,10 +495,16 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
     # it has been read -- which is why they are enforced in different places.)
     if (!stopped && !is.null(max_total_calls) && trace$calls >= max_total_calls) {
       stopped <- TRUE
-      gr_warn(sprintf(paste0("Stopped before document %d of %d: the run has made %d call(s), at ",
-                             "or above the %s `max_total_calls` ceiling. The remaining documents ",
-                             "are marked 'skipped'."),
+      # Named as requests, with the two kinds apart: the ceiling counts
+      # embeddings requests as gr_options(max_calls =) does, and "3 call(s)"
+      # beside a trace that printed "1 model calls" read as a miscount.
+      embed <- as.integer(gr_trace_summary(trace)$embed_calls)
+      gr_warn(sprintf(paste0("Stopped before document %d of %d: the run has made %d request(s)%s, ",
+                             "at or above the %s `max_total_calls` ceiling, which counts ",
+                             "embeddings requests as well as model calls. The remaining ",
+                             "documents are marked 'skipped'."),
                       i, length(sources), trace$calls,
+                      if (embed > 0L) sprintf(" (%s)", format_call_counts(trace)) else "",
                       format(max_total_calls, scientific = FALSE, trim = TRUE)),
               class = "gr_corpus_call_cap")
     }
@@ -738,7 +753,7 @@ print.gr_corpus <- function(x, ...) {
                 sum(done), sum(s$not_found[done], na.rm = TRUE),
                 sum(s$partial[done], na.rm = TRUE)))
   }
-  cat(sprintf("  this run: %d model call(s), %s\n", x$trace$calls,
+  cat(sprintf("  this run: %s, %s\n", format_call_counts(x$trace),
               format_trace_cost(x$trace)))
   warned <- if (is.null(s$warnings)) 0L else sum(!is.na(s$warnings))
   if (warned) {

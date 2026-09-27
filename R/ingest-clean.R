@@ -201,11 +201,22 @@ gr_clean <- function(text, steps = NULL, opts = list()) {
 #' and every block keeps the lines of it that survived. A block none of whose
 #' lines survived comes back as "".
 #'
-#' That covers a step that removes whole lines or cuts the text at the start
-#' of a line, which is what the built-in ones do. A step that cuts the text
-#' short inside a line keeps each block up to the cut. A step that rewrites
-#' text inside lines but keeps every line is mapped line for line. Anything
-#' else returns NULL, and the caller falls back.
+#' That covers a step that removes whole lines, which is what the built-in
+#' ones do. A line of the result may also be the start of a line of the
+#' input: the step cut the text short inside that line, and took out what
+#' followed, to the end ("6 References" and the bibliography after it) or up
+#' to a later line it kept (an acknowledgements section). The block the cut
+#' fell in keeps what the step left of that line. So a step that removes
+#' running heads AND cuts the bibliography off inside a line is mapped too;
+#' only a cut that left the input a prefix of itself used to be, so that one
+#' fell back and kept the whole bibliography. A line is taken as a copy of
+#' the next line of the input that is the same, when there is one, and only
+#' otherwise as the start of the nearest line that begins with it; a heading
+#' "Results" is not mistaken for a cut running head "Results of the trial"
+#' that the step dropped.
+#'
+#' A step that rewrites text inside lines but keeps every line is mapped line
+#' for line. Anything else returns NULL, and the caller falls back.
 #' @noRd
 map_document_step <- function(text, joined, cleaned) {
   if (identical(cleaned, joined)) return(ifelse(has_content(text), text, ""))
@@ -224,32 +235,40 @@ map_document_step <- function(text, joined, cleaned) {
   by_block <- function(x) split(x, factor(owner, levels = c(0L, seq_along(text))))[-1L]
 
   # Blank lines carry nothing to match; a step may add or drop them freely.
+  # The copies of each distinct input line, in order, with a pointer to the
+  # first one not yet passed: finding the next copy of a line never rescans.
+  wanted <- out_lines[nzchar(trimws(out_lines))]
+  first <- match(orig, orig)
+  groups <- unique(first)
+  copies <- split(seq_along(orig), factor(first, levels = groups))
+  slot <- integer(length(orig))
+  slot[groups] <- seq_along(groups)
+  next_copy <- rep(1L, length(groups))
+  wanted_slot <- slot[match(wanted, orig)]         # NA: no input line is the same
+
   kept <- rep(FALSE, length(orig))
+  now <- orig                                      # what each input line keeps
   subsequence <- TRUE
   i <- 1L
-  for (line in out_lines[nzchar(trimws(out_lines))]) {
-    while (i <= length(orig) && orig[i] != line) i <- i + 1L
-    if (i > length(orig)) { subsequence <- FALSE; break }
-    kept[i] <- TRUE
-    i <- i + 1L
-  }
-  idx <- by_block(seq_along(orig))
-  if (!subsequence) {
-    # The start of the input and nothing after it: a step that cut the text
-    # short inside a line, from a numbered "6 References" heading to the end,
-    # say. Every block before the cut is kept, the one it fell in keeps what
-    # the step left of it, and every block after it is gone. Applied to each
-    # block on its own instead, the cut never fired and the whole bibliography
-    # was kept.
-    if (startsWith(joined, cleaned)) {
-      m <- length(out_lines)          # the line the cut fell in
-      return(vapply(idx, function(own) {
-        t <- if (max(own) < m) paste(orig[own], collapse = "\n")
-             else if (own[1] > m) ""
-             else paste(c(orig[own[own < m]], out_lines[m]), collapse = "\n")
-        if (nzchar(trimws(t))) t else ""
-      }, character(1), USE.NAMES = FALSE))
+  for (k in seq_along(wanted)) {
+    j <- NA_integer_
+    g <- wanted_slot[k]
+    if (!is.na(g)) {
+      at <- copies[[g]]
+      while (next_copy[g] <= length(at) && at[next_copy[g]] < i) next_copy[g] <- next_copy[g] + 1L
+      if (next_copy[g] <= length(at)) j <- at[next_copy[g]]
     }
+    if (is.na(j)) {
+      # No copy of the line left: the start of the nearest line, cut inside it.
+      while (i <= length(orig) && !startsWith(orig[i], wanted[k])) i <- i + 1L
+      if (i > length(orig)) { subsequence <- FALSE; break }
+      j <- i
+      now[j] <- wanted[k]
+    }
+    kept[j] <- TRUE
+    i <- j + 1L
+  }
+  if (!subsequence) {
     # Not the input with lines taken out. The same number of lines means text
     # was rewritten in place, and each block takes back its own lines.
     if (length(out_lines) != length(orig)) return(NULL)
@@ -259,12 +278,15 @@ map_document_step <- function(text, joined, cleaned) {
     }, character(1), USE.NAMES = FALSE))
   }
 
+  idx <- by_block(seq_along(orig))
+  cut <- now != orig
   vapply(seq_along(text), function(b) {
     own <- idx[[b]]
     content <- own[!blank[own]]
     if (!length(content) || !any(kept[content])) return("")
-    if (all(kept[content])) return(text[b])
-    paste(orig[own[kept[own] | blank[own]]], collapse = "\n")
+    if (all(kept[content]) && !any(cut[own])) return(text[b])
+    # Not blank: a line of the result it kept (or the start of one) never is.
+    paste(now[own[kept[own] | blank[own]]], collapse = "\n")
   }, character(1), USE.NAMES = FALSE)
 }
 
@@ -409,35 +431,63 @@ register_builtin_cleaners <- function() {
 #' Text set in capitals (a disclaimer, a contract's liability clause) has
 #' nothing but capitals after its breaks, so that rule never fired there:
 #' "LIA-" / "BLE" stayed split, and a quote of "LIABLE" failed to check out. A
-#' word of capitals broken before more capitals is rejoined as well, unless
-#' the words beside the pair all have lower-case letters: that is mixed-case
-#' text, and the pair two abbreviations ("the HIV-" / "AIDS epidemic").
+#' word of capitals broken before more capitals is rejoined as well when the
+#' text around it is set in capitals, and left alone in mixed-case text, where
+#' the pair is two abbreviations ("the HIV-" / "AIDS epidemic", "analysed by
+#' LC-" / "MS/MS").
+#'
+#' What counts as the text around it: the nearest 12 letters before the pair
+#' on its first line, and the nearest 12 after it on its second. A side is set
+#' in capitals when those letters have at least five capitals and at most one
+#' lower-case letter ("Le CONTRAT DE LI-", "(a) FOR ANY INDI-"), and mixed case
+#' when they have a lower-case letter and are not set in capitals. The pair is
+#' joined when either side is set in capitals, or when neither is mixed case (a
+#' heading on lines of its own, "8. INDEMNI-" / "FICATION"). Judging by the one
+#' nearest word, as the rule first did, joined pairs in ordinary prose whenever
+#' an abbreviation stood beside them: "A PET-" / "CT scan", "Phase II HIV-" /
+#' "AIDS", "LC-" / "MS/MS". A lone word of capitals broken inside mixed-case
+#' text ("Please read CARE-" / "FULLY") looks exactly like "the HIV-" / "AIDS
+#' epidemic" and is left split too; that is the price of keeping those apart.
+#' Lines above or below the pair are not looked at: a heading in capitals on
+#' the line before ("RESULTS" / "US-" / "UK trade grew") says nothing about the
+#' prose that follows it.
+#'
+#' The block is cut into lines and only the ends of lines are looked at, so the
+#' time grows with the length of the block. Matching the pairs across the whole
+#' block and slicing it by character position once per pair took time in
+#' proportion to the length times the number of pairs: a 2 MB block in capitals
+#' took a minute.
 #' @noRd
 rejoin_hyphenated <- function(x) {
   if (length(x) != 1L) return(vapply(x, rejoin_hyphenated, character(1), USE.NAMES = FALSE))
   if (is.na(x)) return(x)
   x <- gsub("(\\p{L})[-\u2010\u2011][ \t]*\r?\n[ \t]*(\\p{Ll})", "\\1\\2", x, perl = TRUE)
-  m <- gregexpr("(?<!\\p{L})(\\p{Lu}{2,})[-\u2010\u2011][ \t]*\r?\n[ \t]*(\\p{Lu}+)(?!\\p{L})",
-                x, perl = TRUE)[[1]]
-  if (m[1] == -1L) return(x)
-  start <- as.integer(m)
-  end <- start + attr(m, "match.length") - 1L
-  # The nearest word before the pair and after it, "" where there is none.
-  before <- substring(x, pmax(1L, start - 80L), start - 1L)
-  after <- substring(x, end + 1L, end + 80L)
-  prev <- ifelse(grepl("\\p{L}", before, perl = TRUE),
-                 sub("(?s)^.*?(\\p{L}+)[^\\p{L}]*$", "\\1", before, perl = TRUE), "")
-  nxt <- ifelse(grepl("\\p{L}", after, perl = TRUE),
-                sub("(?s)^[^\\p{L}]*(\\p{L}+).*$", "\\1", after, perl = TRUE), "")
-  lower <- function(w) grepl("\\p{Ll}", w, perl = TRUE)
-  capitals <- (nzchar(prev) & !lower(prev)) | (nzchar(nxt) & !lower(nxt))
-  join <- capitals | !(lower(prev) | lower(nxt))
-  if (!any(join)) return(x)
-  cs <- attr(m, "capture.start"); cl <- attr(m, "capture.length")
-  first <- substring(x, cs[, 1], cs[, 1] + cl[, 1] - 1L)
-  second <- substring(x, cs[, 2], cs[, 2] + cl[, 2] - 1L)
-  regmatches(x, list(m)) <- list(ifelse(join, paste0(first, second), regmatches(x, list(m))[[1]]))
-  x
+  if (!grepl("\\p{Lu}[-\u2010\u2011][ \t]*\r?\n[ \t]*\\p{Lu}", x, perl = TRUE)) return(x)
+  # A trailing "\n" makes strsplit() keep a final empty line, so pasting the
+  # lines back with "\n" gives `x` again exactly.
+  lines <- strsplit(paste0(x, "\n"), "\n", fixed = TRUE)[[1]]
+  n <- length(lines)
+  # A line that ends in a word of two or more capitals and a hyphen, and a line
+  # that starts with a word of capitals.
+  tail_at <- regexpr("(?<!\\p{L})\\p{Lu}{2,}[-\u2010\u2011][ \t]*\r?$", lines, perl = TRUE)
+  head_at <- regexpr("^[ \t]*\\p{Lu}+(?!\\p{L})", lines, perl = TRUE)
+  i <- which(tail_at[-n] > 0L & head_at[-1L] > 0L)
+  if (!length(i)) return(x)
+  before <- gsub("\\P{L}+", "", substr(lines[i], 1L, tail_at[i] - 1L), perl = TRUE)
+  before <- substring(before, pmax(1L, nchar(before) - 11L))
+  after <- substring(lines[i + 1L], head_at[i + 1L] + attr(head_at, "match.length")[i + 1L])
+  after <- substr(gsub("\\P{L}+", "", after, perl = TRUE), 1L, 12L)
+  count <- function(s, class) nchar(gsub(sprintf("[^%s]+", class), "", s, perl = TRUE))
+  low_b <- count(before, "\\p{Ll}"); low_a <- count(after, "\\p{Ll}")
+  capitals <- (low_b <= 1L & count(before, "\\p{Lu}") >= 5L) |
+    (low_a <= 1L & count(after, "\\p{Lu}") >= 5L)
+  j <- i[capitals | (low_b == 0L & low_a == 0L)]
+  if (!length(j)) return(x)
+  lines[j] <- sub("[-\u2010\u2011][ \t]*\r?$", "", lines[j], perl = TRUE)
+  lines[j + 1L] <- sub("^[ \t]+", "", lines[j + 1L], perl = TRUE)
+  sep <- rep("\n", n - 1L)
+  sep[j] <- ""
+  paste0(lines, c(sep, ""), collapse = "")
 }
 
 #' Named cleaning presets.

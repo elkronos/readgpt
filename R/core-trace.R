@@ -28,10 +28,16 @@
 #'   the size of the model calls' prompts and replies.
 #'
 #'   `errors` has one entry per request that failed: its `step`, `label` and
-#'   `error`. A failure the run recovered from without losing any input, such
-#'   as an embeddings request replaced by [gr_embed()]'s lexical fallback,
-#'   also carries `recovered = TRUE`. The answer still says what the fallback
-#'   cost it (it is marked partial), but the document was read in full.
+#'   `error`. A failure the run recovered from without losing any input also
+#'   carries `recovered = TRUE`: the document was read in full, and
+#'   [gr_read_many()] does not count it as failed. Only some fallbacks mark the
+#'   answer partial. An embeddings request replaced by [gr_embed()]'s lexical
+#'   fallback does when the vectors ranked the chunks a reader sent (the
+#'   `retrieve`, `rerank` and `iterative` readers). The same fallback while
+#'   [gr_segment()] made semantic cuts, and a proposition batch kept as
+#'   written, leave the answer unmarked and say so in its `$warnings`. A
+#'   contextual header that could not be written leaves no mark on the answer
+#'   at all, and this entry is the record of it.
 #'
 #'   `budget_stop` is `TRUE` once a limit stopped the run, and `stop_reason`
 #'   says which: `"calls"` for `max_calls`, `"cost"` for `max_cost_usd` (see
@@ -473,6 +479,23 @@ as.data.frame.gr_trace <- function(x, row.names = NULL, optional = FALSE, ...) {
     stringsAsFactors = FALSE)
   if (!is.null(row.names)) rownames(out) <- row.names
   out
+}
+
+#' A run's requests as a one-line print shows them: "3 model call(s)", then
+#' ", 4 embeddings request(s)" when it made any.
+#'
+#' `calls` counts both, since the limits count both, but only the first are
+#' model calls. print.gr_trace() and print.gr_answer() count them apart, and a
+#' print that showed `calls` as model calls (a corpus's "this run: 6 model
+#' call(s)" for 2 model calls and 4 embeddings requests) disagreed with the
+#' trace printed after it.
+#' @noRd
+format_call_counts <- function(trace) {
+  if (!inherits(trace, "gr_trace")) return("0 model call(s)")
+  s <- gr_trace_summary(trace)
+  embed <- as.integer(s$embed_calls)
+  paste0(sprintf("%d model call(s)", as.integer(s$calls) - embed),
+         if (embed > 0L) sprintf(", %d embeddings request(s)", embed) else "")
 }
 
 #' @export

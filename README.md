@@ -313,7 +313,7 @@ do.call(rbind, lapply(c(0, 30, 60), function(ov)
 #>     method n total_tokens min median mean max over_cap
 #> 1 sentence 6          534  47   92.5 89.0 107        0
 #> 2 sentence 7          668  74   99.0 95.4 107        0
-#> 3 sentence 9          864  79   94.0 96.0 109        0
+#> 3 sentence 9          863  79   94.0 95.9 109        0
 ```
 
 ## Axis 3: read

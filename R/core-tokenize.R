@@ -224,7 +224,12 @@ tok_heuristic <- function(text) {
       }
     }
     est <- ascii_est + n_cjk * 1.15 + n_other * 1.15 + n_astral * 6.5
-    as.integer(ceiling(est) + 3L)   # +3 for per-message framing overhead
+    # Rounded before ceiling(): the costs are fractions (n/3, L/4, L/1.3), and
+    # sum() accumulates in long double, which is 80 bits on x86-64 Linux and 64
+    # on Apple silicon. A total that sits on a whole number came out a hair
+    # above it on one and below on the other, so the same text counted one
+    # token apart on two machines, and chunk boundaries and budgets with it.
+    as.integer(ceiling(round(est, 6)) + 3L)   # +3 for per-message framing overhead
   }, integer(1), USE.NAMES = FALSE)
 }
 

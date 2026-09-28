@@ -66,6 +66,14 @@ test_that("with no model named, the write-up sizes for the model the client asks
       return('{"sections":[{"heading":"Findings","brief":"t","claims":[1],"rationale":null}]}')
     }
     if (grepl("<draft>", messages[[length(messages)]]$content, fixed = TRUE)) return("Revised [study 1].")
+    # The merge of the batch drafts keeps each draft's study. Citing only study
+    # 1, as this once did, drops every other batch, which now marks the
+    # section partial (review 6, r3-synthesis-layer-call-sizing-03).
+    all_txt <- paste(vapply(messages[-1], function(m) as.character(m$content), ""), collapse = " ")
+    if (grepl("<draft 1>", all_txt, fixed = TRUE)) {
+      ids <- unique(regmatches(all_txt, gregexpr("(?<=\\[study )[0-9]+", all_txt, perl = TRUE))[[1]])
+      return(paste(sprintf("A modest reduction was reported [study %s].", ids), collapse = " "))
+    }
     # A study this call was shown: a batch draft citing [study 1] from a batch
     # that does not hold it is now reported as citing a study it was not given.
     last <- messages[[length(messages)]]$content

@@ -7,8 +7,12 @@
 gr_cache(dir = NULL, read = TRUE, write = TRUE)
 }
 \arguments{
-\item{dir}{Directory for cache entries. Defaults to the \code{cache_dir} option.
-Created on first write, not here.}
+\item{dir}{Directory for cache entries. Defaults to the \code{cache_dir} option,
+and to a directory under \code{\link[=tempdir]{tempdir()}} when that is not set either. Created
+on first write, not here. An empty string or \code{NA} is an error rather than
+a directory: it is what \code{Sys.getenv()} returns for a variable that is not
+set, and taken as a path it pointed the cache at the root of the
+filesystem.}
 
 \item{read, write}{Whether to read existing entries and write new ones. Set
 \code{write = FALSE} to run against a frozen cache; set \code{read = FALSE} to
@@ -22,7 +26,11 @@ environment, so copies of it share the same statistics.
 Wrap a client with \code{\link[=gr_cache_client]{gr_cache_client()}} and every successful model call is
 written to disk, keyed on the exact request. Re-issuing the same request
 returns the stored response without touching the network: free, instant, and
-byte-identical even at a temperature above zero.
+byte-identical even at a temperature above zero. A failed call is never
+written, and neither is a reply cut off at the output cap or a structured
+(JSON-schema) reply that does not parse, so re-running asks again. An
+unparseable structured reply that an earlier version did store is asked
+again rather than replayed.
 }
 \details{
 The default location is under \code{\link[=tempdir]{tempdir()}}, so a cache costs nothing and

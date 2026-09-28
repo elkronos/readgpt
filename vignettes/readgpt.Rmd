@@ -91,7 +91,7 @@ you use:
 | read scanned pages and images (OCR) | `tesseract` and `magick` |
 | use a provider other than OpenAI | `ellmer` |
 | run many requests at once | `future` and `future.apply` |
-| count tokens exactly as OpenAI does | `reticulate`, with Python's `tiktoken` |
+| count tokens with OpenAI's own tokenizer | `reticulate`, with Python's `tiktoken` |
 | use the point-and-click app | `shiny` |
 
 If you ask for something that needs a package you do not have, readgpt says

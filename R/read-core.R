@@ -115,17 +115,87 @@ new_answer <- function(text, reader, question, chunks_used, trace, evidence = NU
     partial = isTRUE(partial),
     notes = notes,
     trace = trace,
-    warnings = character(0)
+    warnings = character(0),
+    # Which of the trace's steps are this answer's (answer_trace()). A trace
+    # is shared by reference, so a caller who passes one trace to several runs
+    # has every run in it, those made after this answer included. Steps up to
+    # here are the most this run can have made; where it started is known only
+    # to the caller that began it (gr_read(), answer_document()), which moves
+    # `first` up.
+    trace_steps = if (inherits(trace, "gr_trace"))
+      c(first = 1L, last = length(trace$steps)) else NULL
   ), class = "gr_answer")
+}
+
+#' The part of an answer's trace that is this answer's run.
+#'
+#' `x$trace` is the whole of a trace the caller may have shared with other
+#' runs. Where the answer records its steps (`trace_steps`, from new_answer()
+#' and the caller that began the run), this is a trace holding only those
+#' steps, with the counts, errors and cost worked out from them
+#' (trace_slice()); otherwise, or where they are the whole trace, it is
+#' `x$trace` itself. What as_json(), print() and the audit report say about
+#' one answer comes from this, so one run's record does not carry another
+#' document's prompts, calls or cost.
+#' @noRd
+answer_trace <- function(x) {
+  tr <- x[["trace", exact = TRUE]]
+  if (!inherits(tr, "gr_trace")) return(tr)
+  r <- suppressWarnings(as.integer(x[["trace_steps", exact = TRUE]]))
+  n <- length(tr$steps)
+  if (length(r) != 2L || anyNA(r)) return(tr)
+  first <- max(1L, r[1L])
+  last <- min(n, r[2L])
+  if (first <= 1L && last >= n) return(tr)
+  trace_slice(tr, if (last >= first) seq.int(first, last) else integer(0))
+}
+
+#' A copy of a trace holding only steps `idx`, for reporting on one run.
+#'
+#' The counts are worked out from the steps as trace_record() and
+#' trace_note() make them: a request is any step not marked `"local"`, an
+#' embeddings request's tokens are `embed_tokens`, and a step answered from a
+#' cache costs nothing. An error is kept when it names one of the steps.
+#' Steps keep their numbers, which say where each is in the whole trace, as
+#' the errors' `step` does.
+#' @noRd
+trace_slice <- function(trace, idx) {
+  out <- new.env(parent = emptyenv())
+  for (nm in ls(trace, all.names = TRUE)) assign(nm, get(nm, envir = trace), envir = out)
+  steps <- trace$steps[idx]
+  req <- Filter(function(s) is.list(s) && !identical(s$kind, "local"), steps)
+  emb <- vapply(req, function(s) identical(s$kind, "embedding"), logical(1))
+  cached <- vapply(req, function(s) isTRUE(s$cached), logical(1))
+  tin <- vapply(req, function(s) as_int1(s$tokens$input, 0L), integer(1))
+  tout <- vapply(req, function(s) as_int1(s$tokens$output, 0L), integer(1))
+  usd <- vapply(seq_along(req), function(i) {
+    if (cached[i]) return(0)
+    v <- tryCatch(suppressWarnings(as.numeric(gr_estimate_cost(
+      as_chr1(req[[i]]$model, "unknown"), tin[i], tout[i]))), error = function(e) NA_real_)
+    if (length(v) == 1L && !is.na(v)) v else 0
+  }, numeric(1))
+  num <- vapply(steps, function(s) as_int1(s$step, NA_integer_), integer(1))
+  out$steps <- steps
+  out$calls <- length(req)
+  out$cached <- sum(cached)
+  out$tokens_in <- sum(tin[!emb])
+  out$tokens_out <- sum(tout[!emb])
+  out$embed_tokens <- sum(tin[emb])
+  out$spent_usd <- sum(usd)
+  out$errors <- Filter(function(e) is.list(e) && as_int1(e$step, NA_integer_) %in% num,
+                       trace$errors)
+  class(out) <- class(trace)
+  out
 }
 
 #' @export
 print.gr_answer <- function(x, ...) {
   cat(sprintf("<gr_answer> reader=%s%s\n", x$reader, if (x$partial) " (PARTIAL)" else ""))
   cat(sprintf("  Q: %s\n", substr(x$question, 1, 160)))
-  if (!is.null(x$trace)) {
-    s <- gr_trace_summary(x$trace)
-    recovered <- sum(vapply(x$trace$errors, is_recovered_error, logical(1)))
+  tr <- answer_trace(x)
+  if (inherits(tr, "gr_trace")) {
+    s <- gr_trace_summary(tr)
+    recovered <- sum(vapply(tr$errors, is_recovered_error, logical(1)))
     # Model calls and embeddings requests apart, as print.gr_trace() counts
     # them: `calls` has both, so a needle run that made one model call printed
     # "7 model call(s)". The tokens are the model calls' alone either way.
@@ -137,7 +207,7 @@ print.gr_answer <- function(x, ...) {
                 else "",
                 s$tokens_in, s$tokens_out, s$errors,
                 if (recovered > 0L) sprintf(" (%d recovered by a fallback)", recovered) else "",
-                format_trace_cost(x$trace)))
+                format_trace_cost(tr)))
   }
   cat("  ---\n")
   if (is_not_found(x$answer)) cat(not_found_wording(x), "\n", sep = "") else cat(x$answer, "\n")
@@ -257,19 +327,36 @@ partial_reasons <- function(x) {
       "no chunk shared a word with the question, so the candidates were an evenly spread sample",
     if (flag("embedding_fallback")) "embeddings fell back to word matching",
     if (flag("degraded")) "fell back to a simpler method",
-    if (identical(get("merge_ok"), FALSE)) "the answers could not be merged"
+    # `skim` merges no answers: what it consolidates is the evidence it
+    # extracted, and "could not be merged" sent a reader looking for answers.
+    if (identical(get("merge_ok"), FALSE)) {
+      if (identical(as_chr1(x$reader, ""), "skim")) "the evidence could not be consolidated"
+      else "the answers could not be merged"
+    }
   )
   err <- as_chr1(get("error"), "")
-  if (!nzchar(err) && inherits(x$trace, "gr_trace") && length(x$trace$errors)) {
+  # This answer's own steps: a trace shared with other runs holds their
+  # failures too, and one of them is not why this answer is partial.
+  tr <- answer_trace(x)
+  if (!nzchar(err) && inherits(tr, "gr_trace") && length(tr$errors)) {
     # The first failure nothing recovered from, when there is one: an
     # embeddings request the lexical fallback replaced is not why an answer is
     # partial, and named first it hid the request that was. Failing that, the
     # first recovered one, which says why the fallback was needed.
-    errs <- x$trace$errors
+    errs <- tr$errors
     open <- Filter(Negate(is_recovered_error), errs)
     err <- as_chr1((if (length(open)) open else errs)[[1]]$error, "")
   }
   if (nzchar(err)) why <- c(why, sprintf("first error: %s", substr(err, 1, 120)))
+  # An ensemble member's own reason is in its notes, not these. Named, so a
+  # member that fell back or cut its text is not hidden behind a failure the
+  # ensemble happens to count, or behind an embeddings error a fallback
+  # recovered from; after the rest, which say what the ensemble itself saw.
+  members <- as.character(unlist(get("partial_members"), use.names = FALSE))
+  if (length(members)) {
+    why <- c(why, sprintf("member(s) %s returned a partial answer",
+                          paste(sprintf("'%s'", members), collapse = ", ")))
+  }
   if (!length(why) && is_nonblank(get("reason"))) why <- get("reason")
   why
 }
@@ -278,18 +365,54 @@ partial_reasons <- function(x) {
 #' @noRd
 is_recovered_error <- function(e) is.list(e) && isTRUE(e[["recovered", exact = TRUE]])
 
+#' The notes fields that list things: chunk ids, pages, member names, queries,
+#' field names. Counts (`dropped_chunks`, `skipped`) are numbers, not lists,
+#' and stay out. A new notes field that lists things belongs here too.
+#' @noRd
+.gr_answer_note_arrays <- c(
+  "cited_unknown", "cited_unparsed", "unread_pages", "queries",
+  "members", "signatures", "answered", "partial_members",
+  "not_reported", "unknown", "unsupported", "dropped_unverified", "unreadable", "unresolved")
+
+#' An answer's notes as as_json() writes them: an object, with each field that
+#' lists things an array at every length (json_arrays()), an ensemble's
+#' members' notes included.
+#' @noRd
+answer_notes_json <- function(notes) {
+  notes <- as.list(notes %||% list())
+  if (!length(notes)) return(structure(list(), names = character(0)))
+  notes <- json_arrays(notes, .gr_answer_note_arrays)
+  if (is.list(notes[["member_notes", exact = TRUE]])) {
+    notes$member_notes <- lapply(notes$member_notes, answer_notes_json)
+  }
+  if (is.list(notes[["collapsed_members", exact = TRUE]])) {
+    notes$collapsed_members <- lapply(notes$collapsed_members, function(g) I(as.character(g)))
+  }
+  notes
+}
+
 #' @export
 as_json.gr_answer <- function(x, pretty = TRUE, ...) {
   w <- x[["warnings", exact = TRUE]] %||% character(0)
+  used <- x$chunks_used %||% integer(0)
   as_json.default(list(
     answer = x$answer, reader = x$reader, question = x$question,
-    partial = x$partial, chunks_used = x$chunks_used, notes = x$notes,
-    evidence = x$evidence,
+    # Arrays at every length: `auto_unbox` wrote one chunk id as a number and
+    # two as an array, and no notes at all as `[]` rather than an object, so a
+    # consumer that iterated over them broke on the short case.
+    partial = x$partial,
+    chunks_used = I(if (is.numeric(used)) as.integer(used) else as.vector(used)),
+    notes = answer_notes_json(x$notes),
+    # No evidence is no rows, as a table with none is: `[]`, not `null`.
+    evidence = x$evidence %||% list(),
     # A list of pairs rather than a named vector: two warnings of one class would
     # otherwise become one JSON object with a repeated key.
     warnings = lapply(seq_along(w), function(i)
       list(class = as_chr1(names(w)[i], "gr_warning"), message = unname(w[[i]]))),
-    trace = trace_as_list(x$trace)
+    # This run's steps only (answer_trace()): with a trace shared across runs,
+    # the whole of it put other documents' text, in their prompts, into this
+    # answer's record, and runs made after it too.
+    trace = trace_as_list(answer_trace(x))
   ), pretty = pretty, ...)
 }
 
@@ -428,15 +551,30 @@ as_json.gr_answer <- function(x, pretty = TRUE, ...) {
 #' `grepl("NOT_IN_DOCUMENT", ans$answer)`: a real answer can quote the sentinel
 #' ("the log said NOT_IN_DOCUMENT, but revenue was 45.2 million"), and models do
 #' not reproduce the token byte-exactly. They wrap it in quotes, bold it, or
-#' add a full stop. This matches the sentinel *alone*, modulo that decoration,
-#' and treats a blank answer as not-found too.
+#' add a full stop, in the punctuation of the language they are writing:
+#' Japanese corner brackets, an ideographic full stop, French guillemets. This
+#' matches the sentinel alone, modulo that decoration (any punctuation, symbol
+#' or space around it), and treats a blank answer as not-found too.
+#'
+#' Models also explain themselves: `"NOT_IN_DOCUMENT. The excerpt only covers
+#' costs."`, `"NOT_IN_DOCUMENT (the excerpt covers costs only)"`, or the
+#' sentinel and then a blank line and a sentence. A reply that OPENS with the
+#' sentinel, written as the token (with its underscores, or in capitals), and
+#' breaks off there (a full stop, colon, semicolon or comma before a space, an
+#' ideographic full stop or comma, a dash, an opening bracket, or a line
+#' break) is the not-found verdict whatever follows, and counts as not-found.
+#' That includes `"NOT_IN_DOCUMENT. However, ..."`: the model's
+#' verdict is the sentinel, and what it adds is not an answer to the question.
+#' The sentinel anywhere else in a reply, or opening a sentence that goes on
+#' ("NOT_IN_DOCUMENT is what the log printed"), is part of a real answer.
 #'
 #' The v1 test was `grepl("not found|no information|not applicable", ...)` over
 #' the whole response, which threw away every answer that happened to contain
 #' one of those phrases.
 #'
 #' @param x An answer string, or `ans$answer`.
-#' @return `TRUE` if the string is the not-found sentinel (or blank).
+#' @return `TRUE` if the string is the not-found sentinel (or blank), or opens
+#'   with it as described above.
 #' @seealso [gr_answer], [gr_compare()], whose `summary$not_found` column is
 #'   this predicate applied per recipe
 #' @family reading functions
@@ -445,17 +583,70 @@ as_json.gr_answer <- function(x, pretty = TRUE, ...) {
 #' is_not_found("NOT_IN_DOCUMENT")
 #' is_not_found("**NOT_IN_DOCUMENT.**")     # models decorate it
 #' is_not_found("")                          # nothing came back
+#' is_not_found("NOT_IN_DOCUMENT. The excerpt only covers costs.")
 #'
 #' # A real answer that merely mentions the sentinel is NOT not-found.
 #' is_not_found("The log said NOT_IN_DOCUMENT, but revenue was 45.2 million.")
 is_not_found <- function(x) {
-  x <- trimws(as_chr1(x))
+  x <- trimws(to_utf8(as_chr1(x)))
   if (!nzchar(x)) return(TRUE)
-  # The sentinel alone, modulo surrounding punctuation and formatting. Models do
-  # not reproduce it byte-exactly, so accept the common trailing punctuation and
-  # a space instead of the underscores; anything longer is a real answer.
-  grepl("^[\"'`*_ ]*NOT[ _]IN[ _]DOCUMENT[\"'`*_.!:;, ]*$", x, ignore.case = TRUE)
+  # The sentinel alone, modulo surrounding punctuation and formatting, and a
+  # space instead of the underscores.
+  if (grepl(.gr_not_found_alone, x, perl = TRUE, ignore.case = TRUE)) return(TRUE)
+  # The sentinel opening the reply and breaking off, then an explanation.
+  # Only as the token, with an underscore or in capitals: "Not in document
+  # form; the figures were in a spreadsheet" is an answer.
+  if (!grepl(.gr_sentinel_opens, x, perl = TRUE, ignore.case = TRUE)) return(FALSE)
+  m <- regmatches(x, regexec(.gr_sentinel_opens, x, perl = TRUE, ignore.case = TRUE))[[1]]
+  grepl("_", m[2], fixed = TRUE) || identical(m[2], toupper(m[2]))
 }
+
+#' What a model puts around a one-word reply: punctuation, symbols and
+#' spacing of any script (curly and CJK quote marks, guillemets, the
+#' ideographic full stop, markdown bold).
+#' @noRd
+.gr_reply_decoration <- "[\\p{P}\\p{S}\\p{Z}\\s]*"
+
+#' The sentinel and nothing but decoration: is_sentinel_reply()'s pattern,
+#' made once.
+#' @noRd
+.gr_not_found_alone <- paste0("^", .gr_reply_decoration, "NOT[ _]IN[ _]DOCUMENT",
+                              .gr_reply_decoration, "$")
+
+#' The sentinel opening a reply, as its own word, then (past closing quote
+#' marks, bold and brackets) a break: a sentence or clause mark before a
+#' space, as the ideographic ones need none; a dash, a hyphen only with a
+#' space after it; an opening bracket; or a line break. Not a full stop or a
+#' hyphen inside a name ("NOT_IN_DOCUMENT.txt", "NOT_IN_DOCUMENT-2"). The
+#' first group is the sentinel as written.
+#' @noRd
+.gr_sentinel_opens <- paste0(
+  "^", .gr_reply_decoration, "(NOT[ _]IN[ _]DOCUMENT)[\"'`*_\\p{Pe}\\p{Pf}]*[ \\t\\p{Zs}]*",
+  "(?:[.!?:;,](?=[\\s\\p{Z}])|(?!-)\\p{Pd}|-(?=[\\s\\p{Z}])|\\p{Ps}|",
+  "[\u3001\u3002\uff01\uff0c\uff0e\uff1a\uff1b\uff1f]|\\R)")
+
+#' Is `x` the one-word reply `word` (a regular expression) and nothing else
+#' but decoration (.gr_reply_decoration)? Case is ignored.
+#'
+#' For the readers' sentinels: NOT_IN_DOCUMENT here, and NONE, which the
+#' passage-extracting readers are told to reply with when an excerpt has
+#' nothing (is_none_reply()).
+#' @noRd
+is_sentinel_reply <- function(x, word) {
+  x <- to_utf8(as.character(x))
+  !is.na(x) & grepl(paste0("^", .gr_reply_decoration, word, .gr_reply_decoration, "$"), x,
+                    perl = TRUE, ignore.case = TRUE)
+}
+
+#' Did a passage-extracting reader's excerpt reply "nothing relevant"?
+#'
+#' The NONE the extraction prompt asks for, decorated in any script ("NONE.",
+#' "**None**", or with an ideographic full stop or in corner brackets). Only
+#' NONE alone: a passage copied verbatim may itself open with "None." ("None.
+#' All patients completed the study."), and discarding it would lose evidence
+#' without a word. Vectorised; NA is not a NONE.
+#' @noRd
+is_none_reply <- function(x) is_sentinel_reply(trimws(to_utf8(as.character(x))), "NONE")
 
 #' A model call that succeeded but returned nothing usable.
 #'
@@ -477,11 +668,28 @@ render_chunks <- function(df, ids = NULL) {
   if (!nrow(df)) return("")
   ids <- ids %||% df$chunk_id
   paste(vapply(seq_len(nrow(df)), function(i) {
-    loc <- c(if (!is.na(df$page[i])) sprintf("p.%d", df$page[i]),
+    loc <- c(if (!is.na(df$page[i])) paste0("p.", page_text(df$page[i])),
              if (!is.na(df$section[i])) sprintf("\u00a7 %s", df$section[i]))
     hdr <- sprintf("[chunk %s%s]", ids[i], if (length(loc)) paste0(" ", paste(loc, collapse = ", ")) else "")
     paste0(hdr, "\n", df$text[i])
   }, character(1)), collapse = "\n\n")
+}
+
+#' A page as a label, whatever a segmenter recorded it as.
+#'
+#' new_chunks() takes provenance as given, and a custom segmenter may record a
+#' PDF's page labels ("iv", "A-3") or a fractional page. "%d" took only a whole
+#' number, and every reader failed on anything else with a bare sprintf()
+#' error that named neither the chunk nor the segmenter. A number is written
+#' in full, never as "1e+05".
+#' @noRd
+page_text <- function(p) {
+  if (is.numeric(p)) {
+    return(vapply(p, function(v) if (is.na(v)) NA_character_
+                  else format(v, scientific = FALSE, trim = TRUE, digits = 15L),
+                  character(1), USE.NAMES = FALSE))
+  }
+  as.character(p)
 }
 
 #' How long a body has to be before the question is worth repeating.
@@ -590,6 +798,12 @@ prompt_overhead <- function(question, system_prompt, restate = "auto") {
 #' an ellmer chat bills as the model it was built with, whatever the request
 #' names. NA when that model has no price, which gr_lapply() counts as the
 #' trace counts such a call, as nothing.
+#'
+#' The reply is priced at the cap the request is sent with, which for a
+#' reasoning model is raised to leave room for its reasoning
+#' (reasoning_output_cap()): priced at the cap asked for, a 90-token context
+#' line or a 200-token relevance score understated what each item can bill by
+#' up to about 1,850 tokens.
 #' @noRd
 batch_item_usd <- function(client, model, input_tokens, max_output) {
   m <- client_billed_model(client) %||% as_chr1(model, "")
@@ -598,7 +812,8 @@ batch_item_usd <- function(client, model, input_tokens, max_output) {
                                    error = function(e) NULL)
   info <- quiet(gr_model_info(m))
   if (is.null(info)) return(NA_real_)
-  out <- min(as_num1(max_output, 0), as_num1(info$max_output, Inf))
+  out <- reasoning_output_cap(min(as_num1(max_output, 0), as_num1(info$max_output, Inf)),
+                              info, input_tokens)
   as_num1(quiet(gr_estimate_cost(m, input_tokens, out)), NA_real_)
 }
 
@@ -698,10 +913,12 @@ evidence_table <- function(chunk_ids, texts, pages = NA_integer_, sections = NA_
 #' prompt itself can never exceed the context window.
 #'
 #' Besides the text, the result says how many findings were cut to fit a merge
-#' (`truncated`) and how many merge replies came back cut off at the output cap
-#' (`truncated_calls`). A reply cut off part way through a level is passed up as
-#' a finding like any other, so the final merge can be whole and still rest on
-#' one that was not.
+#' (`truncated`), how many merge replies came back cut off at the output cap
+#' (`truncated_calls`) and how many merge requests failed (`failed`). A reply
+#' cut off part way through a level is passed up as a finding like any other,
+#' so the final merge can be whole and still rest on one that was not. So is a
+#' group whose merge failed, joined unmerged: `ok` says whether the LAST merge
+#' worked, and `failed` counts every level, the last included.
 #' @noRd
 tree_merge <- function(client, question, pieces, spec, trace, label = "merge",
                        system_prompt = NULL, kind = "findings") {
@@ -712,13 +929,14 @@ tree_merge <- function(client, question, pieces, spec, trace, label = "merge",
   spec$model <- spec$model %||% as_chr1(client[["model", exact = TRUE]], gr_options("model"))
   pieces <- pieces[has_content(pieces)]
   if (!length(pieces)) return(list(text = .NOT_FOUND, ok = FALSE, levels = 0L,
-                                   truncated_calls = 0L))
+                                   truncated_calls = 0L, failed = 0L))
   if (length(pieces) == 1L) return(list(text = pieces[[1]], ok = TRUE, levels = 0L,
-                                        truncated_calls = 0L))
+                                        truncated_calls = 0L, failed = 0L))
 
   level <- 0L
   truncated <- 0L
   cut <- 0L
+  failed <- 0L
   prev_n <- length(pieces) + 1L
   repeat {
     level <- level + 1L
@@ -728,23 +946,37 @@ tree_merge <- function(client, question, pieces, spec, trace, label = "merge",
     overhead <- prompt_overhead(question, system_prompt, "never")
     bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
 
+    # Each finding as the prompt carries it: in its tags, and joined to the
+    # next by a blank line. Counted bare, 300 one-word findings came to 1,200
+    # tokens against a 2,145-token budget and went out as one prompt of 3,501,
+    # which gr_call() refused for a 3,000-token window. The numbered tags of
+    # the final level, the longer of the two, size every level.
+    sized <- function(p) gr_count_tokens(sprintf("<%s %d>\n%s\n</%s %d>\n\n", kind,
+                                                 seq_along(p), p, kind, seq_along(p)))
+    pts <- sized(pieces)
+
     # A single finding larger than the whole merge budget cannot be reduced by
     # grouping: it lands alone in its group, a one-element group is returned
     # unchanged, and the loop spins through every level doing nothing before
     # concatenating the lot. Truncate it once, and say so, so each level makes
     # real progress.
-    over <- gr_count_tokens(pieces) > bud$input
+    over <- pts > bud$input
     if (any(over)) {
       gr_msg(sprintf("Merge: %d finding(s) exceed the %d-token merge budget; truncating them.",
                      sum(over), bud$input))
-      pieces[over] <- vapply(pieces[over], gr_truncate_tokens, character(1),
-                             n = bud$input, USE.NAMES = FALSE)
+      # Cut to leave room for its tags, which the truncation does not count.
+      big <- pieces[over]
+      room <- pmax(1, bud$input - (pts[over] - gr_count_tokens(big)))
+      pieces[over] <- vapply(seq_along(big), function(k) gr_truncate_tokens(big[k], n = room[k]),
+                             character(1), USE.NAMES = FALSE)
       truncated <- truncated + sum(over)
+      pts <- sized(pieces)
     }
 
     groups <- list(); sizes <- numeric(0); buf <- character(0); tks <- 0L
-    for (p in pieces) {
-      pt <- gr_count_tokens(p)
+    for (k in seq_along(pieces)) {
+      p <- pieces[k]
+      pt <- pts[k]
       if (length(buf) && tks + pt > bud$input) {
         groups[[length(groups) + 1L]] <- buf; sizes <- c(sizes, tks); buf <- character(0); tks <- 0L
       }
@@ -761,7 +993,7 @@ tree_merge <- function(client, question, pieces, spec, trace, label = "merge",
         # finding put together -- while the failure path two lines down was
         # carefully capped. Same degradation, same bound.
         return(list(text = merge_giveup(pieces, spec), ok = FALSE, levels = level,
-                    truncated = truncated, truncated_calls = cut,
+                    truncated = truncated, truncated_calls = cut, failed = failed,
                     error = paste(cap_name(trace), "reached before merging")))
       }
       res <- gr_call(client, list(
@@ -773,10 +1005,11 @@ tree_merge <- function(client, question, pieces, spec, trace, label = "merge",
       if (!res$ok) {
         # Concatenation is a documented, visible degradation -- not a silent one.
         return(list(text = merge_giveup(pieces, spec), ok = FALSE, levels = level,
-                    truncated = truncated, truncated_calls = cut, error = res$error))
+                    truncated = truncated, truncated_calls = cut, failed = failed + 1L,
+                    error = res$error))
       }
       return(list(text = res$text, ok = TRUE, levels = level, truncated = truncated,
-                  truncated_calls = cut + reply_cut_off(res)))
+                  truncated_calls = cut + reply_cut_off(res), failed = failed))
     }
 
     gr_msg(sprintf("Merge level %d: %d finding(s) -> %d group(s).", level, length(pieces), length(groups)))
@@ -787,8 +1020,10 @@ tree_merge <- function(client, question, pieces, spec, trace, label = "merge",
                             overhead + max_tokens_of(sizes[lengths(groups) > 1L]),
                             spec$max_answer_tokens)
     got <- gr_lapply(groups, function(g, trace) {
-      if (length(g) == 1L) return(list(text = g, cut = FALSE))
-      if (!trace_can_call(trace)) return(list(text = merge_giveup(g, spec), cut = FALSE))
+      if (length(g) == 1L) return(list(text = g, cut = FALSE, failed = FALSE))
+      if (!trace_can_call(trace)) {
+        return(list(text = merge_giveup(g, spec), cut = FALSE, failed = FALSE))
+      }
       body <- paste(sprintf("<%s>\n%s\n</%s>", kind, g, kind), collapse = "\n\n")
       res <- gr_call(client, list(
         list(role = "system", content = system_prompt),
@@ -796,22 +1031,26 @@ tree_merge <- function(client, question, pieces, spec, trace, label = "merge",
         list(role = "user", content = paste0("Question: ", question))
       ), model = spec$model, max_output = spec$max_answer_tokens, temperature = spec$temperature,
          trace = trace, label = paste0(label, ".level", level))
-      if (res$ok) list(text = res$text, cut = reply_cut_off(res))
-      else list(text = paste(g, collapse = "\n\n"), cut = FALSE)
+      # A failed group goes up unmerged, which keeps its findings and says
+      # nothing of the failure, so it is counted.
+      if (res$ok) list(text = res$text, cut = reply_cut_off(res), failed = FALSE)
+      else list(text = paste(g, collapse = "\n\n"), cut = FALSE, failed = TRUE)
     }, parallel = spec$parallel, label = "merge group", trace = trace,
        client = client, item_usd = worst)
     pieces <- vapply(got, function(x) as_chr1(x$text), character(1), USE.NAMES = FALSE)
     cut <- cut + sum(vapply(got, function(x) isTRUE(x$cut), logical(1)))
+    failed <- failed + sum(vapply(got, function(x) isTRUE(x$failed), logical(1)))
     pieces <- pieces[has_content(pieces)]
 
     # Progress guard. If a level did not shrink the pile, another level will not
     # either -- every input to it is the same. Stop now with a bounded answer
     # rather than burning six more rounds of calls to reach the same place.
     if (!length(pieces)) return(list(text = .NOT_FOUND, ok = FALSE, levels = level,
-                                     truncated = truncated, truncated_calls = cut))
+                                     truncated = truncated, truncated_calls = cut,
+                                     failed = failed))
     if (length(pieces) >= prev_n || level > 6L) {
       return(list(text = merge_giveup(pieces, spec), ok = FALSE, levels = level,
-                  truncated = truncated, truncated_calls = cut,
+                  truncated = truncated, truncated_calls = cut, failed = failed,
                   error = if (level > 6L) "merge depth cap reached" else "merge made no progress"))
     }
     prev_n <- length(pieces)

@@ -11,22 +11,30 @@ gr_truncate_tokens(text, n, marker = " ...[truncated]")
 
 \item{n}{Maximum token count.}
 
-\item{marker}{Appended when truncation occurred; set \code{""} to suppress.}
+\item{marker}{Appended when truncation occurred; set \code{""} to suppress. It is
+dropped when it would cost half the budget or more.}
 }
 \value{
 A single string. \code{""} when \code{n <= 0} or the input is blank. This is
 not treated as an error.
 }
 \description{
-Truncation happens at a word boundary where the text has whitespace, and at a
-character boundary where it does not (base64, a data URI, a CJK run, a minified
-line); otherwise the cap would be unenforceable for exactly the inputs that
-most need it. Returns \code{""} for
-empty input and never returns \code{NA}.
+The result is the start of \code{text} as written -- line breaks, indentation and
+paragraph breaks kept -- followed by \code{marker}. The cut falls at the end of a
+word where the text has whitespace. When the next unit is too long to be a
+word (a CJK run, base64, a data URI, minified JSON, a long URL: anything that
+alone would cost more than 16 tokens) the cut goes inside it at a character,
+so a long unbroken run fills the budget instead of being dropped whole;
+otherwise the cap would be unenforceable, or nearly all of it wasted, for
+exactly the inputs that most need it. Returns \code{""} for empty input and never
+returns \code{NA}.
 }
 \examples{
 gr_truncate_tokens(paste(rep("alpha beta gamma", 40), collapse = " "), 20)
 gr_truncate_tokens("short enough already", 100)
+
+# A table keeps its rows.
+cat(gr_truncate_tokens("Arm | N | Events\nA | 482 | 31\nB | 479 | 44\nC | 470 | 50", 24))
 }
 \seealso{
 \code{\link[=gr_count_tokens]{gr_count_tokens()}}

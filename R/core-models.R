@@ -109,6 +109,9 @@
 #' @param context_window Total context window in tokens.
 #' @param max_output Maximum tokens the model will emit in one response.
 #' @param input_usd,output_usd Price per 1M tokens; used for cost estimates.
+#'   Give both or neither for a chat model: one without the other is an error,
+#'   since a cost with half its price missing cannot be estimated. An embedding
+#'   model needs only `input_usd`.
 #' @param reasoning Whether this is a reasoning model (affects prompt shape).
 #' @param supports_temperature Whether the API accepts `temperature`.
 #' @param kind `"chat"` or `"embedding"`.
@@ -137,6 +140,18 @@ gr_register_model <- function(id, context_window, max_output,
     gr_abort("`context_window` must be a positive integer.")
   }
   if (is.na(max_output) || max_output < 0L) gr_abort("`max_output` must be >= 0.")
+  # Half a price is refused here, where the omission is made, rather than
+  # discovered later as a cost that cannot be computed. Pricing the missing
+  # half as free is what this used to do: output_usd left out costed a run's
+  # replies at $0 and a max_cost_usd limit never tripped.
+  if (kind == "chat" && xor(is.na(as_num1(input_usd)), is.na(as_num1(output_usd)))) {
+    gr_abort(sprintf(paste0("Model '%s' has %s but no %s. Give both prices (USD per 1M tokens), ",
+                            "or neither to register it unpriced, in which case readgpt reports ",
+                            "the cost as unknown rather than guessing."),
+                     id, if (is.na(as_num1(input_usd))) "`output_usd`" else "`input_usd`",
+                     if (is.na(as_num1(input_usd))) "`input_usd`" else "`output_usd`"),
+             class = "gr_bad_setting")
+  }
   if (max_output >= context_window && kind == "chat") {
     gr_abort(sprintf(paste0("`max_output` (%d) must be smaller than `context_window` (%d): a model ",
                             "cannot emit its entire context. This exact inversion is what made the ",
@@ -163,6 +178,12 @@ gr_register_model <- function(id, context_window, max_output,
 #' regex, then a conservative default. The returned list always carries
 #' `certain`, which is `FALSE` when the answer came from a regex or the default.
 #' Treat that as "verify before trusting for cost control".
+#'
+#' An alias (`"chatgpt-4o-latest"`, say) takes the entry of the model it names,
+#' a registered override of that model included, and reports the alias as its
+#' `id`. A family-regex match and the default both warn with class
+#' `gr_unknown_model`; under `gr_options(unknown_model_action = "error")` both
+#' stop instead, because neither id is in the registry.
 #'
 #' @param model Model id.
 #' @return A named list: `id`, `context_window`, `max_output`, `input_usd` and
@@ -192,11 +213,20 @@ gr_model_info <- function(model = NULL) {
     return(utils::modifyList(.gr_unknown_model,
                              c(seeded[[model]], list(certain = TRUE, source = "builtin"))))
   }
+  # An alias resolves to its target as the target itself would: a registered
+  # override first. Looking in the built-ins alone kept charging the stale
+  # built-in price for "chatgpt-4o-latest" after gr_register_model("gpt-4o")
+  # corrected it, so a spending limit allowed twice the intended spend. The id
+  # is set after the merge: c(target, list(id = alias)) held two `id`
+  # elements, and the target's won.
   alias <- .gr_aliases[[model]]
-  if (!is.null(alias) && !is.null(seeded[[alias]])) {
-    return(utils::modifyList(.gr_unknown_model,
-                             c(seeded[[alias]], list(id = model, certain = TRUE, source = "alias"))))
+  target <- if (!is.null(alias)) gr_state$models[[alias]] %||% seeded[[alias]]
+  if (!is.null(target)) {
+    out <- utils::modifyList(.gr_unknown_model, target)
+    out$id <- model; out$certain <- TRUE; out$source <- "alias"
+    return(out)
   }
+  action <- gr_options("unknown_model_action")
   for (p in gr_state$model_patterns) {
     if (grepl(p$pattern, model, perl = TRUE)) {
       out <- utils::modifyList(.gr_unknown_model, p[setdiff(names(p), "pattern")])
@@ -204,16 +234,21 @@ gr_model_info <- function(model = NULL) {
       # A family match is a GUESS. Say so: the gpt-4 catch-all assigns an
       # 8192-token window, and silently applying that to a 128k model
       # over-chunks the document by ~20x and multiplies the API calls to match.
-      gr_warn(sprintf(paste0("Model '%s' is not in the registry; matched family pattern '%s' ",
-                             "-> %d-token context, %d-token output. Verify with ",
-                             "gr_model_info('%s'), and correct it with gr_register_model() ",
-                             "if that is wrong."),
-                      model, p$pattern, out$context_window, out$max_output, model),
-              class = "gr_unknown_model")
+      msg <- sprintf(paste0("Model '%s' is not in the registry; matched family pattern '%s' ",
+                            "-> %d-token context, %d-token output. Verify with ",
+                            "gr_model_info('%s'), and correct it with gr_register_model() ",
+                            "if that is wrong."),
+                     model, p$pattern, out$context_window, out$max_output, model)
+      # The option is "what to do when an id is not in the registry", and a
+      # family match is not in the registry either. It used to be read only
+      # after the patterns, so a typo such as "gpt-5.6-tera" matched ^gpt-5 and
+      # ran -- with a guessed window and no price, so no enforceable spending
+      # limit -- under the setting chosen to stop exactly that.
+      if (identical(action, "error")) gr_abort(msg, class = "gr_unknown_model")
+      gr_warn(msg, class = "gr_unknown_model")
       return(out)
     }
   }
-  action <- gr_options("unknown_model_action")
   msg <- sprintf(paste0("Model '%s' is not in the registry. Falling back to a conservative ",
                         "%d-token context with a %d-token output reserve. Register the real ",
                         "limits with gr_register_model('%s', context_window = ..., max_output = ...) ",
@@ -383,7 +418,9 @@ gr_budget <- function(model = NULL, reserve_output = NULL, overhead = 0,
 #' @param input_tokens,output_tokens Token counts (scalars or vectors; vectors
 #'   are summed).
 #' @return A single numeric USD figure, or `NA_real_` when the model has no
-#'   pricing in the registry. Pricing is seeded from the registry's `as_of`
+#'   pricing in the registry, or no output price and `output_tokens` above zero
+#'   (an embedding model's missing output price counts as zero, since it
+#'   produces no output tokens). Pricing is seeded from the registry's `as_of`
 #'   snapshot. Treat it as an estimate, and use [gr_register_model()] to
 #'   correct it.
 #' @seealso [gr_model_info()], [gr_register_model()], [gr_trace_summary()]
@@ -408,5 +445,14 @@ gr_estimate_cost <- function(model, input_tokens, output_tokens = 0) {
   }
   tin <- usable(input_tokens); tout <- usable(output_tokens)
   if (is.na(tin) || is.na(tout)) return(NA_real_)
-  tin / 1e6 * info$input_usd + tout / 1e6 * (info$output_usd %|z|% 0)
+  # A missing output price is unknown, not free. `%|z|% 0` priced every reply
+  # at $0, so the preflight saw a number and did not warn that the limit was
+  # uncheckable, and the trace counted the input alone. Only an embedding
+  # model, which has no output tokens to price, gets zero.
+  out_usd <- as_num1(info$output_usd)
+  if (is.na(out_usd)) {
+    if (tout > 0 && !identical(info$kind, "embedding")) return(NA_real_)
+    out_usd <- 0
+  }
+  tin / 1e6 * info$input_usd + tout / 1e6 * out_usd
 }

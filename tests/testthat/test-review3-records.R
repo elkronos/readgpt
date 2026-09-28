@@ -297,12 +297,16 @@ test_that("BibTeX accent commands become the letters they spell", {
   uni <- c(Dvorak = "Dvo\u0159\u00e1k", Erdos = "Erd\u0151s", Francois = "Fran\u00e7ois",
            Gunes = "G\u00fcne\u015f", Kovacevic = "Kova\u010devi\u0107", Was = "W\u0105s",
            Zotero = "Dvo\u0159\u00e1k", Bare = "Dvo\u0159\u00e1k", Sorensen = "S\u00f8rensen")
+  # Each database record carries the BibTeX author's own initial: two initials
+  # that differ are two people, whatever the title (records-audit-03).
+  ini <- c(Dvorak = "J", Erdos = "P", Francois = "M", Gunes = "A", Kovacevic = "I", Was = "J",
+           Zotero = "J", Bare = "J", Sorensen = "L")
   for (nm in names(bib)) {
     d <- withr::local_tempdir()
     writeLines(c("@inproceedings{k1,", sprintf("  author = {%s and Smith, Anna},", bib[[nm]]),
                  "  title = {A study of long enough titles for matching},", "  year = {2019},", "}"),
                file.path(d, "scholar.bib"), useBytes = TRUE)
-    r3_ris(file.path(d, "conf.ris"), list(list(au = paste0(uni[[nm]], ", J.; Smith, A."),
+    r3_ris(file.path(d, "conf.ris"), list(list(au = paste0(uni[[nm]], ", ", ini[[nm]], ".; Smith, A."),
                                                ti = "A study of long enough titles for matching", py = 2019)))
     r <- gr_records(d)
     expect_identical(sub(",.*$", "", r$records$authors[2]), uni[[nm]], info = nm)

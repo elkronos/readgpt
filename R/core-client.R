@@ -30,8 +30,16 @@
 #' Looks in `key`, then the `readgpt.api_key` option, then `OPENAI_API_KEY`.
 #' Never prints or logs the key.
 #'
+#' Spaces and line endings around the key are dropped, so a key read from a
+#' file with `readLines()` or `readChar()` works as written. A key with a
+#' control character inside it (a line break in the middle, say) is refused
+#' with a `gr_auth_error`: sent as it is, it would end the `Authorization`
+#' header and start another one, and every request would fail as a transport
+#' error that never mentions the key.
+#'
 #' @param key Optional explicit key.
-#' @return The key string. Raises a `gr_auth_error` if none is found.
+#' @return The key string. Raises a `gr_auth_error` if none is found, or if the
+#'   key contains a control character.
 #'
 #' @section No key set:
 #' A run that would have to send a request without a key stops with a
@@ -58,11 +66,36 @@
 #' # Restore. Sys.setenv(x = NA) would leave the variable set to "NA", not unset.
 #' if (!is.na(previous)) Sys.setenv(OPENAI_API_KEY = previous)
 gr_api_key <- function(key = NULL) {
-  k <- as_chr1(key %||% getOption("readgpt.api_key", "") %||% "")
-  if (!nzchar(k)) k <- as_chr1(Sys.getenv("OPENAI_API_KEY"))
+  k <- api_key_value(key)
   if (!nzchar(k)) {
     gr_abort(paste0("No API key. Set OPENAI_API_KEY, or options(readgpt.api_key = '...'), ",
                     "or pass `api_key` to gr_client()."), class = "gr_auth_error")
+  }
+  k
+}
+
+#' The key gr_api_key() resolves, or "" when there is none.
+#'
+#' Separate from gr_api_key() so request_headers() can tell "no key" (fine when
+#' the client sends its own headers) from "a key that cannot be sent", which is
+#' raised from here and must reach the caller. It used to be pasted into the
+#' Authorization header unchecked, although normalise_headers() refuses a
+#' control character in any other header value: a key with "\r\n" inside
+#' injected a header of its own, and the trailing newline readChar() leaves on
+#' a key file corrupted the request, which then failed as a retried transport
+#' error ("Server returned nothing") that never mentioned the key.
+#' @noRd
+api_key_value <- function(key = NULL) {
+  k <- trimws(as_chr1(key %||% getOption("readgpt.api_key", "") %||% ""))
+  if (!nzchar(k)) k <- trimws(as_chr1(Sys.getenv("OPENAI_API_KEY")))
+  if (grepl("[[:cntrl:]]", k)) {
+    # Never the value: an error message is the one place a credential is
+    # guaranteed to be printed.
+    gr_abort(paste0("The API key contains a control character. A line break inside a key is ",
+                    "usually a stray line ending from the file or environment variable it was ",
+                    "read from; check OPENAI_API_KEY, options(readgpt.api_key =) and the ",
+                    "`api_key` passed to gr_client()."),
+             class = c("gr_bad_key", "gr_auth_error"))
   }
   k
 }
@@ -160,7 +193,10 @@ normalise_headers <- function(headers, arg = "headers") {
 #' @noRd
 request_headers <- function(client) {
   user <- normalise_headers(client$headers)
-  key <- tryCatch(gr_api_key(client$api_key), error = function(e) NULL)
+  # A key that cannot be sent is raised, not treated as no key: that would
+  # report "No API key found" to someone whose key is set.
+  key <- api_key_value(client$api_key)
+  if (!nzchar(key)) key <- NULL
   if (is.null(key) && length(user) == 0L) return(NULL)
   h <- if (is.null(key)) stats::setNames(character(0), character(0))
        else c(Authorization = paste("Bearer", key))
@@ -306,10 +342,13 @@ gr_client <- function(model = NULL, api = NULL, api_key = NULL, base_url = NULL,
 print.gr_client <- function(x, ...) {
   cat(sprintf("<gr_client> model=%s api=%s base_url=%s\n",
               as_chr1(x$model, "?"), as_chr1(x$api, "?"), as_chr1(x$base_url, "?")))
-  key <- tryCatch(gr_api_key(x$api_key), error = function(e) NULL)
+  key <- tryCatch(gr_api_key(x$api_key), gr_bad_key = function(e) NA,
+                  error = function(e) NULL)
   hdr <- normalise_headers(x$headers)
   cat(sprintf("  auth: %s%s\n",
-              if (is.null(key)) "no key resolved" else "bearer key (hidden)",
+              if (is.null(key)) "no key resolved"
+              else if (identical(key, NA)) "key refused (it contains a control character)"
+              else "bearer key (hidden)",
               if (length(hdr)) {
                 sprintf(", %d extra header(s), values hidden: %s",
                         length(hdr), paste(names(hdr), collapse = ", "))
@@ -332,8 +371,9 @@ print.gr_client <- function(x, ...) {
 #' time it is called, so they appear in [gr_models()] afterwards. Its default
 #' handler returns plain text, so readers that need JSON-schema output
 #' (`rerank`, `iterative`) take their documented degraded path unless your
-#' handler returns valid JSON for those prompts. And its `embed_handler` is used
-#' by [gr_embed()] in preference to any registered embedder, reporting
+#' handler returns valid JSON for those prompts. And [gr_embed()] uses its
+#' `embed_handler` unless `gr_options(embedder =)` names a registered embedder
+#' (see the `embedder` argument of [gr_embed()]), reporting
 #' `embedding_source = "api"`, so an offline run gets semantic-shaped vectors
 #' rather than the lexical fallback. A mock embed handler that fails or returns
 #' the wrong number of rows is still caught and still degrades, like any other.
@@ -406,7 +446,8 @@ gr_result <- function(ok, text = "", error = NULL, status = NA_integer_,
     # is at the mercy of the session locale the moment anything serialises,
     # compares or counts characters in it. mark_utf8() labels, it does not
     # convert, so this cannot corrupt a response the way enc2utf8() would.
-    text = mark_utf8(as_chr1(text)),
+    # Bytes that are not UTF-8 at all are replaced first; see repair_utf8().
+    text = mark_utf8(repair_utf8(as_chr1(text))),
     error = error,
     status = status,
     usage = usage,
@@ -422,6 +463,49 @@ gr_result <- function(ok, text = "", error = NULL, status = NA_integer_,
     # tokens from being counted as money spent this run.
     cached = isTRUE(cached)
   ), class = "gr_result")
+}
+
+#' Replace the bytes of a model's text that are not UTF-8, so no regex fails on
+#' it.
+#'
+#' A reply is UTF-8 by contract, but jsonlite decodes a lone low-surrogate
+#' escape ("\udc00", half of a split emoji) into the bytes ED B0 80, which
+#' validUTF8() rejects. The first trimws() or gsub() on that text then stopped
+#' with "input string 1 is invalid UTF-8" -- in parse_response(), outside every
+#' handler, so a paid call vanished from the trace and one chunk's reply failed
+#' the whole document. The bytes are replaced with U+FFFD, the character that
+#' means "something was here that could not be read", rather than reinterpreted
+#' in some other encoding as to_utf8() does for documents: a model reply that is
+#' not UTF-8 is damaged, not Latin-1. Encoded surrogates are replaced by
+#' pattern first, because the platform iconv() on macOS lets them through.
+#' Costs one validUTF8() pass when there is nothing to repair.
+#' @noRd
+repair_utf8 <- function(x) {
+  if (!length(x) || !is.character(x)) return(x)
+  bad <- which(!is.na(x) & !validUTF8(x))
+  if (!length(bad)) return(x)
+  y <- gsub("\xed[\xa0-\xbf][\x80-\xbf]", "\ufffd", x[bad], useBytes = TRUE)
+  y <- iconv(y, "UTF-8", "UTF-8", sub = "\ufffd")
+  # iconv() gives NA only when it cannot convert at all; drop what is left
+  # then, as to_utf8()'s last resort does.
+  gone <- is.na(y) | !validUTF8(y)
+  if (any(gone)) {
+    y[gone] <- iconv(x[bad][gone], "UTF-8", "ASCII", sub = "")
+    y[is.na(y)] <- ""
+  }
+  x[bad] <- y
+  mark_utf8(x)
+}
+
+#' The same repair for every string in a parsed JSON value, keeping its shape.
+#' @noRd
+repair_utf8_deep <- function(x) {
+  if (is.character(x)) {
+    x[] <- repair_utf8(as.vector(x))
+    return(x)
+  }
+  if (is.list(x) && length(x)) x[] <- lapply(x, repair_utf8_deep)
+  x
 }
 
 #' The provider spellings of "the reply was cut off at the output cap".
@@ -463,7 +547,14 @@ print.gr_result <- function(x, ...) {
 #'   `"developer"`, `"user"` or `"assistant"`.
 #' @param model Overrides the client default.
 #' @param max_output Maximum completion tokens. Clamped to the model's limit
-#'   and to what the context window actually leaves after the prompt.
+#'   and to what the context window actually leaves after the prompt. A value
+#'   that is not a single number (`NA`, text) warns and uses the model's limit,
+#'   as `NULL` does. For a reasoning model (see [gr_model_info()]) the cap an
+#'   API request carries also bounds the model's hidden reasoning, so a small
+#'   cap is sent as at least 2048 tokens (within the model's limit and the
+#'   context window); otherwise the reasoning can use all of it and the reply
+#'   come back empty. The reply is then no longer held to the smaller cap by the
+#'   API, and the extra tokens are billed if the model uses them.
 #' @param temperature Sampling temperature; dropped automatically for reasoning
 #'   models that reject it.
 #' @param schema Optional JSON Schema (as a list) requesting structured output.
@@ -495,13 +586,46 @@ print.gr_result <- function(x, ...) {
 gr_call <- function(client, messages, model = NULL, max_output = NULL,
                     temperature = NULL, schema = NULL, schema_name = "result",
                     trace = NULL, label = "call", ...) {
+  # Checked here too, so the error names the function the user called.
+  if (!inherits(client, "gr_client")) gr_abort("`client` must come from gr_client() or gr_mock_client().")
+  model_call(client, messages, model, max_output, temperature, schema, schema_name,
+             trace, label, list(...))
+}
+
+#' gr_call(), with a test a reply must pass before it is cached.
+#'
+#' `accept` is a function of the reply text. The cache wrote every reply with
+#' ok = TRUE, but for a schema call gr_call_json() parses afterwards, and a
+#' reply cut off mid-JSON is a failure to every reader of it. Caching it turned
+#' a one-off glitch into a permanent failure that re-running could not clear --
+#' the one thing the cache promises never to do. So the caller that knows what
+#' a usable reply is says so, and a stored reply that fails the same test (one
+#' written before this existed) is asked again rather than replayed.
+#' @noRd
+model_call <- function(client, messages, model = NULL, max_output = NULL,
+                       temperature = NULL, schema = NULL, schema_name = "result",
+                       trace = NULL, label = "call", extra = list(), accept = NULL) {
   if (!inherits(client, "gr_client")) gr_abort("`client` must come from gr_client() or gr_mock_client().")
   messages <- normalise_messages(messages)
   model <- as_chr1(model %||% client$model)
   info <- gr_model_info(model)
 
-  prompt_tokens <- sum(gr_count_tokens(vapply(messages, function(m) as_chr1(m$content), character(1))))
+  # Counted in the model's own encoding where the tokenizer has one (tiktoken).
+  prompt_tokens <- sum(gr_count_tokens(vapply(messages, function(m) as_chr1(m$content), character(1)),
+                                       model = model))
   headroom <- info$context_window - prompt_tokens - 32L
+  # A cap that cannot be read is the model's cap, as NULL is. clamp() maps NA
+  # to its floor, so max_output = NA -- a spec field left unset, text that is
+  # not a number -- sent every request capped at ONE token (below the
+  # Responses API's minimum of 16, so a 400), with no word about the setting.
+  # gr_budget() was fixed for the same thing in `reserve_output`.
+  if (!is.null(max_output) &&
+      !(length(max_output) == 1L && (is.numeric(max_output) || is.character(max_output)) &&
+        !is.na(suppressWarnings(as.numeric(max_output))))) {
+    gr_warn("`max_output` must be a single number of tokens; using the model's limit.",
+            class = "gr_bad_setting")
+    max_output <- NULL
+  }
   max_output <- as.integer(clamp(max_output %||% info$max_output, 1, info$max_output))
   if (headroom < max_output) max_output <- as.integer(max(headroom, 0L))
 
@@ -524,7 +648,7 @@ gr_call <- function(client, messages, model = NULL, max_output = NULL,
   # have had to be written twice and kept in step by hand.
   started <- Sys.time()
   res <- client_dispatch(client, messages, model, max_output, temperature,
-                         schema, schema_name, info, params, label, list(...))
+                         schema, schema_name, info, params, label, extra, accept)
   trace_record(trace, label, messages, res, params,
                seconds = as.numeric(difftime(Sys.time(), started, units = "secs")))
   res
@@ -535,10 +659,12 @@ gr_call <- function(client, messages, model = NULL, max_output = NULL,
 #' Order matters. A replay client never reaches the network at all. A cache is
 #' consulted before the request is issued and written only after it succeeds --
 #' a failure is a property of the moment, not of the request, and caching one
-#' would make a transient blip permanent.
+#' would make a transient blip permanent. `accept`, when given, is the caller's
+#' test of a usable reply (see model_call()).
 #' @noRd
 client_dispatch <- function(client, messages, model, max_output, temperature,
-                            schema, schema_name, info, params, label, extra) {
+                            schema, schema_name, info, params, label, extra,
+                            accept = NULL) {
   if (inherits(client, "gr_replay_client")) {
     return(replay_lookup(client, messages, model, params))
   }
@@ -556,10 +682,17 @@ client_dispatch <- function(client, messages, model, max_output, temperature,
 
   cache <- client$.cache
   key <- NULL
+  usable <- function(r) is.null(accept) || isTRUE(tryCatch(accept(r$text), error = function(e) FALSE))
   if (inherits(cache, "gr_cache")) {
     key <- cache_key(client, messages, model, max_output, temperature,
                      schema, schema_name, extra)
     hit <- cache_get(cache, key)
+    if (!is.null(hit) && !usable(hit)) {
+      # Stored before the caller's test existed. Asked again, and overwritten
+      # below if the new reply passes.
+      cache_unhit(cache)
+      hit <- NULL
+    }
     if (!is.null(hit)) {
       # Entries are stored as built. One written before the truncation
       # spellings were unified can still say "incomplete" or "max_tokens".
@@ -573,8 +706,9 @@ client_dispatch <- function(client, messages, model, max_output, temperature,
   } else if (inherits(client, "gr_backend_client")) {
     backend_dispatch(client, messages, model, params, label)
   } else {
-    body <- build_request_body(client, messages, model, max_output, temperature,
-                              schema, schema_name, info, extra)
+    body <- build_request_body(client, messages, model,
+                               reasoning_output_cap(max_output, info, params$prompt_tokens),
+                               temperature, schema, schema_name, info, extra)
     url <- paste0(client$base_url,
                   if (identical(client$api, "responses")) "/responses" else "/chat/completions")
     out <- http_call(client, url, body)
@@ -586,12 +720,43 @@ client_dispatch <- function(client, messages, model, max_output, temperature,
   # A reply cut off at the cap is not stored either. It is an incomplete answer,
   # and caching it made the cut permanent: every later run replayed the same
   # half sentence instead of asking again.
+  # Nor is a reply the caller has said it cannot use: a schema reply that does
+  # not parse is as much a failure as a timeout.
   if (inherits(cache, "gr_cache") && isTRUE(res$ok) &&
-      !identical(res$finish_reason, "length")) {
+      !identical(res$finish_reason, "length") && usable(res)) {
     cache_put(cache, key, res)
   }
   res
 }
+
+#' The output cap a request to a reasoning model is sent with.
+#'
+#' On the Responses API `max_output_tokens`, and on Chat Completions
+#' `max_completion_tokens`, bound the reasoning tokens as well as the reply, and
+#' a reasoning model at its default effort can spend a few hundred to a couple
+#' of thousand of them before it writes a word. The package's short structured
+#' calls ask for 90 to 200 tokens (a chunk's context line, a relevance score, a
+#' conflict resolution), so on the default model all of the cap could go on
+#' reasoning: the reply came back "incomplete" with no text, context headers
+#' were silently dropped and rerank reported that the endpoint might not
+#' support JSON schema -- while every call was billed. Such a request is sent
+#' with room for the reasoning (at least `.gr_reasoning_floor` tokens, within
+#' the model's limit and what the context window leaves after the prompt). A cap
+#' at or above that is sent as it is. Only the HTTP request changes: the cache
+#' key, the trace and a mock or backend handler see the cap the caller asked
+#' for.
+#' @noRd
+reasoning_output_cap <- function(max_output, info, prompt_tokens) {
+  max_output <- as.integer(max_output)
+  if (!isTRUE(info$reasoning) || max_output >= .gr_reasoning_floor) return(max_output)
+  room <- min(as_num1(info$max_output, .gr_reasoning_floor),
+              as_num1(info$context_window, 0) - as_num1(prompt_tokens, 0) - 32)
+  as.integer(max(max_output, min(.gr_reasoning_floor, room)))
+}
+
+#' The least output cap a reasoning model is sent; see reasoning_output_cap().
+#' @noRd
+.gr_reasoning_floor <- 2048L
 
 #' Run a mock client's handler and normalise whatever it returned.
 #' @noRd
@@ -644,16 +809,31 @@ handler_result <- function(out, model, prompt_tokens) {
   if (inherits(out, "gr_result")) {
     # Re-normalise: a hand-built gr_result from a user handler can violate the
     # character(1) contract that every caller downstream relies on.
-    return(gr_result(out$ok, text = out$text, error = out$error,
+    txt <- repair_utf8(as_chr1(out$text))
+    return(gr_result(out$ok, text = txt, error = out$error,
                      status = out$status %||% NA_integer_,
-                     usage = settle_usage(out$usage, prompt_tokens, out$text),
-                     model = out$model %||% model,
+                     usage = settle_usage(out$usage, prompt_tokens, txt),
+                     # A result built with gr_result() and no `model` carries
+                     # NA, not NULL, so `%||%` kept it: the trace then priced
+                     # the call as model "unknown" and added nothing to
+                     # spent_usd, however many tokens it reported.
+                     model = if (nzchar(as_chr1(out$model, ""))) as_chr1(out$model) else model,
                      finish_reason = out$finish_reason %||% NA_character_,
                      retryable = isTRUE(out$retryable), raw = out$raw,
                      cached = isTRUE(out$cached)))
   }
   if (inherits(out, "condition")) {
-    return(gr_result(FALSE, error = conditionMessage(out), model = model))
+    # The handler was handed the prompt and then raised. Whether a provider
+    # billed it first is not knowable from here, and for ellmer it usually did:
+    # chat_structured() raises when it cannot parse the JSON the model sent
+    # back, after the paid round trip. Recording 0 tokens made that spend
+    # invisible to max_cost_usd, so the prompt is charged -- the direction that
+    # keeps a spending limit honest, as settle_usage() does. The reply's
+    # tokens are unknown and not charged. (The ellmer adapter no longer raises
+    # for a reply it could not read: it returns the failure with the tokens
+    # ellmer recorded for the turn, and raises only when there was no turn.)
+    return(gr_result(FALSE, error = repair_utf8(conditionMessage(out)), model = model,
+                     usage = list(input = as_int1(prompt_tokens, 0L), output = 0L)))
   }
   {
     # A handler that returns "" is the mock's version of the API returning
@@ -662,7 +842,7 @@ handler_result <- function(out, model, prompt_tokens) {
     # invariant says so. Reporting it as a successful empty answer here made
     # the mock disagree with production on the one case readers most need to
     # handle, and made the invariant untestable offline.
-    txt <- as_chr1(out)
+    txt <- repair_utf8(as_chr1(out))
     if (!nzchar(trimws(txt))) {
       gr_result(FALSE, text = "", error = "empty completion", model = model,
                 finish_reason = "empty",
@@ -693,7 +873,16 @@ normalise_messages <- function(messages) {
     if (!role %in% c("system", "user", "assistant", "developer")) {
       gr_abort(sprintf("Unsupported message role '%s'.", role))
     }
-    list(role = role, content = as_chr1(m$content))
+    # Labelled here, before anything counts, keys, records or sends it. Under a
+    # non-UTF-8 locale (LC_ALL=C in cron, Docker, env -i) a question typed in a
+    # script or read with readLines() is UTF-8 bytes marked "unknown", and
+    # jsonlite, serialising the request body, read those bytes as the native
+    # encoding and sent "Quelle <c3><a9>tait" to the model -- while the trace,
+    # which labels what it records, showed the question intact. This cannot
+    # help text that paste() joined to labelled document text before it got
+    # here: paste() escapes the unlabelled part itself, so that has to be
+    # labelled where the user's text comes in.
+    list(role = role, content = mark_utf8(as_chr1(m$content)))
   })
 }
 
@@ -776,10 +965,27 @@ http_call <- function(client, url, body) {
       next
     }
     status <- httr::status_code(resp)
-    if (status >= 200 && status < 300) return(parse_response(resp, client$api))
-    detail <- tryCatch(httr::content(resp, as = "text", encoding = "UTF-8"),
-                       error = function(e) "<unreadable body>")
-    detail <- substr(as_chr1(detail), 1, 800)
+    if (status >= 200 && status < 300) {
+      # A 200 is a request that was sent and billed, so it is traced whatever
+      # its body turns out to hold. An error here used to leave gr_call()
+      # before trace_record(), and in a parallel map took the document with it.
+      # Usage unknown, not zero, so gr_call() settles it against the prompt.
+      return(tryCatch(parse_response(resp, client$api), error = function(e) {
+        gr_result(FALSE, status = status,
+                  usage = list(input = NA_integer_, output = NA_integer_),
+                  error = paste0("Could not read the API response: ",
+                                 repair_utf8(conditionMessage(e))))
+      }))
+    }
+    body_text <- repair_utf8(as_chr1(tryCatch(httr::content(resp, as = "text", encoding = "UTF-8"),
+                                              error = function(e) "<unreadable body>")))
+    detail <- substr(body_text, 1, 800)
+    if (out_of_quota(status, body_text)) {
+      # Terminal, whatever the status says: see out_of_quota().
+      return(gr_result(FALSE, status = status, retryable = FALSE,
+                       error = sprintf("HTTP %d (the account is out of quota; not retried): %s",
+                                       status, detail)))
+    }
     if (status %in% .retryable_status && attempt <= client$max_retries) {
       wait <- retry_after(resp) %||% backoff_delay(client$retry_pause_base, attempt)
       gr_msg(sprintf("HTTP %d; retrying in %.1fs (attempt %d/%d).",
@@ -790,6 +996,26 @@ http_call <- function(client, url, body) {
     return(gr_result(FALSE, error = sprintf("HTTP %d: %s", status, detail),
                      status = status, retryable = status %in% .retryable_status))
   }
+}
+
+#' Is this a refusal because the account has no quota left?
+#'
+#' OpenAI sends it as a 429 with code `insufficient_quota`, the status it uses
+#' for a rate limit, and every 429 was retried: with the default policy each
+#' call slept through about 22 seconds of backoff before failing, and a
+#' 40-chunk read spent some 15 minutes waiting on an account that no retry
+#' could fix. Only the provider's own code is trusted here; a 429 without it is
+#' a rate limit and is retried as before.
+#' @noRd
+out_of_quota <- function(status, body_text) {
+  if (!identical(as.integer(status), 429L) || !grepl("insufficient_quota", body_text, fixed = TRUE)) {
+    return(FALSE)
+  }
+  parsed <- tryCatch(jsonlite::parse_json(body_text), error = function(e) NULL)
+  err <- if (is.list(parsed)) parsed[["error", exact = TRUE]] else NULL
+  if (!is.list(err)) return(FALSE)
+  any(vapply(c("code", "type"), function(f) identical(as_chr1(err[[f, exact = TRUE]]),
+                                                     "insufficient_quota"), logical(1)))
 }
 
 #' Exponential backoff with real jitter.
@@ -829,8 +1055,8 @@ parse_response <- function(resp, api) {
   err <- fld(parsed, "error")
   if (!is.null(err)) {
     # `error` may be an object or a bare string, depending on the endpoint.
-    msg <- if (is.list(err)) as_chr1(fld(err, "message"), "API returned an error object.")
-           else as_chr1(err, "API returned an error object.")
+    msg <- repair_utf8(if (is.list(err)) as_chr1(fld(err, "message"), "API returned an error object.")
+                       else as_chr1(err, "API returned an error object."))
     return(gr_result(FALSE, error = msg, status = httr::status_code(resp), raw = parsed))
   }
   text <- extract_text(parsed, api)
@@ -999,10 +1225,13 @@ extract_text <- function(parsed, api) {
   # a different type than expected must produce "", not an uncaught error.
   if (!is.list(parsed)) return("")
   fld <- function(x, nm) if (is.list(x)) x[[nm, exact = TRUE]] else NULL
+  # Repaired before trimws(), whose regex stops on bytes that are not UTF-8;
+  # see repair_utf8().
+  clean <- function(x) trimws(repair_utf8(x))
 
   ot <- fld(parsed, "output_text")
   if (is.list(ot)) ot <- unlist(ot, use.names = FALSE)
-  if (is.character(ot) && length(ot)) return(trimws(paste(ot, collapse = "")))
+  if (is.character(ot) && length(ot)) return(clean(paste(ot, collapse = "")))
 
   out <- fld(parsed, "output")
   if (is.list(out) && length(out)) {
@@ -1020,17 +1249,34 @@ extract_text <- function(parsed, api) {
       }, character(1))
     }), use.names = FALSE)
     parts <- parts[!is.na(parts) & nzchar(parts)]
-    if (length(parts)) return(trimws(paste(parts, collapse = "")))
+    if (length(parts)) return(clean(paste(parts, collapse = "")))
   }
 
   ch <- fld(parsed, "choices")
   if (is.list(ch) && length(ch) && is.list(ch[[1]])) {
     msg <- fld(ch[[1]], "message")
-    if (is.character(msg)) return(trimws(as_chr1(msg)))
+    if (is.character(msg)) return(clean(as_chr1(msg)))
     if (is.list(msg)) {
       ref <- fld(msg, "refusal")
-      if (!is.null(ref)) return(as_chr1(ref))
-      return(trimws(as_chr1(fld(msg, "content"))))
+      if (!is.null(ref)) return(repair_utf8(as_chr1(ref)))
+      cont <- fld(msg, "content")
+      # Content as an array of typed parts, which several OpenAI-compatible
+      # servers send (reasoning models: a "thinking" part, then "text").
+      # as_chr1() deparsed each part, so the answer read
+      # 'list(type = "text", text = "...")', the model's reasoning included,
+      # with ok = TRUE. Only the text parts are the reply, as in the
+      # Responses branch above; a refusal part is reported as one.
+      if (is.list(cont)) {
+        parts <- vapply(cont, function(cc) {
+          if (is.character(cc)) return(as_chr1(cc))
+          if (!is.list(cc)) return("")
+          type <- as_chr1(fld(cc, "type"), "text")
+          if (identical(type, "refusal")) return(as_chr1(fld(cc, "refusal")))
+          if (type %in% c("text", "output_text")) as_chr1(fld(cc, "text")) else ""
+        }, character(1))
+        return(clean(paste(parts[nzchar(parts)], collapse = "")))
+      }
+      return(clean(as_chr1(cont)))
     }
   }
   ""
@@ -1054,6 +1300,10 @@ is_refusal <- function(parsed) {
   if (is.list(ch) && length(ch) && is.list(ch[[1]])) {
     msg <- fld(ch[[1]], "message")
     if (is.list(msg) && !is.null(fld(msg, "refusal"))) return(TRUE)
+    cont <- if (is.list(msg)) fld(msg, "content") else NULL
+    if (is.list(cont)) for (cc in cont) {
+      if (is.list(cc) && identical(as_chr1(fld(cc, "type")), "refusal")) return(TRUE)
+    }
   }
   FALSE
 }
@@ -1062,8 +1312,24 @@ is_refusal <- function(parsed) {
 #' @noRd
 gr_call_json <- function(client, messages, schema, schema_name = "result",
                          allow_empty = FALSE, ...) {
-  res <- gr_call(client, messages, schema = schema, schema_name = schema_name, ...)
+  # The same test decides what is cached, so a reply this function would call
+  # a failure is never stored as a success (see model_call()).
+  accept <- function(txt) json_reply(txt, schema, allow_empty)$ok
+  # gr_call()'s own arguments, so `...` is matched exactly as it was.
+  send <- function(client, messages, model = NULL, max_output = NULL, temperature = NULL,
+                   schema = NULL, schema_name = "result", trace = NULL, label = "call", ...) {
+    model_call(client, messages, model, max_output, temperature, schema, schema_name,
+               trace, label, list(...), accept = accept)
+  }
+  res <- send(client, messages, schema = schema, schema_name = schema_name, ...)
   if (!res$ok) return(list(ok = FALSE, value = NULL, result = res))
+  out <- json_reply(res$text, schema, allow_empty)
+  list(ok = out$ok, value = out$value, result = res)
+}
+
+#' A schema reply's text, parsed, and whether a caller can use it.
+#' @noRd
+json_reply <- function(text, schema = NULL, allow_empty = FALSE) {
   # parse_json(), never fromJSON(). Given a short string that is not valid
   # JSON, fromJSON() treats it as a LOCATION: text starting http:// or https://
   # is downloaded, and a path that exists is opened. This text is the model's
@@ -1071,27 +1337,54 @@ gr_call_json <- function(client, messages, schema, schema_name = "result",
   # "http://attacker/x.json?q=<the question>" made this machine send that
   # request and then recorded whatever came back as the model's decision, and a
   # reply naming a FIFO hung the run. parse_json() only parses; with
-  # simplifyVector = TRUE it simplifies exactly as fromJSON() did.
-  parse <- function(txt) tryCatch(jsonlite::parse_json(txt, simplifyVector = TRUE),
+  # simplifyVector = TRUE it simplifies exactly as fromJSON() did. Its warning
+  # about an unpaired surrogate is quieted: the string is repaired below.
+  parse <- function(txt) tryCatch(suppressWarnings(jsonlite::parse_json(txt, simplifyVector = TRUE)),
                                   error = function(e) NULL)
-  val <- parse(res$text)
+  text <- as_chr1(text)
+  val <- parse(text)
   if (is.null(val)) {
     # Some endpoints wrap JSON in a code fence even under strict mode.
-    stripped <- gsub("^\\s*```(?:json)?\\s*|\\s*```\\s*$", "", res$text, perl = TRUE)
+    stripped <- gsub("^\\s*```(?:json)?\\s*|\\s*```\\s*$", "", text, perl = TRUE)
     val <- parse(stripped)
   }
+  # A "\udc00" escape (half of a split emoji) decodes to bytes that are not
+  # UTF-8, and the first regex a reader ran on the value stopped the whole
+  # document. Only walked when the reply has a surrogate escape at all.
+  if (!is.null(val) && grepl("\\\\u[dD][89a-fA-F]", text)) val <- repair_utf8_deep(val)
   # A bare 7, "text", [1,2,3] or true is valid JSON but not an object. Callers
   # index into `value` with `$`, which errors on an atomic vector, so anything
   # that is not a named list is treated as a parse failure and routed to the
   # reader's documented degraded path instead.
-  #
-  # `allow_empty` is for the one caller where `{}` is a real answer rather than a
-  # broken one: `extract` asks each chunk what it can fill and an excerpt that
-  # can fill nothing is a finding. Without this the empty object was routed to
-  # the failure path, so a document that simply did not discuss the schema came
-  # back with every chunk counted as a failed call and the answer marked
-  # partial -- reporting "we could not read this" for "it does not say".
-  ok <- !is.null(val) && (is.list(val) || is.data.frame(val)) &&
-    (isTRUE(allow_empty) || length(names(val)) > 0)
-  list(ok = ok, value = if (ok) val else NULL, result = res)
+  ok <- !is.null(val) && (is.list(val) || is.data.frame(val))
+  ok <- ok && if (isTRUE(allow_empty)) empty_or_schema_object(val, schema)
+              else length(names(val)) > 0
+  list(ok = ok, value = if (ok) val else NULL)
+}
+
+#' Under `allow_empty`: is this reply `{}`, or an object using the schema's
+#' own field names?
+#'
+#' `allow_empty` is for the one caller where `{}` is a real answer rather than a
+#' broken one: `extract` asks each chunk what it can fill and an excerpt that
+#' can fill nothing is a finding. Without it the empty object was routed to the
+#' failure path, so a document that simply did not discuss the schema came back
+#' with every chunk counted as a failed call and the answer marked partial --
+#' reporting "we could not read this" for "it does not say".
+#'
+#' But it let through every other shape as well. A reply that wrapped its
+#' fields (`{"extraction": {...}}`), renamed them, or was an array filled
+#' nothing, since the reader reads the schema's names, and was then recorded as
+#' that same complete negative, partial = FALSE, with no failed call: the mix-up
+#' this exists to prevent, the other way round. Strict schemas rule those out,
+#' but a gateway that ignores strict mode, or a backend that sends no schema,
+#' does not. So an object must be empty or name at least one of the schema's
+#' properties; anything else is a call that failed.
+#' @noRd
+empty_or_schema_object <- function(val, schema) {
+  # `{}` parses to a NAMED empty list, `[]` to an unnamed one.
+  if (is.data.frame(val) || !is.list(val) || is.null(names(val))) return(FALSE)
+  if (!length(val)) return(TRUE)
+  props <- names(if (is.list(schema)) schema[["properties", exact = TRUE]])
+  !length(props) || any(names(val) %in% props)
 }

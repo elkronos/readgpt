@@ -40,6 +40,9 @@
 #'   headings, values say what that section has to cover.
 #' @param recipe The reading pipeline to default to, as in [gr_extract()].
 #' @param description One line, for [gr_protocols()].
+#' @param search A [gr_search()]: how the search was run. Optional, and kept
+#'   with the criteria so that a saved protocol states what was searched as
+#'   well as what was eligible.
 #' @return A `gr_protocol`.
 #'
 #' @section Criteria are not free text:
@@ -71,7 +74,7 @@
 #' p
 gr_protocol <- function(name, question = NULL, include = NULL, exclude = NULL,
                         fields = NULL, outline = NULL, recipe = "research",
-                        description = "") {
+                        description = "", search = NULL) {
   if (!is_nonblank(name)) gr_abort("A protocol needs a `name`.", class = "gr_bad_protocol")
   if (!is_nonblank(question)) {
     gr_abort(paste0("A protocol needs a `question`. It is what the criteria and the schema are ",
@@ -82,16 +85,23 @@ gr_protocol <- function(name, question = NULL, include = NULL, exclude = NULL,
     fields <- if (is.list(fields)) do.call(gr_fields, fields) else
       gr_abort("`fields` must come from gr_fields().", class = "gr_bad_protocol")
   }
-  structure(list(
+  if (!is.null(search) && !inherits(search, "gr_search")) {
+    gr_abort("`search` must come from gr_search().", class = "gr_bad_protocol")
+  }
+  p <- list(
     name = as_chr1(name),
     question = as_chr1(question),
     include = criteria_vector(include, "include"),
     exclude = criteria_vector(exclude, "exclude"),
     fields = fields,
-    outline = outline_vector(outline),
+    outline = outline_vector(outline, warn = TRUE),
     recipe = recipe,
     description = as_chr1(description)
-  ), class = "gr_protocol")
+  )
+  # Only when there is one, so a protocol without a search is the same object
+  # it always was.
+  if (!is.null(search)) p$search <- search
+  structure(p, class = "gr_protocol")
 }
 
 #' @export
@@ -110,6 +120,9 @@ print.gr_protocol <- function(x, ...) {
   }
   if (length(x$outline)) {
     cat(sprintf("  outline  : %s\n", paste(names(x$outline), collapse = " / ")))
+  }
+  if (inherits(x$search, "gr_search")) {
+    cat(sprintf("  search   : %s\n", paste(names(x$search$databases), collapse = ", ")))
   }
   cat(sprintf("  recipe   : %s\n", as_chr1(x$recipe, "research")))
   invisible(x)
@@ -176,10 +189,23 @@ gr_protocols <- function(name = NULL) {
 #' whoever is checking the work, and cited alongside the results. That means a
 #' file, and JSON because it is exact and needs nothing installed.
 #'
-#' The round trip is lossless for everything a protocol *is*. `recipe` is the one
-#' thing it may not be: a `gr_recipe` object is written as its name, because a
-#' file that pinned every clean and segmentation setting would silently pin them
-#' for a reader on a different version.
+#' The round trip is lossless for everything a protocol *is*, the search
+#' included when one was given to [gr_protocol()]. `recipe` is the one thing it
+#' may not be: a `gr_recipe` object is written as its name, because a file that
+#' pinned every clean and segmentation setting would silently pin them for a
+#' reader on a different version. Two outline sections with one heading cannot
+#' both be keys of the file's outline, so the second is written as
+#' "Findings.1", with a warning; give each section its own heading. Anything
+#' else attached to the object (`p$notes <- ...`) is not written, and saving
+#' warns that it is not.
+#'
+#' The file is UTF-8 whatever the session's encoding, and is read as UTF-8.
+#' In a C locale, or a Windows session in a single-byte code page, a criterion
+#' with an accent or a symbol in it (the greater-than-or-equal sign of "aged
+#' 18 or over") was written as the text "<U+2265>", or as a byte no other
+#' machine reads as that letter, and a correct file read in a C locale came
+#' back as "<e2><89><a5>": the criteria then sent to the screening model and
+#' printed in the audit report.
 #'
 #' @param protocol A [gr_protocol()].
 #' @param path File path. `gr_protocol_read()` also accepts a JSON string.
@@ -196,7 +222,23 @@ gr_protocol_save <- function(protocol, path) {
   if (!inherits(protocol, "gr_protocol")) {
     gr_abort("`protocol` must come from gr_protocol().", class = "gr_bad_protocol")
   }
-  writeLines(as.character(as_json(protocol_as_list(protocol), pretty = TRUE)), path)
+  known <- c("name", "question", "description", "include", "exclude", "fields", "outline",
+             "recipe", "search")
+  extra <- setdiff(names(protocol)[!vapply(protocol, is.null, logical(1))], known)
+  if (length(extra)) {
+    gr_warn(sprintf("%s %s not part of a protocol and %s not saved. Only %s are written.",
+                    paste(sprintf("'%s'", extra), collapse = ", "),
+                    if (length(extra) > 1L) "are" else "is", if (length(extra) > 1L) "were" else "was",
+                    paste(known, collapse = ", ")), class = "gr_protocol_unsaved")
+  }
+  dup <- unique(names(protocol$outline)[duplicated(names(protocol$outline))])
+  if (length(dup)) {
+    gr_warn(sprintf(paste0("The outline has %s more than once. A file's outline cannot hold ",
+                           "one heading twice, so the copies are saved as %s."),
+                    paste(sprintf("'%s'", dup), collapse = ", "),
+                    paste(sprintf("'%s.1'", dup), collapse = ", ")), class = "gr_duplicate_heading")
+  }
+  write_utf8_lines(as.character(as_json(utf8_deep(protocol_as_list(protocol)), pretty = TRUE)), path)
   invisible(path)
 }
 
@@ -204,10 +246,14 @@ gr_protocol_save <- function(protocol, path) {
 #' @export
 gr_protocol_read <- function(path) {
   txt <- if (length(path) == 1L && !grepl("[{}]", path) && file.exists(path)) {
-    paste(readLines(path, warn = FALSE), collapse = "\n")
+    # Read as UTF-8, which is what gr_protocol_save() writes. A file written
+    # by an older version in a single-byte code page is transcoded rather
+    # than read as mojibake.
+    paste(to_utf8(readLines(path, warn = FALSE, encoding = "UTF-8")), collapse = "\n")
   } else {
-    as_chr1(path)
+    mark_utf8(as_chr1(path))
   }
+  txt <- sub("^\ufeff", "", txt)                               # a byte-order mark
   raw <- tryCatch(jsonlite::fromJSON(txt, simplifyVector = FALSE),
                   error = function(e) NULL)
   if (!is.list(raw)) {
@@ -234,15 +280,38 @@ criteria_vector <- function(x, what) {
 #' A bare character vector is accepted and each element becomes its own heading
 #' with itself as the brief, because "Methods", "Findings", "Limitations" is a
 #' perfectly good outline and demanding names for it is bureaucracy.
+#'
+#' A heading is how a section is told apart -- in a saved protocol, and in the
+#' claims gr_outline() assigns to each -- so `warn = TRUE` (a protocol being
+#' built) says when one is used twice.
 #' @noRd
-outline_vector <- function(x) {
+outline_vector <- function(x, warn = FALSE) {
   if (is.null(x) || !length(x)) return(character(0))
   v <- vapply(x, as_chr1, character(1), USE.NAMES = FALSE)
   nms <- names(x)
   if (is.null(nms)) nms <- rep("", length(v))
   nms[!nzchar(trimws(nms))] <- v[!nzchar(trimws(nms))]
   keep <- nzchar(trimws(v))
-  stats::setNames(unname(v[keep]), nms[keep])
+  out <- stats::setNames(unname(v[keep]), nms[keep])
+  dup <- unique(names(out)[duplicated(names(out))])
+  if (warn && length(dup)) {
+    gr_warn(sprintf(paste0("The outline has %s more than once. Sections are told apart by ",
+                           "heading, so give each its own."),
+                    paste(sprintf("'%s'", dup), collapse = ", ")), class = "gr_duplicate_heading")
+  }
+  out
+}
+
+#' Every string in a nested list, and every name, labelled UTF-8.
+#'
+#' jsonlite reads an unlabelled string as native, and in a C locale that turns
+#' the UTF-8 bytes of a typed criterion into "<c3><a9>" text.
+#' @noRd
+utf8_deep <- function(x) {
+  nm <- names(x)
+  x <- if (is.list(x)) lapply(x, utf8_deep) else if (is.character(x)) mark_utf8(x) else x
+  if (!is.null(nm)) names(x) <- mark_utf8(nm)
+  x
 }
 
 #' A protocol as a plain list, for JSON.
@@ -251,7 +320,7 @@ outline_vector <- function(x) {
 #' survive JSON. Written out field by field so the file says what it means.
 #' @noRd
 protocol_as_list <- function(p) {
-  list(
+  out <- list(
     name = p$name,
     question = p$question,
     description = p$description,
@@ -269,6 +338,32 @@ protocol_as_list <- function(p) {
     outline = as.list(p$outline),
     recipe = if (inherits(p$recipe, "gr_recipe")) p$recipe$name else as_chr1(p$recipe, "research")
   )
+  s <- p$search
+  if (inherits(s, "gr_search")) {
+    # One entry per database, not an object keyed by name: two searches of one
+    # database on two dates are two entries, and a key cannot repeat.
+    out$search <- list(
+      databases = lapply(seq_along(s$databases), function(i) list(
+        source = names(s$databases)[i], query = unname(s$databases[i]), date = s$dates[i])),
+      limits = as.list(s$limits), registration = s$registration,
+      other = as.list(s$other), notes = s$notes)
+  }
+  out
+}
+
+#' A gr_search back from the list protocol_as_list() wrote.
+#' @noRd
+search_from_list <- function(s) {
+  chr <- function(v) vapply(v, function(e) if (is.null(e)) NA_character_ else as_chr1(e, NA_character_),
+                            character(1), USE.NAMES = FALSE)
+  db <- s$databases %||% list()
+  dates <- chr(lapply(db, `[[`, "date"))
+  lim <- chr(s$limits)
+  gr_search(databases = stats::setNames(chr(lapply(db, `[[`, "query")), chr(lapply(db, `[[`, "source"))),
+            dates = if (all(is.na(dates))) NULL else dates,
+            limits = if (!length(lim) || all(is.na(lim))) NULL else lim,
+            registration = if (is.null(s$registration)) NA_character_ else as_chr1(s$registration),
+            other = chr(s$other), notes = if (is.null(s$notes)) NULL else as_chr1(s$notes))
 }
 
 #' @noRd
@@ -290,7 +385,9 @@ as_protocol <- function(x) {
               include = flat(x$include), exclude = flat(x$exclude),
               fields = fields, outline = outline,
               recipe = as_chr1(x$recipe, "research"),
-              description = as_chr1(x$description))
+              description = as_chr1(x$description),
+              search = if (inherits(x$search, "gr_search")) x$search
+                       else if (length(x$search)) search_from_list(x$search))
 }
 
 #' @noRd

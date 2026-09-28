@@ -87,9 +87,12 @@
 #' claim was drawn from: a claim may only name studies its call was shown. A
 #' number that fails either is dropped and counted rather than trusted, a claim
 #' left with no supporting study is dropped entirely, and a `moderator` naming a
-#' column the table does not have is cleared: it is an invented explanation for
-#' a real disagreement. `$dropped` records all of it, so a claims table that
-#' looks thin can be told apart from a literature that is.
+#' column the model was not shown is cleared: it is an invented explanation for
+#' a real disagreement. So is a moderator that does not tell the two sides of a
+#' contested claim apart by counting: a column the table does not report for
+#' the studies on one side, a value reported on both sides, or numbers whose
+#' ranges overlap. `$dropped` records all of it, so a claims table that looks
+#' thin can be told apart from a literature that is.
 #'
 #' The study numbers are the same ones [gr_synthesise()] cites, because both
 #' derive them from one function. A claim resting on study 3 and a sentence
@@ -101,7 +104,18 @@
 #' the whole corpus comes back once per batch with disjoint support, which reads
 #' as several narrow claims instead of one broad one. The reconcile pass may only
 #' group claims that already exist: every claim it fails to place stays on its
-#' own rather than disappearing.
+#' own rather than disappearing. When it cannot run -- a call or cost limit, a
+#' failed or cut-off reply, a reply that is not a list of groups, or more claims
+#' than fit one prompt -- the claims are kept unmerged, with a warning, and
+#' `$unmerged` is `TRUE`.
+#'
+#' What the reconcile pass cannot check is MEANING. A merged claim keeps one
+#' member's wording and the union of every member's studies, so if the model
+#' groups two claims that say different things, the studies behind one are
+#' listed as supporting the other's wording. Such a merge is not detectable by
+#' counting; the merged claim's `note` names every other wording it absorbed so
+#' that it can be seen, and a group mixing claims of different `kind` is warned
+#' about.
 #'
 #' A batch is limited by the reply as well as by the context window, because the
 #' reply names every study it uses: with the default `max_claim_tokens` a batch
@@ -121,6 +135,12 @@
 #' @param include_unclear Keep rows with nothing extracted. Off by default, the
 #'   same as [gr_synthesise()].
 #' @param trace A [gr_trace()] to record into.
+#' @param bib Which columns carry bibliographic identity, as in
+#'   [gr_synthesise()]: a named list of `citation`, `authors`, `year`, `title`,
+#'   `venue`, `doi`. Those columns are withheld from the model, so a claim
+#'   cannot attribute a finding to a name, and cannot be moderated by one.
+#'   Omitted, only the conventional names are withheld. Pass the same `bib` to
+#'   [gr_synthesise()] and [gr_gaps()].
 #' @return An object of class `gr_claims`:
 #'   \describe{
 #'     \item{`claims`}{One row per claim: `claim_id`, `claim`, `kind`,
@@ -133,6 +153,9 @@
 #'       their batch was cut off at the reply limit, failed, or was not sent
 #'       for a call or cost limit.}
 #'     \item{`lost`}{The study numbers of those studies.}
+#'     \item{`unmerged`}{`TRUE` when claims from several batches could not be
+#'       reconciled, so one finding may appear as more than one claim.}
+#'     \item{`hidden`}{The columns withheld from the model as bibliographic.}
 #'   }
 #' @seealso [gr_outline()] to derive sections from these claims,
 #'   [gr_synthesise()] to write from them, [gr_gaps()] for what they do not
@@ -155,7 +178,7 @@
 #' cm$support
 gr_claims <- function(extraction, question = NULL, protocol = NULL, client = NULL,
                       model = NULL, temperature = NULL, max_claim_tokens = 1600L,
-                      include_unclear = FALSE, trace = NULL) {
+                      include_unclear = FALSE, trace = NULL, bib = NULL) {
   tab <- if (inherits(extraction, "gr_extraction")) extraction$table else extraction
   if (!is.data.frame(tab) || !nrow(tab)) {
     gr_abort("`extraction` must be a gr_extraction, or a data frame shaped like its $table.",
@@ -168,6 +191,11 @@ gr_claims <- function(extraction, question = NULL, protocol = NULL, client = NUL
     check_protocol_edited(protocol, "draw claims against it")
     if (is.null(question)) question <- protocol$question
   }
+  # Labelled UTF-8 here, where it enters. Under a non-UTF-8 locale a question
+  # typed in a script is UTF-8 bytes marked "unknown"; it is kept on the
+  # result, and gr_outline() and gr_synthesise() paste it to labelled text,
+  # which paste() answers by escaping it to "<c3><a9>".
+  if (is.character(question)) question <- mark_utf8(question)
   if (!is_nonblank(question)) {
     gr_abort(paste0("`question` must be a non-empty string. A claim is a statement about the ",
                     "literature RELATIVE TO a question, and without one there is nothing for a ",
@@ -192,8 +220,11 @@ gr_claims <- function(extraction, question = NULL, protocol = NULL, client = NUL
 
   # Same withholding as the write-up: a model that can see who wrote a study
   # will attribute to the name rather than to the number, and a claim attributed
-  # to a name is checked by nothing.
-  hidden <- unlist(bib_columns(used), use.names = FALSE)
+  # to a name is checked by nothing. With the write-up's `bib` too: without it a
+  # `first_author` column reached this model, came back inside claim text and as
+  # a moderator, and gr_synthesise(bib =) then pasted both into a prompt whose
+  # studies block had withheld that column.
+  hidden <- unlist(bib_columns(used, bib), use.names = FALSE)
   rendered <- render_studies(used, hide = hidden)
   # "never": claims_batch() sends the question once.
   overhead <- prompt_overhead(question, .gr_prompts$claims_system, "never")
@@ -258,7 +289,8 @@ gr_claims <- function(extraction, question = NULL, protocol = NULL, client = NUL
                    else "The model returned none. ",
                    "There is nothing for gr_outline() or gr_synthesise(claims = ) to work from."),
             class = "gr_no_claims")
-    return(new_claims(empty_claim_rows(), used, question, empty_dropped(), trace, lost_studies))
+    return(new_claims(empty_claim_rows(), used, question, empty_dropped(), trace, lost_studies,
+                      hidden = hidden))
   }
   if (length(lost)) {
     gr_warn(lost_msg, class = if (length(cut_off)) c("gr_claims_truncated", "gr_claims_batch_failed")
@@ -276,13 +308,19 @@ gr_claims <- function(extraction, question = NULL, protocol = NULL, client = NUL
     gr_warn(paste0("Every claim was dropped in verification; see `$dropped`. The usual cause is ",
                    "a model citing study numbers that are not in the table."),
             class = "gr_no_claims")
-    return(new_claims(empty_claim_rows(), used, question, checked$dropped, trace, lost_studies))
+    return(new_claims(empty_claim_rows(), used, question, checked$dropped, trace, lost_studies,
+                      hidden = hidden))
   }
   # Claims can repeat only across batches that returned some.
   final <- if (sum(vapply(raw, function(r) NROW(r) > 0L, logical(1))) > 1L) {
     claims_reconcile(checked$claims, question, client, spec, trace)
   } else checked$claims
-  new_claims(final, used, question, checked$dropped, trace, lost_studies)
+  # A merge changes which studies sit on each side of a claim, so a moderator
+  # that told a member's two sides apart may not tell the merged claim's apart.
+  # Checked again on what is actually returned.
+  again <- claims_moderators(final, used)
+  new_claims(again$claims, used, question, rbind(checked$dropped, again$dropped), trace,
+             lost_studies, hidden = hidden, unmerged = isTRUE(attr(final, "unmerged")))
 }
 
 #' What a claims reply costs, for sizing batches by it.
@@ -299,6 +337,39 @@ gr_claims <- function(extraction, question = NULL, protocol = NULL, client = NUL
 claims_per_batch <- function(reply) {
   max(1L, as.integer(floor((reply - .gr_claims_reply_tokens[["base"]]) /
                              .gr_claims_reply_tokens[["per_study"]])))
+}
+
+#' What a reconcile reply for `n` claims can take: every claim number once, with
+#' its comma and the brackets of its group. About two tokens a claim; six, to be
+#' generous, since a reply cut off here leaves every claim unmerged.
+#' @noRd
+reconcile_reply_tokens <- function(n) {
+  as.integer(200L + 6L * n)
+}
+
+#' What went wrong with a call that returned nothing usable, as a phrase
+#' following "the ... call".
+#'
+#' Three causes that need three different remedies. gr_call() shrinks the reply
+#' to whatever the context window leaves after the prompt, so a long prompt is
+#' cut off BELOW the limit it asked for, and "raise the limit" was advice that
+#' could not help. `knob` names the argument that raises `cap`.
+#' @noRd
+call_failure <- function(result, messages, model, cap, knob) {
+  if (reply_cut_off(result)) {
+    info <- gr_model_info(model)
+    prompt <- sum(gr_count_tokens(vapply(messages, function(m) as_chr1(m$content), character(1))))
+    room <- as.integer(info$context_window - prompt - 32L)
+    if (room < min(cap, info$max_output)) {
+      return(sprintf(paste0("stopped short: its %d-token prompt left about %d tokens for the ",
+                            "reply in '%s''s %d-token context window"),
+                     prompt, max(room, 0L), as_chr1(model), as.integer(info$context_window)))
+    }
+    return(sprintf("stopped at the %d-token reply limit (raise %s)",
+                   as.integer(min(cap, info$max_output)), knob))
+  }
+  err <- as_chr1(result$error, "")
+  if (nzchar(err)) sprintf("failed (%s)", substr(err, 1L, 200L)) else "failed"
 }
 
 #' One claims call over one batch of studies.
@@ -435,7 +506,8 @@ claim_rows <- function(x) {
 #'   * A `moderator` naming a column the table does not have is cleared. The
 #'     claim may still be sound; the EXPLANATION was invented, and an invented
 #'     explanation for a real disagreement is the most convincing kind of error
-#'     this layer can make.
+#'     this layer can make. So is a moderator that names a real column which
+#'     does not tell the claim's two sides apart; see moderator_split().
 #' @noRd
 claims_verify <- function(got, used, cols = study_fields(used)) {
   ids <- used$study
@@ -489,53 +561,159 @@ claims_verify <- function(got, used, cols = study_fields(used)) {
   }
   got$note <- note
   got[[".shown"]] <- NULL
-  list(claims = got[keep, , drop = FALSE],
-       dropped = if (length(drops)) do.call(rbind, drops) else empty_dropped())
+  # Existing is not explaining. A moderator naming `design` when every study is
+  # an RCT was kept, printed to the writer as "distinguished by: design", and
+  # took the claim out of gr_gaps()' unexplained disagreements -- while the same
+  # gr_gaps() reported that design never varies.
+  split <- claims_moderators(got[keep, , drop = FALSE], used)
+  list(claims = split$claims,
+       dropped = rbind(if (length(drops)) do.call(rbind, drops) else empty_dropped(),
+                       split$dropped))
+}
+
+#' Values that say a study did not report the field.
+#' @noRd
+.gr_unreported <- c("", "na", "n/a", "not reported")
+
+#' Why a moderator column does NOT tell a claim's two sides apart, or NA if it does.
+#'
+#' The schema asks for "the field that distinguishes the supporting studies from
+#' the contradicting ones", and that is a count: the values on one side must not
+#' turn up on the other. Numbers must be separable by a threshold -- every
+#' supporting value above every contradicting one, or below -- because two sets
+#' of sample sizes are always different sets and that explains nothing. Checked
+#' only on a contested claim; with nothing on the other side there is nothing
+#' to separate, and nothing to count.
+#'
+#' Strict on purpose. A column that separates most of the studies is cleared,
+#' and recorded in `$dropped`: a claim shown as an unexplained disagreement
+#' that was mostly explained costs a sentence, while an explanation the table
+#' does not bear out is exactly the error this layer exists to stop.
+#' @noRd
+moderator_split <- function(used, col, sup, con, vals = moderator_values(used, col)) {
+  if (!length(con) || !length(sup)) return(NA_character_)
+  if (is.null(vals)) return("it is not a column in the table")
+  side <- function(ids) {
+    x <- vals[match(ids, used$study)]
+    x[!is.na(x)]
+  }
+  a <- side(sup); b <- side(con)
+  if (!length(a) || !length(b)) {
+    return(sprintf("the table does not report it for any %s study",
+                   if (!length(a)) "supporting" else "contradicting"))
+  }
+  na <- suppressWarnings(as.numeric(a)); nb <- suppressWarnings(as.numeric(b))
+  if (!anyNA(na) && !anyNA(nb)) {
+    if (max(na) < min(nb) || max(nb) < min(na)) return(NA_character_)
+    return(sprintf("its values overlap (%s to %s supporting, %s to %s contradicting)",
+                   format(min(na)), format(max(na)), format(min(nb)), format(max(nb))))
+  }
+  both <- intersect(a, b)
+  if (length(both)) {
+    return(sprintf("studies on both sides report '%s'", both[1]))
+  }
+  NA_character_
+}
+
+#' A moderator column as moderator_split() compares it: numbers as they are,
+#' text trimmed and lower-cased, and "not reported" in any spelling as NA.
+#' NULL for a column the table does not have.
+#' @noRd
+moderator_values <- function(used, col) {
+  if (!col %in% names(used)) return(NULL)
+  v <- used[[col]]
+  if (is.numeric(v)) return(v)
+  v <- lower_text(trimws(as.character(v)))
+  v[v %in% .gr_unreported] <- NA_character_
+  v
+}
+
+#' Clear every moderator that does not separate its claim's two sides.
+#'
+#' For claims whose sides changed after claims_verify() looked at them, which
+#' is what a reconcile merge does. Returns the claims and the `$dropped` rows.
+#' @noRd
+claims_moderators <- function(claims, used) {
+  drops <- list()
+  # Each column normalised once, not once per claim naming it.
+  seen <- list()
+  for (i in seq_len(nrow(claims))) {
+    m <- claims$moderator[i]
+    if (is.na(m)) next
+    if (!m %in% names(seen)) seen[m] <- list(moderator_values(used, m))
+    why <- moderator_split(used, m, claims$.support[[i]], claims$.contradict[[i]],
+                           vals = seen[[m]])
+    if (is.na(why)) next
+    drops[[length(drops) + 1L]] <- data.frame(
+      claim = claims$claim[i],
+      reason = "moderator does not separate the supporting from the contradicting studies",
+      detail = sprintf("%s: %s", m, why), stringsAsFactors = FALSE)
+    claims$note[i] <- paste(stats::na.omit(c(claims$note[i], sprintf(
+      "cleared moderator '%s': %s", m, why))), collapse = "; ")
+    claims$moderator[i] <- NA_character_
+  }
+  list(claims = claims, dropped = if (length(drops)) do.call(rbind, drops) else empty_dropped())
 }
 
 #' Group claims that say the same thing, across batches.
 #'
 #' The model is shown the claim TEXTS only -- no studies, no numbers to cite --
-#' so the worst it can do is group badly. It cannot invent a claim here, and it
-#' cannot invent support: a group's support is the union of its members', all of
-#' which were verified before this ran. A claim the reply fails to place keeps
-#' its own group, because dropping one silently is the failure this whole file is
-#' built to avoid.
+#' so it cannot invent a claim here, and every study a merged claim names was
+#' verified before this ran. What it CAN do is group badly: a group's support
+#' is the union of its members', under one member's wording, so two claims
+#' that say different things grouped together list each other's studies as
+#' support. Nothing here can check meaning, so the merged claim's `note` names
+#' every other wording it absorbed, and a group mixing kinds is warned about.
+#' A claim the reply fails to place keeps its own group, because dropping one
+#' silently is the failure this whole file is built to avoid.
+#'
+#' Whenever the claims come back unmerged for a reason other than "nothing to
+#' merge", the result carries `attr(, "unmerged") = TRUE`, which gr_claims()
+#' records on the object.
 #' @noRd
 claims_reconcile <- function(claims, question, client, spec, trace) {
   n <- nrow(claims)
   if (n < 2L) return(reindex_claims(claims))
+  unmerged <- function(why, class = "gr_claims_unmerged") {
+    gr_warn(sprintf(paste0("Claims from different batches were not merged: %s, so one finding can ",
+                           "appear as more than one claim."), why),
+            class = class)
+    out <- reindex_claims(claims)
+    attr(out, "unmerged") <- TRUE
+    out
+  }
   if (!trace_can_call(trace)) {
-    gr_warn(sprintf(paste0("Claims from different batches were not merged: the run reached its %s, ",
-                           "so one finding can appear as more than one claim."),
-                    cap_name(trace)),
-            class = "gr_claims_capped")
-    return(reindex_claims(claims))
+    return(unmerged(sprintf("the run reached its %s", cap_name(trace)), class = "gr_claims_capped"))
   }
   listed <- paste(sprintf("%d. %s", seq_len(n), claims$claim), collapse = "\n")
-  res <- gr_call_json(client, list(
+  # Sized by the claims, as the draw is sized by its studies: the reply names
+  # every claim once, so a fixed limit cut off the reply for a large corpus and
+  # every claim came back unmerged. gr_call() clamps it to what the model can emit.
+  cap <- max(as.integer(spec$max_answer_tokens), reconcile_reply_tokens(n))
+  msgs <- list(
     list(role = "system", content = .gr_prompts$reconcile_system),
     list(role = "user", content = paste0("Review question: ", question)),
-    list(role = "user", content = paste0("<claims>\n", listed, "\n</claims>"))
-  ), schema = .gr_reconcile_schema, schema_name = "claim_groups", model = spec$model,
-     max_output = spec$max_answer_tokens, temperature = spec$temperature,
-     trace = trace, label = "claims.reconcile")
+    list(role = "user", content = paste0("<claims>\n", listed, "\n</claims>")))
+  res <- gr_call_json(client, msgs, schema = .gr_reconcile_schema, schema_name = "claim_groups",
+                      model = spec$model, max_output = cap, temperature = spec$temperature,
+                      trace = trace, label = "claims.reconcile")
   if (!isTRUE(res$ok)) {
     # Said, as the capped case above is. Batches sized by their reply make this
     # pass the normal route for a large corpus, and its reply names every claim.
-    gr_warn(sprintf(paste0("Claims from different batches were not merged: the reconcile call %s, ",
-                           "so one finding can appear as more than one claim."),
-                    if (reply_cut_off(res$result))
-                      sprintf("was cut off at the %d-token reply limit (raise `max_claim_tokens`)",
-                              spec$max_answer_tokens)
-                    else "failed"),
-            class = "gr_claims_unmerged")
-    return(reindex_claims(claims))
+    return(unmerged(sprintf("the reconcile call %s", call_failure(res$result, msgs, spec$model, cap,
+                                                                  "`max_claim_tokens`"))))
   }
 
   raw <- json_field(res$value, "groups", scalar = FALSE)
-  g <- as_id_list(if (is.list(raw) || is.matrix(raw)) raw else list(raw),
-                  if (is.matrix(raw)) nrow(raw) else length(raw))
+  # A flat array, `{"groups":[1,2,3]}`, is not one group of three: it is a reply
+  # that ignored the schema (gr_call_json() does not enforce it). Read as one
+  # group it merged every claim into the longest one's wording and handed it
+  # every study, opposite findings included. Equal-length groups arrive as a
+  # matrix and ragged ones as a list, so a bare vector is only ever this.
+  if (!is.null(raw) && !is.list(raw) && !is.matrix(raw)) {
+    return(unmerged("the reconcile reply was a flat list of numbers, not a list of groups"))
+  }
+  g <- as_id_list(raw, if (is.matrix(raw)) nrow(raw) else length(raw))
   # Defence in depth, not load-bearing: `claims[c(1, 99), ]` yields a row of NAs
   # rather than an error, and the merge below happens to absorb it -- nchar(NA)
   # loses to any real claim text and NULL support unions to nothing. Mutating
@@ -559,11 +737,30 @@ claims_reconcile <- function(claims, question, client, spec, trace) {
     gr_msg(sprintf("%d claim(s) were not placed by the reconcile pass and kept their own group.",
                    length(missed)))
   }
+  # A finding, a method and a gap cannot "say the same thing"; a group mixing
+  # them is the model grouping by topic, and the merged claim keeps one kind.
+  mixed <- vapply(clean, function(v) length(unique(claims$kind[v])) > 1L, logical(1))
+  if (any(mixed)) {
+    gr_warn(sprintf(paste0("The reconcile pass merged claims of different kinds into %d claim(s); ",
+                           "a merged claim keeps one wording and every member's studies. Their ",
+                           "`note` names the wordings merged in."), sum(mixed)),
+            class = "gr_claims_merged")
+  }
   merged <- lapply(clean, function(v) {
     first <- claims[v[1], , drop = FALSE]
     # The longest text, because a claim stated over more studies is usually
     # stated more fully, and the support is the union either way.
-    first$claim <- claims$claim[v][which.max(nchar(claims$claim[v]))]
+    keep <- which.max(nchar(claims$claim[v]))
+    first$claim <- claims$claim[v][keep]
+    # Every other wording, so a merge can be read back. Without it one claim
+    # absorbing an opposite one ("did not improve symptoms" taking in "improved
+    # symptoms") left the first claim's studies supporting the second's words,
+    # with nothing anywhere to show that a merge had happened.
+    norm <- function(s) lower_text(gsub("[[:space:]]+", " ", trimws(s)))
+    others <- unique(claims$claim[v][-keep])
+    others <- others[norm(others) != norm(first$claim)]
+    absorbed <- if (length(others)) sprintf("merged with: %s", paste(sprintf(
+      "'%s'", others), collapse = "; ")) else NULL
     mods <- stats::na.omit(claims$moderator[v])
     first$moderator <- if (length(mods)) mods[1] else NA_character_
     sc <- stats::na.omit(claims$scope[v])
@@ -578,7 +775,7 @@ claims_reconcile <- function(claims, question, client, spec, trace) {
     # has to be told, because this is exactly the kind of loss the claims layer
     # exists to make visible.
     flipped <- intersect(con, sup)
-    nts <- stats::na.omit(claims$note[v])
+    nts <- c(stats::na.omit(claims$note[v]), absorbed)
     if (length(flipped)) {
       nts <- c(nts, sprintf(paste0("study %s contradicted a claim merged into this one; ",
                                    "kept as supporting"), paste(flipped, collapse = ", ")))
@@ -615,9 +812,12 @@ empty_dropped <- function() {
 
 #' `lost` is the study numbers whose batch contributed nothing -- cut off at
 #' the reply limit, failed, or not sent -- and `partial` says whether there
-#' are any.
+#' are any. `hidden` is the columns withheld from the model as bibliographic,
+#' which gr_gaps() withholds too; `unmerged` says the reconcile pass could not
+#' run over claims that needed it.
 #' @noRd
-new_claims <- function(claims, used, question, dropped, trace, lost = integer(0)) {
+new_claims <- function(claims, used, question, dropped, trace, lost = integer(0),
+                       hidden = character(0), unmerged = FALSE) {
   claims <- reindex_claims(claims)
   support <- claim_support_table(claims)
   wide <- data.frame(
@@ -629,6 +829,7 @@ new_claims <- function(claims, used, question, dropped, trace, lost = integer(0)
   rownames(wide) <- NULL
   structure(list(claims = wide, support = support, studies = used, question = question,
                  dropped = dropped, partial = length(lost) > 0L, lost = as.integer(lost),
+                 unmerged = isTRUE(unmerged), hidden = as.character(hidden),
                  trace = trace), class = "gr_claims")
 }
 
@@ -682,6 +883,10 @@ print.gr_claims <- function(x, ...) {
     cat(sprintf(paste0("  PARTIAL: %d of %d studies contributed nothing, their batch cut off, ",
                        "failed or not sent; see $lost\n"),
                 length(x$lost), nrow(x$studies)))
+  }
+  if (isTRUE(x$unmerged)) {
+    cat("  UNMERGED: claims from different batches were not reconciled, so one finding may\n")
+    cat("  appear as more than one claim\n")
   }
   invisible(x)
 }
@@ -807,10 +1012,21 @@ claim_order <- function(claims, support, weights) {
 #' @param closing The heading of the closing section, which receives gap claims
 #'   and anything unplaced. `NULL` for no closing section.
 #' @param trace A [gr_trace()] to record into.
+#' @param max_outline_tokens The reply limit for the outline call. The reply
+#'   names every claim and writes a heading, brief and rationale per section,
+#'   so by default it grows with both: `400 + 8` per claim `+ 60` per section,
+#'   never below 1200, plus 4000 on a model registered as a reasoning model,
+#'   which spends part of the same limit before it writes. Clamped to what the
+#'   model can emit. A reply cut off at it puts every claim in one section,
+#'   with a warning.
 #' @return A named character vector shaped exactly like the `outline` argument of
 #'   [gr_synthesise()] (headings as names, briefs as values), carrying
-#'   `attr(, "claims")` (a `section`/`claim_id` frame), `attr(, "rationale")` and
-#'   `attr(, "closing")`.
+#'   `attr(, "claims")` (a `section`/`claim_id` frame), `attr(, "rationale")`,
+#'   `attr(, "closing")` and `attr(, "claims_fingerprint")`, a hash of the
+#'   claims' numbers and texts. A claim number means something only within one
+#'   [gr_claims()] result, so [gr_synthesise()] refuses the outline
+#'   (`gr_claims_mismatch`) when the `claims` it is given are not the ones the
+#'   outline was derived from: a re-run, or claims edited or reordered since.
 #' @seealso [gr_claims()], [gr_synthesise()], [gr_gaps()]
 #' @export
 #' @examples
@@ -832,7 +1048,8 @@ claim_order <- function(claims, support, weights) {
 #' attr(o, "claims")
 gr_outline <- function(claims, question = NULL, client = NULL, model = NULL,
                        temperature = NULL, max_sections = 6L,
-                       closing = "What is missing", trace = NULL) {
+                       closing = "What is missing", trace = NULL,
+                       max_outline_tokens = NULL) {
   if (!inherits(claims, "gr_claims")) {
     gr_abort("`claims` must come from gr_claims().", class = "gr_bad_claims")
   }
@@ -840,32 +1057,49 @@ gr_outline <- function(claims, question = NULL, client = NULL, model = NULL,
     gr_abort("That gr_claims has no claims, so there is no structure to derive from it.",
              class = "gr_no_claims")
   }
-  question <- as_chr1(question %||% claims$question)
+  # Labelled UTF-8, as in gr_claims(). The closing heading most of all: it
+  # sits among headings read from the model, which are labelled, and
+  # gr_synthesise() pastes it to the claims and trims it with them -- which,
+  # typed with an accent under a C locale, stopped the write-up.
+  question <- mark_utf8(as_chr1(question %||% claims$question))
+  if (is.character(closing)) closing <- mark_utf8(closing)
   if (!is_nonblank(question)) gr_abort("`question` must be a non-empty string.")
   client <- client %||% gr_client(model = model %||% gr_options("model"))
-  spec <- gr_read_spec("stuff", model = model, temperature = temperature,
-                       max_answer_tokens = 1200L)
-  # The model the request goes to, named on the request: gr_read_spec() leaves
-  # it NULL when none is given.
-  spec <- resolve_read_model(spec, client)
+  # The model first, because the default reply limit depends on it.
+  spec <- resolve_read_model(gr_read_spec("stuff", model = model, temperature = temperature),
+                             client)
+  cw <- claims$claims
+  # A fixed 1200 tokens, with no way to raise it, cut off the outline from about
+  # 300 claims on an ordinary model and from 20 on a reasoning one, which spends
+  # the same limit thinking first. Every claim then went to one section, and the
+  # warning's advice could not help: the same claims ask for the same reply.
+  info <- gr_model_info(spec$model)
+  auto <- outline_reply_tokens(nrow(cw), max_sections, info)
+  max_outline_tokens <- if (is.null(max_outline_tokens)) auto else
+    clamp_warn(na_default(max_outline_tokens, auto, "max_outline_tokens"), 16, 1e6,
+               "max_outline_tokens")
+  # Clamped to what the model can emit, as gr_call() would, so that the limit a
+  # warning names is the limit the request carried.
+  spec$max_answer_tokens <- min(as.integer(max_outline_tokens), as.integer(info$max_output))
   trace <- trace %||% claims$trace %||% gr_trace(meta = list(stage = "outline"))
 
-  cw <- claims$claims
-  listed <- paste(sprintf("%d. [%s] %s%s", cw$claim_id, cw$kind, cw$claim,
+  # Labelled, so that a claim edited by hand, unlabelled under a non-UTF-8
+  # locale, is not escaped by paste() for sitting beside the model's claims.
+  listed <- paste(sprintf("%d. [%s] %s%s", cw$claim_id, mark_utf8(cw$kind), mark_utf8(cw$claim),
                           ifelse(is.na(cw$moderator), "",
-                                 sprintf(" (contested; distinguished by %s)", cw$moderator))),
+                                 sprintf(" (contested; distinguished by %s)",
+                                         mark_utf8(cw$moderator)))),
                   collapse = "\n")
+  msgs <- list(
+    list(role = "system", content = .gr_prompts$outline_system),
+    list(role = "user", content = paste0("Review question: ", question)),
+    list(role = "user", content = paste0("<claims>\n", listed, "\n</claims>")),
+    list(role = "user", content = sprintf("Use at most %d sections.", as.integer(max_sections))))
   capped <- !trace_can_call(trace)
   res <- if (!capped) {
-    gr_call_json(client, list(
-      list(role = "system", content = .gr_prompts$outline_system),
-      list(role = "user", content = paste0("Review question: ", question)),
-      list(role = "user", content = paste0("<claims>\n", listed, "\n</claims>")),
-      list(role = "user", content = sprintf("Use at most %d sections.",
-                                            as.integer(max_sections)))
-    ), schema = .gr_outline_schema, schema_name = "outline", model = spec$model,
-       max_output = spec$max_answer_tokens, temperature = spec$temperature,
-       trace = trace, label = "outline.derive")
+    gr_call_json(client, msgs, schema = .gr_outline_schema, schema_name = "outline",
+                 model = spec$model, max_output = spec$max_answer_tokens,
+                 temperature = spec$temperature, trace = trace, label = "outline.derive")
   } else list(ok = FALSE, value = NULL)
 
   secs <- if (isTRUE(res$ok)) outline_rows(json_field(res$value, "sections", scalar = FALSE)) else NULL
@@ -878,11 +1112,11 @@ gr_outline <- function(claims, question = NULL, client = NULL, model = NULL,
                                        "Every claim was put in one section. Raise the limit, or ",
                                        "pass an `outline` to gr_synthesise() yourself."),
                                 cap_name(trace))
-            else if (cut) sprintf(paste0("The outline reply stopped at the %d-token reply limit before ",
-                                         "it finished, so every claim was put in one section. Pass an ",
-                                         "`outline` to gr_synthesise() yourself, or lower ",
-                                         "`max_sections`."),
-                                  spec$max_answer_tokens)
+            else if (cut) sprintf(paste0("The outline reply %s before it finished, so every claim was ",
+                                         "put in one section. Lower `max_sections`, or pass an ",
+                                         "`outline` to gr_synthesise() yourself."),
+                                  call_failure(res$result, msgs, spec$model, spec$max_answer_tokens,
+                                               "`max_outline_tokens`"))
             else paste0("The outline call did not return usable sections, so every claim was put ",
                         "in one section. Pass an `outline` to gr_synthesise() yourself, or try again."),
             class = if (cut) c("gr_outline_truncated", "gr_outline_failed") else "gr_outline_failed")
@@ -891,6 +1125,22 @@ gr_outline <- function(claims, question = NULL, client = NULL, model = NULL,
     secs$.claims <- list(cw$claim_id)
   }
   finish_outline(secs, cw, closing, max_sections)
+}
+
+#' The default reply limit for an outline of `n` claims, on the model `info`
+#' describes.
+#'
+#' The reply lists every claim number and writes a heading, a brief and a
+#' rationale per section. Never below the 1200 it used to be fixed at. A
+#' reasoning model spends part of the same limit before it writes a word, and
+#' how much is not known in advance; a limit is a ceiling rather than a charge,
+#' so the allowance is generous, while a reply cut off costs the whole outline.
+#' @noRd
+outline_reply_tokens <- function(n, max_sections, info) {
+  sections <- suppressWarnings(as.numeric(max_sections))
+  if (length(sections) != 1L || !is.finite(sections)) sections <- 6
+  base <- max(1200, 400 + 8 * n + 60 * sections)
+  as.integer(min(1e6, base + if (isTRUE(info$reasoning)) 4000 else 0))
 }
 
 #' @noRd
@@ -1004,6 +1254,11 @@ finish_outline <- function(secs, cw, closing, max_sections) {
   attr(out, "claims") <- map
   attr(out, "rationale") <- stats::setNames(secs$rationale, secs$heading)
   attr(out, "closing") <- if (is_nonblank(closing)) as_chr1(closing) else NA_character_
+  # Which claims the numbers in `map` are. A claim number is a position in one
+  # gr_claims() result, so an outline made from a re-run, or from claims
+  # reordered since, names the same numbers for other claims; gr_synthesise()
+  # compares this with the claims it is given and stops on a difference.
+  attr(out, "claims_fingerprint") <- claims_fingerprint(cw)
   out
 }
 
@@ -1033,6 +1288,11 @@ finish_outline <- function(secs, cw, closing, max_sections) {
 #'   of two fields' sizes.
 #' @param min_reported A field missing for more than this fraction of studies is
 #'   reported as not reported.
+#' @param bib Which columns carry bibliographic identity, as in [gr_claims()]
+#'   and [gr_synthesise()]. They are not dimensions of the evidence -- "every
+#'   study reports 'Lancet'" is not a gap in a literature -- and a gap line goes
+#'   to the writing model, which is never told who wrote a study. The columns
+#'   `claims` withheld are left out whatever this says; `bib` adds to them.
 #' @return A data frame of class `gr_gaps`: `kind`, `dimension`, `detail`, `n`.
 #' @seealso [gr_claims()], [gr_outline()], [gr_synthesise()]
 #' @export
@@ -1046,7 +1306,8 @@ finish_outline <- function(secs, cw, closing, max_sections) {
 #'   '"contradicted_by":[],"moderator":null,"scope":"one study"}]}'))
 #' cm <- gr_claims(tab, question = "Does it work?", client = cl)
 #' gr_gaps(cm)
-gr_gaps <- function(claims, extraction = NULL, max_cells = 40L, min_reported = 0.5) {
+gr_gaps <- function(claims, extraction = NULL, max_cells = 40L, min_reported = 0.5,
+                    bib = NULL) {
   if (!inherits(claims, "gr_claims")) {
     gr_abort("`claims` must come from gr_claims().", class = "gr_bad_claims")
   }
@@ -1054,15 +1315,29 @@ gr_gaps <- function(claims, extraction = NULL, max_cells = 40L, min_reported = 0
   cw <- claims$claims
   fields <- if (inherits(extraction, "gr_extraction")) extraction$fields else
     if (inherits(extraction, "gr_fields")) extraction else NULL
-  cols <- setdiff(names(st), c("study", .gr_reserved_fields))
+  # The fields the claims model was shown, by the rule render_studies() uses.
+  # Every column but the reserved ones made authors, year and venue dimensions,
+  # and "no variation (authors): ... all say 'Smith, J.; Okafor, A.'" went to
+  # the closing section as a gap the writer was told to state. `%||%` for a
+  # claims table saved before it recorded what it withheld.
+  hidden <- union(claims$hidden %||% unlist(bib_columns(st), use.names = FALSE),
+                  unlist(bib_columns(st, bib), use.names = FALSE))
+  cols <- setdiff(study_fields(st, hide = hidden), .gr_reserved_fields)
   out <- list()
   add <- function(kind, dimension, detail, n) {
     out[[length(out) + 1L]] <<- data.frame(kind = kind, dimension = dimension,
                                           detail = detail, n = as.integer(n),
                                           stringsAsFactors = FALSE)
   }
+  # The table's values and the declared categories, labelled UTF-8 before they
+  # are compared. Under a non-UTF-8 locale a category typed in gr_fields() is
+  # unlabelled bytes, and a value the model returned is labelled, so an
+  # accented category never matched itself: it was reported as declared and
+  # unstudied, and every combination with it as unstudied, in a table where a
+  # study reports it -- gaps the closing section is told to state.
+  txt <- function(v) trimws(mark_utf8(as.character(v)))
   vals <- function(col) {
-    v <- trimws(as.character(st[[col]]))
+    v <- txt(st[[col]])
     v[!is.na(v) & nzchar(v) & v != "NA"]
   }
 
@@ -1075,7 +1350,7 @@ gr_gaps <- function(claims, extraction = NULL, max_cells = 40L, min_reported = 0
       f <- fields[[nm]]
       if (!identical(f$type, "enum") || !length(f$values)) next
       enums <- c(enums, nm)
-      absent <- setdiff(f$values, vals(nm))
+      absent <- setdiff(mark_utf8(as.character(f$values)), vals(nm))
       if (length(absent)) {
         add("declared but unstudied", nm, paste(absent, collapse = "; "), length(absent))
       }
@@ -1112,13 +1387,13 @@ gr_gaps <- function(claims, extraction = NULL, max_cells = 40L, min_reported = 0
     cells <- 0L
     pairs <- utils::combn(sort(enums), 2L, simplify = FALSE)
     for (pr in pairs) {
-      a <- fields[[pr[1]]]$values; b <- fields[[pr[2]]]$values
+      a <- mark_utf8(as.character(fields[[pr[1]]]$values))
+      b <- mark_utf8(as.character(fields[[pr[2]]]$values))
       # trimws(), because vals() trims and this did not: a cell holding " cohort"
       # counted as studied for rule 2 and as UNSTUDIED here, so the same table
       # produced "every study reports 'cohort'" and "design = 'cohort' with ...
       # unstudied" in one report.
-      seen <- unique(paste(trimws(as.character(st[[pr[1]]])),
-                           trimws(as.character(st[[pr[2]]])), sep = "\u0001"))
+      seen <- unique(paste(txt(st[[pr[1]]]), txt(st[[pr[2]]]), sep = "\u0001"))
       for (x in a) for (y in b) {
         if (cells >= max_cells) break
         if (!paste(x, y, sep = "\u0001") %in% seen) {
@@ -1193,5 +1468,11 @@ print.gr_gaps <- function(x, ...) {
 #' @noRd
 render_gaps <- function(gaps) {
   if (!is.data.frame(gaps) || !nrow(gaps)) return(NULL)
-  paste(sprintf("- %s (%s): %s", gaps$kind, gaps$dimension, gaps$detail), collapse = "\n")
+  # Labelled column by column before they are joined. A gap line quotes the
+  # table ("every study reports ...") or a claim, and one of those can be
+  # labelled UTF-8 while the other is not -- a table read in under a C locale
+  # -- and paste() then escaped the unlabelled lines to "<c3><a9>".
+  txt <- function(v) mark_utf8(as.character(v))
+  paste(sprintf("- %s (%s): %s", txt(gaps$kind), txt(gaps$dimension), txt(gaps$detail)),
+        collapse = "\n")
 }

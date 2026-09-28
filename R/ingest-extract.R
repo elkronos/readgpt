@@ -121,9 +121,133 @@ as_blocks <- function(x) {
 #' first regex to touch it -- `trimws()` inside `paragraphs_of()` -- aborted the
 #' whole ingest with "input string 1 is invalid UTF-8". Transcoding happened
 #' later in `gr_ingest()`, which was already too late.
+#'
+#' A UTF-16 or UTF-32 file (Excel's "Unicode Text", Windows PowerShell output)
+#' is decoded as such: told by its byte-order mark, by a zero in every other
+#' byte, or by the charset a web server declared for it. `readLines()` cut
+#' every line of one at its first zero byte and the file came out as three
+#' characters, refused as empty "or cleaned too hard". A charset a server
+#' declared is also used when the bytes are not valid UTF-8 (Shift_JIS, say);
+#' otherwise latin1 and CP1252 are recognised as before. A UTF-8 byte-order
+#' mark is dropped rather than kept as the text's first character.
 #' @noRd
 read_text_lines <- function(path) {
-  to_utf8(readLines(path, warn = FALSE))
+  head <- tryCatch(readBin(path, "raw", 4096L), error = function(e) raw(0))
+  bom <- byte_order_mark(head)
+  from <- if (!is.null(bom)) bom$enc else utf16_by_zeros(head)
+  if (is.null(from) || identical(from, "UTF-8")) {
+    declared <- charset_known(attr(path, "gr_charset", exact = TRUE))
+    if (!is.null(declared) && !declared %in% .gr_utf8_names && is.null(bom)) {
+      all <- readBin(path, "raw", file.info(path)$size)
+      if (any(all == as.raw(0)) || !validUTF8(rawToChar(all))) from <- declared
+    }
+  }
+  if (is.null(from) || identical(from, "UTF-8")) {
+    lines <- to_utf8(readLines(path, warn = FALSE))
+    if (length(lines)) lines[1] <- sub("^\ufeff", "", lines[1])
+    return(lines)
+  }
+  bytes <- readBin(path, "raw", file.info(path)$size)
+  if (!is.null(bom)) bytes <- bytes[-seq_len(bom$n)]
+  # A last character cut short is dropped, not allowed to spoil the rest.
+  unit <- if (grepl("^UTF-32", from)) 4L else if (grepl("^UTF-16", from)) 2L else 1L
+  bytes <- bytes[seq_len(length(bytes) - length(bytes) %% unit)]
+  txt <- iconv(list(bytes), from = from, to = "UTF-8", sub = "\ufffd")
+  if (is.na(txt)) return(to_utf8(readLines(path, warn = FALSE)))
+  lines <- strsplit(normalise_newlines(txt), "\n", fixed = TRUE)[[1]]
+  if (length(lines)) lines[1] <- sub("^\ufeff", "", lines[1])
+  to_utf8(lines)
+}
+
+#' Names under which a charset is UTF-8, or read as it (ASCII is a subset).
+#' @noRd
+.gr_utf8_names <- c("utf-8", "us-ascii", "ascii")
+
+#' The encoding a byte-order mark at the start of `head` gives, and how many
+#' bytes the mark is; NULL when there is none.
+#' @noRd
+byte_order_mark <- function(head) {
+  starts <- function(b) length(head) >= length(b) && identical(head[seq_along(b)], as.raw(b))
+  if (starts(c(0xff, 0xfe, 0x00, 0x00))) return(list(enc = "UTF-32LE", n = 4L))
+  if (starts(c(0x00, 0x00, 0xfe, 0xff))) return(list(enc = "UTF-32BE", n = 4L))
+  if (starts(c(0xef, 0xbb, 0xbf))) return(list(enc = "UTF-8", n = 3L))
+  if (starts(c(0xff, 0xfe))) return(list(enc = "UTF-16LE", n = 2L))
+  if (starts(c(0xfe, 0xff))) return(list(enc = "UTF-16BE", n = 2L))
+  NULL
+}
+
+#' UTF-16 with no byte-order mark, told by where its zero bytes fall: text in
+#' a Latin script has one in nearly every other byte, and the bytes between
+#' are characters of text. A binary file has zeros anywhere (a Word 97 file's
+#' header has them in every other byte for a while), so a short sample, or one
+#' whose other bytes are not text, is not taken for it. NULL when the bytes do
+#' not look like it.
+#' @noRd
+utf16_by_zeros <- function(head) {
+  n <- length(head) - length(head) %% 2L
+  if (n < 32L) return(NULL)
+  odd <- head[seq(1L, n, 2L)]
+  even <- head[seq(2L, n, 2L)]
+  text <- function(b) {
+    b <- as.integer(b)
+    mean(b %in% c(9L, 10L, 13L) | (b >= 32L & b <= 126L) | b >= 160L) >= 0.9
+  }
+  zero <- as.raw(0)
+  if (mean(even == zero) >= 0.9 && mean(odd == zero) <= 0.02 && text(odd)) return("UTF-16LE")
+  if (mean(odd == zero) >= 0.9 && mean(even == zero) <= 0.02 && text(even)) return("UTF-16BE")
+  NULL
+}
+
+#' A declared charset, lower-cased, when iconv can convert from it; else NULL.
+#' @noRd
+charset_known <- function(x) {
+  x <- lower_text(trimws(gsub("[\"']", "", as_chr1(x, ""))))
+  if (!nzchar(x)) return(NULL)
+  if (x %in% c("utf8", "unicode-1-1-utf-8")) x <- "utf-8"
+  # As browsers do: a page labelled latin1 is Windows-1252, whose curly quotes
+  # and dashes latin1 reads as control characters.
+  if (x %in% c("iso-8859-1", "iso8859-1", "iso_8859-1", "latin1", "l1", "cp819")) {
+    x <- "windows-1252"
+  }
+  ok <- tryCatch({ iconv("", x, "UTF-8"); TRUE }, error = function(e) FALSE,
+                 warning = function(w) FALSE)
+  if (ok) x else NULL
+}
+
+#' The encoding to parse an HTML page's bytes in.
+#'
+#' A byte-order mark first. Then UTF-8 when the bytes are valid UTF-8: text in
+#' any other encoding almost never is, and a page saved as UTF-8 under an old
+#' declaration is read right. Then the charset the server declared (`declared`,
+#' from the Content-Type), then the page's own `<meta>` or XML declaration,
+#' then UTF-16 told by its zero bytes, and failing all of those Windows-1252,
+#' which is what a browser assumes. Left to itself, libxml2 read every page as
+#' UTF-8 whatever it declared, so a Windows-1252 page lost every accented
+#' letter, micro sign, dash and curly quote to U+FFFD.
+#' @noRd
+html_encoding <- function(bytes, declared = NULL) {
+  head <- bytes[seq_len(min(length(bytes), 8192L))]
+  bom <- byte_order_mark(head)
+  if (!is.null(bom)) return(bom)
+  zero <- any(bytes == as.raw(0))
+  if (!zero && validUTF8(rawToChar(bytes))) return(list(enc = "UTF-8", n = 0L))
+  txt <- rawToChar(head[head != as.raw(0)])
+  own <- function(pattern) {
+    m <- regmatches(txt, regexpr(pattern, txt, ignore.case = TRUE, perl = TRUE, useBytes = TRUE))
+    if (length(m)) sub("^.*=[[:space:]]*[\"']?", "", m, perl = TRUE, useBytes = TRUE)
+  }
+  meta <- own("<meta[^>]*charset[[:space:]]*=[[:space:]]*[\"']?[A-Za-z0-9._:-]+")
+  xml <- own("<\\?xml[^>]*encoding[[:space:]]*=[[:space:]]*[\"']?[A-Za-z0-9._:-]+")
+  for (cs in c(declared, meta, xml)) {
+    cs <- charset_known(cs)
+    # A page that says UTF-8 and is not is read as a browser falls back.
+    if (!is.null(cs) && !cs %in% .gr_utf8_names) return(list(enc = cs, n = 0L))
+  }
+  if (zero) {
+    u <- utf16_by_zeros(head)
+    if (!is.null(u)) return(list(enc = u, n = 0L))
+  }
+  list(enc = "windows-1252", n = 0L)
 }
 
 #' @noRd
@@ -133,25 +257,68 @@ extract_txt <- function(path, opts) {
                        stringsAsFactors = FALSE))
 }
 
+#' Markdown (and R Markdown, Quarto) as blocks, read line by line.
+#'
+#' A heading line is a block of its own, and the `section` of what follows it.
+#' A fenced code block (``` or ~~~) is one `code` block, blank lines and all,
+#' and a `#` line inside it is code, not a heading. Cutting the text into
+#' paragraphs first and then asking whether each one was a heading missed a
+#' heading with text on the very next line ("## Methods" / "We randomised..."),
+#' which stayed in the section before it, and took an R comment standing alone
+#' in a chunk ("# Fit the model") for a heading that relabelled the rest of the
+#' report.
 #' @noRd
 extract_md <- function(path, opts) {
   lines <- read_text_lines(path)
-  txt <- paste(lines, collapse = "\n")
-  paras <- paragraphs_of(txt)
-  if (!length(paras)) return(as_blocks(data.frame(text = character(0))))
-  # Track the current heading so downstream segmenters can group by section.
-  section <- NA_character_
-  secs <- character(length(paras)); kinds <- character(length(paras))
-  for (i in seq_along(paras)) {
-    h <- regmatches(paras[i], regexpr("^#{1,6}[ \t]+.*$", paras[i], perl = TRUE))
-    if (length(h)) section <- trimws(sub("^#+[ \t]+", "", h[1]))
-    secs[i] <- section
-    kinds[i] <- if (length(h)) "heading"
-    else if (grepl("^```", paras[i])) "code"
-    else if (grepl("^\\s*\\|.*\\|", paras[i])) "table"
-    else "body"
+  n <- length(lines)
+  if (!n) return(as_blocks(data.frame(text = character(0))))
+  # Fences first: which lines open or close one. A closing fence is the
+  # opener's character, at least as long, with nothing after it; a backtick
+  # fence's info string has no backticks. An unclosed fence runs to the end.
+  fence_at <- regexpr("^ {0,3}(`{3,}|~{3,})", lines, perl = TRUE)
+  in_code <- logical(n)
+  opens <- logical(n)
+  open <- NULL
+  fence_end <- fence_at + attr(fence_at, "match.length") - 1L
+  for (i in which(fence_at > 0L)) {
+    mark <- trimws(substr(lines[i], fence_at[i], fence_end[i]))
+    rest <- substring(lines[i], fence_end[i] + 1L)
+    if (is.null(open)) {
+      if (startsWith(mark, "`") && grepl("`", rest, fixed = TRUE)) next
+      open <- list(at = i, mark = mark)
+      opens[i] <- TRUE
+    } else if (substr(mark, 1L, 1L) == substr(open$mark, 1L, 1L) &&
+               nchar(mark) >= nchar(open$mark) && !nzchar(trimws(rest))) {
+      in_code[open$at:i] <- TRUE
+      open <- NULL
+    }
   }
-  as_blocks(data.frame(text = paras, section = secs, kind = kinds, stringsAsFactors = FALSE))
+  if (!is.null(open)) in_code[open$at:n] <- TRUE
+  blank <- !in_code & !nzchar(trimws(lines))
+  heading <- !in_code & grepl("^ {0,3}#{1,6}[ \t]+[^ \t]", lines, perl = TRUE)
+  # A block starts at a fence that opens, at a heading, and at the first line
+  # of prose after a blank line, a heading or a code block.
+  prev <- function(x) c(TRUE, x[-n])
+  starts <- (in_code & opens) |
+    (!in_code & !blank & (heading | prev(blank) | prev(heading) | prev(in_code)))
+  keep <- !blank
+  id <- cumsum(starts)[keep]
+  text <- vapply(split(lines[keep], id), paste, character(1), collapse = "\n")
+  text <- sub("[ \t\n]+$", "", text)
+  first <- which(keep & starts)
+  # Prose loses the indent of its first line, as it did when cut into
+  # paragraphs; code keeps it.
+  text[!in_code[first]] <- sub("^[ \t]+", "", text[!in_code[first]])
+  kind <- ifelse(in_code[first], "code",
+                 ifelse(heading[first], "heading",
+                        ifelse(grepl("^\\s*\\|.*\\|", text), "table", "body")))
+  # Each block carries the last heading at or above it, the closing #s of a
+  # heading ("## Methods ##") left out.
+  title <- trimws(sub("[ \t]+#+$", "", sub("^ {0,3}#+[ \t]+", "", text)))
+  last <- cummax(ifelse(kind == "heading", seq_along(kind), 0L))
+  section <- ifelse(last > 0L, title[pmax(last, 1L)], NA_character_)
+  as_blocks(data.frame(text = unname(text), section = unname(section), kind = kind,
+                       stringsAsFactors = FALSE))
 }
 
 #' @noRd
@@ -159,7 +326,18 @@ extract_html <- function(path, opts) {
   if (!requireNamespace("xml2", quietly = TRUE)) {
     gr_abort("Reading HTML needs the 'xml2' package.", class = "gr_missing_dep")
   }
-  doc <- xml2::read_html(path)
+  bytes <- readBin(path, "raw", file.info(path)$size)
+  if (!length(bytes)) return(as_blocks(data.frame(text = character(0))))
+  enc <- html_encoding(bytes, attr(path, "gr_charset", exact = TRUE))
+  if (enc$n) bytes <- bytes[-seq_len(enc$n)]
+  # An encoding libxml2 cannot use, or bytes it will not take in that one, are
+  # read as a browser would read them instead.
+  doc <- NULL
+  for (e in unique(c(enc$enc, "windows-1252", "ISO-8859-1"))) {
+    doc <- tryCatch(xml2::read_html(bytes, encoding = e), error = function(err) NULL)
+    if (!is.null(doc)) break
+  }
+  if (is.null(doc)) doc <- xml2::read_html(bytes)
   # Not content: code, styling, page chrome by the package's long-standing
   # choice, what shows only without scripts, and the choices of a drop-down.
   xml2::xml_remove(xml2::xml_find_all(doc, paste0(
@@ -260,24 +438,83 @@ html_blocks <- function(doc) {
     segs$take(" ")
   }
 
-  # A table that lays out a page rather than holding data: a heading in it
-  # (outside a header cell or the caption), or a single row or column holding
-  # headings, paragraphs, lists, divs or other tables. Pages built on a layout
-  # table -- older sites, HTML e-mail, generated reports -- put the whole
-  # article in one cell, and reading that row by row made it one "table" block
-  # with no headings, no sections and no paragraph breaks. A data table's cells
-  # hold values, and keep the row format even when a value is written as a <p>
-  # or two.
-  heading_xpath <- paste0(".//*[self::h1 or self::h2 or self::h3 or self::h4 or self::h5 ",
-                          "or self::h6][not(ancestor::th) and not(ancestor::caption)]")
-  block_xpath <- paste0(".//*[self::p or self::div or self::ul or self::ol or self::dl or ",
-                        "self::blockquote or self::pre or self::table or self::section or ",
-                        "self::article or self::h1 or self::h2 or self::h3 or self::h4 or ",
-                        "self::h5 or self::h6][not(ancestor::caption)]")
-  is_layout <- function(tbl, cells) {
-    if (length(find(tbl, heading_xpath))) return(TRUE)
-    one_line <- length(cells) == 1L || all(lengths(cells) <= 1L)
-    one_line && length(find(tbl, block_xpath)) > 0L
+  # A table that lays out a page rather than holding data. Pages built on a
+  # layout table -- older sites, HTML e-mail, generated reports -- put the
+  # whole article in one cell, and reading that row by row made it one "table"
+  # block with no headings, no sections and no paragraph breaks. A data
+  # table's cells hold values, and keep the row format even when a value is
+  # written as a <p> or two, or a cell holds a heading.
+  #
+  # What a cell holds is counted in paragraphs: the innermost block elements
+  # in it, with a list or a table inside it counted as one. A cell of two or
+  # more holds page content. A layout is then:
+  #   * a table of one cell holding anything -- but not a lone heading when
+  #     the table sits in a cell of a data table, where it is a value too;
+  #   * a stack of rows -- at most one of them split into several cells, and
+  #     no header cells -- with a cell of page content, or with a layout table
+  #     (a heading beside other content in one cell) inside one of its cells:
+  #     a banner row, a navigation and content row, and a footer row;
+  #   * a grid (any other table) only when one cell holds a heading beside
+  #     other content and at least half of the table's text: the article.
+  # A heading on its own in a cell -- a header row styled as headings, the
+  # label of a group of rows -- is a value. Taking any heading for a layout
+  # split such data tables into one block per cell, a value apart from its
+  # label, and made the last header cell the section of the page after the
+  # table; a single row whose cells each held one <p> was split the same way.
+  # Headings in the header cells, the caption, or a table inside a cell of a
+  # grid say nothing about the table around them.
+  #
+  # A grid laid out without such a heading (a logo and a search box above a
+  # navigation and content row, say) is still read row by row: it cannot be
+  # told from a data table whose cells hold paragraphs.
+  heading_names <- paste0("h", 1:6)
+  unit_names <- c("p", "div", "section", "article", "center", "header", "main", "aside", "figure",
+                  "form", "fieldset", "address", "blockquote", "pre", heading_names)
+  whole_names <- c("ul", "ol", "dl", "table")
+  any_of <- function(nm) paste0("self::", nm, collapse = " or ")
+  # The paragraphs of a cell of the table at nesting `%1$d`, relative to the
+  # cell: its innermost blocks, not inside a list, and a list or a table
+  # inside it whole.
+  cell_paras <- paste0(
+    ".//*[", any_of(c(unit_names, whole_names)), "][count(ancestor::table) = %1$d]",
+    "[not(ancestor::*[", any_of(c("ul", "ol", "dl")), "][count(ancestor::table) = %1$d])]",
+    "[", any_of(whole_names), " or not(.//*[", any_of(c(unit_names, whole_names)), "])]")
+  # The cells, at that nesting, that hold two paragraphs or more; and the data
+  # cells among them with a heading.
+  crowded_xpath <- paste0(".//*[self::td or self::th][count(ancestor::table) = %1$d]",
+                          "[count(", cell_paras, ") > 1]")
+  crowded_heading_xpath <- paste0(".//td[count(ancestor::table) = %1$d]",
+                                  "[.//*[", any_of(heading_names), "][count(ancestor::table) = %1$d]]",
+                                  "[count(", cell_paras, ") > 1]")
+  deep_heading_xpath <- paste0(".//*[", any_of(heading_names), "][count(ancestor::table) > %d]")
+  block_xpath <- paste0(".//*[", any_of(c(setdiff(unit_names, heading_names), whole_names)),
+                        "][not(ancestor::caption)]")
+  any_heading_xpath <- paste0(".//*[", any_of(heading_names), "][not(ancestor::caption)]")
+  text_size <- function(node) nchar(gsub("\\s+", "", xml2::xml_text(node), perl = TRUE))
+  # Each query below is a single pass over the table. Grouping the paragraphs
+  # by the path of their cell instead was quadratic in the number of rows:
+  # libxml2 finds a node's path by counting the siblings before it.
+  is_layout <- function(tbl, cells, level, in_data) {
+    n_cells <- sum(lengths(cells))
+    if (!n_cells) return(FALSE)
+    if (n_cells == 1L) {
+      return(length(find(tbl, block_xpath)) > 0L ||
+               length(find(tbl, sprintf(crowded_xpath, level))) > 0L ||
+               (!in_data && length(find(tbl, any_heading_xpath)) > 0L))
+    }
+    if (sum(lengths(cells) > 1L) <= 1L &&
+        !length(find(tbl, sprintf(".//th[count(ancestor::table) = %d]", level)))) {
+      if (length(find(tbl, sprintf(crowded_xpath, level)))) return(TRUE)
+      # A layout table in one of the cells: a heading in a table inside it,
+      # beside other content in its cell.
+      deep <- find(tbl, sprintf(deep_heading_xpath, level))
+      for (lv in sort(unique(xml2::xml_find_num(deep, "count(ancestor::table)")))) {
+        if (length(find(tbl, sprintf(crowded_heading_xpath, lv)))) return(TRUE)
+      }
+      return(FALSE)
+    }
+    held <- find(tbl, sprintf(crowded_heading_xpath, level))
+    length(held) > 0L && any(2L * text_size(held) >= text_size(tbl))
   }
 
   stray_xpath <- paste0(
@@ -289,7 +526,7 @@ html_blocks <- function(doc) {
     "[not(self::text()) or normalize-space(.) != '']",
     "[not(.//*[(self::tr or self::td or self::th) and count(ancestor::table) = %d])]")
 
-  read_table <- function(tbl) {
+  read_table <- function(tbl, in_data = FALSE) {
     # Rows and cells of THIS table, however thead/tbody wrap them, and not
     # those of a table nested in one of its cells.
     level <- length(find(tbl, "ancestor-or-self::table"))
@@ -301,7 +538,7 @@ html_blocks <- function(doc) {
       kids <- xml2::xml_children(row)
       if (all(tolower(xml2::xml_name(kids)) %in% c("td", "th"))) kids else find(row, cell_xpath)
     })
-    if (is_layout(tbl, cells)) return(walk(tbl))
+    if (is_layout(tbl, cells, level, in_data)) return(walk(tbl))
     # Markup that is in the table but in none of its rows or cells -- a <p>
     # before the first row, a div after the last -- is not dropped: a browser
     # shows it before the table, and so it is read there. (A table in a row
@@ -318,7 +555,7 @@ html_blocks <- function(doc) {
       if (any(nzchar(vals))) emit(paste(vals, collapse = " | "), "table")
       if (!has_nested) next
       for (inner in find(rows[[r]], sprintf(".//table[count(ancestor::table) = %d]", level))) {
-        read_table(inner)
+        read_table(inner, in_data = TRUE)
       }
     }
   }
@@ -434,10 +671,30 @@ extract_pdf <- function(path, opts) {
     }
   }
 
+  # Reading order: running heads and feet out, two columns read one after the
+  # other, and headings found so the blocks carry sections. See ingest-pdf.R.
+  raw <- identical(opts[["layout", exact = TRUE]] %||% "auto", "raw")
+  lines <- NULL
+  if (!raw || any(!ocr_done & nchar(gsub("[[:space:]]+", "", pages)) <= 800L)) {
+    lines <- drop_running_lines(lapply(pages, page_lines))
+  }
+  # A page that did not become text through OCR and has nothing on it once
+  # its running head, foot or stamp is dropped was not read, whatever OCR was
+  # set to. Counting only pages OCR was tried on and failed missed every
+  # scanned page under ocr = "never", and, when OCR is not installed, every
+  # scanned page with a Bates number or fax header in its text layer: the stamp
+  # went as a running foot and the page added nothing, with partial = FALSE.
+  # A page that is text under a short cover line or caption still counts as
+  # read, as before. (800 characters: four running lines of 200 at most.)
+  if (!is.null(lines)) {
+    bare <- !ocr_done & !vapply(lines, function(l) any(nzchar(trimws(l))), logical(1))
+    unread <- sort(unique(c(unread, which(bare))))
+  }
+
   # Emit one block per paragraph per page. Page provenance is a real column, not
   # a "--- Page Break ---" marker glued into the text where it would be read as
   # document content.
-  if (identical(opts[["layout", exact = TRUE]] %||% "auto", "raw")) {
+  if (raw) {
     out <- do.call(rbind, lapply(seq_along(pages), function(i) {
       p <- paragraphs_of(pages[i])
       if (!length(p)) return(NULL)
@@ -445,9 +702,6 @@ extract_pdf <- function(path, opts) {
                  stringsAsFactors = FALSE)
     }))
   } else {
-    # Reading order: running heads and feet out, two columns read one after the
-    # other, and headings found so the blocks carry sections. See ingest-pdf.R.
-    lines <- drop_running_lines(lapply(pages, page_lines))
     for (i in which(!ocr_done)) {
       g <- column_gutter(lines[[i]])
       if (!is.na(g)) lines[[i]] <- reorder_columns(lines[[i]], g)
@@ -457,6 +711,9 @@ extract_pdf <- function(path, opts) {
   }
   out <- as_blocks(out %||% data.frame(text = character(0)))
   attr(out, "gr_unread_pages") <- unread
+  # How many pages the file has, for a page count that does not stop at the
+  # last page any block came from.
+  attr(out, "gr_pages") <- length(pages)
   out
 }
 
@@ -522,7 +779,9 @@ extract_docx <- function(path, opts) {
   # The old code never removed its unzip directory; temp files leaked for the
   # life of the session.
   on.exit(unlink(dir, recursive = TRUE, force = TRUE), add = TRUE)
-  utils::unzip(path, exdir = dir)
+  ocr_media <- !identical(as_chr1(opts$ocr %||% "auto"), "never") &&
+    requireNamespace("tesseract", quietly = TRUE)
+  docx_unzip(path, dir, media = ocr_media)
 
   doc_xml <- file.path(dir, "word", "document.xml")
   blocks <- data.frame(text = character(0), section = character(0), kind = character(0),
@@ -537,8 +796,7 @@ extract_docx <- function(path, opts) {
   }
 
   media <- file.path(dir, "word", "media")
-  if (!identical(as_chr1(opts$ocr %||% "auto"), "never") && dir.exists(media) &&
-      requireNamespace("tesseract", quietly = TRUE)) {
+  if (ocr_media && dir.exists(media)) {
     imgs <- list.files(media, full.names = TRUE,
                        pattern = "\\.(png|jpe?g|tiff?|bmp)$", ignore.case = TRUE)
     if (length(imgs)) {
@@ -556,6 +814,54 @@ extract_docx <- function(path, opts) {
   }
   as_blocks(blocks)
 }
+
+#' Unpack the parts of a Word file that are read: the text, styles, footnotes
+#' and endnotes, and the images in word/media when they will be OCR-ed.
+#'
+#' The whole archive was unpacked, with no limit, before anything was read. A
+#' .docx is a zip, and a zip entry of zeros compresses about 1000 to 1: a
+#' 300 KB file carrying an unused 300 MB member wrote 300 MB to the temporary
+#' directory to read an 11-token document, and a 10 MB one would write 10 GB.
+#' Only the parts named above are unpacked now, and their sizes, as the
+#' archive lists them, are added up first: text parts over `max_bytes` (512 MB,
+#' the most Word itself will save) are refused, and images past it are left
+#' out of OCR with a warning. The listed size is the most unzip writes for an
+#' entry, so a size the archive understates cannot get past it.
+#' @noRd
+docx_unzip <- function(path, dir, media = FALSE, max_bytes = .gr_max_docx_bytes) {
+  listing <- tryCatch(utils::unzip(path, list = TRUE), error = function(e) NULL)
+  # Not a zip: nothing is unpacked, and the caller finds no document part, as
+  # it did when unzip failed on it.
+  if (is.null(listing) || !nrow(listing)) return(invisible(character(0)))
+  name <- listing$Name
+  size <- as.numeric(listing$Length)
+  parts <- c("word/document.xml", "word/styles.xml", "word/footnotes.xml", "word/endnotes.xml")
+  text <- name %in% parts
+  if (sum(size[text]) > max_bytes) {
+    gr_abort(sprintf(paste0("'%s' unpacks to %s of text, more than the %s a Word file is read ",
+                            "to. It may be damaged or built to fill the disk."),
+                     basename(path), format_bytes(sum(size[text])), format_bytes(max_bytes)),
+             class = c("gr_too_large", "gr_unsupported_format"))
+  }
+  take <- unique(name[text])
+  if (media) {
+    img <- which(grepl("^word/media/[^/]+\\.(png|jpe?g|tiff?|bmp)$", name, ignore.case = TRUE) &
+                   !duplicated(name))
+    fits <- cumsum(size[img]) <= max_bytes
+    if (!all(fits)) {
+      gr_warn(sprintf(paste0("%d of %d images in '%s' are not OCR-ed: together they unpack to more ",
+                             "than %s."), sum(!fits), length(img), basename(path),
+                      format_bytes(max_bytes)), class = "gr_docx_media_skipped")
+    }
+    take <- c(take, name[img[fits]])
+  }
+  if (length(take)) utils::unzip(path, files = take, exdir = dir)
+  invisible(take)
+}
+
+#' The most the text parts of a Word file may unpack to: 512 MB.
+#' @noRd
+.gr_max_docx_bytes <- 512 * 1024^2
 
 #' @noRd
 extract_image <- function(path, opts) {

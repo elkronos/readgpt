@@ -92,8 +92,14 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims 
     # none can come to more than "extracted from".
     own <- is.na(t$duplicate_of %||% rep(NA, nrow(t)))
     add("extracted from", nrow(t) - dup)
+    # And no value given that went unverified: a row with nothing filled can
+    # still have had values, unreadable as their field's type, rejected, or
+    # dropped under require_quote. Those are counted under "values
+    # unsupported" below, and were also said here to be absent from the
+    # document. An unknown count (NA, or no column) is not a zero either.
+    nu <- t[["n_unverified"]] %||% rep(NA_integer_, nrow(t))
     add("  reported nothing", sum(t$status %in% c("ok", "restored") & !is.na(t$n_filled) &
-                                    t$n_filled == 0L & own),
+                                    t$n_filled == 0L & nu %in% 0L & own),
         "read successfully; none of the fields are in the document")
     # "incomplete" has values, so it is not a failed read: counted there, it
     # was described as having none and a table of real values looked empty.
@@ -105,9 +111,12 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims 
         "no values; these are outstanding")
     # Not "no verbatim span": a sentence that is in the chunk word for word but
     # does not state the value is unverified too (verified = FALSE, match = 1).
-    add("values unsupported", sum(t$n_unverified, na.rm = TRUE),
+    # Distinct documents only, as "extracted from" is: a duplicate row carries
+    # its first copy's values and count, and summed with them it counted the
+    # same unsupported values twice.
+    add("values unsupported", sum(t$n_unverified[own], na.rm = TRUE),
         paste0("not verified: no quote, a quote not found in the chunk cited, or one that ",
-               "does not state the value"))
+               "does not state the value in any form the check reads"))
   }
   if (inherits(claims, "gr_claims")) {
     cw <- claims$claims
@@ -117,13 +126,31 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims 
     # before the field existed.
     add("studies lost to a claims batch", length(claims$lost %||% integer(0)),
         "their claims batch was cut off at the reply limit, failed or not sent; see $lost")
+    # 1 when the claims of several batches were never reconciled into one
+    # list, so the counts below may count one finding more than once.
+    # isTRUE() for a claims table saved before the field existed.
+    add("claims not reconciled across batches", as.integer(isTRUE(claims$unmerged)),
+        "the reconcile pass could not run; one finding may appear as more than one claim")
     add("claims drawn", nrow(cw), "statements about the literature, each attached to studies")
     add("  contested", sum(cw$n_contradict > 0L), "studies on both sides")
     add("  unexplained", sum(cw$n_contradict > 0L & is.na(cw$moderator)),
         "contested with nothing in the table to explain the split")
     add("  on one study", sum(cw$n_support == 1L), "no replication in this corpus")
-    add("claims dropped", nrow(claims$dropped),
-        "verification removed them; see the claims object's $dropped")
+    # `$dropped` has a row for three different events, and only one of them
+    # removes a claim: a bad study number is taken off a claim that is kept, a
+    # moderator that is not a column is cleared from one. Counted as one
+    # number, "claims dropped 3" was quoted for a run that dropped none.
+    why <- as.character(claims$dropped$reason %||% character(0))
+    detail <- as.character(claims$dropped$detail %||% rep(NA_character_, length(why)))
+    refs <- grepl("^study number", why)
+    add("claims dropped", sum(why == "no supporting study left after verification"),
+        "no supporting study was left after verification; see the claims object's $dropped")
+    add("study numbers removed", sum(lengths(strsplit(detail[refs & !is.na(detail)], ",",
+                                                         fixed = TRUE))),
+        paste0("cited a study not in the table, or one not shown to the batch; the claim ",
+               "stays if others remain"))
+    add("moderators cleared", sum(why == "moderator is not a column in the table"),
+        "named a column the table does not have; the claim is kept without it")
   }
   if (!length(rows)) {
     return(data.frame(stage = character(0), n = integer(0), note = character(0),
@@ -150,7 +177,13 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims 
 #'   [gr_extract()] and [gr_synthesise()].
 #' @param protocol The [gr_protocol()] the run was made under. Worth passing even
 #'   when the other objects carry its pieces: the criteria as *written* are what
-#'   a reader checks the decisions against.
+#'   a reader checks the decisions against. The report compares it with what
+#'   each stage recorded using (the screening's question and criteria, the
+#'   extraction's schema, the write-up's question and outline). Where they
+#'   differ, as they do for a protocol edited after the run, it says so at the
+#'   top of the protocol section and shows what each stage actually used,
+#'   rather than presenting the edited criteria as the ones fixed in advance.
+#'   Where no stage recorded anything to compare it with, it says that too.
 #' @param title A heading for the report.
 #' @return `path`, invisibly.
 #'
@@ -168,6 +201,10 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims 
 #' reading of it look identical here; what the check rules out is the quote
 #' having been invented. The report says so, in the report, because a column a
 #' reader over-reads is worse than no column.
+#'
+#' A page is given to a span found on one page of the document. A span found on
+#' several pages, or not found at all, keeps the page of the chunk it was
+#' credited to, so an unverified quote shown with a page was not found on it.
 #'
 #' @section It does not flatter the run:
 #' Unverified quotes, documents that could not be read, screening calls the model
@@ -216,10 +253,36 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims 
 #' request, is cut to the text around what is highlighted, with each cut shown
 #' as "\[...\]".
 #' Last comes one row per request, from `as.data.frame()` on the answer's
-#' trace (see [gr_trace()]), without the prompts and replies.
+#' trace (see [gr_trace()]), without the prompts and replies. Where the answer
+#' records which steps of a trace shared with other runs are its own, the
+#' requests, the rows and the cost are those steps only.
 #'
 #' A `gr_corpus` gives one row per document, then each document's answer and
 #' passages. Answers are there only if the run kept them (`keep_answers`).
+#'
+#' "Not partial" is said only when the reader did not mark the answer partial
+#' and no request on its trace failed. A failed request is flagged even when
+#' the reader did not count it; a trace shared with other runs flags their
+#' failures too, because an error cannot always be put in one run. An answer
+#' that is "not found" because the request that would have given it failed is
+#' shown as no answer, not as a finding about the document.
+#'
+#' @section Web addresses:
+#' A document fetched from a web address is shown without the user name,
+#' password, query string or fragment in the address, which is where presigned
+#' and tokenised links carry their credentials. The query is replaced by a short
+#' fingerprint, so two addresses that differ only there stay apart. This covers
+#' the document names, the error and warning text the report shows, and the
+#' answer's document. It does not change what the objects themselves hold.
+#'
+#' @section Claims and the write-up:
+#' The claims table has a `section` column only when the synthesis recorded
+#' which section each claim was given to. When a revision pass
+#' (`coherence`) was kept, "What was written" shows the published text and the
+#' studies each of its headings cites, then the sections as first drafted,
+#' with their checks, under "Draft before revision", and the passes that ran.
+#' The cost table includes the calls [gr_claims()] made and, when it was left
+#' to record on the claims' trace, [gr_outline()].
 #' @seealso [gr_flow()], [gr_screen()], [gr_extract()], [gr_synthesise()],
 #'   [gr_verify_evidence()], [answer_document()], [gr_read_many()]
 #' @export
@@ -281,7 +344,7 @@ gr_audit_report <- function(path, screening = NULL, extraction = NULL,
   body <- c(
     audit_header(title, question, protocol, screening, extraction, synthesis, answer),
     audit_answer(answer),
-    audit_protocol(protocol, extraction),
+    audit_protocol(protocol, extraction, screening, synthesis),
     audit_flow(screening, extraction, records, claims %||% synthesis$claims),
     audit_screening(screening),
     audit_calibration(calibration),
@@ -292,7 +355,7 @@ gr_audit_report <- function(path, screening = NULL, extraction = NULL,
     # The search belongs to a review. A report on one answer has none to show.
     if (review || !is.null(records)) audit_search(records),
     audit_cost(screening = screening, extraction = extraction, synthesis = synthesis,
-               reading = answer),
+               reading = answer, claims = claims %||% synthesis$claims),
     audit_caveats(screening = !is.null(screening), answer = !is.null(answer),
                   quotes = review || answer_has_quotes(answer))
   )
@@ -381,31 +444,173 @@ audit_header <- function(title, question, protocol, screening, extraction, synth
             esc(as.character(utils::packageVersion("readgpt")))))
 }
 
+#' The protocol, checked against what the run recorded using.
+#'
+#' A protocol is a plain list anyone can edit after the run, and the report is
+#' handed whichever one the caller has now. Rendered under "fixed before any
+#' document was read" without a look at the stages, criteria added after seeing
+#' the results were presented as the ones the decisions were made against --
+#' the drift the protocol exists to rule out. The screening records its
+#' question and criteria, the extraction its schema and the write-up its
+#' question and outline, so each is compared, and a difference is said first.
 #' @noRd
-audit_protocol <- function(protocol, extraction) {
+audit_protocol <- function(protocol, extraction, screening = NULL, synthesis = NULL) {
+  screened <- inherits(screening, "gr_screening") &&
+    (length(screening$include) || length(screening$exclude))
   fields <- protocol$fields %||% extraction$fields
-  if (is.null(protocol) && is.null(fields)) return(NULL)
-  crit <- function(label, v) {
-    if (!length(v)) return(NULL)
-    c(sprintf("<p><strong>%s</strong></p><ul>", esc(label)),
-      sprintf("<li>%s</li>", esc(v)), "</ul>")
+  if (is.null(protocol) && is.null(fields) && !screened) return(NULL)
+  if (is.null(protocol)) {
+    return(c("<h2>The protocol</h2>",
+             "<p class='sub'>No protocol was given with the report. These are the criteria and",
+             "the schema the run recorded using.</p>",
+             if (screened) c(protocol_criteria("Include only if all of:", screening$include),
+                             protocol_criteria("Exclude if any of:", screening$exclude)),
+             protocol_schema(fields)))
   }
-  c("<h2>The protocol</h2>",
-    "<p class='sub'>Fixed before any document was read. These are what the decisions below",
-    "are checked against.</p>",
-    crit("Include only if all of:", protocol$include),
-    crit("Exclude if any of:", protocol$exclude),
-    if (!is.null(fields)) c(
-      "<p><strong>Extraction schema</strong></p>",
-      html_table(data.frame(field = names(fields),
-                            type = vapply(fields, function(f) f$type, character(1)),
-                            description = vapply(fields, function(f) f$description, character(1)),
-                            stringsAsFactors = FALSE))),
-    if (length(protocol$outline)) c(
-      "<p><strong>Write-up outline</strong></p>",
-      html_table(data.frame(section = names(protocol$outline),
-                            `must cover` = unname(protocol$outline),
-                            check.names = FALSE, stringsAsFactors = FALSE))))
+  drift <- protocol_drift(protocol, screening, extraction, synthesis)
+  intro <- if (length(drift$differ)) {
+    sprintf(paste0("<p class='flag'>This is not the protocol the run was made under. %s The ",
+                   "decisions below were made against what each stage recorded, shown after ",
+                   "the protocol, not against this.</p>"),
+            esc(paste(drift$differ, collapse = " ")))
+  } else if (length(drift$checked)) {
+    # Before THOSE stages read anything: that much the match establishes.
+    sprintf(paste0("<p class='sub'>Fixed before %s read any document: %s recorded exactly ",
+                   "these. They are what the decisions below are checked against.</p>"),
+            esc(and_words(drift$checked)), if (length(drift$checked) == 1L) "it" else "each")
+  } else {
+    paste0("<p class='sub'>Given with the report. No stage passed to it recorded the criteria ",
+           "it ran under, so the report cannot confirm these are the ones the run used.</p>")
+  }
+  c("<h2>The protocol</h2>", intro,
+    protocol_criteria("Include only if all of:", protocol$include),
+    protocol_criteria("Exclude if any of:", protocol$exclude),
+    # The extraction's own schema when the protocol has none: labelled as
+    # that, since the protocol cannot have fixed a schema it does not carry.
+    protocol_schema(fields, if (is.null(protocol$fields))
+      "Extraction schema (as the extraction recorded it; the protocol has none)"),
+    protocol_outline(protocol$outline),
+    drift$shown)
+}
+
+#' A list of criteria under a label, or nothing when there are none.
+#' @noRd
+protocol_criteria <- function(label, v) {
+  if (!length(v)) return(NULL)
+  c(sprintf("<p><strong>%s</strong></p><ul>", esc(label)), sprintf("<li>%s</li>", esc(v)), "</ul>")
+}
+
+#' @noRd
+protocol_schema <- function(fields, label = "Extraction schema") {
+  if (is.null(fields)) return(NULL)
+  c(sprintf("<p><strong>%s</strong></p>", esc(label)),
+    html_table(data.frame(field = names(fields),
+                          type = vapply(fields, function(f) as_chr1(f$type, NA_character_),
+                                        character(1)),
+                          description = vapply(fields, function(f) as_chr1(f$description,
+                                                                           NA_character_),
+                                               character(1)),
+                          stringsAsFactors = FALSE)))
+}
+
+#' @noRd
+protocol_outline <- function(outline, label = "Write-up outline") {
+  if (!length(outline)) return(NULL)
+  c(sprintf("<p><strong>%s</strong></p>", esc(label)),
+    html_table(data.frame(section = names(outline), `must cover` = unname(outline),
+                          check.names = FALSE, stringsAsFactors = FALSE)))
+}
+
+#' Where a protocol and the stages run under it disagree.
+#'
+#' `checked` names the stages that recorded something to compare, `differ`
+#' says in a sentence each how one departs from the protocol, and `shown` is
+#' what that stage actually used, for the report. Criteria are compared as
+#' sets, after the trimming criteria_vector() gives both: order carries no
+#' meaning in a list of criteria, and neither does space around one.
+#' @noRd
+protocol_drift <- function(protocol, screening = NULL, extraction = NULL, synthesis = NULL) {
+  checked <- character(0); differ <- character(0); shown <- character(0)
+  # Labelled UTF-8 on both sides first: the entry points label what they are
+  # given, and a protocol typed in a C locale may not be, so the same bytes
+  # compared unequal and a faithful run was reported as drifting.
+  same_set <- function(a, b) setequal(to_utf8(criteria_vector(a, "")), to_utf8(criteria_vector(b, "")))
+  words <- function(q) gsub("[[:space:]]+", " ", trimws(to_utf8(as_chr1(q, ""))))
+  same_q <- function(q) is.null(q) || identical(words(q), words(protocol$question))
+  if (inherits(screening, "gr_screening")) {
+    checked <- c(checked, "the screening")
+    # The question is on the trace gr_read_many() made for the screening.
+    sq <- if (inherits(screening$trace, "gr_trace"))
+      screening$trace$meta[["question", exact = TRUE]]
+    bad <- c(if (!same_q(sq)) "question",
+             if (!same_set(protocol$include, screening$include)) "inclusion criteria",
+             if (!same_set(protocol$exclude, screening$exclude)) "exclusion criteria")
+    if (length(bad)) {
+      differ <- c(differ, sprintf("The screening differs from it in its %s.", and_words(bad)))
+      shown <- c(shown, "<h3>What the screening was run against</h3>",
+                 if (!same_q(sq)) sprintf("<p><strong>Question.</strong> %s</p>", esc(sq)),
+                 protocol_criteria("Include only if all of:", screening$include),
+                 protocol_criteria("Exclude if any of:", screening$exclude),
+                 if (!length(screening$include) && !length(screening$exclude))
+                   "<p class='sub'>(no criteria recorded)</p>")
+    }
+  }
+  if (inherits(extraction, "gr_extraction") && !is.null(protocol$fields) &&
+      !is.null(extraction$fields)) {
+    checked <- c(checked, "the extraction")
+    if (!same_fields(protocol$fields, extraction$fields)) {
+      differ <- c(differ, "The extraction differs from it in its schema.")
+      shown <- c(shown, "<h3>The schema the extraction used</h3>",
+                 protocol_schema(extraction$fields,
+                                 "Extraction schema, as the extraction recorded it"))
+    }
+  }
+  if (inherits(synthesis, "gr_synthesis")) {
+    checked <- c(checked, "the write-up")
+    wq <- synthesis$question
+    wo <- synthesis$outline
+    # Only an outline the protocol has: without one, the write-up's outline
+    # came from somewhere else by design (gr_outline(), or the caller).
+    moved <- length(protocol$outline) &&
+      !(identical(unname(words_each(names(wo))), unname(words_each(names(protocol$outline)))) &&
+          identical(unname(words_each(wo)), unname(words_each(protocol$outline))))
+    bad <- c(if (!same_q(wq)) "question", if (moved) "outline")
+    if (length(bad)) {
+      differ <- c(differ, sprintf("The write-up differs from it in its %s.", and_words(bad)))
+      shown <- c(shown, "<h3>What the write-up was made with</h3>",
+                 if (!same_q(wq)) sprintf("<p><strong>Question.</strong> %s</p>", esc(wq)),
+                 if (moved) protocol_outline(wo, "Outline, as the write-up recorded it"))
+    }
+  }
+  list(checked = checked, differ = differ, shown = shown)
+}
+
+#' Two schemas define the same fields: names, types, descriptions and allowed
+#' values alike, in any order.
+#' @noRd
+same_fields <- function(a, b) {
+  key <- function(f) {
+    if (!length(f)) return(character(0))
+    vapply(seq_along(f), function(i) {
+      g <- f[[i]]
+      paste(names(f)[i], as_chr1(g$type, ""), trimws(as_chr1(g$description, "")),
+            paste(sort(as.character(g$values %||% character(0))), collapse = "\u001f"),
+            sep = "\u001e")
+    }, character(1))
+  }
+  ka <- key(a); kb <- key(b)
+  length(ka) == length(kb) && setequal(ka, kb)
+}
+
+#' Each string with its space runs made one space and its ends trimmed.
+#' @noRd
+words_each <- function(x) gsub("[[:space:]]+", " ", trimws(as.character(x %||% character(0))))
+
+#' "a", "a and b", "a, b and c".
+#' @noRd
+and_words <- function(x) {
+  if (length(x) <= 1L) return(paste(x, collapse = ""))
+  paste(paste(x[-length(x)], collapse = ", "), "and", x[length(x)])
 }
 
 #' @noRd
@@ -421,7 +626,11 @@ audit_flow <- function(screening, extraction, records = NULL, claims = NULL) {
 audit_screening <- function(screening) {
   if (is.null(screening)) return(NULL)
   t <- screening$table
-  keep <- c("document", "decision", "criterion", "reason", "quote", "verified", "error")
+  # `criterion_valid` FALSE is a criterion the protocol does not list: an
+  # exclusion on one was held back for a person, and the report showed the
+  # criterion with nothing to say it was not the protocol's.
+  keep <- c("document", "decision", "criterion", "criterion_valid", "reason", "quote",
+            "verified", "error")
   c("<h2>Screening decisions</h2>",
     sprintf("<p class='sub'>One model call per document.%s</p>",
             if (any(t$truncated, na.rm = TRUE))
@@ -429,6 +638,7 @@ audit_screening <- function(screening) {
             else ""),
     html_table(t[, intersect(keep, names(t)), drop = FALSE],
                flag = list(decision = function(v) v %in% c("unclear", NA),
+                           criterion_valid = function(v) !is.na(v) & !v,
                            verified = function(v) !is.na(v) & !v)))
 }
 
@@ -452,6 +662,17 @@ audit_extraction <- function(extraction) {
 audit_evidence <- function(extraction) {
   ev <- extraction$evidence
   if (!is.data.frame(ev) || !nrow(ev)) return(NULL)
+  # A duplicate's rows are its first copy's, repeated under its name: counted,
+  # they doubled that copy's spans and its unverified ones, and the tally no
+  # longer matched the flow's. Left out, and said so.
+  t <- extraction$table
+  copies <- if (is.data.frame(t) && !is.null(t[["document"]]) && !is.null(t[["duplicate_of"]]))
+    as.character(t[["document"]][!is.na(t[["duplicate_of"]])]) else character(0)
+  repeated <- if (is.null(ev[["document"]])) rep(FALSE, nrow(ev))
+              else as.character(ev[["document"]]) %in% copies
+  n_repeated <- sum(repeated)
+  ev <- ev[!repeated, , drop = FALSE]
+  if (!nrow(ev)) return(NULL)
   keep <- intersect(c("document", "field", "page", "section", "quote", "verified", "match"),
                     names(ev))
   unver <- !isTRUE_vec(ev$verified)
@@ -461,12 +682,17 @@ audit_evidence <- function(extraction) {
   there <- sum(unver & cited_verbatim(ev))
   gone <- sum(unver) - there
   c("<h2>Where every value came from</h2>",
-    sprintf("<p class='sub'>%d span(s); %s</p>", nrow(ev),
+    sprintf("<p class='sub'>%d span(s); %s%s</p>", nrow(ev),
             if (gone || there) sprintf("<span class='flag'>%s</span>.", paste(c(
               if (gone) sprintf("%d could not be found in the chunk cited", gone),
-              if (there) sprintf("%d found in the chunk cited but not stating the value cited",
-                                 there)), collapse = "; "))
-            else "<span class='ok'>every one was found in the chunk cited</span>."),
+              if (there) sprintf(paste0("%d found in the chunk cited but not stating the value ",
+                                        "cited in any form the check reads"), there)),
+              collapse = "; "))
+            else "<span class='ok'>every one was found in the chunk cited</span>.",
+            if (n_repeated) sprintf(paste0(" %d more for duplicate documents are left out: they ",
+                                           "repeat the spans of the copy each duplicates."),
+                                    n_repeated)
+            else ""),
     html_table(ev[, keep, drop = FALSE],
                numeric_cols = intersect(c("page", "match"), keep),
                flag = list(verified = function(v) !isTRUE_vec(v))))
@@ -508,16 +734,29 @@ audit_claims <- function(synthesis, claims = NULL) {
     "written from these claims, rests on them (study %s).</p>"),
     length(lost), nrow(cm$studies),
     paste(c(utils::head(lost, 20L), if (length(lost) > 20L) "..."), collapse = ", "))
+  # Claims drawn in several batches and never reconciled: the table read as
+  # one list of distinct findings, and the counts below as counts of them.
+  # isTRUE() for a claims table saved before the field existed.
+  unmerged_note <- if (isTRUE(cm$unmerged)) paste0(
+    "<p class='flag'>The claims from different batches of studies were not reconciled: the ",
+    "reconcile pass could not run, so one finding may appear below as more than one claim, ",
+    "each resting on fewer studies than the finding does, and the counts of claims, of ",
+    "contested claims and of claims on one study may count it more than once.</p>")
   if (!nrow(cm$claims)) {
     if (!length(lost)) return(NULL)
     return(c("<h2>What the review claims, and what each claim rests on</h2>",
              "<p class='flag'>No claims were drawn.</p>", lost_note))
   }
-  sec <- attr(synthesis$outline, "claims")
+  # Which section each claim was given to. gr_synthesise() rebuilds the outline
+  # with setNames(), which drops the "claims" attribute gr_outline() put on it,
+  # so read from there alone the column was empty for every claim. A column
+  # that is always empty says the claims went nowhere; left out instead, with
+  # a line saying the assignment was not recorded.
+  sec <- synthesis[["claim_sections", exact = TRUE]] %||% attr(synthesis$outline, "claims")
+  sec_ok <- is.data.frame(sec) && all(c("section", "claim_id") %in% names(sec))
   tab <- cm$claims[, c("claim_id", "claim", "kind", "moderator", "scope",
                        "n_support", "n_contradict"), drop = FALSE]
-  tab$section <- if (is.null(sec)) NA_character_ else
-    sec$section[match(tab$claim_id, sec$claim_id)]
+  if (sec_ok) tab$section <- as.character(sec$section)[match(tab$claim_id, sec$claim_id)]
   sup <- cm$support
   docs <- cm$studies$document[match(sup$study, cm$studies$study)]
   detail <- data.frame(claim_id = sup$claim_id, study = sup$study, role = sup$role,
@@ -536,63 +775,140 @@ audit_claims <- function(synthesis, claims = NULL) {
             else "<span class='ok'>each with a distinguishing field named</span>",
             lone),
     lost_note,
+    unmerged_note,
+    if (!is.null(synthesis) && !sec_ok)
+      paste0("<p class='sub'>Which section each claim was given to was not recorded with this ",
+             "synthesis, so it is not shown.</p>"),
     html_table(tab, numeric_cols = c("claim_id", "n_support", "n_contradict"),
-               flag = list(n_support = function(v) suppressWarnings(as.numeric(v)) <= 1)),
+               flag = list(n_support = function(v) suppressWarnings(as.numeric(v)) <= 1,
+                           # A claim the outline gave to no section was not written up.
+                           section = function(v) is.na(v))),
     "<h3>Every claim, study by study</h3>",
     html_table(detail, numeric_cols = c("claim_id", "study"),
                flag = list(role = function(v) v == "contradicts")),
     if (nrow(cm$dropped))
-      c("<h3>Dropped in verification</h3>",
+      c("<h3>Removed or cleared in verification</h3>",
         sprintf(paste0("<p class='sub'>A claims table that looks thin has to be tellable from a ",
-                       "literature that is, so what verification removed is printed too.</p>")),
+                       "literature that is, so what verification removed is printed too. Only a ",
+                       "row whose reason is that no supporting study was left removed a claim; ",
+                       "the others took a study number or a moderator off a claim that was ",
+                       "kept.</p>")),
         html_table(cm$dropped)))
 }
 
+#' What was written, and what each part of it rests on.
+#'
+#' The sections and their citation tables are the draft. A kept revision pass
+#' (`coherence`) can merge, rename or cut sections and move a citation from one
+#' to another while citing the same studies overall, and `$text` is then the
+#' revision, not the sections. Shown as "what was written", the draft put
+#' headings, text and citation placements in front of a reader that the
+#' published review does not have. So with a kept pass the published text
+#' comes first, with the studies each of its headings cites, and the draft
+#' follows under its own heading with the checks that ran on it.
 #' @noRd
 audit_synthesis <- function(synthesis) {
   if (is.null(synthesis)) return(NULL)
   s <- synthesis$sections
   cites <- synthesis$citations
+  rep_df <- synthesis$coherence
+  revised <- is.data.frame(rep_df) && nrow(rep_df) && any(isTRUE_vec(rep_df$kept))
+  lvl <- if (revised) "h4" else "h3"
+  col <- function(nm, i) if (is.null(s[[nm]])) NA else s[[nm]][i]
   per <- function(i) {
     ci <- if (is.null(cites)) NULL else cites[cites$section == s$section[i], , drop = FALSE]
-    c(sprintf("<h3>%s</h3>", esc(s$section[i])),
-      sprintf("<p class='sub'>Must cover: %s</p>", esc(s$brief[i])),
-      sprintf("<blockquote>%s</blockquote>", esc(s$text[i])),
-      if (s$n_unknown[i] > 0L)
+    blank <- !nzchar(trimws(as_chr1(s$text[i], "")))
+    # Each flag below is one of the reasons synth_section() marks a section
+    # partial, so a section marked partial with none of them in `fl` is
+    # partial for a reason not recorded apart, and is flagged for that below.
+    fl <- c(
+      if (isTRUE(col("n_unknown", i) > 0L))
         sprintf("<p class='flag'>%d citation(s) point at a row that does not exist.</p>",
                 s$n_unknown[i]),
       # A real row the section was never shown: the model cannot have read it
       # there, so the citation is as unsupported as one to no row at all. The
       # section is already partial for it; without this the report said nothing.
       # `is.null()` for a synthesis saved before the column existed.
-      if (!is.null(s$n_unsupplied) && isTRUE(s$n_unsupplied[i] > 0L))
+      if (isTRUE(col("n_unsupplied", i) > 0L))
         sprintf("<p class='flag'>%d citation(s) point at a study this section was not given.</p>",
                 s$n_unsupplied[i]),
       # A bracket the citation check could not read names studies nobody checked.
-      if (!is.null(s$n_unparsed) && isTRUE(s$n_unparsed[i] > 0L))
+      if (isTRUE(col("n_unparsed", i) > 0L))
         sprintf(paste0("<p class='flag'>%d citation(s) could not be read, so the studies they ",
                        "name were not checked.</p>"), s$n_unparsed[i]),
-      if (!is.null(s$n_truncated) && isTRUE(s$n_truncated[i] > 0L))
+      if (isTRUE(col("n_truncated", i) > 0L))
         sprintf(paste0("<p class='flag'>%d response(s) for this section were cut off at the ",
                        "output cap, so the section may be incomplete.</p>"), s$n_truncated[i]),
-      if (s$n_cited[i] == 0L)
-        "<p class='flag'>This section cites nothing.</p>",
-      if (!is.null(s$claims_missed) && s$claims_missed[i] > 0L)
+      # An empty section is partial too, and "cites nothing" did not say why.
+      if (blank)
+        paste0("<p class='flag'>This section is empty: no usable reply came back for it, or ",
+               "the run reached its call or cost ceiling before it.</p>"),
+      if (isTRUE(col("claims_missed", i) > 0L))
         sprintf(paste0("<p class='flag'>%d of the %d claim(s) this section was given were not ",
                        "written up.</p>"), s$claims_missed[i], s$n_claims[i]),
+      # The batch counts, when the synthesis recorded them. `col()` for one
+      # saved before they were kept.
+      if (isTRUE(col("lost_batches", i) > 0L))
+        sprintf(paste0("<p class='flag'>%d batch(es) of studies failed, so the studies in them ",
+                       "are not in this section.</p>"), as.integer(s$lost_batches[i])),
+      if (isTRUE(col("capped_batches", i) > 0L))
+        sprintf(paste0("<p class='flag'>%d batch(es) of studies were not sent: the run reached ",
+                       "its call or cost ceiling, so the studies in them are not in this ",
+                       "section.</p>"), as.integer(s$capped_batches[i])),
+      if (isTRUE(col("merge_failed", i)))
+        paste0("<p class='flag'>The batches of studies were drafted but not merged, so this ",
+               "section is those drafts joined end to end rather than one account.</p>"))
+    # sections$partial also counts a batch of studies that failed or was never
+    # sent, and a merge that failed, which a synthesis made before those were
+    # recorded does not break out. Read alone, the flags above passed such a
+    # section as clean while the run had warned that studies were missing.
+    if (isTRUE(col("partial", i)) && !length(fl)) {
+      fl <- paste0("<p class='flag'>This section is marked partial: a batch of the studies it ",
+                   "was written from failed or was not sent, or the batches could not be merged, ",
+                   "so studies may be missing from it. The warnings the run raised say which.</p>")
+    }
+    c(sprintf("<%s>%s</%s>", lvl, esc(s$section[i]), lvl),
+      sprintf("<p class='sub'>Must cover: %s</p>", esc(s$brief[i])),
+      if (!blank) sprintf("<blockquote>%s</blockquote>", esc(s$text[i])),
+      fl,
+      if (!blank && isTRUE(col("n_cited", i) == 0L))
+        "<p class='flag'>This section cites nothing.</p>",
       if (!is.null(ci) && nrow(ci))
         html_table(ci[, intersect(c("study", "document"), names(ci)), drop = FALSE],
                    numeric_cols = "study"))
   }
   lost <- synthesis$claims$lost %||% integer(0)
-  c("<h2>What was written, and what each section rests on</h2>",
+  # Honest citations the revision left as markers; see gr_synthesise(). print()
+  # and the gr_synth_unrendered warning say so, and the report did not.
+  # `%||%` for a synthesis made before the field existed.
+  unrendered <- synthesis$unrendered %||% integer(0)
+  drafts <- unlist(lapply(seq_len(nrow(s)), per), use.names = FALSE)
+  c(if (revised) "<h2>What was written, and what it rests on</h2>"
+    else "<h2>What was written, and what each section rests on</h2>",
     # Every section can be complete against claims that are not: claims drawn
     # from a third of the corpus give a review of a third of the corpus.
     if (length(lost))
       sprintf(paste0("<p class='flag'>Written from claims that %d of the %d studies contributed ",
                      "nothing to: their claims batch was cut off, failed or was not sent.</p>"),
               length(lost), nrow(synthesis$studies)),
-    unlist(lapply(seq_len(nrow(s)), per), use.names = FALSE),
+    if (length(unrendered))
+      sprintf(paste0("<p class='flag'>%s %s %s cited honestly but left as a [study N] marker ",
+                     "in the revised text: the revision made that citation impossible to tell ",
+                     "from one a section made without being given the study.</p>"),
+              if (length(unrendered) == 1L) "Study" else "Studies",
+              esc(and_words(as.character(unrendered))),
+              if (length(unrendered) == 1L) "is" else "are"),
+    if (revised) c(synthesis_published(synthesis), "<h3>Draft before revision</h3>",
+                   paste0("<p class='sub'>The sections as first written, each with the checks ",
+                          "that ran on it. The revision above was made from these.</p>"))
+    else if (is.data.frame(rep_df) && nrow(rep_df))
+      paste0("<p class='sub'>Revision passes ran and none was kept, so the sections below are ",
+             "the text as published.</p>"),
+    drafts,
+    if (is.data.frame(rep_df) && nrow(rep_df)) c(
+      "<h3>Revision passes</h3>",
+      html_table(rep_df[, intersect(c("pass", "ran", "kept", "reason"), names(rep_df)),
+                        drop = FALSE])),
     if (isTRUE(synthesis$skipped > 0L))
       sprintf(paste0("<p class='sub'>%d row(s) were left out of the write-up: a duplicate, a ",
                      "document that could not be read in full, or one with nothing ",
@@ -600,12 +916,50 @@ audit_synthesis <- function(synthesis) {
               synthesis$skipped))
 }
 
+#' The published text of a synthesis whose revision was kept, and the studies
+#' each of its headings cites, found again in the text the citation check
+#' reads (`text_marked`), since no section's own table describes it.
 #' @noRd
-audit_cost <- function(screening = NULL, extraction = NULL, synthesis = NULL, reading = NULL) {
+synthesis_published <- function(synthesis) {
+  marked <- as_chr1(synthesis$text_marked, "")
+  lines <- strsplit(marked, "\n", fixed = TRUE)[[1]]
+  is_head <- grepl("^#{1,6}[[:space:]]", lines)
+  group <- cumsum(is_head)
+  heads <- c("(before the first heading)", trimws(sub("^#{1,6}[[:space:]]+", "", lines[is_head])))
+  studies <- synthesis$studies
+  rows <- lapply(sort(unique(group)), function(g) {
+    ids <- cited_ids(paste(lines[group == g], collapse = "\n"), "study")
+    if (!length(ids)) return(NULL)
+    data.frame(heading = heads[g + 1L], study = ids,
+               document = if (is.null(studies$document)) NA_character_
+                          else as.character(studies$document)[match(ids, studies$study)],
+               stringsAsFactors = FALSE)
+  })
+  tab <- do.call(rbind, rows)
+  unknown <- if (is.null(tab)) 0L else sum(!tab$study %in% studies$study)
+  c(paste0("<p class='sub'>A revision pass was kept, so this is the text as published: the ",
+           "draft below after revision. Its headings, and where each citation sits, are the ",
+           "revision's.</p>"),
+    sprintf("<blockquote class='passage'>%s</blockquote>", esc(as_chr1(synthesis$text, marked))),
+    if (unknown)
+      sprintf(paste0("<p class='flag'>%d citation(s) in the published text point at a row that ",
+                     "does not exist.</p>"), unknown),
+    if (is.null(tab)) "<p class='flag'>The published text cites nothing.</p>"
+    else c("<p class='sub'>The studies each heading of the published text cites.</p>",
+           html_table(tab, numeric_cols = "study",
+                      flag = list(document = function(v) is.na(v)))))
+}
+
+#' @noRd
+audit_cost <- function(screening = NULL, extraction = NULL, synthesis = NULL, reading = NULL,
+                       claims = NULL) {
+  # One answer's own run (answer_trace()), as its summary and request table
+  # count it: from a trace shared across runs, the row was every run's.
+  if (inherits(reading, "gr_answer")) reading <- list(trace = answer_trace(reading))
   # Named for the reader, not after the class. "gr_screening" is what the object
   # is called in the code and means nothing to the person the report is for.
-  stages <- list(screening = screening, extraction = extraction, synthesis = synthesis,
-                 answer = reading)
+  stages <- list(screening = screening, extraction = extraction,
+                 claims = claims_cost_stage(claims), synthesis = synthesis, answer = reading)
   traces <- Filter(function(x) inherits(x$trace, "gr_trace"), stages)
   if (!length(traces)) return(NULL)
   rows <- lapply(names(traces), function(nm) {
@@ -620,9 +974,40 @@ audit_cost <- function(screening = NULL, extraction = NULL, synthesis = NULL, re
   })
   tab <- do.call(rbind, rows)
   c("<h2>What the run cost</h2>",
+    if ("claims" %in% names(traces))
+      paste0("<p class='sub'>The claims row is the calls gr_claims() made and, where it ",
+             "recorded them on the claims' trace, those gr_outline() made.</p>"),
     "<p class='sub'>Only requests that were sent are counted. A reply served from a cache",
     "cost nothing, however large its prompt.</p>",
     html_table(tab, numeric_cols = c("calls", "cached", "tokens_in", "tokens_out", "usd")))
+}
+
+#' The claims stage of the cost table, as a stage audit_cost() can read: its
+#' own requests only, from the claims' trace, or NULL when there are none.
+#'
+#' gr_claims() and gr_outline() record their calls on `claims$trace`, and
+#' gr_synthesise() keeps a trace of its own, so a claims-based review's
+#' drawing, reconciling and outlining were in no row of the table. Not the
+#' trace's own counters: gr_claims(trace = tr) records on `tr` itself, which
+#' also holds whatever else the caller ran on it -- a screening or write-up
+#' already in the table, counted twice. Its steps are picked out by label.
+#' @noRd
+claims_cost_stage <- function(claims) {
+  if (!inherits(claims, "gr_claims") || !inherits(claims$trace, "gr_trace")) return(NULL)
+  mine <- Filter(function(st) grepl("^(claims|outline)\\.", as_chr1(st$label, "")),
+                 claims$trace$steps)
+  req <- Filter(function(st) !identical(st$kind, "local") && !is.null(st$tokens), mine)
+  if (!length(req)) return(NULL)
+  tr <- gr_trace(meta = list(stage = "claims"))
+  tr$steps <- req
+  tr$calls <- length(req)
+  tr$cached <- sum(vapply(req, function(st) isTRUE(st$cached), logical(1)))
+  model_call <- !vapply(req, function(st) identical(st$kind, "embedding"), logical(1))
+  tok <- function(k) sum(vapply(req[model_call], function(st) as_int1(st$tokens[[k]], 0L),
+                                integer(1)))
+  tr$tokens_in <- tok("input")
+  tr$tokens_out <- tok("output")
+  list(trace = tr)
 }
 
 #' @noRd
@@ -636,9 +1021,14 @@ audit_caveats <- function(screening = TRUE, answer = FALSE, quotes = TRUE) {
       "right. A correct quote read wrongly looks exactly like a correct quote read rightly. What",
       "the check rules out is the quote having been invented, which is the failure that is",
       "otherwise invisible.</p>"),
+    # What resolve_evidence_pages() does: it leaves the chunk's page on a span
+    # it cannot place on one page. Said as it is -- "left without one" was
+    # printed above a fabricated quote listed with page 1.
     "<p><strong>A page number is where the sentence is, not where the reasoning is.</strong>",
-    "Spans found on several pages, or not found at all, are left without one rather than",
-    "given the likeliest.</p>",
+    "A span found on one page of the document is given that page. One found on several pages,",
+    "or not found at all, keeps the page of the chunk it was credited to, which says where",
+    "that chunk is, not where the sentence is: an unverified quote shown with a page was not",
+    "found on it. A span from a chunk that runs across pages, and not placed, has no page.</p>",
     if (screening) c(
       "<p><strong>Screening saw what the excerpt showed.</strong> Where a document was",
       "truncated the decision was made on its opening; the screening table says which.</p>"),
@@ -661,6 +1051,15 @@ audit_caveats <- function(screening = TRUE, answer = FALSE, quotes = TRUE) {
 #' @noRd
 html_table <- function(df, numeric_cols = character(0), flag = list()) {
   if (!is.data.frame(df) || !nrow(df)) return("<p class='sub'>(nothing)</p>")
+  # A document fetched from the web is named by its address, and an error
+  # about it quotes the address; either can carry the link's credentials.
+  # Here, because every table of documents in the report passes through.
+  for (nm in intersect(c("document", "duplicate_of"), names(df))) {
+    if (is.character(df[[nm]]) || is.factor(df[[nm]])) df[[nm]] <- report_url(df[[nm]])
+  }
+  for (nm in intersect(c("error", "warnings"), names(df))) {
+    if (is.character(df[[nm]]) || is.factor(df[[nm]])) df[[nm]] <- report_url_text(df[[nm]])
+  }
   cell <- function(v, col) {
     txt <- ifelse(is.na(v), "<span class='sub'>&mdash;</span>", esc(v))
     cls <- if (col %in% numeric_cols) " class=\"num\"" else ""
@@ -698,12 +1097,24 @@ audit_calibration <- function(calibration) {
   head <- sprintf(paste0("<p class='sub'>%d record(s) screened by hand, %d of them eligible, ",
                          "sampled from: %s.</p>"),
                   calibration$n, calibration$n_positives, esc(as_chr1(calibration$frame$of, "all")))
-  warn <- if (!isTRUE(calibration$adequate)) sprintf(
-    paste0("<p class='flag'>Only %d eligible record(s) in the sample, below the %s this ",
-           "calibration asks for. The intervals are too wide to conclude much.</p>"),
-    # %s and format(), not %d: min_positives is a double now, and may be Inf --
-    # "never adequate" -- which %d refuses outright, taking the report with it.
-    calibration$n_positives, format(calibration$min_positives))
+  # The calibration's own sentence for why the sample fell short. Adequacy is
+  # judged per frame: a sample of one stratum by its interval, not by how many
+  # eligible records it holds, and one short on that was reported as "Only 0
+  # eligible record(s) ... below the 10", a bar it was never held to. The
+  # count sentence is kept for a calibration saved before the note existed.
+  note <- if (is.list(calibration$adequacy)) calibration$adequacy[["note", exact = TRUE]]
+  warn <- if (!isTRUE(calibration$adequate)) {
+    if (is.character(note) && length(note) == 1L && !is.na(note)) {
+      sprintf("<p class='flag'>%s</p>", esc(note))
+    } else {
+      sprintf(paste0("<p class='flag'>Only %d eligible record(s) in the sample, below the %s this ",
+                     "calibration asks for. The intervals are too wide to conclude much.</p>"),
+              # %s and format(), not %d: min_positives is a double now, and may be
+              # Inf -- "never adequate" -- which %d refuses outright, taking the
+              # report with it.
+              calibration$n_positives, format(calibration$min_positives))
+    }
+  }
   kap <- if (!is.na(calibration$kappa))
     sprintf("<p><b>Cohen's kappa:</b> %.2f</p>", calibration$kappa)
   proj <- if (!is.null(calibration$projected)) {
@@ -716,7 +1127,7 @@ audit_calibration <- function(calibration) {
   miss <- if (nrow(calibration$missed)) sprintf(
     "<p class='flag'>%d eligible stud%s excluded by the screener: %s.</p>",
     nrow(calibration$missed), if (nrow(calibration$missed) == 1L) "y was" else "ies were",
-    esc(paste(utils::head(calibration$missed$document, 8), collapse = ", ")))
+    esc(paste(report_url(utils::head(calibration$missed$document, 8)), collapse = ", ")))
   c("<h2>How good the screening is</h2>", head, html_table(tab), kap, proj, warn, miss)
 }
 
@@ -778,9 +1189,12 @@ answer_has_quotes <- function(x) {
 audit_answer <- function(x) {
   if (inherits(x, "gr_corpus")) return(audit_corpus(x))
   if (!inherits(x, "gr_answer")) return(NULL)
+  # This run's requests only (answer_trace()): with a trace the caller shared
+  # across runs, the table listed every other run's requests, prompts' costs
+  # and errors under this answer.
   c("<h2>The answer</h2>", answer_summary(x),
     "<h2>Where it came from</h2>", answer_passages(x),
-    "<h2>Every request</h2>", request_table(x$trace))
+    "<h2>Every request</h2>", request_table(answer_trace(x)))
 }
 
 #' A document's name for the report: the file name, not the folders above it,
@@ -788,8 +1202,69 @@ audit_answer <- function(x) {
 #' @noRd
 report_doc_name <- function(src) {
   src <- as_chr1(src, NA_character_)
-  if (is.na(src) || is_url(src) || identical(src, "<inline text>")) return(src)
+  if (is.na(src) || identical(src, "<inline text>")) return(src)
+  # A web address in full, since its host and path are what name it -- but not
+  # its credentials; see report_url().
+  if (is_url(src)) return(report_url(src))
   basename(src)
+}
+
+#' A web address as the report may show it: without a user name and password,
+#' and with its query string and fragment replaced by a short fingerprint.
+#'
+#' Presigned and tokenised links (S3, GCS and Azure signatures, download
+#' tokens) carry their credentials in the query, and the address was copied
+#' whole into the document column, the headings and the fetch errors of a
+#' report written to be handed to other people. The fingerprint keeps two
+#' addresses that differ only in the query apart without showing either.
+#'
+#' Applied to an address with a scheme, and to one without a scheme that
+#' starts with a dotted host followed by a path or a query, which is how a
+#' corpus labels a fetched document (corpus_label() drops the scheme). There
+#' only the query is hidden, not a "#" and what follows it, which in a file
+#' name is part of the name. Anything else, a file name included, is returned
+#' as it is.
+#' @noRd
+report_url <- function(x) {
+  x <- as.character(x)
+  out <- x
+  # Vectorised, and one fingerprint per distinct query: every table of
+  # documents in the report passes through here, some with thousands of rows.
+  m <- regexpr("^[[:space:]]*https?://", x, ignore.case = TRUE)
+  n <- ifelse(!is.na(m) & m > 0L, attr(m, "match.length"), 0L)
+  rest <- substring(x, n + 1L)
+  host <- "^([^/?#@[:space:]]+@)?[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+(:[0-9]+)?[/?]"
+  hit <- !is.na(x) & (n > 0L | grepl(host, rest, perl = TRUE))
+  if (!any(hit)) return(out)
+  scheme <- substr(x[hit], 1L, n[hit])
+  # The user name and password, which sit before an "@" ahead of the path.
+  r <- sub("^[^/?#@[:space:]]*@", "", rest[hit], perl = TRUE)
+  at <- ifelse(n[hit] > 0L, regexpr("[?#]", r), regexpr("?", r, fixed = TRUE))
+  q <- at > 0L
+  if (any(q)) {
+    hidden <- substring(r[q], at[q])
+    u <- unique(hidden)
+    fp <- vapply(u, function(h) substr(gr_hash(h), 1L, 6L), character(1), USE.NAMES = FALSE)
+    r[q] <- paste0(substr(r[q], 1L, at[q] - 1L),
+                   sprintf("?[query hidden %s]", fp[match(hidden, u)]))
+  }
+  out[hit] <- paste0(scheme, r)
+  out
+}
+
+#' `x` with every web address in it shown as report_url() shows one: for error
+#' and warning text, which quotes the address it failed to fetch.
+#' @noRd
+report_url_text <- function(x) {
+  x <- as.character(x)
+  has <- !is.na(x) & grepl("https?://", x, ignore.case = TRUE)
+  if (!any(has)) return(x)
+  m <- gregexpr("https?://[^[:space:]'\"<>]+", x[has], ignore.case = TRUE)
+  found <- regmatches(x[has], m)
+  shown <- report_url(unlist(found, use.names = FALSE))
+  regmatches(x[has], m) <- unname(split(shown, factor(rep(seq_along(found), lengths(found)),
+                                                      levels = seq_along(found))))
+  x
 }
 
 #' Rows of label and value, leaving out values nobody recorded.
@@ -801,19 +1276,86 @@ fact_table <- function(labels, values) {
     "</table>")
 }
 
-#' The answer, whether it is complete, and what it took.
+#' The failed requests behind an answer, counted as failed_note() counts them
+#' for a corpus row: the reader's own counts or the trace's failures, whichever
+#' is larger, since the two overlap, and not the ones a fallback recovered.
+#'
+#' `answer_error` is the reader's record that its answering request failed or
+#' was never sent (`notes$error`), and `any_ok` whether any model request of
+#' this run (answer_trace()) came back at all. The trace may hold other runs
+#' when the caller shared one; their failures are counted too, since an error
+#' recorded without its step cannot be put in either run, and a false flag is
+#' the safe side of that doubt. Their successful requests are not: counted,
+#' one other run's reply said a run whose every request failed had read
+#' something, and its "not found" was reported as a finding.
 #' @noRd
-answer_summary <- function(x) {
-  said <- if (is_not_found(x$answer)) sprintf("<p><strong>%s</strong></p>", esc(not_found_wording(x)))
-          else sprintf("<blockquote class='passage'>%s</blockquote>", esc(x$answer))
+answer_failures <- function(x) {
+  n <- as.list(x$notes %||% list())
+  num <- function(k) as_num1(n[[k, exact = TRUE]], 0)
+  tr <- if (inherits(x$trace, "gr_trace")) x$trace else NULL
+  errs <- if (is.null(tr)) list() else tr$errors
+  open <- Filter(Negate(is_recovered_error), errs)
+  err <- as_chr1(n[["error", exact = TRUE]], "")
+  own <- answer_trace(x)
+  steps <- if (!inherits(own, "gr_trace")) list() else
+    Filter(function(st) !identical(st$kind, "local") && !identical(st$kind, "embedding") &&
+             !is.null(st$tokens), own$steps)
+  list(failed = max(num("failed_calls") + num("scoring_failures") + num("failed_summaries") +
+                      isTRUE(n[["failed_call", exact = TRUE]]), length(open)),
+       recovered = length(errs) - length(open),
+       first = if (nzchar(err) || !length(open)) err else as_chr1(open[[1]]$error, ""),
+       answer_error = nzchar(err),
+       any_steps = length(steps) > 0L,
+       any_ok = any(vapply(steps, function(st) isTRUE(st$ok), logical(1))))
+}
+
+#' The answer, whether it is complete, and what it took. `listed` when the
+#' page goes on to list the requests, as it does for one answer.
+#' @noRd
+answer_summary <- function(x, listed = TRUE) {
+  f <- answer_failures(x)
+  # The requests and cost are this run's own (answer_trace()); the failures
+  # are counted over the whole trace by answer_failures(), the safe side of
+  # not knowing which run an error belonged to. `shared` when the two differ.
+  tr <- answer_trace(x)
+  shared <- inherits(tr, "gr_trace") && !identical(tr, x$trace)
+  # "Not found" is a finding about the document only when something was read.
+  # When the request that would have answered failed or was never sent, the
+  # reader's sentinel is no answer at all, and the page said "Not found in the
+  # part of the document that was read" of a document nothing had read.
+  said <- if (is_not_found(x$answer) && (f$answer_error || (f$any_steps && !f$any_ok))) {
+    paste0("<p><strong>No answer: the request that would have given one failed or was not ",
+           "sent, so this says nothing about whether the document holds one.</strong></p>")
+  } else if (is_not_found(x$answer)) {
+    sprintf("<p><strong>%s</strong></p>", esc(not_found_wording(x)))
+  } else sprintf("<blockquote class='passage'>%s</blockquote>", esc(x$answer))
+  # Not from `partial` alone. Several readers leave it FALSE after a request
+  # failed, and the green "every request succeeded" line then sat above the
+  # table flagging the failed request. The trace is what says whether one did.
   status <- if (isTRUE(x$partial)) {
     why <- partial_reasons(x)
     sprintf("<p class='flag'>Partial: %s.</p>",
-            esc(if (length(why)) paste(why, collapse = "; ") else "see the answer's notes"))
+            esc(report_url_text(if (length(why)) paste(why, collapse = "; ")
+                                else "see the answer's notes")))
+  } else if (f$failed > 0) {
+    sprintf(paste0("<p class='flag'>The reader did not mark this answer partial, but %s ",
+                   "request(s) failed%s, so it may rest on less than the reader meant to ",
+                   "use.%s</p>"),
+            format(f$failed, scientific = FALSE),
+            if (nzchar(f$first)) esc(sprintf(" (first error: %s)",
+                                             report_url_text(substr(f$first, 1, 200)))) else "",
+            if (!listed) ""
+            else if (shared) paste0(" The requests of this run are listed below. The failures ",
+                                    "are counted over the whole trace, which other runs share.")
+            else " Each request is listed below.")
+  } else if (f$recovered > 0) {
+    sprintf(paste0("<p class='ok'>Not partial: the reader reported nothing it chose to read as ",
+                   "left out, and the %d request(s) that failed were recovered by a ",
+                   "fallback.</p>"), as.integer(f$recovered))
   } else {
-    "<p class='ok'>Not partial: every request succeeded and nothing the reader chose to read was left out.</p>"
+    paste0("<p class='ok'>Not partial: no request failed, and the reader reported nothing it ",
+           "chose to read as left out.</p>")
   }
-  tr <- x$trace
   recipe <- as_chr1(x$recipe, NA_character_)
   auto <- as.list(x$notes %||% list())[["auto_recipe", exact = TRUE]]
   if (!is.na(recipe) && !is.null(auto)) recipe <- sprintf("%s (chosen by \"auto\")", recipe)
@@ -832,7 +1374,7 @@ answer_summary <- function(x) {
   w <- x[["warnings", exact = TRUE]] %||% character(0)
   c(said, status, facts,
     if (length(w)) c(sprintf("<p class='flag'>%d warning(s) while reading:</p>", length(w)),
-                     "<ul>", sprintf("<li>%s</li>", esc(unname(w))), "</ul>"))
+                     "<ul>", sprintf("<li>%s</li>", esc(report_url_text(unname(w)))), "</ul>"))
 }
 
 #' The passages behind an answer, grouped by chunk, in document order.
@@ -903,8 +1445,12 @@ evidence_card <- function(rows, cited, nums) {
   passage <- if (any(quoted & !is.na(src))) src[quoted & !is.na(src)][1]
              else if (any(kind == "verbatim")) text[kind == "verbatim"][1]
              else NA_character_
-  # One encoding for the searches and the cuts made at the positions they find.
-  if (!is.na(passage)) passage <- to_utf8(passage)
+  # One encoding for the searches and the cuts made at the positions they find,
+  # and accents composed, as normalise_for_match() composes them: folded one
+  # character for one (normalised_with_map()), a decomposed passage never held
+  # the composed quotation the check had found in it, and a verified quote was
+  # listed as "not placed". The composed text looks the same.
+  if (!is.na(passage)) passage <- compose_marks(to_utf8(passage))
   spans <- list()
   unplaced <- character(0)
   if (any(quoted)) {
@@ -923,7 +1469,9 @@ evidence_card <- function(rows, cited, nums) {
       # In the chunk word for word, and not verified: an extracted value its
       # quote does not state. "Not found ... 100%" said the opposite of both.
       else if (identical(verified[i], FALSE) && unstated[i])
-        sprintf("<p class='flag'>Quoted, and found in this chunk, but it does not state the value it is cited for: &ldquo;%s&rdquo;</p>",
+        sprintf(paste0("<p class='flag'>Quoted, and found in this chunk, but it does not state ",
+                       "the value it is cited for: &ldquo;%s&rdquo; (not in any form the check ",
+                       "reads)</p>"),
                 esc(text[i]))
       else if (identical(verified[i], FALSE))
         sprintf("<p class='flag'>Quoted, but not found in this chunk%s: &ldquo;%s&rdquo;</p>",
@@ -951,10 +1499,13 @@ evidence_card <- function(rows, cited, nums) {
 #' `passage` folded the way normalise_for_match() folds text, with a map from
 #' each folded character back to the character it came from.
 #'
-#' Folding keeps each character one character, and a run of space becomes one
-#' space whose place is the run's first character. So a quotation found in the
-#' folded text by an exact search is found exactly where gr_verify_evidence()
-#' found it, and the map gives its place in the original.
+#' `passage` is composed already (compose_marks(), which evidence_card()
+#' applies): composing is the one step of normalise_for_match() that changes
+#' the number of characters. Folding keeps each character one character, and
+#' a run of space becomes one space whose place is the run's first character.
+#' So a quotation found in the folded text by an exact search is found exactly
+#' where gr_verify_evidence() found it, and the map gives its place in the
+#' original.
 #' @noRd
 normalised_with_map <- function(passage) {
   ch <- strsplit(to_utf8(passage), "", fixed = TRUE)[[1]]
@@ -1115,20 +1666,20 @@ audit_corpus <- function(x) {
   answers <- x$answers %||% list()
   per <- function(i) {
     lab <- as.character(s$document[i])
-    head <- sprintf("<h3>%s</h3>", esc(lab))
+    head <- sprintf("<h3>%s</h3>", esc(report_url(lab)))
     status <- as.character(s$status[i])
     if (identical(status, "duplicate") || !is.na(dup_of[i])) {
       return(c(head, sprintf("<p class='sub'>Same text as %s, which is shown there.</p>",
-                             esc(as_chr1(dup_of[i], "an earlier document")))))
+                             esc(report_url(as_chr1(dup_of[i], "an earlier document"))))))
     }
     a <- answers[[lab]]
     if (!inherits(a, "gr_answer")) {
       return(c(head, sprintf("<p class='sub'>No answer: %s.</p>", esc(switch(status,
         skipped = "the run's ceiling was reached before this document",
-        failed = as_chr1(s$error[i], "it could not be read"),
+        failed = report_url_text(as_chr1(s$error[i], "it could not be read")),
         "none was kept")))))
     }
-    c(head, answer_summary(a), "<h4>Where it came from</h4>", answer_passages(a))
+    c(head, answer_summary(a, listed = FALSE), "<h4>Where it came from</h4>", answer_passages(a))
   }
   c("<h2>Every document</h2>",
     sprintf("<p class='sub'>%d document(s). Costs are what each document cost when it was read; a restored row keeps the figure from the run that read it.</p>",

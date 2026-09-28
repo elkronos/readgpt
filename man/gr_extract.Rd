@@ -39,7 +39,8 @@ about what counts as the primary outcome; it does not decide what is
 collected, because \code{fields} does that. Defaults to a neutral instruction.}
 
 \item{recipe}{The ingest and segmentation to use. The reader is always
-\code{extract}, whatever the recipe says.}
+\code{extract}, whatever the recipe says, and a \verb{reader =} override in \code{...}
+is an error.}
 
 \item{client, store, on_error, max_total_usd, recursive}{As \code{\link[=gr_read_many]{gr_read_many()}}.
 \code{store} is worth setting for anything longer than a coffee break: an
@@ -49,7 +50,12 @@ interrupted extraction resumes instead of restarting.}
 for the same field. \code{"first"} (default) takes the earlier one and records
 the disagreement in the \code{conflicts} column, costing nothing. \code{"model"}
 spends one extra call per disagreeing field to adjudicate; if that call
-fails, the first value is kept, as with \code{"first"}.}
+fails, or a request limit is reached before it can be made, the first
+value is kept, as with \code{"first"}, and a warning (in the row's
+\code{summary$warnings}) names the field. If it chooses none of the values,
+the first value is kept but is not verified, so \code{n_unverified} counts it
+and \code{require_quote} drops it. Two spellings of one string (case, quote
+marks, a trailing full stop) are one value, not a disagreement.}
 
 \item{require_quote}{Discard any value that is not verified: one with no
 quote, a quote that is not verbatim in the chunk it cited, or a quote that
@@ -131,25 +137,46 @@ checked against the text of the chunk it was attributed to (the document's
 own text, never a header or rewrite a model added to the chunk). It must
 also carry the value: a number must be one of the numbers the sentence
 states, the sentence must not start or end inside a word, and a one-word
-fragment supports only a value it spells. A number counts however the
-sentence writes it: "1,204", "1 204", "0,45", a middle-dot decimal point
-(U+00B7, as the Lancet prints "0.84"), "3.2 x 10^-5",
-"1.2 million", "54\%" for 0.54, or English words ("Twenty-four", "three",
-"no" for zero). A quotation made of several passages (separate lines,
-bullets, "\link{...}") is checked passage by passage. Nothing is ever discarded
-for failing: a paraphrase stays in \verb{$evidence} with \code{verified = FALSE} and
-the fraction of it that did match in \code{match}, and a real sentence that does
-not carry the value shows \code{verified = FALSE} with \code{match = 1}. When several
+fragment supports only a value it spells. A number counts when the
+sentence writes it in one of these forms: "1,204", "1 204", "0,45", a
+middle-dot decimal point (U+00B7, as the Lancet prints "0.84"),
+"3.2 x 10^-5", "1.2 million" or
+"$1.2 bn", "54\%" or "Fifty-four percent" for 0.54, "a quarter", "one in
+five", "two and a half", and English number words ("Twenty-four",
+"three"). A word that is not a numeral counts only where it counts
+something: "no deaths" and "none" state zero, "no difference" does not,
+and "the first visit" states no 1. A quotation in Spanish, Portuguese,
+French, Italian, German or Dutch is read with that language's number words
+instead ("veinticuatro", "vierundzwanzig", "1,2 millions"). The one
+exception to all of this: a quotation in a script whose number words are
+not read (Cyrillic, Greek, Arabic and the like) that states no number
+that can be read is only checked for being in the chunk. A quotation made
+of several passages (separate lines, bullets, "\link{...}") is checked passage
+by passage, and what an elision leaves out, or what lies between two
+passages that follow each other within one sentence, may not be a
+negation. Nothing is ever discarded for failing: a paraphrase stays in
+\verb{$evidence} with \code{verified = FALSE} and the fraction of it that did match in
+\code{match}, and a real sentence that does not carry the value shows
+\code{verified = FALSE} with \code{match = 1}. When several
 parts of a document give the same value, it is cited with the best quote
 any of them gave. A string field that comes back "None" or "N/A" is kept
 only when its quote verifies and says so itself ("Conflicts of interest:
 None."); otherwise it is the model reporting nothing, and so is not a
 value, and a real value from another part of the document replaces it.
 
+What the check establishes is that the sentence states the number, not that
+the number counts what the field describes: "The dose was 240 mg daily."
+verifies \code{n = 240} as readily as "240 patients were randomised." does, and
+so does a quotation that joins such a sentence to another with "\link{...}".
+Where that matters, read the \code{quote} as well as \code{verified}.
+
 \code{n_unverified} counts the cells in that row whose value could not be tied to a
 verbatim span, either because no quote was given, or because the quote is
-not in the chunk or does not carry the value. That column is the one to look
-at before believing a table:
+not in the chunk or does not carry the value. It also counts a field left
+empty because the value given for it could not be read as the field's type
+("120 (60 per arm)" or "3 million" for an integer, "unclear" for a boolean;
+see \code{\link[=gr_field]{gr_field()}}): the document may well report it, so it is not listed as
+not reported. That column is the one to look at before believing a table:
 \code{n_unverified} of zero means every value in the row can be pointed at in the
 document. A row where it is not zero is not wrong, but it is unaudited, and
 the answer is marked \code{partial} to say so. \code{require_quote = TRUE} turns the

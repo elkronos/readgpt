@@ -10,11 +10,20 @@ gr_api_key(key = NULL)
 \item{key}{Optional explicit key.}
 }
 \value{
-The key string. Raises a \code{gr_auth_error} if none is found.
+The key string. Raises a \code{gr_auth_error} if none is found, or if the
+key contains a control character.
 }
 \description{
 Looks in \code{key}, then the \code{readgpt.api_key} option, then \code{OPENAI_API_KEY}.
 Never prints or logs the key.
+}
+\details{
+Spaces and line endings around the key are dropped, so a key read from a
+file with \code{readLines()} or \code{readChar()} works as written. A key with a
+control character inside it (a line break in the middle, say) is refused
+with a \code{gr_auth_error}: sent as it is, it would end the \code{Authorization}
+header and start another one, and every request would fail as a transport
+error that never mentions the key.
 }
 \section{No key set}{
 

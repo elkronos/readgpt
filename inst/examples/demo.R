@@ -39,6 +39,17 @@ cl <- gr_mock_client(function(messages, params) {
 rule <- function(s) cat("\n", strrep("=", 72), "\n", s, "\n", strrep("=", 72), "\n", sep = "")
 question <- "What was revenue in fiscal 2024?"
 
+# Three readers need more than a question, and abort without it: ensemble the
+# readers it combines, extract the fields it fills, screen the criteria it
+# judges against. Looping over gr_readers() without these stopped the demo at
+# 'extract', and every section after it never ran.
+reader_needs <- list(
+  ensemble = list(members = c("retrieve", "map_reduce", "refine")),
+  extract  = list(fields = gr_fields(
+    revenue = gr_field("Revenue in fiscal 2024, in millions of dollars", "number"))),
+  screen   = list(include = "Reports the company's annual revenue"))
+reader_spec <- function(r, ...) c(list(reader = r, ...), reader_needs[[r]])
+
 # ---------------------------------------------------------------------------
 rule("AXIS 1 -- ingest: cleaning presets change what the model ever sees")
 for (p in c("none", "standard", "academic", "legacy")) {
@@ -77,8 +88,7 @@ cat(sprintf("  %-13s %-24s %5s  %s\n", "reader", "signature", "calls", "breakdow
 cat("  ", strrep("-", 68), "\n", sep = "")
 for (r in gr_readers()$name) {
   cl$reset()
-  spec <- list(reader = r, top_k = 3, rerank_candidates = 4, max_rounds = 2, fan_in = 3)
-  if (r == "ensemble") spec$members <- c("retrieve", "map_reduce", "refine")
+  spec <- reader_spec(r, top_k = 3, rerank_candidates = 4, max_rounds = 2, fan_in = 3)
   a <- suppressWarnings(gr_read(ch, question, cl, spec))
   lab <- table(vapply(cl$calls(), function(x) x$label, character(1)))
   cat(sprintf("  %-13s %-24s %5d  %s\n", r, a$signature, sum(lab),
@@ -132,9 +142,8 @@ gr_options(old)
 cat("  every reader survives a dead API          : ")
 dead <- gr_mock_client(function(m, p) stop("503"))
 cat(all(vapply(gr_readers()$name, function(r) {
-  a <- suppressWarnings(tryCatch(gr_read(ch, question, dead,
-        list(reader = r, top_k = 2, members = c("retrieve", "map_reduce"))),
-        error = function(e) NULL))
+  a <- suppressWarnings(tryCatch(gr_read(ch, question, dead, reader_spec(r, top_k = 2)),
+                                 error = function(e) NULL))
   inherits(a, "gr_answer") && is.character(a$answer) && length(a$answer) == 1L
 }, logical(1))), "\n")
 

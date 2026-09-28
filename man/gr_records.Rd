@@ -12,9 +12,12 @@ gr_records(
 )
 }
 \arguments{
-\item{exports}{Paths to \code{.ris}, \code{.txt}, \code{.bib} or \code{.bibtex} files, or a
-directory containing them. Several exports from several databases is the
-normal case and is what the duplicate counts are for.}
+\item{exports}{Paths to \code{.ris}, \code{.txt}, \code{.bib}, \code{.bibtex} or \code{.nbib} files,
+or directories containing them. Several exports from several databases is
+the normal case and is what the duplicate counts are for. The format is
+read from the content, not the extension: RIS, BibTeX, or PubMed's own
+format (what its "Send to: Citation manager" writes, usually \code{.nbib}). A
+file that is not UTF-8 is read as Windows-1252, with a warning naming it.}
 
 \item{files}{A directory of documents, or a character vector of paths, to
 match records against. Optional: a record set is useful before anything has
@@ -28,14 +31,18 @@ back to normalised title and year when a DOI cannot settle it, which is
 what catches the same conference paper indexed twice, or indexed once with
 its DOI and once without. The title fallback also needs the first author's
 surname to agree as a whole name ("Smith, J." and "Smith JA" agree, "Li" and
-"Lin" do not), or, when a record has no authors, the venue. It ignores
-titles shorter than 12 letters ("Reply", "Editorial") and never merges
-records carrying two different DOIs. A record without a DOI is merged with
-one that has a DOI, and a title with fewer than 12 Latin letters or digits
-is merged at all, only when the venues do not disagree, the first authors'
-initials do not differ, and the author or the venue confirms it. The kept row takes
-any field it lacks (the DOI, the journal) from the rows merged into it.
-\code{"none"} keeps everything.}
+"Lin" do not) and the first initials not to differ ("Wang, L." and
+"Wang, H." are two people), or, when a record has no authors, the venue. An
+organisation agrees with its acronym ("WHO" and "World Health
+Organization"). Between two records without DOIs, a surname that is the
+other record's given name ("Li, W." and "Li Wei") also agrees when the
+initial bears it out and the venues do not disagree. It ignores titles
+shorter than 12 letters ("Reply", "Editorial") and never merges records
+carrying two different DOIs. A record without a DOI is merged with one that
+has a DOI, and a title with fewer than 12 Latin letters or digits is merged
+at all, only when the venues do not disagree and the surname (not a given
+name) or the venue confirms it. The kept row takes any field it lacks (the
+DOI, the journal) from the rows merged into it. \code{"none"} keeps everything.}
 }
 \value{
 An object of class \code{gr_records}:

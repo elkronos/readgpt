@@ -252,7 +252,10 @@ test_that("the embeddings endpoint uses the same headers as the chat endpoint", 
   # release behind the other.
   withr::local_envvar(OPENAI_API_KEY = NA)
   withr::local_options(readgpt.api_key = NULL)
-  cl <- gr_client(base_url = "https://gw.invalid", headers = c("api-key" = "corp"))
+  # No retries: an embeddings request that fails in transport is retried like
+  # a model call now (review6 tokenize-embed-04), and this one always fails.
+  cl <- gr_client(base_url = "https://gw.invalid", headers = c("api-key" = "corp"),
+                  max_retries = 0L)
   seen <- capture_post_headers()
 
   expect_error(

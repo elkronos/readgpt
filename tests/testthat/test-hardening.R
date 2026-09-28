@@ -240,10 +240,14 @@ test_that("min_tokens merges runt chunks instead of billing for them", {
   # Mutation survivor: deleting the runt-merge loop changed nothing any test
   # asserted on.
   units <- c(strrep("alpha ", 25), strrep("beta ", 25), "tiny bit")
-  loose <- readgpt:::pack_units(units, max_tokens = 30, min_tokens = 0)
-  tight <- readgpt:::pack_units(units, max_tokens = 30, min_tokens = 10)
+  # A cap of 32, not 30: the merged runt is 28 real tokens, which the heuristic
+  # once put at exactly 30 by charging its paragraph break nothing. Counting
+  # the break (review6 tokenize-embed-06) makes it 31, so at 30 there was
+  # nothing left to demonstrate.
+  loose <- readgpt:::pack_units(units, max_tokens = 32, min_tokens = 0)
+  tight <- readgpt:::pack_units(units, max_tokens = 32, min_tokens = 10)
   expect_lt(length(tight$text), length(loose$text))
-  expect_lte(max(gr_count_tokens(tight$text)), 30)
+  expect_lte(max(gr_count_tokens(tight$text)), 32)
 
   # The invariant, not just the one example: a chunk may sit below the minimum
   # only when absorbing it would have broken the cap.
@@ -1039,10 +1043,11 @@ test_that("ingestion and segmentation are identical under a C locale", {
   expect_identical(c_loc$tokens, utf8$tokens)
   expect_identical(c_loc$chars, utf8$chars)
   expect_identical(c_loc$totals, utf8$totals)
-  # The em dash in the bundled title must be normalised by `ligatures` either
-  # way; leaving it meant the cleaner had silently stopped matching.
-  expect_false(grepl("—", c_loc$text, useBytes = TRUE))
-  expect_false(grepl("—", utf8$text, useBytes = TRUE))
+  # The em dash in the bundled title must come out the same either way. It is
+  # kept as it is: `ligatures` no longer rewrites dashes, since "--" in the
+  # text stopped a quotation that kept the em dash from checking out.
+  expect_identical(c_loc$text, utf8$text)
+  expect_true(grepl("\u2014", c_loc$text, fixed = TRUE, useBytes = TRUE))
 })
 
 test_that("a misspelt setting is not silently parked in `...`", {

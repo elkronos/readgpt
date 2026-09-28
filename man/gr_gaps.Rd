@@ -4,7 +4,13 @@
 \alias{gr_gaps}
 \title{What a body of work does not cover}
 \usage{
-gr_gaps(claims, extraction = NULL, max_cells = 40L, min_reported = 0.5)
+gr_gaps(
+  claims,
+  extraction = NULL,
+  max_cells = 40L,
+  min_reported = 0.5,
+  bib = NULL
+)
 }
 \arguments{
 \item{claims}{A \code{\link[=gr_claims]{gr_claims()}} result.}
@@ -19,6 +25,12 @@ of two fields' sizes.}
 
 \item{min_reported}{A field missing for more than this fraction of studies is
 reported as not reported.}
+
+\item{bib}{Which columns carry bibliographic identity, as in \code{\link[=gr_claims]{gr_claims()}}
+and \code{\link[=gr_synthesise]{gr_synthesise()}}. They are not dimensions of the evidence -- "every
+study reports 'Lancet'" is not a gap in a literature -- and a gap line goes
+to the writing model, which is never told who wrote a study. The columns
+\code{claims} withheld are left out whatever this says; \code{bib} adds to them.}
 }
 \value{
 A data frame of class \code{gr_gaps}: \code{kind}, \code{dimension}, \code{detail}, \code{n}.

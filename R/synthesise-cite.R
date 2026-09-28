@@ -25,14 +25,22 @@
 # to markers rather than printing a name that might be wrong.
 
 #' The conventional names for the bibliographic roles, in preference order.
+#'
+#' Only names that mean nothing else. `date`, `published`, `publication`,
+#' `source` and `url` were here too, and each is as often a finding -- when the
+#' data were collected, publication status, the registry or survey the data came
+#' from, a trial registration -- as a field of a reference. Taken for one, the
+#' column was withheld from every writing and claims prompt and printed as a
+#' reference list: "1. (2010-2014). national cancer registry." Such a column
+#' is used for a reference only when `bib` names it.
 #' @noRd
 .gr_bib_aliases <- list(
   citation = c("citation", "cite", "citation_key", "cite_key"),
   authors  = c("authors", "author"),
-  year     = c("year", "date", "published"),
+  year     = c("year"),
   title    = c("title"),
-  venue    = c("venue", "journal", "publication", "source"),
-  doi      = c("doi", "url")
+  venue    = c("venue", "journal"),
+  doi      = c("doi")
 )
 
 #' Resolve which columns carry bibliographic identity.
@@ -40,14 +48,23 @@
 #' `bib` names them outright. Otherwise the conventional names are looked for,
 #' which is what makes `gr_protocols("bibliography")` work without configuration.
 #' Nothing is guessed from content -- a column called `n` holding "2019" is not
-#' a year.
+#' a year. A role `bib` gives as `NA` or `""` has no column, so a column with
+#' its conventional name is left as a finding (`bib = list(venue = NA)`).
 #' @noRd
 bib_columns <- function(tab, bib = NULL) {
   out <- list()
   for (role in names(.gr_bib_aliases)) {
-    col <- if (!is.null(bib) && !is.null(bib[[role]])) as_chr1(bib[[role]]) else {
-      hit <- intersect(tolower(.gr_bib_aliases[[role]]), tolower(names(tab)))
-      if (length(hit)) names(tab)[match(hit[1], tolower(names(tab)))] else NULL
+    # Membership first: `bib[[role]]` is an error for a role a named character
+    # vector does not carry. NULL leaves the role to the conventional names, as
+    # it always has; NA or "" says there is no such column.
+    col <- if (!is.null(bib) && role %in% names(bib) && !is.null(bib[[role]])) {
+      v <- bib[[role]]
+      if (!length(v) || is.na(v[1])) "" else as_chr1(v)
+    } else {
+      # lower_text(), which lowers the same way in every locale.
+      nms <- lower_text(names(tab))
+      hit <- intersect(lower_text(.gr_bib_aliases[[role]]), nms)
+      if (length(hit)) names(tab)[match(hit[1], nms)] else NULL
     }
     if (!is.null(col) && nzchar(col)) {
       if (!col %in% names(tab)) {
@@ -80,6 +97,9 @@ bib_columns <- function(tab, bib = NULL) {
 #' carries `attr(, "et_al") = TRUE` and bib_key() cites it as "Smith et al."
 #' however many names are left. Counting only the names given cited "Smith et
 #' al." as "(Smith, 2020)" and "Smith J, Okafor A, et al." as a two-author paper.
+#' So does a list cut off with an ellipsis, "Smith J, Okafor A, ...", at its
+#' end or in its middle: the ellipsis has no letter in it, so it was dropped as
+#' an empty slot and the paper cited as Smith and Okafor's alone.
 #' @noRd
 bib_surnames <- function(x) {
   # to_utf8() first, and Unicode classes rather than [[:upper:]] below. An
@@ -88,16 +108,21 @@ bib_surnames <- function(x) {
   # author dropped and an initial printed as a surname.
   s <- trimws(to_utf8(as_chr1(x)))
   if (!nzchar(s)) return(character(0))
-  named <- sub(.gr_bib_et_al_re, "", s, ignore.case = TRUE)
+  # "NR", "NA", "not reported": a table's way of saying there is no author.
+  # The rule for a lone acronym below would cite it as "(NR, 2019)".
+  if (grepl(.gr_bib_placeholder, s, perl = TRUE)) return(character(0))
+  named <- sub(.gr_bib_et_al_re, "", s, perl = TRUE)
+  named <- gsub(.gr_bib_ellipsis_mid, "", named, perl = TRUE)
   sur <- bib_surnames_read(named)
   if (length(sur) && !identical(named, s)) attr(sur, "et_al") <- TRUE
   sur
 }
 
 #' bib_surnames() once any "et al." is off the end. `byline` carries a
-#' byline's reading into the people before a group author.
+#' byline's reading into the people before a group author, and `solo` the
+#' one-word names that had a degree of their own (see below).
 #' @noRd
-bib_surnames_read <- function(s, byline = FALSE) {
+bib_surnames_read <- function(s, byline = FALSE, solo = character(0)) {
   s <- sub("[,;&[:space:]]+$", "", s)
   # Degrees follow a name in a byline ("John Smith, MD; Aisha Okafor, PhD") and
   # were read as its given names, so the whole name was printed as a surname.
@@ -108,7 +133,25 @@ bib_surnames_read <- function(s, byline = FALSE) {
   # by it made one author, Smith, with the given name Okafor.
   if (grepl(.gr_bib_degree_re[["anchor"]], s, perl = TRUE)) {
     byline <- TRUE
+    # A name of one word is a byline's only when a degree came with it
+    # ("Smith MS, Okafor PhD"). "Smith, John, PhD" has two one-word names and
+    # a degree of its own, which is a surname and a given name, or two
+    # surnames, and nothing says which: read as two people it was cited as
+    # "(Smith & John, 2019)".
+    solo <- c(solo, regmatches(s, gregexpr(paste0("\\p{L}[\\p{L}'-]*(?=[[:space:]]+(?:",
+                                                  .gr_bib_degree_re[["any"]], "))"),
+                                           s, perl = TRUE))[[1]])
     s <- bib_strip_degrees(s)
+    # Capitals left in a person's name once the degrees are out are a surname
+    # printed in capitals ("Jun LI", "MA Wei", "Wei WANG") or initials with no
+    # stops, and nothing says which: read the wrong way round, "Jun LI" was
+    # cited as "(Jun, 2020)", a given name. A group author is not a person,
+    # and "III" is a generation, not a name.
+    who <- trimws(strsplit(s, paste0("[,;]|", .gr_bib_and_sep), perl = TRUE)[[1]])
+    who <- who[!grepl(.gr_bib_corporate, who, perl = TRUE)]
+    caps <- unlist(regmatches(who, gregexpr("(?<![\\p{L}.'-])\\p{Lu}{2,4}(?![\\p{L}.'-])", who,
+                                            perl = TRUE)), use.names = FALSE)
+    if (any(!grepl(.gr_bib_suffix_re, caps))) return(NULL)
   }
   # A string of punctuation has nobody in it, and an empty surname renders as
   # "( , 2019)". With no surnames the caller gets no key, and the run falls back
@@ -120,16 +163,16 @@ bib_surnames_read <- function(s, byline = FALSE) {
   # last author after two or more people ("Smith, J., Okafor, A., Lee, K., &
   # the ABC Study Group"), where the key needs only the first surname and
   # "et al.", whatever the group is called.
+  last <- "^(.*)(?:;|,?[[:space:]]*(?:&|\\band\\b)|,)[[:space:]]*([^,;&]+)$"
   if (grepl(.gr_bib_corporate, s, perl = TRUE)) {
     if (!grepl("[,;]", s)) return(s)
-    m <- regmatches(s, regexec("^(.*)(?:;|,?[[:space:]]*(?:&|\\band\\b)|,)[[:space:]]*([^,;&]+)$",
-                               s, perl = TRUE))[[1]]
+    m <- regmatches(s, regexec(last, s, perl = TRUE))[[1]]
     # "for the EPIC Investigators" is on whose behalf the people wrote, not
     # another author, so it does not make two people "et al.".
     if (length(m) != 3L || !grepl(.gr_bib_corporate, m[3], perl = TRUE) ||
         grepl("^(for|on behalf of)\\b", m[3], ignore.case = TRUE, perl = TRUE) ||
         grepl(.gr_bib_corporate, m[2], perl = TRUE)) return(NULL)
-    people <- bib_surnames_read(sub(.gr_bib_et_al_re, "", m[2], ignore.case = TRUE), byline)
+    people <- bib_surnames_read(sub(.gr_bib_et_al_re, "", m[2], perl = TRUE), byline, solo)
     if (length(people) < 2L) return(NULL)
     attr(people, "et_al") <- TRUE
     return(people)
@@ -138,11 +181,17 @@ bib_surnames_read <- function(s, byline = FALSE) {
   # OECD. The initials guard below exists for the "JA" of "Smith JA", and read
   # a lone acronym as initials too, which sent the whole review to markers.
   if (grepl("^\\p{Lu}{2,}\\.?$", s, perl = TRUE)) return(sub(".", "", s, fixed = TRUE))
+  # And a field of several: "WHO and UNICEF", "NICE; SIGN", "FAO, IFAD,
+  # UNICEF, WFP and WHO". Each acronym was read as the initials of the one
+  # before it, so "UNICEF and WHO" was cited as "(UNICEF, 2020)" and the rest
+  # sent the review to markers.
+  orgs <- bib_acronyms(s)
+  if (length(orgs)) return(orgs)
 
   # ", &" and ", and" are ONE separator. Turning "&" into ", " and then
   # splitting on commas left an empty slot before the last author, and the
   # surname-comma-initials split then lost that author.
-  and_sep <- "[[:space:]]*,?[[:space:]]*(?:&|\\band\\b)[[:space:]]*"
+  and_sep <- .gr_bib_and_sep
   pieces <- function(v) {
     v <- trimws(v)
     v[grepl("\\p{L}", v, perl = TRUE) & !grepl(.gr_bib_suffix_re, v)]
@@ -178,10 +227,11 @@ bib_surnames_read <- function(s, byline = FALSE) {
     if (paired) {
       odd
     } else if (any(ini) ||
-               (!byline && n > length(chunks) && any(!grepl("[[:space:]]", toks)))) {
+               (n > length(chunks) && any(!grepl("[[:space:]]", toks) & !toks %in% solo))) {
       # Initials that do not pair with a surname mean the separators and the
       # authors disagree. Bare single words between commas are either surnames
-      # or surname-and-given-name pairs, and nothing here says which.
+      # or surname-and-given-name pairs, and nothing here says which -- in a
+      # byline too, unless the word had a degree of its own.
       NA_character_
     } else {
       vapply(toks, bib_one_name, character(1), USE.NAMES = FALSE)
@@ -191,11 +241,41 @@ bib_surnames_read <- function(s, byline = FALSE) {
   sur <- trimws(sur)
   # A surname that is itself initials, or still carries one, was read from the
   # wrong end of a name -- the "JA" of "Smith JA", the "Lee K" of a list split
-  # in the wrong places.
-  if (any(vapply(sur, function(w) bib_is_initials(w) || bib_has_initial(w), logical(1)))) {
+  # in the wrong places. One with no letter in it is what a stripped degree
+  # left behind, "()" from "Smith, John (PhD)".
+  if (any(vapply(sur, function(w) bib_is_initials(w) || bib_has_initial(w) ||
+                   !grepl("\\p{L}", w, perl = TRUE), logical(1)))) {
     return(NULL)
   }
   unname(sur)
+}
+
+#' Several organisations named by acronym, or NULL.
+#'
+#' Every author an acronym ("WHO", "UNICEF"), and the field not readable as
+#' surnames with their initials: a surname-first list pairs each surname with
+#' initials of four capitals or fewer, between the semicolons and "and"s.
+#' "WHO, UNICEF" cannot be that, since UNICEF is too long for initials; "LEE,
+#' JA" can, and is left to the reading of people, as "UNICEF, WHO" is. A field
+#' holding a degree is left too: "MD and RN" is nobody.
+#' @noRd
+bib_acronyms <- function(s) {
+  slots <- unlist(lapply(strsplit(s, ";", fixed = TRUE)[[1]], strsplit,
+                         split = "[[:space:]]*,?[[:space:]]*(?:&|\\b(?i:and)\\b)[[:space:]]*",
+                         perl = TRUE))
+  chunks <- lapply(slots, function(ch) {
+    v <- trimws(strsplit(ch, ",", fixed = TRUE)[[1]])
+    v[nzchar(v)]
+  })
+  chunks <- chunks[lengths(chunks) > 0L]
+  toks <- unlist(chunks, use.names = FALSE)
+  if (length(toks) < 2L || !all(grepl("^\\p{Lu}{2,}\\.?$", toks, perl = TRUE)) ||
+      any(grepl(.gr_bib_degree_re[["any"]], toks, perl = TRUE))) return(NULL)
+  caps <- function(v) nchar(sub(".", "", v, fixed = TRUE))
+  pairs <- all(lengths(chunks) %% 2L == 0L) &&
+    all(vapply(chunks, function(v) all(caps(v[c(FALSE, TRUE)]) <= 4L), logical(1)))
+  if (pairs) return(NULL)
+  sub(".", "", toks, fixed = TRUE)
 }
 
 #' Words that make an author field an organisation rather than a person.
@@ -204,11 +284,46 @@ bib_surnames_read <- function(s, byline = FALSE) {
   "\\b(Organi[sz]ations?|Associations?|Institutes?|Society|Committee|Council|Agency|",
   "Department|Ministry|Foundation|Collaborat(ion|ive)|Consortium|University|",
   "Cent(re|er)s?|Commission|Federation|Bureau|Administration|Investigators|Group|",
-  "Network|Academy|Alliance|Coalition|Initiative|Task Force|Taskforce)\\b")
+  "Network|Academy|Alliance|Coalition|Initiative|Task Force|Taskforce|Panel|",
+  "Authority|Office|Programme|Program|Secretariat)\\b")
 
-#' "et al." or "and others" closing an author list.
+#' ", &" or ", and" between two authors: one separator, not two.
 #' @noRd
-.gr_bib_et_al_re <- "[,;[:space:]]*(et al\\.?|and others)[.]?$"
+.gr_bib_and_sep <- "[[:space:]]*,?[[:space:]]*(?:&|\\band\\b)[[:space:]]*"
+
+#' An author field that says there is no author.
+#' @noRd
+.gr_bib_placeholder <- paste0("(?i)^(?:n[./]?[arskd]\\.?|none|unknown|not (?:reported|stated|",
+                              "available|given|known)|no authors? (?:listed|given|reported))$")
+
+#' The spaces a list may put in "et al." or around an ellipsis, a no-break
+#' space among them, by code point (see .gr_bib_fold). Inside a bracket.
+#' @noRd
+.gr_bib_space <- paste0("[:space:]", intToUtf8(c(0xA0, 0x202F)))
+
+#' An ellipsis standing for authors left out: "...", ". . .", the one-character
+#' ellipsis, or either in brackets, "[...]".
+#' @noRd
+.gr_bib_ellipsis <- local({
+  e <- sprintf("(?:\\.[%s]?\\.[%s]?\\.|%s)", .gr_bib_space, .gr_bib_space, intToUtf8(0x2026))
+  sprintf("(?:%s|\\[%s\\]|\\(%s\\))", e, e, e)
+})
+
+#' What closes a list that names fewer authors than the paper has: "et al.",
+#' however it is spelt ("et al", "et. al.", "ET AL.", with a no-break space,
+#' with a stray comma after it), "and others", "etc.", or an ellipsis. "et" has
+#' to start a word, so "Brunet AL" is Brunet with the initials A. L., not
+#' "Brun et al.", and "Ahmet Al" is not "Ahm et al.".
+#' @noRd
+.gr_bib_et_al_re <- sprintf(paste0("(?i)(?:(?:^|[%s,;]+)(?:et\\.?[%s]*al\\b\\.?|(?:and|&)[%s]+",
+                                   "(?:others|colleagues)\\b|etc\\b\\.?)|[%s,;]*%s)[%s.,;:]*$"),
+                            .gr_bib_space, .gr_bib_space, .gr_bib_space, .gr_bib_space,
+                            .gr_bib_ellipsis, .gr_bib_space)
+
+#' An ellipsis inside a list, "Smith J, ..., Zhou Y": authors left out there.
+#' @noRd
+.gr_bib_ellipsis_mid <- sprintf("[,;]?[%s]*%s(?=[%s,;])", .gr_bib_space, .gr_bib_ellipsis,
+                                .gr_bib_space)
 
 #' A generational suffix, which is part of no surname and names no author.
 #' @noRd
@@ -223,6 +338,10 @@ bib_surnames_read <- function(s, byline = FALSE) {
 #' Vancouver for M. D. Smith -- and they are removed only from a field an anchor
 #' has already shown to be a byline. Matched with or without their full stops
 #' ("Ph.D."), and case-sensitively, so the surname "Ma" is not the degree "MA".
+#' `surnames` are the initials-like degrees that are also surnames often
+#' printed in capitals, "MA" and "DO": taken out only after a comma (", MA"),
+#' where a surname never stands, since "Wei MA, PhD" is Wei Ma and read as a
+#' degree left the given name to be cited.
 #' @noRd
 .gr_bib_degrees <- list(
   anchor = c("PhD", "DPhil", "MPhil", "MSc", "BSc", "MBChB", "MBBCh", "BChir", "ScD",
@@ -235,7 +354,8 @@ bib_surnames_read <- function(s, byline = FALSE) {
                "OT", "RD", "PHD", "MPH", "MHS", "MPA", "MBA", "MSN", "BSN", "DNP", "DDS",
                "DMD", "DVM", "CPH", "LPN", "CNM", "FNP", "MSW", "MSPH", "MBBS", "FRCP",
                "FRCS", "FRCR", "FACP", "FACS", "FAAP", "FACC", "FAHA", "FESC", "MRCP",
-               "MRCS", "FFPH", "APRN", "CRNA", "LCSW"))
+               "MRCS", "FFPH", "APRN", "CRNA", "LCSW"),
+  surnames = c("MA", "DO"))
 
 #' A regex for a whole degree, full stops optional, as a word of its own.
 #' @noRd
@@ -248,14 +368,26 @@ bib_degree_pattern <- function(tokens) {
 #' @noRd
 .gr_bib_degree_re <- list(
   anchor = bib_degree_pattern(.gr_bib_degrees$anchor),
-  any = bib_degree_pattern(unlist(.gr_bib_degrees, use.names = FALSE)))
+  any = bib_degree_pattern(unlist(.gr_bib_degrees, use.names = FALSE)),
+  strip = bib_degree_pattern(setdiff(unlist(.gr_bib_degrees, use.names = FALSE),
+                                     .gr_bib_degrees$surnames)),
+  after_comma = paste0(",[[:space:]]*", bib_degree_pattern(.gr_bib_degrees$surnames)))
 
 #' A byline with its degrees taken out, and the separators they leave tidied,
 #' so "John Smith, MD, and Aisha Okafor, PhD" reads as "John Smith, and Aisha
 #' Okafor".
 #' @noRd
 bib_strip_degrees <- function(s) {
-  s <- gsub(.gr_bib_degree_re[["any"]], "", s, perl = TRUE)
+  # Repeated, for ", MD, MA, MPH": each comma it strips after is taken with it.
+  repeat {
+    t <- gsub(.gr_bib_degree_re[["after_comma"]], ",", gsub(.gr_bib_degree_re[["strip"]], "", s,
+                                                           perl = TRUE), perl = TRUE)
+    if (identical(t, s)) break
+    s <- t
+  }
+  # The brackets a degree was written in ("John Smith (PhD)"), empty now, were
+  # read as a surname: "(Smith & (), 2019)".
+  s <- gsub("\\([[:space:],;]*\\)|\\[[[:space:],;]*\\]", "", s)
   s <- gsub("[[:space:]]+", " ", s)
   s <- gsub("[[:space:]]*,([[:space:]]*,)+", ",", s)
   s <- gsub("[[:space:]]*,[[:space:]]*(;|$)", "\\1", s)
@@ -299,7 +431,9 @@ bib_is_given <- function(x) {
 #' Vancouver puts the initials after the surname ("Smith JA", "van der Berg P"),
 #' and everything before them is the surname. Otherwise the given names and
 #' initials come first ("John Smith", "J. A. Smith") and the surname is the last
-#' word. Initials on both sides is neither, and gives NA.
+#' word, with the lowercase particles before it ("Pieter van der Berg", "Maria
+#' de la Cruz"), which the last word alone cited as "Berg" and "Cruz".
+#' Initials on both sides is neither, and gives NA.
 #' @noRd
 bib_one_name <- function(e) {
   w <- strsplit(trimws(e), "[[:space:]]+")[[1]]
@@ -312,7 +446,9 @@ bib_one_name <- function(e) {
     if (any(ini[seq_len(k)])) return(NA_character_)
     return(paste(w[seq_len(k)], collapse = " "))
   }
-  w[length(w)]
+  k <- length(w)
+  while (k > 1L && grepl("^\\p{Ll}", w[k - 1L], perl = TRUE)) k <- k - 1L
+  paste(w[k:length(w)], collapse = " ")
 }
 
 #' The citation key for one row.
@@ -350,7 +486,8 @@ bib_key <- function(row, cols, form = c("parenthetical", "narrative")) {
   if (identical(form, "narrative")) sprintf("%s (%s)", who, yr) else sprintf("%s, %s", who, yr)
 }
 
-#' Keys for every row, or NULL when any row lacks one.
+#' Keys for every row, one per row, or NULL when any row lacks one or two
+#' rows cannot be told apart.
 #' @noRd
 bib_keys <- function(used, cols, form = "parenthetical") {
   if (!length(cols)) return(NULL)
@@ -369,15 +506,62 @@ bib_keys <- function(used, cols, form = "parenthetical") {
       # collation of the file names -- so "2019a" named a different paper on
       # another machine.
       if (!is.null(cols$title)) i <- i[bib_order(as.character(used[[cols$title]][i]))]
-      # `sub()` is not vectorised over `replacement` -- it takes the first and
-      # warns -- so the obvious one-liner gave every duplicate the suffix "a"
-      # and left them identical, which is the fault the suffix exists to fix.
-      for (j in seq_along(i)) {
-        keys[i[j]] <- sub("([0-9]{3,4})([)]?)$", paste0("\\1", .gr_bib_suffix(j), "\\2"), keys[i[j]])
+      # One key at a time: `sub()` is not vectorised over `replacement` -- it
+      # takes the first and warns -- so the obvious one-liner gave every
+      # duplicate the suffix "a" and left them identical, which is the fault
+      # the suffix exists to fix. A letter that would give a key another row
+      # already has is skipped: "2019", "2019" and "2019a" were lettered 2019a,
+      # 2019b and 2019a.
+      j <- 0L
+      for (r in i) {
+        repeat {
+          j <- j + 1L
+          cand <- bib_letter(k, .gr_bib_suffix(j))
+          if (!cand %in% keys) break
+        }
+        keys[r] <- cand
       }
     }
   }
+  # Never two rows under one key. render_citations() collapses a run of
+  # markers to its distinct keys, so two studies sharing one were printed as a
+  # single citation -- a claim resting on two studies read as resting on one,
+  # beside two reference entries nobody could tell apart. Markers, if it comes
+  # to that, rather than that.
+  if (anyDuplicated(keys)) return(NULL)
   keys
+}
+
+#' A key with a same-author, same-year letter: after the year ("Smith, 2019a",
+#' "Smith (2019a)"), or after a hyphen when the key does not end in one
+#' ("Smith, in press-a", "Smith, n.d.-b"), as APA letters those. Lettering only
+#' a key that ended in a year left two "in press" papers under one key.
+#' @noRd
+bib_letter <- function(key, letter) {
+  if (grepl("[0-9]{3,4}[)]?$", key)) {
+    return(sub("([0-9]{3,4})([)]?)$", paste0("\\1", letter, "\\2"), key))
+  }
+  sub("([)]?)$", paste0("-", letter, "\\1"), key)
+}
+
+#' The letter bib_keys() added to a key built from a year, or "".
+#'
+#' A key built from authors and a year is "<who>, <year>", and a letter goes
+#' straight after the year, so the letter is the shortest ending of the key,
+#' of letters or a hyphen and letters, that leaves the key ending in the year.
+#' Read off the key rather than matched by pattern: a year printed "2019a" in
+#' the table, or "in press", is not a letter anybody added. Not bib_key() again
+#' per entry, which parses every author list a second time.
+#' @noRd
+bib_key_letter <- function(key, year) {
+  if (is.na(key) || !nzchar(year)) return("")
+  n <- nchar(key)
+  for (k in seq_len(max(0L, n - nchar(year)))) {
+    l <- substring(key, n - k + 1L)
+    if (!grepl("^-?[a-z]+$", l)) break
+    if (endsWith(substr(key, 1L, n - k), year)) return(l)
+  }
+  ""
 }
 
 #' Replace `[study N]` with the rendered citation.
@@ -441,14 +625,19 @@ reference_list <- function(used, keys, cited, cols, style) {
     v <- trimws(as_chr1(used[[cols[[role]]]][i]))
     if (identical(v, "NA")) "" else v
   }
-  # The a/b suffix bib_keys() assigned. `keys` was in this signature and unused,
+  # The a/b letter bib_keys() assigned. `keys` was in this signature and unused,
   # so the prose said "(Smith & Okafor, 2019a)" and "(Smith & Okafor, 2019b)"
   # against two identical reference entries -- neither citation resolvable,
   # which is the one thing a reference list has to do.
-  suffix <- function(i) {
-    if (is.null(keys) || i > length(keys) || is.na(keys[i])) return("")
-    m <- regmatches(keys[i], regexpr("[0-9]{3,4}[a-z]+", keys[i]))
-    if (!length(m)) "" else sub("^[0-9]{3,4}", "", m)
+  has_key <- function(i) !is.null(keys) && i <= length(keys) && !is.na(keys[i])
+  letter <- function(i) if (has_key(i)) bib_key_letter(keys[i], fld(i, "year")) else ""
+  # Under author-year the prose cites a row by its key, so the entry has to be
+  # findable by it. A key taken from a `citation` field is not what the other
+  # fields print -- with no authors or year it was a list of file names, the
+  # 2019a and 2019b nowhere in it -- so such an entry leads with the key itself.
+  # bib_key() takes the citation first whenever it has one, by the same test.
+  by_citation <- function(i) {
+    identical(style, "author-year") && has_key(i) && nzchar(fld(i, "citation"))
   }
   entries <- vapply(hit, function(i) {
     # Each part is trimmed of its own trailing punctuation before the parts are
@@ -460,10 +649,16 @@ reference_list <- function(used, keys, cited, cols, style) {
     # the place for that convention -- it is an artifact of the parser, and
     # printing it makes the output look machine-made.
     authors <- gsub(";[[:space:]]*", ", ", tidy(fld(i, "authors")))
-    bits <- c(authors,
-              if (nzchar(fld(i, "year"))) sprintf("(%s%s)", tidy(fld(i, "year")), suffix(i)) else "",
-              tidy(fld(i, "title")), tidy(fld(i, "venue")), tidy(fld(i, "doi")))
+    lead <- if (by_citation(i)) tidy(keys[i]) else ""
+    # The letter goes on the year when the year is what the key was built
+    # from; a key that leads the entry carries its own.
+    yr <- if (!nzchar(fld(i, "year"))) "" else
+      sprintf("(%s%s)", tidy(fld(i, "year")), if (nzchar(lead)) "" else letter(i))
+    bits <- c(lead, authors, yr, tidy(fld(i, "title")), tidy(fld(i, "venue")), tidy(fld(i, "doi")))
     bits <- bits[nzchar(bits)]
+    # A key with nothing else to say is still traced to its document.
+    doc <- as_chr1(used$document[i])
+    if (identical(bits, lead) && nzchar(lead) && nzchar(doc)) bits <- c(lead, doc)
     line <- paste(bits, collapse = ". ")
     if (!nzchar(line)) line <- as_chr1(used$document[i])
     paste0(line, ".")

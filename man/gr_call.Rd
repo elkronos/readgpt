@@ -27,7 +27,14 @@ which is wrapped as one user message. \code{role} may be \code{"system"},
 \item{model}{Overrides the client default.}
 
 \item{max_output}{Maximum completion tokens. Clamped to the model's limit
-and to what the context window actually leaves after the prompt.}
+and to what the context window actually leaves after the prompt. A value
+that is not a single number (\code{NA}, text) warns and uses the model's limit,
+as \code{NULL} does. For a reasoning model (see \code{\link[=gr_model_info]{gr_model_info()}}) the cap an
+API request carries also bounds the model's hidden reasoning, so a small
+cap is sent as at least 2048 tokens (within the model's limit and the
+context window); otherwise the reasoning can use all of it and the reply
+come back empty. The reply is then no longer held to the smaller cap by the
+API, and the extra tokens are billed if the model uses them.}
 
 \item{temperature}{Sampling temperature; dropped automatically for reasoning
 models that reject it.}

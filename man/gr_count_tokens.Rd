@@ -13,8 +13,9 @@ gr_count_tokens(text, model = NULL)
 encoding-specific (e.g. \code{"tiktoken"}).}
 }
 \value{
-Integer vector of token counts: a conservative upper bound under the
-default tokenizer.
+Integer vector of token counts: under the default tokenizer, an
+estimate built to err high (see above for the one kind of text where it
+can fall short).
 }
 \description{
 Vectorised over \code{text}. Always returns a non-negative integer vector of the
@@ -23,10 +24,24 @@ same length; blank and \code{NA} entries count as 0.
 \details{
 The default \code{"heuristic"} tokenizer is a deliberate \strong{over-estimate}, not an
 exact count: it classifies each word, sums the per-script contributions, and
-adds a small per-message framing allowance. Overcounting wastes a little
-context; undercounting produces a hard API failure after you have paid for the
-request. For exact counts install reticulate plus Python \code{tiktoken} and call
-\code{gr_set_tokenizer("tiktoken")}.
+adds a small per-message framing allowance. For numbers, tables, code and
+short lines it also counts the pieces a BPE tokenizer splits text into first
+(digit groups, punctuation runs, line breaks, indentation) and keeps the
+larger figure, line by line. Overcounting wastes a little context;
+undercounting produces a hard API failure after you have paid for the
+request. Rare long words (technical and medical vocabulary) can still come in
+under the real count, by about a tenth for a table of medical terms; that is
+what the \code{safety_margin} of \code{\link[=gr_budget]{gr_budget()}} is for.
+
+For counts from OpenAI's own tokenizer install reticulate plus Python
+\code{tiktoken} and call \code{gr_set_tokenizer("tiktoken")}. Given \code{model}, it counts
+in that model's encoding. Without one, which is how the package's own budgets
+call it, it counts in both encodings current OpenAI models use (\code{cl100k_base}
+and \code{o200k_base}) and keeps the larger, so the count holds for any of them.
+Models from other providers tokenize differently, and for them it is an
+estimate without the heuristic's padding. Text that spells a special token
+(\verb{<|endoftext|>}, in a paper about language models) is counted as the plain
+text it is.
 }
 \examples{
 gr_count_tokens(c("the quick brown fox", "", "a much longer sentence than that one"))

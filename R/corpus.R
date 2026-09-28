@@ -230,14 +230,17 @@ format_trace_cost <- function(trace) {
 #'   read in full is written, so one that failed (see `status` below) is read
 #'   again by the next run. An entry is restored only for the same document,
 #'   question, recipe, tokenizer and client configuration: model, endpoint,
-#'   `extra_body`, embedding model and embedder. An entry that is not plain
+#'   `extra_body`, embedding model and embedder. A file is the same document
+#'   when its path, size and content are, whatever its modification time or
+#'   the session's time zone. An entry that is not plain
 #'   data, as a file planted in a shared directory could be, is ignored and the
 #'   document read again.
 #' @param on_error `"continue"` (default) records the failure and moves on;
 #'   `"stop"` aborts. One unreadable file in two hundred should not cost you the
 #'   other hundred and ninety-nine.
 #' @param max_total_usd Stop once the run has spent this much, marking the
-#'   remaining documents `"skipped"`. This is a *corpus* ceiling and is separate
+#'   remaining documents `"skipped"`, except any restored from `store`, which
+#'   costs nothing. This is a *corpus* ceiling and is separate
 #'   from `gr_options(max_cost_usd =)`, which is a limit per document.
 #'   It needs a model with a registered price: against one without, cost is
 #'   *unknown* rather than zero, the ceiling cannot be enforced, and you get a
@@ -248,7 +251,12 @@ format_trace_cost <- function(trace) {
 #'   the model and says how to register it. `cost_usd` stays `NA` either way,
 #'   since what those documents cost in full is not known.
 #' @param max_total_calls Stop *before* a document once the run has made this
-#'   many model calls, marking the rest `"skipped"`. The counterpart to
+#'   many requests, marking the rest `"skipped"`, except any restored from
+#'   `store`, which makes no request. Requests are counted as
+#'   `gr_options(max_calls =)` counts them: model calls and requests to an
+#'   embeddings endpoint alike, so a document read with `"needle"` through an
+#'   API embedder spends more of it than its model calls alone, and more than
+#'   the "model calls" a printed trace shows. The counterpart to
 #'   `max_total_usd` for runs whose model has no registered price, and the only
 #'   ceiling that bounds the run rather than each document:
 #'   `gr_options(max_calls =)` is per document, so a corpus can make
@@ -302,7 +310,12 @@ format_trace_cost <- function(trace) {
 #' error, the partial answer is in `answers`, and a resumed run reads it again
 #' rather than restoring what the failure left. A request the pipeline recovered
 #' from does not count: an embeddings request that failed and was replaced by
-#' lexical vectors leaves the document `"ok"`, with `partial` set. A row that a
+#' lexical vectors leaves the document `"ok"` and stored. `partial` is set when
+#' those vectors ranked the chunks the reader sent (`retrieve`, `rerank`,
+#' `iterative`), but not when they only placed a semantic segmenter's cuts;
+#' that, like a proposition batch kept as written, shows in `warnings`, and a
+#' contextual header that could not be written only in the trace's `errors`
+#' (see [gr_trace()]). A row that a
 #' limit or a failed request stopped keeps `document_id`, `reader` and the chunk
 #' counts, since the text was read; only `answer` and `not_found` are left `NA`.
 #' A restored row keeps the numbers from when that document was first read, so
@@ -316,7 +329,9 @@ format_trace_cost <- function(trace) {
 #' of unread pages) is identical to one already read this run is **not read
 #' again**: its row is filled in from the first copy, except for `warnings`,
 #' which are its own; `status` is `"duplicate"` and `duplicate_of`
-#' names the row it repeats. Nothing is dropped (every source you passed still
+#' names the row it repeats. That is decided afresh in every run, a restored
+#' row included: a copy whose first copy is not in this run is the first copy
+#' now. Nothing is dropped (every source you passed still
 #' has a row), so `subset(x$summary, is.na(duplicate_of))` is the deduplicated
 #' set and `sum(!is.na(x$summary$duplicate_of))` is the number to report as
 #' removed.
@@ -373,6 +388,11 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
                          keep_answers = TRUE, recursive = FALSE, trace = NULL, ...) {
   on_error <- match.arg(on_error)
   if (!is_nonblank(question)) gr_abort("`question` must be a non-empty string.")
+  # Labelled UTF-8 when it is, before anything keeps or pastes it. A question
+  # read from a file without an encoding is marked "unknown", and in a C
+  # locale the traces wrote it to JSON as "caf<c3><a9>", as paste() writes it
+  # beside document text.
+  question <- mark_utf8(question)
   sources <- corpus_sources(sources, recursive = recursive)
   if (!length(sources)) {
     below <- attr(sources, "below") %||% character(0)
@@ -468,6 +488,13 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
   # `max_total_usd` is held to when the only models without a price made
   # embeddings requests. See corpus_cost().
   spent_priced <- 0
+  # What the calls a replay answered from a recording cost when they were
+  # recorded. Nothing is spent on them, so it is in neither figure above, but
+  # it counts against `max_total_usd` as it counts against max_cost_usd (see
+  # budget_spent()): otherwise a replay of a run the ceiling stopped never
+  # reached it, went past the document the run stopped at, and asked for calls
+  # the recording does not hold. It is non-zero only when replaying such a run.
+  replayed <- 0
   unpriced_embed <- character(0)
   unpriced_chat <- character(0)
   stopped <- FALSE
@@ -480,25 +507,10 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
     src <- sources[[i]]
     lab <- labels[[i]]
 
-    # Checked BEFORE the document, not after it: a call ceiling that is only
-    # noticed once the calls are made is not a ceiling. (The cost one below can
-    # only be checked afterwards -- what a document costs is not knowable until
-    # it has been read -- which is why they are enforced in different places.)
-    if (!stopped && !is.null(max_total_calls) && trace$calls >= max_total_calls) {
-      stopped <- TRUE
-      gr_warn(sprintf(paste0("Stopped before document %d of %d: the run has made %d call(s), at ",
-                             "or above the %s `max_total_calls` ceiling. The remaining documents ",
-                             "are marked 'skipped'."),
-                      i, length(sources), trace$calls,
-                      format(max_total_calls, scientific = FALSE, trim = TRUE)),
-              class = "gr_corpus_call_cap")
-    }
-    if (stopped) {
-      rows[[i]] <- corpus_row(lab, status = "skipped",
-                              error = "corpus ceiling reached before this document")
-      next
-    }
-
+    # The store first: restoring a document makes no call, so no ceiling has
+    # anything to stop there. Checked after the ceilings, a resumed run with a
+    # new paper and max_total_calls = 1 spent the one call on the new paper and
+    # marked every paper already in the store "skipped", with no values.
     key <- if (is.null(store)) NULL else corpus_key(src, question, rec, client)
     restored <- if (is.null(key)) NULL else corpus_restore(store, key)
     if (!is.null(restored)) {
@@ -508,12 +520,9 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
       if (is.null(restored$row$document_id)) {
         restored$row$document_id <- as_chr1(restored$doc_hash, NA_character_)
       }
-      if (is.null(restored$row$duplicate_of)) restored$row$duplicate_of <- NA_character_
       if (is.null(restored$row[["warnings", exact = TRUE]])) {
         restored$row$warnings <- NA_character_
       }
-      rows[[i]] <- restored$row
-      if (keep_answers && !is.null(restored$answer)) answers[[lab]] <- restored$answer
       # A restored document is never ingested, so its text is not available to
       # hash here. The hash travels in the store entry instead -- otherwise a
       # resumed run would restore the first copy and then pay to read the second,
@@ -523,10 +532,49 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
       # becomes the anchor -- otherwise a third copy would be reported as a
       # duplicate of a duplicate and the chain would have to be followed to find
       # the document actually read.
-      if (!is.null(restored$doc_hash) && is.na(restored$row$duplicate_of) &&
-          !exists(restored$doc_hash, envir = seen, inherits = FALSE)) {
-        assign(restored$doc_hash, i, envir = seen)
-      }
+      #
+      # Whether it is a duplicate is decided in THIS run, from the hash. The
+      # `duplicate_of` it was saved with names a row of the run that saved it:
+      # kept as it was, a copy whose first copy is not in this run (dropped
+      # from the corpus, or replaced) named a document that is not here, no row
+      # of the study had duplicate_of NA, and the study fell out of the
+      # distinct set. And a first copy restored after its duplicate was
+      # counted twice.
+      h <- restored$doc_hash
+      prior <- if (is.null(h)) NULL else mget(h, envir = seen, ifnotfound = list(NULL))[[1]]
+      restored$row$duplicate_of <- if (!is.null(prior)) labels[[prior]] else
+        if (!is.null(h)) NA_character_ else
+          corpus_stored_duplicate(restored$row[["duplicate_of", exact = TRUE]],
+                                  labels[seq_len(i - 1L)])
+      if (!is.null(h) && is.null(prior)) assign(h, i, envir = seen)
+      rows[[i]] <- restored$row
+      if (keep_answers && !is.null(restored$answer)) answers[[lab]] <- restored$answer
+      next
+    }
+
+    # Checked BEFORE the document, not after it: a call ceiling that is only
+    # noticed once the calls are made is not a ceiling. (The cost one below can
+    # only be checked afterwards -- what a document costs is not knowable until
+    # it has been read -- which is why they are enforced in different places.)
+    if (!stopped && !is.null(max_total_calls) && trace$calls >= max_total_calls) {
+      stopped <- TRUE
+      # Named as requests, with the two kinds apart: the ceiling counts
+      # embeddings requests as gr_options(max_calls =) does, and "3 call(s)"
+      # beside a trace that printed "1 model calls" read as a miscount.
+      embed <- as.integer(gr_trace_summary(trace)$embed_calls)
+      gr_warn(sprintf(paste0("Stopped before document %d of %d: the run has made %d request(s)%s, ",
+                             "at or above the %s `max_total_calls` ceiling, which counts ",
+                             "embeddings requests as well as model calls. The remaining ",
+                             "documents are marked 'skipped', except those restored from ",
+                             "`store`, which costs nothing."),
+                      i, length(sources), trace$calls,
+                      if (embed > 0L) sprintf(" (%s)", format_call_counts(trace)) else "",
+                      format(max_total_calls, scientific = FALSE, trim = TRUE)),
+              class = "gr_corpus_call_cap")
+    }
+    if (stopped) {
+      rows[[i]] <- corpus_row(lab, status = "skipped",
+                              error = "corpus ceiling reached before this document")
       next
     }
 
@@ -594,9 +642,13 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
       gr_warn(sprintf("Document '%s' failed: %s", lab, conditionMessage(e)),
               class = "gr_document_failed")
       e
-    }), gr_warning = doc_rec$record)
+    },
+    # `finally`, not a line after this call: on_error = "stop" and an
+    # authentication error rethrow, and the calls this document had already
+    # made -- paid for -- were then missing from the run's trace, and from the
+    # parent the on.exit above folds it into.
+    finally = trace_absorb(trace, sub)), gr_warning = doc_rec$record)
 
-    trace_absorb(trace, sub)
     secs <- round(as.numeric(difftime(Sys.time(), started, units = "secs")), 2)
     # NOT na.rm = TRUE. gr_trace_cost() returns NA for a model with no registered
     # price precisely so that a total cannot quietly omit it; dropping the NA here
@@ -606,6 +658,7 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
     cost <- doc_cost$usd
     spent <- spent + cost
     spent_priced <- spent_priced + doc_cost$priced
+    replayed <- replayed + as_num1(sub$replayed_usd, 0)
     unpriced_chat <- union(unpriced_chat, doc_cost$unpriced)
     unpriced_embed <- setdiff(union(unpriced_embed, doc_cost$unpriced_embed), unpriced_chat)
 
@@ -693,14 +746,22 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
                       if (length(unpriced_embed) == 1L) "its" else "their", unpriced_embed[[1]]),
               class = "gr_corpus_cost_floor")
     }
-    if (enforced && spent_priced >= max_total_usd) {
+    if (enforced && spent_priced + replayed >= max_total_usd) {
       stopped <- TRUE
       if (i < length(sources)) {
-        gr_warn(sprintf(paste0("Stopped after %d of %d documents: the run has spent %s ",
+        # On the run's trace, as a limit that stops a read is on the read's: a
+        # saved corpus trace then says the run was cut short, and a replay of
+        # it counts its replayed calls (above) and stops at this document too.
+        trace$budget_stop <- TRUE
+        trace$stop_reason <- "cost"
+        gr_warn(sprintf(paste0("Stopped after %d of %d documents: the run has %s ",
                                "$%.4f, at or above the $%.4f `max_total_usd` ceiling. The ",
-                               "remaining documents are marked 'skipped'."),
-                        i, length(sources), if (length(unpriced_embed)) "at least" else "about",
-                        spent_priced, max_total_usd),
+                               "remaining documents are marked 'skipped', except those ",
+                               "restored from `store`, which costs nothing."),
+                        i, length(sources),
+                        if (replayed > 0) "counted what the replayed calls cost when recorded,"
+                        else if (length(unpriced_embed)) "spent at least" else "spent about",
+                        spent_priced + replayed, max_total_usd),
                 class = "gr_corpus_cost_cap")
       }
     }
@@ -738,7 +799,7 @@ print.gr_corpus <- function(x, ...) {
                 sum(done), sum(s$not_found[done], na.rm = TRUE),
                 sum(s$partial[done], na.rm = TRUE)))
   }
-  cat(sprintf("  this run: %d model call(s), %s\n", x$trace$calls,
+  cat(sprintf("  this run: %s, %s\n", format_call_counts(x$trace),
               format_trace_cost(x$trace)))
   warned <- if (is.null(s$warnings)) 0L else sum(!is.na(s$warnings))
   if (warned) {
@@ -767,8 +828,13 @@ print.gr_corpus <- function(x, ...) {
 corpus_label <- function(source, inline = "<inline text>", root = NULL) {
   if (!is.character(source) || length(source) != 1L || is.na(source)) return(inline)
   # The address without its scheme: a file name alone would make two sites'
-  # report.pdf one label.
-  if (is_url(source)) return(sub("^https?://", "", trimws(source), ignore.case = TRUE))
+  # report.pdf one label. And as url_shown() shows it, without a user name and
+  # password and with the query as a fingerprint: the label is summary$document,
+  # the name in `answers` and in every table built on them, and a presigned
+  # link's query holds its credentials. Two links that differ only in the
+  # query keep different fingerprints, so their rows stay apart. The store is
+  # keyed by the address itself (corpus_key()), not by this.
+  if (is_url(source)) return(sub("^https?://", "", url_shown(trimws(source)), ignore.case = TRUE))
   if (grepl("\n", source, fixed = TRUE)) return(inline)
   if (nchar(source, type = "bytes") >= 1000L) return(inline)
   if (file.exists(source)) {
@@ -1023,16 +1089,23 @@ corpus_warnings <- function(w) {
 
 #' Identity of one (document, question, pipeline, model) job.
 #'
-#' A file is identified by path, size and mtime, so an edited document is a new
-#' job rather than a stale hit -- the same rule the ingest cache uses. Anything
-#' that is not an existing file is identified by its own text.
+#' A file is identified by path, size and a hash of its bytes, so an edited
+#' document is a new job rather than a stale hit. Anything that is not an
+#' existing file is identified by its own text.
 #' @noRd
 corpus_key <- function(src, question, rec, client) {
   ident <- if (is.character(src) && length(src) == 1L && !is.na(src) &&
                nchar(src, type = "bytes") < 1000L && file.exists(src)) {
     info <- file.info(src)
+    # The bytes, not the mtime. format(mtime) is local-time text to the second:
+    # resumed in another time zone (cron in UTC, a server, a colleague) every
+    # entry missed and every document was paid for again, and a file rewritten
+    # within the same second at the same size came back "restored" with the
+    # answer to its old text. A hash is the same wherever and whenever the
+    # file is read, and changes whenever the file does, on a filesystem that
+    # keeps mtime to the second as on any other.
     list("file", normalizePath(src, winslash = "/", mustWork = FALSE),
-         info$size, format(info$mtime))
+         info$size, unname(tools::md5sum(src)))
   } else {
     list("text", key_text(as.character(src)))
   }
@@ -1042,7 +1115,8 @@ corpus_key <- function(src, question, rec, client) {
   embedder <- tryCatch(as_chr1(resolve_embedder(client)$name, "?"),
                        error = function(e) as_chr1(gr_options("embedder"), "?"))
   # v3: the client's extra_body and the embedding configuration joined the key.
-  gr_hash(list("readgpt-corpus-v3", ident, key_text(question),
+  # v4: a file is identified by its content rather than its mtime.
+  gr_hash(list("readgpt-corpus-v4", ident, key_text(question),
                # The tokenizer, because it is what turns `max_tokens = 300` into
                # an actual chunk boundary: the same document under "chars" and
                # under "words" segments differently and is answered differently.
@@ -1083,6 +1157,18 @@ simplify_sources <- function(x) {
   if (all(vapply(x, function(e) is.character(e) && length(e) == 1L, logical(1)))) {
     unlist(x, use.names = FALSE)
   } else x
+}
+
+#' The `duplicate_of` a store entry without a hash was saved with, when it
+#' names a row earlier in this run; NA otherwise.
+#'
+#' Without a hash nothing says whether its first copy is still the same text,
+#' so a label that is not in this run is dropped rather than left naming a row
+#' that does not exist.
+#' @noRd
+corpus_stored_duplicate <- function(stored, earlier) {
+  d <- as_chr1(stored, NA_character_)
+  if (!is.na(d) && d %in% earlier) d else NA_character_
 }
 
 #' @noRd

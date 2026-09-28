@@ -141,14 +141,11 @@ test_that("an endpoint without embeddings no longer fails every document of a co
   # The answer still says what the fallback cost it, exactly as before.
   expect_true(all(vapply(out$answers, function(x) isTRUE(x$partial), logical(1))))
 
-  # The document-level check is group corpus's half of contract C1. Until it
-  # lands, the rest of this test cannot pass in this tree.
-  probe <- gr_trace()
-  probe$errors <- list(list(step = 1L, label = "embed.request", error = "HTTP 404",
-                            recovered = TRUE))
-  if (!is.null(readgpt:::failed_note(list(notes = list()), probe))) {
-    skip("failed_note() does not pass over recovered failures yet (contract C1).")
-  }
+  # The document-level half of contract C1 (failed_note() passes over a
+  # recovered failure). Asserted outright: this test used to probe
+  # failed_note() first and skip when it did not, so the one regression it
+  # guards against reported a skip instead of a failure (review 5,
+  # corpus-trace-5).
   expect_identical(out$summary$status, c("ok", "ok"))
   expect_true(all(is.na(out$summary$error)))
   expect_length(list.files(store, recursive = TRUE), 2L)

@@ -120,33 +120,32 @@ seg_fixed <- function(doc, spec, client, trace) {
   # Build each window by measuring, not by assuming a constant token/word ratio.
   # The ratio estimate produced windows over the cap, which the enforcement pass
   # then re-cut, destroying the overlap.
-  txt <- character(0); starts <- integer(0)
+  # Each window's end and each overlap are found by longest_fit(), not by
+  # growing one word at a time: that re-counted the whole window at every word,
+  # so a window cost O(W^2) and a 1e5-token cap took minutes on a long report.
+  n <- length(w)
+  count_words <- function(a, b) gr_count_tokens(paste(w[a:b], collapse = " "))
+  txt <- list()
   i <- 1L
-  while (i <= length(w)) {
-    j <- i; last <- i - 1L
-    while (j <= length(w)) {
-      if (gr_count_tokens(paste(w[i:j], collapse = " ")) > spec$max_tokens) break
-      last <- j; j <- j + 1L
-    }
-    if (last < i) last <- i                       # always consume at least one word
-    txt <- c(txt, paste(w[i:last], collapse = " "))
-    starts <- c(starts, i)
-    if (last >= length(w)) break
-    # Step forward by the window minus the requested overlap, measured in words.
-    back <- 0L
-    while (back < (last - i) &&
-           gr_count_tokens(paste(w[(last - back):last], collapse = " ")) < spec$overlap_tokens) {
-      back <- back + 1L
-    }
-    nxt <- max(last - back + 1L, i + 1L)
-    i <- nxt
+  while (i <= n) {
+    # Always consume at least one word.
+    last <- i - 1L + max(longest_fit(n - i + 1L, function(k)
+      count_words(i, i + k - 1L) <= spec$max_tokens), 1L)
+    txt[[length(txt) + 1L]] <- paste(w[i:last], collapse = " ")
+    if (last >= n) break
+    # Step forward by the window minus the requested overlap, measured in
+    # words: the longest tail of the window under overlap_tokens, leaving at
+    # least one word of progress.
+    back <- longest_fit(last - i, function(k)
+      count_words(last - k + 1L, last) < spec$overlap_tokens)
+    i <- max(last - back + 1L, i + 1L)
   }
-  # A final window wholly contained in its predecessor is a duplicate API call.
-  if (length(txt) > 1L && length(starts) > 1L &&
-      grepl(txt[length(txt)], txt[length(txt) - 1L], fixed = TRUE)) {
-    txt <- txt[-length(txt)]
-  }
-  new_chunks(txt, "fixed", spec)
+  # No dedupe of the final window. It checked whether that window's TEXT
+  # occurred inside the one before, but the final window always ends at the
+  # last word, past where the one before ended, so it is never a positional
+  # duplicate: every time the check fired it deleted text found in no other
+  # chunk -- a closing "Motion carried." that repeats earlier wording.
+  new_chunks(unlist(txt, use.names = FALSE), "fixed", spec)
 }
 
 #' @noRd
@@ -183,21 +182,44 @@ seg_sentence <- function(doc, spec, client, trace) {
 #' @noRd
 seg_recursive <- function(doc, spec, client, trace) {
   seps <- spec$separators %||% c("\n\n\n", "\n\n", "\n", ". ", "; ", ", ", " ")
-  split_rec <- function(txt, depth) {
-    if (gr_count_tokens(txt) <= spec$max_tokens) return(txt)
-    if (depth > length(seps)) return(hard_split(txt, spec$max_tokens))
+  seps <- seps[!is.na(seps)]
+  # Every level cuts just AFTER its separator, which stays on the piece before
+  # it, so the pieces joined with "" are the text exactly. strsplit() drops a
+  # trailing empty field, so pasting the separator back onto all but the last
+  # part lost the one a part ENDED with: a clause ending ". " re-split on " "
+  # came back as "writing.", which met the next piece as "writing.Payment".
+  # Past the caller's separators come sentence ends and then any whitespace,
+  # cut the same way (by lookbehind, so the whitespace stays), then characters.
+  # hard_split() rejoined its pieces with spaces of its own, which a ""
+  # joiner then dropped.
+  cuts <- c(seps, "(?<=[.!?]\\s)(?=\\S)", "(?<=\\s)(?=\\S)")
+  split_at <- function(txt, depth) {
+    if (depth > length(seps)) return(strsplit(txt, cuts[depth], perl = TRUE)[[1]])
     sep <- seps[depth]
     parts <- strsplit(txt, sep, fixed = TRUE)[[1]]
+    paste0(parts, c(rep(sep, length(parts) - 1L), if (endsWith(txt, sep)) sep else ""))
+  }
+  # A blank part (the separator run on its own) joins the part before it, or
+  # the one after when it comes first, so no whitespace between words is lost.
+  glue_blank <- function(parts) {
+    ok <- has_content(parts)
+    if (all(ok) || !any(ok)) return(parts)
+    grp <- pmax(cumsum(ok), 1L)
+    vapply(split(parts, grp), paste, character(1), collapse = "", USE.NAMES = FALSE)
+  }
+  split_rec <- function(txt, depth) {
+    if (gr_count_tokens(txt) <= spec$max_tokens) return(txt)
+    if (depth > length(cuts)) {
+      return(split_by_budget(strsplit(txt, "", fixed = TRUE)[[1]], "", spec$max_tokens))
+    }
+    parts <- glue_blank(split_at(txt, depth))
     if (length(parts) <= 1L) return(split_rec(txt, depth + 1L))
-    # Re-attach the separator so the text is not silently altered.
-    parts <- paste0(parts, c(rep(sep, length(parts) - 1L), ""))
-    parts <- parts[has_content(parts)]
     unlist(lapply(parts, function(p) {
       if (gr_count_tokens(p) <= spec$max_tokens) p else split_rec(p, depth + 1L)
     }), use.names = FALSE)
   }
-  pieces <- split_rec(doc$text, 1L)
-  # The separator is already re-attached to each piece, so pieces join with "".
+  pieces <- split_rec(mark_utf8(doc$text), 1L)
+  # The separator is already attached to each piece, so pieces join with "".
   # But an overlap tail is rebuilt from words and carries no trailing separator,
   # so joining it with "" welded it onto the next word ("delta" + "alpha" ->
   # "deltaalpha"), destroying both real words. Use a space when overlap is on.
@@ -228,8 +250,14 @@ seg_structural <- function(doc, spec, client, trace) {
   is_head <- rep(FALSE, nrow(b))
   # Fall back to detecting headings inline when the extractor found none.
   if (all(is.na(sec))) {
-    is_head <- grepl("^(#{1,6}[ \t]|\\d+(\\.\\d+)*[ \t.)]+[A-Z]|[A-Z][A-Z0-9 ,'\u2019&/-]{6,}$)",
-                     b$text, perl = TRUE) & gr_count_tokens(b$text) < 30L
+    # Capitals of any script, not A-Z: with ASCII classes a French heading
+    # starting with an accented capital, or any Cyrillic one, was never a
+    # heading, so its text was filed, and prefixed, under the heading before
+    # it -- and a Russian document found none at all. After a number, a letter
+    # of a script without case (Chinese, Arabic) also starts a heading.
+    is_head <- grepl(paste0("^(#{1,6}[ \t]|\\d+(\\.\\d+)*[ \t.)]+[\\p{Lu}\\p{Lt}\\p{Lo}]|",
+                            "\\p{Lu}[\\p{Lu}\\p{N} ,'\u2019&/-]{6,}$)"),
+                     mark_utf8(b$text), perl = TRUE) & gr_count_tokens(b$text) < 30L
     # The label is the heading line as written, less any markdown hashes. The
     # heading block is dropped from the body below and this label is prefixed
     # in its place, so it has to carry the whole line: the normalised form
@@ -320,16 +348,40 @@ seg_page <- function(doc, spec, client, trace) {
     out$method <- "page->paragraph"
     return(out)
   }
-  pages <- split(seq_len(nrow(b)), b$page)
+  has_page <- !is.na(b$page)
+  pages <- split(which(has_page), b$page[has_page])
+  # Blocks with no page when the rest have one (a registered extractor may do
+  # this). split() on the page drops NA silently, so their text reached no
+  # chunk. Each unbroken run of them becomes its own chunk, page NA, after the
+  # page it follows in the document.
+  pageless <- which(!has_page)
+  groups <- unname(pages); label <- names(pages)
+  if (length(pageless)) {
+    runs <- unname(split(pageless, cumsum(c(TRUE, diff(pageless) != 1L))))
+    after <- vapply(runs, function(r) {
+      prev <- which(has_page[seq_len(r[1] - 1L)])
+      if (length(prev)) as.character(b$page[max(prev)]) else ""
+    }, character(1))
+    groups <- runs[after == ""]; label <- rep(NA_character_, length(groups))
+    for (nm in names(pages)) {
+      extra <- runs[after == nm]
+      groups <- c(groups, list(pages[[nm]]), extra)
+      label <- c(label, nm, rep(NA_character_, length(extra)))
+    }
+    gr_warn(sprintf(paste0("%d block(s) have no page number, though the rest of the document ",
+                           "does; each run of them is kept as a chunk of its own with page NA, ",
+                           "so no text is lost."), length(pageless)))
+  }
   out <- character(0); pg <- integer(0); sc <- character(0); bid <- integer(0)
-  for (nm in names(pages)) {
-    idx <- pages[[nm]]
+  for (g in seq_along(groups)) {
+    idx <- groups[[g]]
+    nm <- label[g]
     joined <- paste(b$text[idx], collapse = "\n\n")
     # A page over the cap is split rather than sent oversized, but the split is
     # reported so the user knows the page/chunk correspondence broke.
     parts <- if (gr_count_tokens(joined) > spec$max_tokens) {
       gr_msg(sprintf("Page %s exceeds the %d-token cap; splitting it into parts.",
-                     nm, spec$max_tokens))
+                     if (is.na(nm)) "(none)" else nm, spec$max_tokens))
       hard_split(joined, spec$max_tokens)
     } else joined
     out <- c(out, parts)
@@ -385,7 +437,21 @@ seg_semantic <- function(doc, spec, client, trace) {
   ends <- c(cut_after, length(units))
   pieces <- vapply(seq_along(starts), function(i)
     paste(units[starts[i]:ends[i]], collapse = " "), character(1))
+  # Each piece takes the provenance its WHOLE span agrees on, by meta_over()'s
+  # rule, not its first sentence's. Semantic boundaries ignore pages, so a
+  # piece often runs from one page onto the next, and naming the first page
+  # sent a citation of a sentence on page 2 to page 1. Done column by column
+  # rather than one meta_over() per piece, which is slow on a long document.
   pmeta <- umeta[starts, , drop = FALSE]
+  multi <- which(ends > starts)
+  for (nm in names(pmeta)) {
+    v <- umeta[[nm]]
+    mixed <- vapply(multi, function(k) {
+      u <- v[starts[k]:ends[k]]
+      length(unique(u[!is.na(u)])) > 1L
+    }, logical(1))
+    pmeta[[nm]][multi[mixed]] <- NA
+  }
   # Respect the hard cap and the minimum: semantic boundaries decide *where*,
   # the packer decides *how much*.
   packed <- pack_units(pieces, spec$max_tokens, spec$overlap_tokens, spec$min_tokens,
@@ -403,9 +469,9 @@ seg_semantic <- function(doc, spec, client, trace) {
 }
 
 #' The most one segmentation request can cost: `input_tokens` of prompt and a
-#' reply at `max_output`, or the model's own ceiling if lower, at the client
-#' model's price. NA when the model has no price, which the trace cannot count
-#' either.
+#' reply at `max_output`, or the model's own ceiling if lower (for a reasoning
+#' model, the larger cap the request is sent with), at the client model's price.
+#' NA when the model has no price, which the trace cannot count either.
 #' @noRd
 seg_call_usd <- function(client, input_tokens, max_output) {
   model <- as_chr1(client$model, "unknown")
@@ -414,7 +480,11 @@ seg_call_usd <- function(client, input_tokens, max_output) {
                                    error = function(e) NULL)
   info <- quiet(gr_model_info(model))
   if (is.null(info)) return(NA_real_)
-  out <- min(as_num1(max_output, 0), as_num1(info$max_output, Inf))
+  # Priced at the cap the request is sent with: a reasoning model is sent
+  # room to reason above a short cap (reasoning_output_cap()), and is billed
+  # for what it spends there.
+  out <- reasoning_output_cap(min(as_num1(max_output, 0), as_num1(info$max_output, Inf)),
+                              info, input_tokens)
   as_num1(quiet(gr_estimate_cost(model, input_tokens, out)), NA_real_)
 }
 
@@ -465,9 +535,6 @@ seg_contextual <- function(doc, spec, client, trace) {
   # where it sits, so a chunk retrieved alone is still interpretable. Free
   # variant uses document + section metadata; `context_source = "llm"` spends
   # one call per chunk to write the blurb.
-  base <- seg_paragraph(doc, spec, client, trace)
-  d <- base$chunks
-  if (!nrow(d)) { base$method <- "contextual"; return(base) }
   title <- basename(doc$source)
   src <- as_chr1(spec$context_source %||% "metadata")
   if (identical(src, "llm") && is.null(client)) {
@@ -476,7 +543,60 @@ seg_contextual <- function(doc, spec, client, trace) {
             class = "gr_segment_fallback")
     src <- "metadata"
   }
+  cap <- spec$max_tokens
+  frame <- function(h, body) ifelse(nzchar(h), paste0("[", h, "]\n\n", body), body)
+  # Room for the header is held back from the body BEFORE packing. Packed to
+  # the full cap and then prefixed, a chunk near the cap went over it, and
+  # gr_segment() cut it in two: the second piece had no header -- the
+  # out-of-context excerpt this segmenter exists to prevent -- and every
+  # "Part i of n" counted n before the cut. At least half the cap stays text.
+  pack <- function(reserve) {
+    sp <- spec
+    sp$max_tokens <- max(cap - as.integer(reserve), (cap + 1L) %/% 2L)
+    seg_paragraph(doc, sp, client, trace)$chunks
+  }
+  meta_headers <- function(d) {
+    vapply(seq_len(nrow(d)), function(i) {
+      bits <- c(sprintf("Source: %s", title),
+                if (!is.na(d$section[i])) sprintf("Section: %s", d$section[i]),
+                if (!is.na(d$page[i])) sprintf("Page: %d", d$page[i]),
+                sprintf("Part %d of %d", i, nrow(d)))
+      paste(bits, collapse = " | ")
+    }, character(1))
+  }
+  # Whatever still does not fit -- a header longer than half the cap, a reply
+  # counted as longer than it was asked to be -- is shortened, never the body:
+  # the body is the document, the header only points into it.
+  fit_headers <- function(h, body) {
+    for (k in which(nzchar(h) & gr_count_tokens(frame(h, body)) > cap)) {
+      repeat {
+        excess <- gr_count_tokens(frame(h[k], body[k])) - cap
+        if (excess <= 0L || !nzchar(h[k])) break
+        h[k] <- trimws(gr_truncate_tokens(h[k], gr_count_tokens(h[k]) - excess, marker = ""))
+      }
+    }
+    h
+  }
 
+  # The room a header needs. A reply is held to 90 tokens. A metadata header
+  # is bounded by the longest one it could be: the longest section label, the
+  # highest page, and a part number no larger than the document has
+  # characters (a chunk holds at least one). One packing, no second pass.
+  reserve <- if (identical(src, "llm")) 90L else {
+    b <- doc$blocks
+    top_page <- suppressWarnings(max(b$page, na.rm = TRUE))
+    n_hi <- max(1L, nchar(doc$text))
+    worst <- vapply(unique(c(NA_character_, b$section)), function(s) {
+      paste(c(sprintf("Source: %s", title),
+              if (!is.na(s)) sprintf("Section: %s", s),
+              if (is.finite(top_page)) sprintf("Page: %d", as.integer(top_page)),
+              sprintf("Part %d of %d", n_hi, n_hi)), collapse = " | ")
+    }, character(1), USE.NAMES = FALSE)
+    max(gr_count_tokens(frame(worst, "x"))) - gr_count_tokens("x")
+  }
+  d <- pack(reserve)
+  if (!nrow(d)) return(new_chunks(character(0), "contextual", spec))
+  extra <- list(context_source = src)
   headers <- if (identical(src, "llm")) {
     doc_summary <- gr_truncate_tokens(doc$text, 1500, "")
     sys_prompt <- "You situate an excerpt within its source document. Reply with one sentence, no preamble."
@@ -487,41 +607,58 @@ seg_contextual <- function(doc, spec, client, trace) {
     # parallel batch to, since the workers cannot see what the run spends.
     worst <- seg_call_usd(client, sum(gr_count_tokens(c(sys_prompt, ask("")))) + max(d$tokens), 90L)
     mark <- seg_trace_mark(trace)
-    blurbs <- unlist(gr_lapply(seq_len(nrow(d)), function(i, trace) {
-      if (!trace_can_call(trace)) return("")
-      res <- gr_call(client, list(
+    res <- gr_lapply(seq_len(nrow(d)), function(i, trace) {
+      if (!trace_can_call(trace)) return(list(text = "", why = "limit"))
+      r <- gr_call(client, list(
         list(role = "system", content = sys_prompt),
         list(role = "user", content = ask(d$text[i]))
       ), max_output = 90L, trace = trace, label = "segment.context")
-      if (res$ok) res$text else ""
+      if (!isTRUE(r$ok)) return(list(text = "", why = "failed"))
+      txt <- trimws(as_chr1(r$text, ""))
+      list(text = txt, why = if (nzchar(txt)) "" else "empty")
     }, parallel = spec$parallel, label = "context blurb", trace = trace,
-       client = client, item_usd = worst),
-      use.names = FALSE)
+       client = client, item_usd = worst)
     # A chunk whose context call failed is kept, whole, without its header: the
     # failure cost the chunk a pointer, not any of the document. Marked after
     # the batch, which may have run in workers whose traces are absorbed here.
     seg_mark_recovered(trace, mark, "segment.context")
-    blurbs
+    why <- vapply(res, function(r) if (is.list(r)) as_chr1(r$why, "failed") else "failed",
+                  character(1))
+    # But it is said. A chunk skipped at the run's limit, or whose call failed,
+    # silently got no header while the chunk set still claimed
+    # context_source = "llm": under gr_compare() a contextual recipe run after
+    # the others was capped by their spending, and its answer said nothing.
+    # The warning reaches the answer through the chunk set's warnings.
+    missing <- nzchar(why)
+    if (any(missing)) {
+      reason <- c(limit = "skipped at the run's call or cost limit",
+                  failed = "whose request failed", empty = "with an empty reply")
+      n_why <- vapply(names(reason), function(r) sum(why == r), integer(1))
+      gr_warn(sprintf(paste0("%d of %d contextual chunk(s) have no context line (%s). They are ",
+                             "kept whole without one, so no text is lost, but each reads as an ",
+                             "excerpt with nothing to say where it sits."),
+                      sum(missing), length(missing),
+                      paste(sprintf("%d %s", n_why[n_why > 0L], reason[n_why > 0L]),
+                            collapse = ", ")),
+              class = "gr_segment_fallback")
+    }
+    extra$blurbs_missing <- sum(missing)
+    extra$blurbs_at_limit <- sum(why == "limit")
+    vapply(res, function(r) if (is.list(r)) as_chr1(r$text, "") else "", character(1))
   } else {
-    vapply(seq_len(nrow(d)), function(i) {
-      bits <- c(sprintf("Source: %s", title),
-                if (!is.na(d$section[i])) sprintf("Section: %s", d$section[i]),
-                if (!is.na(d$page[i])) sprintf("Page: %d", d$page[i]),
-                sprintf("Part %d of %d", i, nrow(d)))
-      paste(bits, collapse = " | ")
-    }, character(1))
+    meta_headers(d)
   }
+  headers <- fit_headers(headers, d$text)
   # The header is not the document's text, and under context_source = "llm" a
   # model wrote it. Kept as the chunk's text it became part of what quotes were
   # checked against, so a quote of a figure the context-writing call invented
   # ("revenue rose to 52 million" of a document that says 45.2) verified as a
   # verbatim quotation. `source_text` is the body alone; see new_chunks().
   body <- d$text
-  d$text <- ifelse(nzchar(headers), paste0("[", headers, "]\n\n", body), body)
-  out <- new_chunks(d$text, "contextual", spec, page = d$page, section = d$section,
-                    block_id = d$block_id,
+  out <- new_chunks(frame(headers, body), "contextual", spec, page = d$page,
+                    section = d$section, block_id = d$block_id,
                     source_text = ifelse(nzchar(headers), body, NA_character_))
-  out$extra <- list(context_source = src)
+  out$extra <- extra
   out
 }
 

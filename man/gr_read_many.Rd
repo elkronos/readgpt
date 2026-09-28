@@ -45,7 +45,9 @@ is what makes a four-hour run survive being interrupted. Only a document
 read in full is written, so one that failed (see \code{status} below) is read
 again by the next run. An entry is restored only for the same document,
 question, recipe, tokenizer and client configuration: model, endpoint,
-\code{extra_body}, embedding model and embedder. An entry that is not plain
+\code{extra_body}, embedding model and embedder. A file is the same document
+when its path, size and content are, whatever its modification time or
+the session's time zone. An entry that is not plain
 data, as a file planted in a shared directory could be, is ignored and the
 document read again.}
 
@@ -54,7 +56,8 @@ document read again.}
 other hundred and ninety-nine.}
 
 \item{max_total_usd}{Stop once the run has spent this much, marking the
-remaining documents \code{"skipped"}. This is a \emph{corpus} ceiling and is separate
+remaining documents \code{"skipped"}, except any restored from \code{store}, which
+costs nothing. This is a \emph{corpus} ceiling and is separate
 from \code{gr_options(max_cost_usd =)}, which is a limit per document.
 It needs a model with a registered price: against one without, cost is
 \emph{unknown} rather than zero, the ceiling cannot be enforced, and you get a
@@ -66,7 +69,12 @@ the model and says how to register it. \code{cost_usd} stays \code{NA} either wa
 since what those documents cost in full is not known.}
 
 \item{max_total_calls}{Stop \emph{before} a document once the run has made this
-many model calls, marking the rest \code{"skipped"}. The counterpart to
+many requests, marking the rest \code{"skipped"}, except any restored from
+\code{store}, which makes no request. Requests are counted as
+\code{gr_options(max_calls =)} counts them: model calls and requests to an
+embeddings endpoint alike, so a document read with \code{"needle"} through an
+API embedder spends more of it than its model calls alone, and more than
+the "model calls" a printed trace shows. The counterpart to
 \code{max_total_usd} for runs whose model has no registered price, and the only
 ceiling that bounds the run rather than each document:
 \code{gr_options(max_calls =)} is per document, so a corpus can make
@@ -133,7 +141,12 @@ that was not the JSON asked for): \code{error} says how many and gives the first
 error, the partial answer is in \code{answers}, and a resumed run reads it again
 rather than restoring what the failure left. A request the pipeline recovered
 from does not count: an embeddings request that failed and was replaced by
-lexical vectors leaves the document \code{"ok"}, with \code{partial} set. A row that a
+lexical vectors leaves the document \code{"ok"} and stored. \code{partial} is set when
+those vectors ranked the chunks the reader sent (\code{retrieve}, \code{rerank},
+\code{iterative}), but not when they only placed a semantic segmenter's cuts;
+that, like a proposition batch kept as written, shows in \code{warnings}, and a
+contextual header that could not be written only in the trace's \code{errors}
+(see \code{\link[=gr_trace]{gr_trace()}}). A row that a
 limit or a failed request stopped keeps \code{document_id}, \code{reader} and the chunk
 counts, since the text was read; only \code{answer} and \code{not_found} are left \code{NA}.
 A restored row keeps the numbers from when that document was first read, so
@@ -149,7 +162,9 @@ source is extracted and cleaned, and a document whose cleaned text (and set
 of unread pages) is identical to one already read this run is \strong{not read
 again}: its row is filled in from the first copy, except for \code{warnings},
 which are its own; \code{status} is \code{"duplicate"} and \code{duplicate_of}
-names the row it repeats. Nothing is dropped (every source you passed still
+names the row it repeats. That is decided afresh in every run, a restored
+row included: a copy whose first copy is not in this run is the first copy
+now. Nothing is dropped (every source you passed still
 has a row), so \code{subset(x$summary, is.na(duplicate_of))} is the deduplicated
 set and \code{sum(!is.na(x$summary$duplicate_of))} is the number to report as
 removed.

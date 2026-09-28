@@ -46,18 +46,46 @@ ALLOWED_ROOTS <- local({
   stats::setNames(normalizePath(d, winslash = "/", mustWork = FALSE), "documents")
 })
 
+# The documents the UI offers under one root. list.files() leaves out dotfiles
+# and hidden directories, and the pattern leaves out the other types the
+# extractors read (csv, log, ...), so neither can be picked.
+DOC_PATTERN <- "\\.(pdf|docx|txt|md|html?|png|jpe?g|tiff?)$"
+list_documents <- function(root) {
+  if (!length(root) || is.na(root)) return(character(0))
+  list.files(root, full.names = TRUE, recursive = TRUE, pattern = DOC_PATTERN,
+             ignore.case = TRUE)
+}
+
 # The UI offers only files under ALLOWED_ROOTS, but `input$file` is whatever the
 # browser sends -- a crafted websocket message can set it to any path on the
 # server. Without this check the app is an arbitrary-file-read oracle that reads
 # the file back to the caller through the answer bubble.
-safe_path <- function(path) {
-  if (!isTruthy(path)) return(NULL)
+#
+# Only a path the UI listed is accepted, compared as a string before anything
+# touches the filesystem. Checking "exists and sits under a root" let a crafted
+# value read hidden files and unlisted types there (.env.txt, *.csv, *.log)
+# through the free preview. And it called normalizePath() and file.exists() on
+# the untrusted string first: on Windows a UNC path (\\host\share\x) makes the
+# server open an SMB session to that host with its own credentials, and on macOS
+# /net/<host>/ makes the automounter contact it, before the path is refused.
+safe_path <- function(path, offered) {
+  if (!is.character(path) || length(path) != 1L || is.na(path) || !nzchar(path)) return(NULL)
+  if (!path %in% offered) return(NULL)
+  # A listed path can still be a symlink out of the root: resolve it and check.
   p <- suppressWarnings(normalizePath(path, winslash = "/", mustWork = FALSE))
   if (!file.exists(p) || dir.exists(p)) return(NULL)
   roots <- paste0(sub("/+$", "", ALLOWED_ROOTS), "/")
   if (!any(startsWith(p, roots))) return(NULL)
   p
 }
+
+# What a blank cost field means, said where it is typed.
+cap_label <- local({
+  cap <- gr_options("max_cost_usd")
+  sprintf("Abort if estimated cost exceeds (USD; blank = %s)",
+          if (is.null(cap)) "no limit, as this R session sets none"
+          else sprintf("this R session's cap, $%s", format(cap)))
+})
 
 # A history entry has to survive JSON encoding. A gr_answer carries its trace,
 # which is an ENVIRONMENT, and jsonlite refuses to encode one -- so the download
@@ -70,7 +98,10 @@ plain_answer <- function(a) {
 }
 
 seg_choices <- gr_segmenters()$name
-read_choices <- gr_readers()$name
+# Not extract or screen: they answer a protocol (the fields to fill, the
+# criteria to judge by), not a question, and the app has nowhere to enter one,
+# so ticking either always failed with a message about what was missing.
+read_choices <- setdiff(gr_readers()$name, c("extract", "screen"))
 clean_choices <- gr_cleaners()$name
 
 ui <- fluidPage(
@@ -126,7 +157,7 @@ ui <- fluidPage(
                   selected = gr_options("model")),
       numericInput("temperature", "Temperature (blank = model default)", NA, 0, 2, 0.1),
       passwordInput("api_key", "API key (this browser session only)"),
-      numericInput("max_cost", "Abort if estimated cost exceeds (USD)", 2, 0, 1000, 0.5),
+      numericInput("max_cost", cap_label, 2, 0, 1000, 0.5),
       checkboxInput("parallel", "Parallel per-chunk calls", FALSE),
       hr(),
       textAreaInput("question", "Question", "", rows = 3),
@@ -167,11 +198,20 @@ server <- function(input, output, session) {
     gr_client(model = input$model, api_key = key)
   })
 
+  # The chosen root's documents, listed once per root: the file menu shows
+  # them, and safe_path() accepts nothing else. input$root is checked too; a
+  # crafted value names no root. Before the menu has registered, the root is
+  # the first, which is what the menu selects.
+  offered <- reactive({
+    nm <- input$root %||% names(ALLOWED_ROOTS)[1]
+    root <- if (is.character(nm) && length(nm) == 1L && nm %in% names(ALLOWED_ROOTS))
+      ALLOWED_ROOTS[[nm]] else NA_character_
+    list(root = root, files = list_documents(root))
+  })
+
   output$file_ui <- renderUI({
-    root <- ALLOWED_ROOTS[[input$root]]
-    files <- list.files(root, full.names = TRUE, recursive = TRUE,
-                        pattern = "\\.(pdf|docx|txt|md|html?|png|jpe?g|tiff?)$",
-                        ignore.case = TRUE)
+    root <- offered()$root
+    files <- offered()$files
     if (!length(files)) {
       return(helpText(sprintf("No supported documents under %s. Set GPTREAD_DOC_ROOTS to point elsewhere.", root)))
     }
@@ -192,7 +232,11 @@ server <- function(input, output, session) {
   output$clean_tbl <- renderTable(gr_cleaners())
 
   ingest_spec <- reactive({
-    clean <- if (identical(input$clean_preset, "custom")) input$clean_steps else input$clean_preset
+    # An empty checkbox group arrives as NULL, and gr_ingest_spec(clean = NULL)
+    # is the standard preset: "custom" with nothing ticked, meaning no cleaning,
+    # removed page numbers and joined hyphenated words all the same.
+    clean <- if (identical(input$clean_preset, "custom")) input$clean_steps %||% character(0)
+             else input$clean_preset
     gr_ingest_spec(clean = clean, ocr = input$ocr)
   })
   segment_spec <- reactive({
@@ -225,22 +269,37 @@ server <- function(input, output, session) {
     }
   })
 
-  # The cost field, checked. NULL is no cap; NA means the field was refused and
-  # the user told why. gr_options() refuses a cap it cannot compare, and a
-  # refusal raised outside any tryCatch would end the handler with R's error
-  # text instead of a message about the field the user just typed in.
+  # The cost field, checked. NULL is a blank field, which leaves the R session's
+  # cap (gr_options("max_cost_usd")) in force, as the label says: blank used to
+  # mean no cap at all, so clearing the field lifted every spending limit
+  # without a word. NA means the field was refused and the user told why.
+  # gr_options() refuses a cap it cannot compare, and a refusal raised outside
+  # any tryCatch would end the handler with R's error text instead of a message
+  # about the field the user just typed in.
   cost_cap <- function() {
     cap <- if (isTruthy(input$max_cost)) as.numeric(input$max_cost)[1] else NULL
     if (!is.null(cap) && (is.na(cap) || cap < 0)) {
-      showNotification("The cost cap must be zero or more, or left blank for none.",
-                       type = "error")
+      showNotification(paste("The cost cap must be zero or more, or left blank for this",
+                             "R session's cap."), type = "error")
       return(NA)
     }
     cap
   }
+  # The options a run sets for the cost field: none for a blank one.
+  cap_option <- function(cap) if (is.null(cap)) list() else list(max_cost_usd = cap)
+
+  # The question the last run answered. Ask blocks the R process for the whole
+  # run and the box is cleared only once it returns, so a second click made
+  # meanwhile arrives afterwards with the old question still in input$question,
+  # and it ran -- and billed -- the whole comparison again. A question stays
+  # answered until the browser sends a new value for the box, the clear
+  # included. The higher priority runs this before the Ask handler when both
+  # arrive together, so it cannot undo the handler's record.
+  answered <- reactiveVal(NULL)
+  observeEvent(input$question, answered(NULL), priority = 10)
 
   observeEvent(input$preview, {
-    path <- safe_path(input$file)
+    path <- safe_path(input$file, offered()$files)
     if (is.null(path)) {
       showNotification("Pick a document from the list.", type = "error"); return()
     }
@@ -248,7 +307,7 @@ server <- function(input, output, session) {
     if (paid) {
       cap <- cost_cap()
       if (identical(cap, NA)) return()
-      old <- gr_options(max_cost_usd = cap)
+      old <- gr_options(cap_option(cap))
       on.exit(gr_options(old), add = TRUE)
     }
     # Its own trace, so the run's limits hold and what it spent can be reported.
@@ -287,7 +346,12 @@ server <- function(input, output, session) {
 
   observeEvent(input$go, {
     req(nzchar(trimws(input$question %||% "")), length(input$readers) > 0)
-    path <- safe_path(input$file)
+    if (identical(input$question, answered())) {
+      showNotification("That question was just answered. Edit it to ask again.",
+                       type = "message")
+      return()
+    }
+    path <- safe_path(input$file, offered()$files)
     if (is.null(path)) {
       showNotification("Pick a document from the list.", type = "error"); return()
     }
@@ -296,7 +360,7 @@ server <- function(input, output, session) {
     }
     cap <- cost_cap()
     if (identical(cap, NA)) return()
-    old <- gr_options(max_cost_usd = cap, parallel = isTRUE(input$parallel))
+    old <- gr_options(c(cap_option(cap), list(parallel = isTRUE(input$parallel))))
     on.exit(gr_options(old), add = TRUE)
 
     # A blank numericInput sends NA, but before the input has registered it is
@@ -322,15 +386,25 @@ server <- function(input, output, session) {
       showNotification(conditionMessage(res), type = "error", duration = 12)
       return()
     }
+    # Why each partial answer is partial, beside its error. `error` is set only
+    # when a recipe threw; a reader that records its failures in its notes (every
+    # call failing on a mistyped key, say) left it NA on a row reading
+    # not_found = TRUE, which says the document does not contain the answer.
+    summary <- res$summary
+    summary$partial_because <- vapply(summary$recipe, function(nm) {
+      a <- res$answers[[nm]]
+      if (is.null(a) || !isTRUE(a$partial)) NA_character_ else why_partial(a)
+    }, character(1), USE.NAMES = FALSE)
     last_trace(res$trace)
-    last_cmp(res$summary)
+    last_cmp(summary)
+    answered(input$question)
     history(c(history(), list(list(
       question = input$question,
       asked_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S"),
       document = basename(path),
       answers = res$answers,
       plain = lapply(res$answers, plain_answer),
-      summary = res$summary,
+      summary = summary,
       trace_json = as.character(as_json(res$trace))))))
     updateTextAreaInput(session, "question", value = "")
   })
@@ -343,13 +417,14 @@ server <- function(input, output, session) {
         div(class = "bubble you", tags$strong("You: "), e$question),
         do.call(tagList, lapply(names(e$answers), function(nm) {
           a <- e$answers[[nm]]
+          why <- if (isTRUE(a$partial)) why_partial(a) else note_error(a)
           div(class = "bubble bot",
               tags$strong(sprintf("%s [%s]", nm, a$signature %||% "")),
-              tags$br(), a$answer,
+              tags$br(), answer_text(a),
               div(class = "meta", sprintf(
                 "%d chunk(s) used%s%s", length(a$chunks_used),
                 if (isTRUE(a$partial)) " - PARTIAL" else "",
-                if (!is.null(a$notes$error)) paste0(" - ", a$notes$error) else "")))
+                if (!is.na(why)) paste0(" - ", why) else "")))
         })),
         tags$hr())
     }))
@@ -367,12 +442,44 @@ server <- function(input, output, session) {
         question = e$question, asked_at = e$asked_at, document = e$document,
         answers = e$plain, summary = e$summary,
         trace = jsonlite::fromJSON(e$trace_json, simplifyVector = FALSE)))
-      writeLines(as.character(jsonlite::toJSON(h, pretty = TRUE, auto_unbox = TRUE,
-                                               null = "null", na = "null", force = TRUE)),
-                 file)
+      # The bytes as they are. writeLines() to a path re-encodes to the
+      # session's encoding, so in a C or single-byte locale a question or an
+      # answer with a character that has no place there (a "greater than or
+      # equal" sign, an accented name) was saved as "<U+2265>". The helper is
+      # internal, but this app ships inside the package, as why_partial() says.
+      readgpt:::write_utf8_lines(as.character(jsonlite::toJSON(
+        h, pretty = TRUE, auto_unbox = TRUE, null = "null", na = "null", force = TRUE)),
+        file)
     })
 }
 
 `%||%` <- function(x, y) if (is.null(x)) y else x
+
+# notes$error as one string, or NA. `[[exact = TRUE]]`: `$` partial-matches.
+note_error <- function(a) {
+  x <- as.list(a$notes)[["error", exact = TRUE]]
+  if (length(x) && !is.na(x[[1]])) as.character(x[[1]]) else NA_character_
+}
+
+# Why an answer is partial, in the words print() uses, or NA when it cannot
+# say. The bubble showed notes$error alone, which only a recipe that threw
+# sets: a run whose every request failed (a mistyped key: HTTP 401 on each)
+# read "NOT_IN_DOCUMENT - PARTIAL" with no reason. The helper is internal, but
+# this app ships inside the package, so the two cannot drift apart.
+why_partial <- function(a) {
+  why <- tryCatch(readgpt:::partial_reasons(a), error = function(e) character(0))
+  # A recipe's own error in full, as the bubble showed it before: the helper
+  # cuts its "first error" to 120 characters, which can lose what to change.
+  err <- note_error(a)
+  if (!is.na(err)) why <- c(why[!startsWith(why, "first error: ")], err)
+  if (length(why)) paste(why, collapse = "; ") else NA_character_
+}
+
+# The answer as a person reads it. The sentinel is a value for code; shown
+# raw it read as "the document does not say" even of a run that read nothing.
+answer_text <- function(a) {
+  if (!is_not_found(a$answer)) return(a$answer)
+  tryCatch(readgpt:::not_found_wording(a), error = function(e) a$answer)
+}
 
 shinyApp(ui, server)

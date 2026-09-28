@@ -14,7 +14,7 @@ gr_inventory(
 }
 \arguments{
 \item{sources}{A directory, or a character vector of paths. A directory is
-walked; anything else is taken as given.}
+walked, on its own or among other paths; a file is taken as given.}
 
 \item{recursive}{Descend into subdirectories. \code{TRUE} here, unlike
 \code{\link[=gr_read_many]{gr_read_many()}}, because the point of the function is to show you
@@ -28,17 +28,27 @@ extractable text is counted as needing OCR. Read exactly as
 \code{\link[=gr_ingest_spec]{gr_ingest_spec()}} reads it, default included, so what this predicts is
 what ingestion will do.}
 
-\item{max_pdf_pages}{Pages sampled per PDF for the text-layer probe. The
-whole point is to be fast on a big folder; a scan is obvious from a few
-pages. \code{Inf} reads every page.}
+\item{max_pdf_pages}{Pages sampled per PDF for the text-layer probe, spread
+across the document (the middle of each of that many equal stretches of
+it) rather than its first pages, which are its least typical: a cover
+image, a blank page, a text cover sheet in front of a scan. Only those
+pages are extracted, so the probe stays fast on long documents. The whole
+point is to be fast on a big folder; a scan is obvious from a few pages.
+\code{Inf} reads every page. A sample is a sample: a PDF whose scanned pages
+all fall between the sampled ones is reported as having a text layer, so
+raise this for a folder where that matters.}
 }
 \value{
 An object of class \code{gr_inventory}:
 \describe{
 \item{\code{files}}{One row per file found, readable or not: \code{file} (the path
-relative to \code{sources}, so the folder it came from survives), \code{folder},
+relative to \code{sources}, so the folder it came from survives; for a
+vector of paths, relative to the folder they all sit in), \code{folder},
 \code{ext}, \code{bytes}, \code{extractor} (\code{NA} when none claims it), \code{status},
-\code{pages}, \code{ocr_pages}, \code{tokens} and \code{note}.}
+\code{pages}, \code{ocr_pages} (pages with no text layer, estimated from the
+sampled pages when not every page was read, which \code{note} then says),
+\code{tokens}, \code{note}, and \code{path}, the file as found, to hand on to
+\code{\link[=gr_read_many]{gr_read_many()}}.}
 \item{\code{by_status}}{Counts and sizes per status.}
 \item{\code{totals}}{Files, readable files, bytes, known \code{tokens},
 \code{tokens_unknown} (readable files whose size cannot be counted yet), and
@@ -88,7 +98,8 @@ is usually all it takes) and pass each group to the recipe you chose.
 \section{Tokens, and what is left unknown}{
 
 \code{tokens} is counted exactly where counting is cheap: plain text, markdown,
-HTML, CSV, and PDFs from the pages actually probed, scaled by page count. For
+HTML (with its markup, so a page's count runs high), CSV, and PDFs from the
+pages actually probed, scaled by page count. For
 formats needing an optional package that is not installed, and for scans
 whose text does not exist until OCR runs, it is \code{NA}, not a guess. Those
 files are counted in \code{totals$tokens_unknown} rather than folded into the sum

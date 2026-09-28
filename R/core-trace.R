@@ -19,7 +19,7 @@
 #'   pass the same trace to several calls and they all record into it. Fields:
 #'   `run_id`, `started`, `meta`, `steps`, `calls`, `cached`, `tokens_in`,
 #'   `tokens_out`, `embed_tokens`, `errors`, `budget_stop`, `stop_reason`,
-#'   `spent_usd`.
+#'   `spent_usd`, `replayed_usd`.
 #'   `cached` counts the calls answered from a [gr_cache()] or a
 #'   [gr_replay_client()] rather than the network, so `calls - cached` is what
 #'   the run paid for. `calls` includes requests to an embeddings endpoint,
@@ -28,16 +28,31 @@
 #'   the size of the model calls' prompts and replies.
 #'
 #'   `errors` has one entry per request that failed: its `step`, `label` and
-#'   `error`. A failure the run recovered from without losing any input, such
-#'   as an embeddings request replaced by [gr_embed()]'s lexical fallback,
-#'   also carries `recovered = TRUE`. The answer still says what the fallback
-#'   cost it (it is marked partial), but the document was read in full.
+#'   `error`. A failure the run recovered from without losing any input also
+#'   carries `recovered = TRUE`: the document was read in full, and
+#'   [gr_read_many()] does not count it as failed. Only some fallbacks mark the
+#'   answer partial. An embeddings request replaced by [gr_embed()]'s lexical
+#'   fallback does when the vectors ranked the chunks a reader sent (the
+#'   `retrieve`, `rerank` and `iterative` readers). The same fallback while
+#'   [gr_segment()] made semantic cuts, and a proposition batch kept as
+#'   written, leave the answer unmarked and say so in its `$warnings`. A
+#'   contextual header that could not be written leaves no mark on the answer
+#'   at all, and this entry is the record of it.
 #'
 #'   `budget_stop` is `TRUE` once a limit stopped the run, and `stop_reason`
 #'   says which: `"calls"` for `max_calls`, `"cost"` for `max_cost_usd` (see
-#'   [gr_options()]). `spent_usd` is what the calls so far cost, the figure
-#'   `max_cost_usd` is checked against. A call to a model with no registered
-#'   price adds nothing to it, so [gr_trace_cost()] is the full account.
+#'   [gr_options()]). `spent_usd` is what the calls so far cost. A call to a
+#'   model with no registered price adds nothing to it, so [gr_trace_cost()] is
+#'   the full account. `replayed_usd` is what the calls a [gr_replay_client()]
+#'   answered cost when they were recorded, counted when the spending limit
+#'   stopped the recorded run: nothing was paid for them, but `max_cost_usd`
+#'   is checked against `spent_usd + replayed_usd`, so the replay stops at the
+#'   same call. A call answered from a [gr_cache()] adds to neither, so a
+#'   re-run through a warm cache under the same limit reads further than the
+#'   run that filled it.
+#'   [as_json()] and [gr_trace_save()] write `budget_stop`, `stop_reason`,
+#'   `spent_usd` and `replayed_usd`, so a saved run says whether it was cut
+#'   short.
 #'
 #'   `as.data.frame()` on a trace returns one row per request; see below.
 #'
@@ -108,9 +123,38 @@ gr_trace <- function(run_id = NULL, meta = list()) {
   # the spend has too. gr_trace_cost() is the full account, and says "unknown"
   # where this cannot.
   e$spent_usd <- 0
+  # What the calls a replay answered from a recording cost when they were
+  # recorded. Nothing was paid for them, so it is not in `spent_usd`, but it
+  # counts against the spending limit with it (see budget_spent()): a replay
+  # that did not count it never reached the limit that stopped the recorded
+  # run, and went on to ask for calls the recording never made.
+  e$replayed_usd <- 0
   # "calls" or "cost": which limit set `budget_stop`.
   e$stop_reason <- NA_character_
   structure(e, class = "gr_trace")
+}
+
+#' A dollar amount to 12 significant figures, as the double a JSON reader reads
+#' back from them.
+#'
+#' What a request counts against the spending limit is rounded so before it is
+#' added up. Twelve figures is far below a cent, and it lets the figure be
+#' saved exactly in 15 digits: a price such as 1234 tokens at $2.50 plus 56 at
+#' $10 per million needs 17, and one such figure made as_json() write the whole
+#' trace twice (see needs_more_digits()). A replay adds up the saved figures,
+#' so it adds the very numbers the recorded run added.
+#' @noRd
+usd12 <- function(x) {
+  if (length(x) != 1L || !is.finite(x) || x == 0) return(x)
+  json_reads(sprintf("%.12g", x))
+}
+
+#' What a run has counted against `max_cost_usd`: what it spent, plus what the
+#' calls a replay answered from a recording cost when they were recorded.
+#' @noRd
+budget_spent <- function(trace) {
+  if (!inherits(trace, "gr_trace")) return(0)
+  as_num1(trace$spent_usd, 0) + as_num1(trace$replayed_usd, 0)
 }
 
 #' Record one request.
@@ -133,12 +177,27 @@ trace_record <- function(trace, label, messages, result, params = list(), second
   }
   # Priced by the model the step records, as gr_trace_cost() prices it. A call
   # answered from a cache or a replay spent nothing.
+  budget <- 0
   if (!isTRUE(result$cached)) {
     usd <- tryCatch(suppressWarnings(as.numeric(gr_estimate_cost(
       as_chr1(result$model %||% params$model, "unknown"),
       result$usage$input %||% 0L, result$usage$output %||% 0L))),
       error = function(e) NA_real_)
-    if (length(usd) == 1L && !is.na(usd)) trace$spent_usd <- (trace$spent_usd %||% 0) + usd
+    if (length(usd) == 1L && !is.na(usd)) {
+      usd <- usd12(usd)
+      trace$spent_usd <- (trace$spent_usd %||% 0) + usd
+      budget <- usd
+    }
+  } else {
+    # A replayed call counts what it cost when it was recorded, so a replay
+    # stops where the recorded run was stopped. A cache hit carries no such
+    # figure: a cache is there to make a run cheaper, and a run through a warm
+    # cache goes as far as its limit lets it pay for.
+    replayed <- as_num1(result[["replay_usd", exact = TRUE]], 0)
+    if (is.finite(replayed) && replayed > 0) {
+      trace$replayed_usd <- as_num1(trace$replayed_usd, 0) + replayed
+      budget <- replayed
+    }
   }
   if (!isTRUE(result$ok)) {
     trace$errors <- c(trace$errors, list(list(step = length(trace$steps) + 1L, label = label,
@@ -173,7 +232,12 @@ trace_record <- function(trace, label, messages, result, params = list(), second
     # reported 0 misses: it certified itself as an exact reproduction of a run
     # it had not reproduced.
     finish_reason = as_chr1(result$finish_reason, NA_character_),
-    params = params[setdiff(names(params), "schema")]
+    params = params[setdiff(names(params), "schema")],
+    # What the request counted against max_cost_usd: its price when it was
+    # sent; for a call a replay answered, what it cost when it was recorded;
+    # and 0 from a cache. A replay of this trace counts the same figures, so it
+    # stops where this run stopped whatever the replaying session's prices.
+    budget_usd = budget
   )
   # Only on embeddings requests, so a model call's step keeps the fields it
   # always had.
@@ -224,12 +288,15 @@ trace_absorb <- function(parent, child) {
   off <- length(parent$steps)
   # Exact names: `$recipe` would match the `recipes` a comparison's trace keeps.
   src <- child$meta[["source", exact = TRUE]]
+  rec <- as_chr1(child$meta[["recipe", exact = TRUE]], NA_character_)
   parent$steps <- c(parent$steps, lapply(child$steps, function(st) {
     st$step <- st$step + off
-    st$recipe <- as_chr1(child$meta[["recipe", exact = TRUE]], NA_character_)
-    # Which document a folded-in step was about, so a corpus trace can still be
-    # read request by request. A step folded in twice keeps its first document.
+    # Which document and recipe a folded-in step was about, so a corpus trace
+    # can still be read request by request. A step folded in twice keeps its
+    # first document and its first recipe: a stage whose own meta names no
+    # recipe used to write NA over the one the step already had.
     if (is.null(st$source) && !is.null(src)) st$source <- as_chr1(src, NA_character_)
+    if (!is_nonblank(as_chr1(st$recipe, NA_character_)) && is_nonblank(rec)) st$recipe <- rec
     st
   }))
   parent$calls <- parent$calls + child$calls
@@ -247,6 +314,7 @@ trace_absorb <- function(parent, child) {
     e
   }))
   parent$spent_usd <- (parent$spent_usd %||% 0) + (child$spent_usd %||% 0)
+  parent$replayed_usd <- as_num1(parent$replayed_usd, 0) + as_num1(child$replayed_usd, 0)
   if (isTRUE(child$budget_stop)) {
     parent$budget_stop <- TRUE
     parent$stop_reason <- child$stop_reason %||% NA_character_
@@ -315,7 +383,7 @@ trace_can_call <- function(trace, n = 1L) {
     trace$stop_reason <- "calls"
     return(FALSE)
   }
-  if (limit_reached(trace$spent_usd %||% 0, gr_options("max_cost_usd"))) {
+  if (limit_reached(budget_spent(trace), gr_options("max_cost_usd"))) {
     trace$budget_stop <- TRUE
     trace$stop_reason <- "cost"
     return(FALSE)
@@ -358,7 +426,7 @@ warn_capped_batch <- function(trace, who, n, advice) {
   if (identical(cap_name(trace), "spending limit")) {
     gr_warn(sprintf(paste0("%s needs %d calls but the run has spent $%s, which reaches the $%s ",
                            "spending limit; raise gr_options(max_cost_usd =)."),
-                    who, n, fmt_usd(trace$spent_usd),
+                    who, n, fmt_usd(budget_spent(trace)),
                     format(gr_options("max_cost_usd"), scientific = FALSE)),
             class = "gr_cost_cap")
   } else {
@@ -475,6 +543,23 @@ as.data.frame.gr_trace <- function(x, row.names = NULL, optional = FALSE, ...) {
   out
 }
 
+#' A run's requests as a one-line print shows them: "3 model call(s)", then
+#' ", 4 embeddings request(s)" when it made any.
+#'
+#' `calls` counts both, since the limits count both, but only the first are
+#' model calls. print.gr_trace() and print.gr_answer() count them apart, and a
+#' print that showed `calls` as model calls (a corpus's "this run: 6 model
+#' call(s)" for 2 model calls and 4 embeddings requests) disagreed with the
+#' trace printed after it.
+#' @noRd
+format_call_counts <- function(trace) {
+  if (!inherits(trace, "gr_trace")) return("0 model call(s)")
+  s <- gr_trace_summary(trace)
+  embed <- as.integer(s$embed_calls)
+  paste0(sprintf("%d model call(s)", as.integer(s$calls) - embed),
+         if (embed > 0L) sprintf(", %d embeddings request(s)", embed) else "")
+}
+
 #' @export
 print.gr_trace <- function(x, ...) {
   s <- gr_trace_summary(x)
@@ -511,8 +596,12 @@ print.gr_trace <- function(x, ...) {
 #' silently disappeared from the JSON whenever a call failed.
 #'
 #' @param x Object to serialise. Methods exist for [gr_answer], `gr_trace`,
-#'   [gr_chunks] and [gr_document]; anything else falls back to a plain
-#'   `jsonlite` conversion.
+#'   [gr_chunks] and [gr_document]; anything else (a review stage such as a
+#'   screening or an extraction, a corpus, a comparison, a list of answers)
+#'   falls back to a plain `jsonlite` conversion, in which a trace, answer,
+#'   chunk set or document found at any depth is written as its own method
+#'   writes it, and any other environment, a function, or a client (which
+#'   holds the API key), none of which is data, is written as `null`.
 #' @param pretty Whether to indent.
 #' @param ... Passed to `jsonlite::toJSON()`.
 #' @return A `json`-classed character string. `NULL` fields are written as
@@ -520,7 +609,10 @@ print.gr_trace <- function(x, ...) {
 #'   significant digits as it takes to read back as the same number: 15 for
 #'   most, 16 or 17 for the few that need them (`jsonlite::toJSON()` on its own
 #'   rounds to four decimal places, and its `digits = NA` keeps 15 significant
-#'   digits). Pass `digits` to round them.
+#'   digits). Pass `digits` to round them. Otherwise a vector of length one is
+#'   written as a scalar, except in the fields of a trace that list things (a
+#'   comparison's `recipes`, the scores a ranking kept, the cleaning steps an
+#'   ingest ran), which are arrays at every length.
 #' @seealso [gr_trace_summary()], [gr_answer]
 #' @export
 #' @examples
@@ -546,11 +638,109 @@ as_json.default <- function(x, pretty = TRUE, ..., digits = NA) {
   # here means exact: 15 digits, which is what jsonlite writes and is exact for
   # nearly every number, and more only for a number that needs them.
   exact <- length(digits) == 1L && is.na(digits) && !inherits(digits, "AsIs")
+  x <- json_ready(x, digits = digits, ...)
   out <- jsonlite::toJSON(x, pretty = pretty, auto_unbox = TRUE, null = "null",
                           na = "null", force = TRUE, digits = if (exact) NA else digits, ...)
   if (!exact || !needs_more_digits(x)) return(out)
   shortest_numbers(jsonlite::toJSON(x, pretty = pretty, auto_unbox = TRUE, null = "null",
                                     na = "null", force = TRUE, digits = I(17), ...))
+}
+
+#' `x` with everything jsonlite cannot write replaced by what can be.
+#'
+#' Every review stage keeps its trace, an environment, in `$trace`, and a
+#' corpus or a comparison keeps answers that each hold one, so as_json() on
+#' any of them, or on a list holding an answer, failed with "cannot unclass an
+#' environment". Only the four classed methods had been taught to swap the
+#' trace out. So, at any depth: a trace becomes trace_as_list(); an object
+#' inside `x` that has an as_json() method of its own (an answer, a chunk set,
+#' a document) is written by that method, so it has the same shape wherever it
+#' sits; and any other environment, a function, or a client (which holds the
+#' API key) becomes `null`, since none of them is data. `x` itself is left to
+#' the method that was called.
+#'
+#' Every string is labelled UTF-8 on the way (label_utf8()). jsonlite reads an
+#' unlabelled string as the session's encoding, so under a non-UTF-8 locale
+#' (LC_ALL=C in cron or a container) a question typed in a script, or read with
+#' readLines(), was written as "caf<c3><a9>": in a saved trace's meta, in the
+#' criteria a screening records, in a document label. Only the JSON changes;
+#' the objects are left as they are, since other code compares them with
+#' strings of the caller's that carry no label either.
+#' @noRd
+json_ready <- function(x, ...) {
+  own <- new.env(parent = emptyenv())
+  has_method <- function(cls) {
+    if (is.null(own[[cls]])) {
+      own[[cls]] <- !is.null(utils::getS3method("as_json", cls, optional = TRUE))
+    }
+    own[[cls]]
+  }
+  walk <- function(v, depth) {
+    if (is.environment(v)) {
+      return(if (inherits(v, "gr_trace")) walk(trace_as_list(v), depth + 1L) else NULL)
+    }
+    # A client is not data either, and it carries the API key: written out, a
+    # list that held one put the key in the JSON.
+    if (is.function(v) || inherits(v, "gr_client")) return(NULL)
+    if (is.character(v)) return(label_utf8(v))
+    if (is.factor(v)) {
+      attr(v, "levels") <- label_utf8(attr(v, "levels", exact = TRUE))
+      return(v)
+    }
+    if (!is.list(v) || !length(v)) return(v)
+    cls <- attr(v, "class", exact = TRUE)
+    if (depth > 0L && !is.null(cls) && any(vapply(cls, has_method, logical(1)))) {
+      # Written by its own method and read back as plain lists, which keeps
+      # every JSON type (an array stays a list, so stays an array) and lets the
+      # whole document be indented as one.
+      return(jsonlite::parse_json(as_json(v, pretty = FALSE, ...), simplifyVector = FALSE))
+    }
+    # unclass(), so no `[` or as.list() method of the object's class gets a
+    # say: as.list() splits a POSIXlt into its times.
+    out <- lapply(unclass(v), walk, depth = depth + 1L)
+    attributes(out) <- attributes(v)
+    # The names are keys in the JSON: a list of answers is keyed by document.
+    nm <- attr(out, "names", exact = TRUE)
+    if (!is.null(nm)) attr(out, "names") <- label_utf8(nm)
+    out
+  }
+  walk(x, 0L)
+}
+
+#' `x`, a character vector, with each string that is valid UTF-8 but carries
+#' no label labelled UTF-8, its names likewise, and nothing else changed.
+#'
+#' mark_utf8() keeping attributes (names, dim, I()), and leaving alone a string
+#' R has labelled latin1 or bytes, which jsonlite converts itself. ASCII is
+#' unaffected, as it always is.
+#' @noRd
+label_utf8 <- function(x) {
+  lab <- function(s) {
+    need <- !is.na(s) & Encoding(s) == "unknown" & validUTF8(s)
+    if (any(need)) { tmp <- s[need]; Encoding(tmp) <- "UTF-8"; s[need] <- tmp }
+    s
+  }
+  if (!length(x)) return(x)
+  x <- lab(x)
+  nm <- attr(x, "names", exact = TRUE)
+  if (!is.null(nm)) attr(x, "names") <- lab(nm)
+  x
+}
+
+#' Mark the fields of `x` named in `fields` as arrays, so as_json() writes
+#' them as arrays whatever their length.
+#'
+#' `auto_unbox` writes every length-one vector as a scalar, so a field that
+#' holds a list of things was a string with one and an array with two, and a
+#' consumer that iterated over it broke on the one. [I()] keeps the brackets.
+#' @noRd
+json_arrays <- function(x, fields) {
+  if (!is.list(x)) return(x)
+  for (f in intersect(fields, names(x))) {
+    v <- x[[f]]
+    if (!is.null(v) && is.atomic(v) && !inherits(v, "AsIs")) x[[f]] <- I(v)
+  }
+  x
 }
 
 #' Does `x` hold a double that 15 significant digits do not write exactly?
@@ -560,8 +750,12 @@ as_json.default <- function(x, pretty = TRUE, ..., digits = NA) {
 #' @noRd
 needs_more_digits <- function(x) {
   doubles <- function(el) {
-    if (is.list(el)) return(unlist(lapply(el, doubles), use.names = FALSE))
-    if (is.double(el) && !inherits(el, c("Date", "POSIXt"))) return(as.vector(el[is.finite(el)]))
+    # Before the list test, and unclass() in it: a POSIXlt is a list, and
+    # lapply() on one hands back more POSIXlt, which recursed until the C
+    # stack ran out on any object holding a date-time of that kind.
+    if (inherits(el, c("Date", "POSIXt"))) return(NULL)
+    if (is.list(el)) return(unlist(lapply(unclass(el), doubles), use.names = FALSE))
+    if (is.double(el)) return(as.vector(el[is.finite(el)]))
     NULL
   }
   v <- doubles(x)
@@ -613,6 +807,12 @@ shortest_numbers <- function(json) {
   structure(mark_utf8(txt), class = class(json))
 }
 
+#' The trace fields that list things: a comparison's `recipes`, the models
+#' "auto" weighed, the cleaning steps an ingest ran, and the scores a ranking
+#' kept. A new field that lists things belongs here too.
+#' @noRd
+.gr_trace_arrays <- c("recipes", "models", "clean_steps", "top_scores", "scores")
+
 #' A trace as a plain, serialisable list.
 #'
 #' A `gr_trace` is an environment so that nested readers can write to one shared
@@ -623,13 +823,27 @@ shortest_numbers <- function(json) {
 #' @noRd
 trace_as_list <- function(x) {
   if (is.null(x) || !inherits(x, "gr_trace")) return(NULL)
+  # The fields of the meta and of a local step's detail that list things, as
+  # arrays at every length (see json_arrays()): a one-recipe comparison's
+  # `recipes` was a string, and a two-recipe one's an array.
+  steps <- lapply(x$steps, function(st) {
+    if (is.list(st) && is.list(st$detail)) st$detail <- json_arrays(st$detail, .gr_trace_arrays)
+    st
+  })
   list(
     run_id = x$run_id,
     started = format(x$started, "%Y-%m-%dT%H:%M:%OS3"),
-    meta = x$meta,
+    meta = json_arrays(x$meta, .gr_trace_arrays),
     summary = as.list(gr_trace_summary(x)),
-    steps = x$steps,
-    errors = x$errors
+    steps = steps,
+    errors = x$errors,
+    # Whether a limit cut the run short, and which. Left out, a saved run that
+    # was stopped read as one that finished, and a replay of it that went past
+    # the stop was told only that it had "diverged".
+    budget_stop = isTRUE(x$budget_stop),
+    stop_reason = as_chr1(x$stop_reason, NA_character_),
+    spent_usd = usd12(as_num1(x$spent_usd, 0)),
+    replayed_usd = usd12(as_num1(x$replayed_usd, 0))
   )
 }
 

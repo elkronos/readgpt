@@ -95,22 +95,23 @@ test_that("a kept revision leaves a study the section was not given as a marker"
   expect_match(all3$text, "It replicated (Lee & Petrov, 2021).", fixed = TRUE)
 })
 
-test_that("a revision that moves a reported marker leaves that study as a marker everywhere", {
-  # The structure pass merges Trials into Replication, so which "[study 3]" was
-  # the fabricated one can no longer be told. Rendering either could print the
-  # fabrication as a fact; leaving both costs an honest citation in a review
-  # already marked partial, and the study leaves the reference list with it.
+test_that("a revision that moves a reported marker leaves it, and still renders the honest one", {
+  # The structure pass merges Trials into Replication. The fabricated
+  # sentence is still the one Trials wrote, word for word, so it stays a
+  # marker; "It replicated [study 3]." is the one Replication wrote, so it is
+  # rendered and listed. (Pass 3 left both, as eeff205 and 41fe931 did not,
+  # and dropped Lee & Petrov from the references.)
   merged <- function(d) {
     paste0("## Replication\n\nA benefit [study 1], confirmed elsewhere [study 3]. ",
            "It replicated [study 3].\n\n## What is missing\n\nNothing is missing.")
   }
   s <- r3s_synth(r3s_client(merged), coherence = "structure")
   expect_true(s$coherence$kept)
-  expect_match(s$text, "A benefit (Smith & Okafor, 2019), confirmed elsewhere [study 3]. It replicated [study 3].",
-               fixed = TRUE)
-  expect_false(grepl("Lee & Petrov", s$text, fixed = TRUE))
-  expect_false(any(grepl("Lee, K.", s$references, fixed = TRUE)))
+  expect_match(s$text, paste0("A benefit (Smith & Okafor, 2019), confirmed elsewhere [study 3]. ",
+                              "It replicated (Lee & Petrov, 2021)."), fixed = TRUE)
+  expect_true(any(grepl("Lee, K.", s$references, fixed = TRUE)))
   expect_true(any(grepl("Smith, J.", s$references, fixed = TRUE)))
+  expect_identical(s$unrendered, integer(0))
 })
 
 test_that("render_revised() follows the sections by heading, and leaves unattributed text alone", {
@@ -133,13 +134,14 @@ test_that("render_revised() follows the sections by heading, and leaves unattrib
   # Nothing reported: rendered as one text, as before.
   r0 <- readgpt:::render_revised(txt, heads, marked, list(integer(0), integer(0)), render)
   expect_identical(r0$text, render(txt, integer(0)))
-  # A heading renamed: the reported marker left section A, so study 3 is left
-  # everywhere, and with no marker rendered it is `left` for the reference list.
+  # A heading renamed: the reported sentence is under no heading of the draft
+  # and is left; section B's sentence is the one B wrote, word for word, so it
+  # is rendered. (Pass 3 left study 3 everywhere and dropped its reference.)
   ren <- paste0("## Trials\n\nHonest [study 1]. Invented [study 3].\n\n## B\n\nHonest [study 3].")
   r2 <- readgpt:::render_revised(ren, heads, marked, uns, render)
   expect_match(r2$text, "Honest (Smith, 2019). Invented [study 3].", fixed = TRUE)
-  expect_match(r2$text, "## B\n\nHonest [study 3].", fixed = TRUE)
-  expect_identical(r2$left, 3L)
+  expect_match(r2$text, "## B\n\nHonest (Lee, 2021).", fixed = TRUE)
+  expect_identical(r2$left, integer(0))
 })
 
 # ---------------------------------------------------------------------------

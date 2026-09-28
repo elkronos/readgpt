@@ -25,7 +25,9 @@ falls back and records the fallback in \verb{$method}, e.g.
 \code{contextual} chunks carry a \code{source_text} column: the document text each
 chunk was made from, without the rewrite or the context line, which is
 what a quote from the chunk is checked against. When no \code{trace} was
-passed, \verb{$trace} is the one this call recorded into.
+passed, \verb{$trace} is the one this call recorded into. \code{page} keeps blocks
+that have no page number, in a document whose other blocks have one, as
+chunks of their own with page \code{NA}, and warns.
 }
 \description{
 Segmentation is deliberately separate from ingestion: one extraction can feed

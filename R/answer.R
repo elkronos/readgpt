@@ -77,6 +77,9 @@
 answer_document <- function(source, question, recipe = "auto", client = NULL,
                             return = c("answer", "text", "json"), trace = NULL, ...) {
   return <- match.arg(return)
+  # UTF-8 and labelled, before it is pasted next to the document's text; see
+  # gr_read().
+  if (is.character(question)) question <- to_utf8(question)
   if (!is_nonblank(question)) gr_abort("`question` must be a non-empty string.")
   # "auto" is decided once the document's length is known. Both candidates are
   # built now, so an override that applies to neither fails before any work.
@@ -121,6 +124,10 @@ answer_document <- function(source, question, recipe = "auto", client = NULL,
                        doc, chunks, rec$name)
   if (auto) ans$notes$auto_recipe <- rec$name
   trace_stamp(trace, from, source = source_label(source), recipe = rec$name)
+  # This run's steps, its ingestion and segmentation as well as its read, so
+  # the answer's record (answer_trace()) covers the whole run and no other
+  # on a trace passed in. Before as_json() below, which reads it.
+  ans$trace_steps <- c(first = from, last = length(trace$steps))
 
   switch(return,
     answer = ans,
@@ -237,8 +244,9 @@ finish_answer <- function(ans, doc, chunks, recipe) {
 #' [gr_options()] is checked against what every recipe and every segmentation
 #' has spent so far, so a recipe that reaches it stops `partial` and the ones
 #' after it are refused and recorded as failed. `max_calls` is counted for
-#' each recipe on its own, so a recipe's answer does not depend on its
-#' position in the list.
+#' each recipe on its own, its segmentation included, so a recipe's answer
+#' does not depend on its position in the list. A segmentation that a limit
+#' cut short is not shared with a later recipe.
 #'
 #' @param source File path, web address, or raw text; see [gr_ingest()].
 #' @param question The question.
@@ -271,6 +279,8 @@ gr_compare <- function(source, question, recipes = c("fast", "needle", "thorough
                        client = NULL, allow_duplicates = FALSE,
                        on_error = c("continue", "stop"), ...) {
   on_error <- match.arg(on_error)
+  # UTF-8 and labelled; see gr_read().
+  if (is.character(question)) question <- to_utf8(question)
   if (!is_nonblank(question)) gr_abort("`question` must be a non-empty string.")
   # A single gr_recipe IS a list (name/ingest/segment/read), so iterating it
   # walked its four FIELDS and tried to treat each as a recipe. Wrap it.
@@ -322,9 +332,42 @@ gr_compare <- function(source, question, recipes = c("fast", "needle", "thorough
   answers <- list()
   for (nm in names(recs)) {
     r <- recs[[nm]]
+    # Each recipe gets its own call count, then its steps are folded into the
+    # shared trace. Sharing the trace outright meant `max_calls` counted
+    # earlier recipes against later ones, so the same recipe returned a
+    # different answer depending on its position in the comparison. That
+    # holds for its segmentation as much as its read: an LLM segmenter run on
+    # the shared trace met the cap early, kept batches as written, and handed
+    # the recipe different chunks than it got alone.
+    # Made before the tryCatch and folded in after it, so a recipe that fails
+    # after spending still has its requests in the comparison's trace.
+    sub <- gr_trace(meta = list(recipe = nm, source = source_label(source)))
+    # Where this recipe's steps start in the comparison's trace, for the answer
+    # of a recipe that fails, which is made on that trace.
+    start <- length(trace$steps)
+    seed <- 0
+    rseed <- 0
+    seeded_calls <- 0L
+    seg_steps <- 0L
     out <- tryCatch({
       d <- if (identical(gr_hash(unclass(r$ingest)), gr_hash(unclass(recs[[1]]$ingest)))) doc
            else gr_ingest(source, r$ingest, trace = trace)
+      # Money is the exception. `max_cost_usd` is a limit on the run, and a
+      # comparison is one run: a fresh count for each recipe let four recipes
+      # spend four times the limit with nothing stopped and nothing partial.
+      # So each recipe starts from what the comparison has spent, and its
+      # segmentation, pre-flight and every request check the total.
+      seed <- as_num1(trace$spent_usd, 0)
+      sub$spent_usd <- seed
+      # And what the calls a replay answered from its recording cost when they
+      # were recorded, which the limit counts as well (budget_spent()): seeded
+      # the same way, so a replay of a comparison the limit stopped stops each
+      # recipe where the recording did, rather than going past the stop.
+      rseed <- as_num1(trace$replayed_usd, 0)
+      sub$replayed_usd <- rseed
+      # What the comparison had spent beyond that, for the progress line, which
+      # adds this trace's own spend. NA, when a cost is unknown, stays NA.
+      sub$spent_before <- sum(gr_trace_cost(trace)$usd) - seed
       # Key on the document's actual TEXT, not its character count. Counting
       # characters meant any length-preserving cleaner produced a cache hit on
       # different text, and one recipe was handed another recipe's chunks --
@@ -333,29 +376,22 @@ gr_compare <- function(source, question, recipes = c("fast", "needle", "thorough
       # and the warnings of the ingestion that produced them, so two ingestions
       # with the same text but different losses must not share chunks.
       skey <- gr_hash(list(d$text, unclass(r$segment), d$stats$unread_pages, d$warnings))
-      ch <- seg_cache[[skey]]
-      if (is.null(ch)) { ch <- gr_segment(d, r$segment, client = client, trace = trace)
-                         seg_cache[[skey]] <- ch }
-      # Each recipe gets its own call count, then its steps are folded into
-      # the shared trace. Sharing the trace outright meant `max_calls` counted
-      # earlier recipes against later ones, so the same recipe returned a
-      # different answer depending on its position in the comparison.
-      sub <- gr_trace(meta = list(recipe = nm, source = source_label(source)))
-      # Money is the exception. `max_cost_usd` is a limit on the run, and a
-      # comparison is one run: a fresh count for each recipe let four recipes
-      # spend four times the limit with nothing stopped and nothing partial.
-      # So each recipe starts from what the comparison has spent, segmentation
-      # included, which is charged to the shared trace, and pre-flight and
-      # every request check the total.
-      seed <- as_num1(trace$spent_usd, 0)
-      sub$spent_usd <- seed
-      # What the comparison had spent beyond that, for the progress line, which
-      # adds this trace's own spend. NA, when a cost is unknown, stays NA.
-      sub$spent_before <- sum(gr_trace_cost(trace)$usd) - seed
+      hit <- seg_cache[[skey]]
+      if (is.null(hit)) {
+        ch <- gr_segment(d, r$segment, client = client, trace = sub)
+        seg_steps <- length(sub$steps)
+        # A chunking a limit cut short is this recipe's, not the one another
+        # recipe with the same segment spec would get on its own.
+        if (!isTRUE(sub$budget_stop)) seg_cache[[skey]] <- list(chunks = ch, calls = sub$calls)
+      } else {
+        ch <- hit$chunks
+        # Charged the requests the chunking took, as it would be run alone, and
+        # relieved of them below before its steps are folded in, since it did
+        # not make them.
+        seeded_calls <- as.integer(hit$calls)
+        sub$calls <- sub$calls + seeded_calls
+      }
       a <- gr_read(ch, question, client, r$read, trace = sub)
-      # Only this recipe's spend is folded in: the seed is already there.
-      sub$spent_usd <- sub$spent_usd - seed
-      trace_absorb(trace, sub)
       finish_answer(a, d, ch, nm)
     }, error = function(e) {
       # Every recipe would fail the same way, so a missing key is not one
@@ -371,6 +407,23 @@ gr_compare <- function(source, question, recipes = c("fast", "needle", "thorough
       a$recipe <- nm
       a
     })
+    # Only this recipe's spend and requests are folded in: the seeds are
+    # already there.
+    sub$spent_usd <- sub$spent_usd - seed
+    sub$replayed_usd <- as_num1(sub$replayed_usd, 0) - rseed
+    sub$calls <- sub$calls - seeded_calls
+    off <- length(trace$steps)
+    trace_absorb(trace, sub)
+    # A failed recipe's answer is on the comparison's trace, which holds every
+    # recipe: its steps are the ones from where it began to the requests just
+    # folded in (answer_trace()).
+    if (identical(out[["trace", exact = TRUE]], trace)) {
+      out$trace_steps <- c(first = start + 1L, last = length(trace$steps))
+    }
+    # A chunking is the comparison's, shared with any later recipe that cuts
+    # the document the same way, so its requests belong to no recipe in the
+    # comparison's trace, as they did when they were made on it.
+    for (i in off + seq_len(seg_steps)) trace$steps[[i]]$recipe <- NA_character_
     answers[[nm]] <- out
   }
 
@@ -389,11 +442,27 @@ gr_compare <- function(source, question, recipes = c("fast", "needle", "thorough
                chunks_used = length(a$chunks_used),
                answer_chars = nchar(a$answer),
                not_found = is_not_found(a$answer),
-               error = as_chr1(a$notes$error, NA_character_),
+               error = answer_error(a),
                stringsAsFactors = FALSE)
   }))
   list(answers = answers, summary = summary, trace = trace,
        document = list(source = doc$source, stats = doc$stats))
+}
+
+#' What went wrong in a run, in a line, for gr_compare()'s `error` column.
+#'
+#' The reader's own `notes$error` when it left one. A reader that counts its
+#' failures in `notes$failed_calls` instead (map_reduce, skim or refine on a
+#' 401) left the column NA beside `not_found = TRUE`, as if nothing had
+#' failed; the first failure on the answer's own steps that nothing recovered
+#' from says what did, as partial_reasons() finds it. NA when there is none.
+#' @noRd
+answer_error <- function(a) {
+  err <- as_chr1(as.list(a$notes %||% list())[["error", exact = TRUE]], NA_character_)
+  if (is_nonblank(err)) return(err)
+  tr <- answer_trace(a)
+  open <- if (inherits(tr, "gr_trace")) Filter(Negate(is_recovered_error), tr$errors) else list()
+  if (length(open)) as_chr1(open[[1]]$error, NA_character_) else NA_character_
 }
 
 #' Apply flat `...` overrides onto the right axis of a recipe.

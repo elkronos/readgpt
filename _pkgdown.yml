@@ -131,6 +131,7 @@ reference:
   - gr_cache_client
   - gr_cache_stats
   - gr_cache_clear
+  - gr_flush_caches
   - gr_replay_client
 
 - title: Extending readgpt

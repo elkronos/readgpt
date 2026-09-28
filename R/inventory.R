@@ -44,7 +44,7 @@
 #' is usually all it takes) and pass each group to the recipe you chose.
 #'
 #' @param sources A directory, or a character vector of paths. A directory is
-#'   walked; anything else is taken as given.
+#'   walked, on its own or among other paths; a file is taken as given.
 #' @param recursive Descend into subdirectories. `TRUE` here, unlike
 #'   [gr_read_many()], because the point of the function is to show you
 #'   everything.
@@ -54,15 +54,25 @@
 #'   extractable text is counted as needing OCR. Read exactly as
 #'   [gr_ingest_spec()] reads it, default included, so what this predicts is
 #'   what ingestion will do.
-#' @param max_pdf_pages Pages sampled per PDF for the text-layer probe. The
-#'   whole point is to be fast on a big folder; a scan is obvious from a few
-#'   pages. `Inf` reads every page.
+#' @param max_pdf_pages Pages sampled per PDF for the text-layer probe, spread
+#'   across the document (the middle of each of that many equal stretches of
+#'   it) rather than its first pages, which are its least typical: a cover
+#'   image, a blank page, a text cover sheet in front of a scan. Only those
+#'   pages are extracted, so the probe stays fast on long documents. The whole
+#'   point is to be fast on a big folder; a scan is obvious from a few pages.
+#'   `Inf` reads every page. A sample is a sample: a PDF whose scanned pages
+#'   all fall between the sampled ones is reported as having a text layer, so
+#'   raise this for a folder where that matters.
 #' @return An object of class `gr_inventory`:
 #'   \describe{
 #'     \item{`files`}{One row per file found, readable or not: `file` (the path
-#'       relative to `sources`, so the folder it came from survives), `folder`,
+#'       relative to `sources`, so the folder it came from survives; for a
+#'       vector of paths, relative to the folder they all sit in), `folder`,
 #'       `ext`, `bytes`, `extractor` (`NA` when none claims it), `status`,
-#'       `pages`, `ocr_pages`, `tokens` and `note`.}
+#'       `pages`, `ocr_pages` (pages with no text layer, estimated from the
+#'       sampled pages when not every page was read, which `note` then says),
+#'       `tokens`, `note`, and `path`, the file as found, to hand on to
+#'       [gr_read_many()].}
 #'     \item{`by_status`}{Counts and sizes per status.}
 #'     \item{`totals`}{Files, readable files, bytes, known `tokens`,
 #'       `tokens_unknown` (readable files whose size cannot be counted yet), and
@@ -85,7 +95,8 @@
 #'
 #' @section Tokens, and what is left unknown:
 #' `tokens` is counted exactly where counting is cheap: plain text, markdown,
-#' HTML, CSV, and PDFs from the pages actually probed, scaled by page count. For
+#' HTML (with its markup, so a page's count runs high), CSV, and PDFs from the
+#' pages actually probed, scaled by page count. For
 #' formats needing an optional package that is not installed, and for scans
 #' whose text does not exist until OCR runs, it is `NA`, not a guess. Those
 #' files are counted in `totals$tokens_unknown` rather than folded into the sum
@@ -129,12 +140,23 @@ gr_inventory <- function(sources, recursive = TRUE, model = NULL,
   is_dir <- is.character(sources) && length(sources) == 1L && !is.na(sources) &&
     dir.exists(sources)
   root <- if (is_dir) sources else NA_character_
+  walk <- function(d) {
+    f <- list.files(d, full.names = TRUE, recursive = recursive, no.. = TRUE)
+    f[!dir.exists(f)]
+  }
   if (is_dir) {
-    paths <- list.files(sources, full.names = TRUE, recursive = recursive, no.. = TRUE)
-    paths <- paths[!dir.exists(paths)]
+    paths <- walk(sources)
   } else {
     paths <- as.character(unlist(sources, use.names = FALSE))
     paths <- paths[!is.na(paths)]
+    # A folder among the paths is walked as it is on its own. Taken as a file
+    # it was one row saying "no extractor claims '.'", and nothing in it was
+    # surveyed.
+    folder <- dir.exists(paths)
+    if (any(folder)) {
+      paths <- unlist(lapply(seq_along(paths), function(i) if (folder[i]) walk(paths[i]) else paths[i]),
+                      use.names = FALSE)
+    }
   }
   # Byte order, not sort(), which follows LC_COLLATE: the survey listed "adams"
   # before "Baker" on one machine and after it under cron or R CMD check, so the
@@ -154,6 +176,12 @@ gr_inventory <- function(sources, recursive = TRUE, model = NULL,
     paths <- paths[!duplicated(real)]
   }
 
+  # What the `file` labels are relative to. For a vector of paths, the folder
+  # they all sit in: labelling each by its basename made 2019/report.txt and
+  # 2020/report.txt two rows of one name, one ready and one empty, with nothing
+  # to say which was which.
+  base <- if (is_dir) root else common_parent(paths)
+
   if (!length(paths)) {
     return(structure(list(files = inventory_frame(), by_status = inventory_status_frame(),
                           totals = list(files = 0L, readable = 0L, bytes = 0,
@@ -172,9 +200,9 @@ gr_inventory <- function(sources, recursive = TRUE, model = NULL,
   # what is foreseeable -- a corrupt PDF, a file that cannot be read as text --
   # and this guards what is not.
   rows <- lapply(seq_along(paths), function(i) {
-    tryCatch(inventory_row(paths[i], ext[i], claims[i], root, ocr_min_chars, max_pdf_pages),
+    tryCatch(inventory_row(paths[i], ext[i], claims[i], base, ocr_min_chars, max_pdf_pages),
              error = function(e) {
-               rel <- if (!is.na(root)) relative_path(paths[i], root) else NA_character_
+               rel <- if (!is.na(base)) relative_path(paths[i], base) else NA_character_
                if (is.na(rel)) rel <- basename(paths[i])
                data.frame(file = rel, folder = dirname(rel), ext = ext[i],
                           # Keep what is already known. Throwing the size away
@@ -186,7 +214,7 @@ gr_inventory <- function(sources, recursive = TRUE, model = NULL,
                           extractor = if (is.na(claims[i])) NA_character_ else claims[i],
                           status = "unreadable", pages = NA_integer_,
                           ocr_pages = NA_integer_, tokens = NA_real_,
-                          note = substr(conditionMessage(e), 1, 200),
+                          note = substr(conditionMessage(e), 1, 200), path = paths[i],
                           stringsAsFactors = FALSE)
              })
   })
@@ -231,7 +259,27 @@ inventory_frame <- function() {
   data.frame(file = character(0), folder = character(0), ext = character(0),
              bytes = numeric(0), extractor = character(0), status = character(0),
              pages = integer(0), ocr_pages = integer(0), tokens = numeric(0),
-             note = character(0), stringsAsFactors = FALSE)
+             note = character(0), path = character(0), stringsAsFactors = FALSE)
+}
+
+#' The deepest folder every path sits in, or NA.
+#' @noRd
+common_parent <- function(paths) {
+  if (!length(paths)) return(NA_character_)
+  d <- vapply(paths, function(x) tryCatch(normalizePath(dirname(x), winslash = "/", mustWork = FALSE),
+                                          error = function(e) NA_character_),
+              character(1), USE.NAMES = FALSE)
+  if (anyNA(d)) return(NA_character_)
+  parts <- strsplit(d, "/", fixed = TRUE)
+  common <- character(0)
+  for (i in seq_len(min(lengths(parts)))) {
+    v <- unique(vapply(parts, `[`, character(1), i))
+    if (length(v) != 1L) break
+    common <- c(common, v)
+  }
+  if (!length(common)) return(NA_character_)
+  if (length(common) == 1L) return(paste0(common, "/"))      # "/" or "C:/"
+  paste(common, collapse = "/")
 }
 
 #' @noRd
@@ -282,7 +330,8 @@ inventory_row <- function(path, ext, extractor, root, ocr_min_chars, max_pdf_pag
                     ext = ext, bytes = size,
                     extractor = if (is.na(extractor)) NA_character_ else extractor,
                     status = NA_character_, pages = NA_integer_, ocr_pages = NA_integer_,
-                    tokens = NA_real_, note = NA_character_, stringsAsFactors = FALSE)
+                    tokens = NA_real_, note = NA_character_, path = path,
+                    stringsAsFactors = FALSE)
 
   if (is.na(size)) {
     out$status <- "unreadable"; out$note <- "could not be measured"; return(out)
@@ -319,12 +368,21 @@ inventory_row <- function(path, ext, extractor, root, ocr_min_chars, max_pdf_pag
   out
 }
 
+#' Read a text, markdown or HTML file and count it.
+#'
+#' Through read_text_lines(), as the text and markdown extractors read, which
+#' makes the lines UTF-8. readLines() alone left a Windows-1252 file's bytes as
+#' they were, the token counter refused them, and the file was reported
+#' "unreadable" -- and dropped from the cost floor -- when ingestion reads it
+#' without complaint (the HTML extractor decodes a page itself, and gr_ingest()
+#' makes every block UTF-8). An HTML page is counted with its markup, which
+#' is cheap and over-counts; running the extractor over every page would be
+#' exact and was ten times slower on a large one.
 #' @noRd
 probe_text <- function(path) {
-  txt <- tryCatch(readLines(path, warn = FALSE), error = function(e) NULL)
-  if (is.null(txt)) return(list(status = "unreadable", tokens = NA_real_,
+  body <- tryCatch(paste(read_text_lines(path), collapse = "\n"), error = function(e) NULL)
+  if (is.null(body)) return(list(status = "unreadable", tokens = NA_real_,
                                 note = "could not be read as text"))
-  body <- paste(txt, collapse = "\n")
   if (!nzchar(trimws(body))) {
     return(list(status = "empty", tokens = 0, note = "no text content"))
   }
@@ -337,6 +395,13 @@ probe_text <- function(path) {
 #' money is spent rather than during. Sampling matters: a scan is obvious from
 #' three pages, and reading every page of four hundred PDFs to find that out
 #' would defeat the purpose.
+#'
+#' The sample is spread across the document, not taken from its front. The
+#' first pages are the least typical: a born-digital report behind a picture
+#' cover and two blank pages was a "scan" that "will read as empty", and a
+#' scanned article behind a text cover sheet -- how database downloads come --
+#' was "ready", with its tokens extrapolated from the cover. `ocr_pages` is an
+#' estimate from the sample, and `note` says so.
 #' @noRd
 probe_pdf <- function(path, ocr_min_chars, max_pdf_pages) {
   if (!requireNamespace("pdftools", quietly = TRUE)) {
@@ -357,32 +422,60 @@ probe_pdf <- function(path, ocr_min_chars, max_pdf_pages) {
   # be read as "no cap" -- which would read every page of every PDF, the
   # opposite of what the setting is for.
   cap <- as.numeric(max_pdf_pages)
-  take <- if (!is.finite(cap) || cap >= n) seq_len(n) else seq_len(max(1L, floor(cap)))
-  pg <- tryCatch(pdftools::pdf_text(path)[take], error = function(e) NULL)
+  k <- if (!is.finite(cap) || cap >= n) n else max(1, floor(cap))
+  # The middle page of each of k equal stretches of the document.
+  take <- if (k >= n) seq_len(n) else as.integer(floor((seq_len(k) - 0.5) * n / k)) + 1L
+  pg <- tryCatch(pdf_pages_text(path, take, n), error = function(e) NULL)
   if (is.null(pg)) {
     return(list(status = "unreadable", tokens = NA_real_, pages = n,
                 note = "the PDF opened but no text could be read"))
   }
   chars <- nchar(trimws(pg))
   thin <- chars < ocr_min_chars
+  sampled <- length(take) < n
+  # Pages with no text layer, estimated from the sample when it is one.
+  est <- as.integer(round(sum(thin) * (n / length(take))))
+  # Name what is actually missing. Listing both packages when one of them is
+  # installed sends people to fix the wrong thing.
+  missing <- c("tesseract", "magick")[!vapply(c("tesseract", "magick"),
+                                              requireNamespace, logical(1), quietly = TRUE)]
+  ocr <- if (!length(missing)) "; will be OCR'd"
+         else sprintf(", and %s %s not installed", paste(sprintf("'%s'", missing), collapse = " and "),
+                      if (length(missing) > 1L) "are" else "is")
+  if (all(thin)) {
+    return(list(status = "needs_ocr", tokens = NA_real_, pages = n, ocr_pages = est,
+                note = paste0("no text layer",
+                              if (sampled) sprintf(" on the %d of %d pages sampled", length(take), n),
+                              ocr)))
+  }
   # Tokens from the sampled pages, scaled to the whole document. An estimate,
   # and said to be one, rather than reading four hundred pages to be exact.
   seen <- as.numeric(sum(gr_count_tokens(paste(pg, collapse = "\n"))))
-  tokens <- if (!length(take)) NA_real_ else seen * (n / length(take))
-  if (all(thin)) {
-    # Name what is actually missing. Listing both packages when one of them is
-    # installed sends people to fix the wrong thing.
-    missing <- c("tesseract", "magick")[!vapply(c("tesseract", "magick"),
-                                                requireNamespace, logical(1), quietly = TRUE)]
-    return(list(status = "needs_ocr", tokens = NA_real_, pages = n, ocr_pages = n,
-                note = if (!length(missing)) "no text layer; will be OCR'd"
-                       else sprintf("no text layer, and %s %s not installed",
-                                    paste(sprintf("'%s'", missing), collapse = " and "),
-                                    if (length(missing) > 1L) "are" else "is")))
-  }
-  list(status = "ready", tokens = tokens, pages = n,
-       ocr_pages = as.integer(round(sum(thin) * (n / length(take)))),
-       note = if (any(thin)) "some pages have no text layer" else NA_character_)
+  list(status = "ready", tokens = seen * (n / length(take)), pages = n, ocr_pages = est,
+       note = if (!any(thin)) NA_character_
+              else paste0(if (sampled) "about " else "", est, " of ", n, " pages have no text layer",
+                          if (sampled) sprintf(" (estimated from %d sampled)", length(take)), ocr))
+}
+
+#' The text of pages `take` of a PDF of `n` pages.
+#'
+#' Only those pages. `pdftools::pdf_text()` has no page argument and extracts
+#' the whole text layer, so a sample of three pages of a 1,200-page report
+#' saved nothing but the token count, and a survey meant to take seconds took
+#' time in proportion to every page in the folder. A copy holding just the
+#' sampled pages is quick to make; where it cannot be made (an encrypted file,
+#' say), the whole text is read as before.
+#' @noRd
+pdf_pages_text <- function(path, take, n) {
+  if (length(take) >= n) return(pdftools::pdf_text(path))
+  tmp <- tempfile(fileext = ".pdf")
+  on.exit(unlink(tmp), add = TRUE)
+  out <- tryCatch({
+    suppressWarnings(suppressMessages(pdftools::pdf_subset(path, pages = take, output = tmp)))
+    suppressWarnings(pdftools::pdf_text(tmp))
+  }, error = function(e) NULL)
+  if (length(out) == length(take)) return(out)
+  pdftools::pdf_text(path)[take]
 }
 
 #' @export
@@ -409,6 +502,18 @@ print.gr_inventory <- function(x, ...) {
     cat(sprintf("  ! %d file(s) have no text layer%s\n", nrow(ocr),
                 if (any(stuck)) " and 'tesseract'/'magick' are not installed, so they will read as empty"
                 else "; they will be OCR'd, which is slower"))
+  }
+  # A file that is "ready" can still be mostly scan: a text cover sheet in
+  # front of scanned pages. Without OCR those pages read as nothing, and the
+  # answers rest on the rest of the file, so it is said here too.
+  part <- x$files[x$files$status == "ready" & !is.na(x$files$ocr_pages) & x$files$ocr_pages > 0L, ,
+                  drop = FALSE]
+  if (nrow(part)) {
+    stuck <- grepl("not installed", part$note, fixed = TRUE)
+    cat(sprintf("  ! %d file(s) have some pages with no text layer (about %d in all)%s\n", nrow(part),
+                sum(part$ocr_pages),
+                if (any(stuck)) "; 'tesseract'/'magick' are not installed, so those pages will read as empty"
+                else "; those pages will be OCR'd"))
   }
   dep <- x$files[x$files$status == "needs_package", , drop = FALSE]
   if (nrow(dep)) {

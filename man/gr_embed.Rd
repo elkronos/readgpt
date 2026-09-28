@@ -39,11 +39,26 @@ embedded, on word overlap, so nothing was left unread.}
 \code{"lexical"}}: hashed bag-of-words vectors that measure word overlap, not
 meaning, so \code{semantic} segmentation and \code{retrieve} ranking become markedly
 less accurate. The substitution warns and is recorded, but the run
-continues. Use \code{"error"} to fail fast, or \code{"none"} to get an empty matrix.}
+continues. Use \code{"error"} to fail fast, or \code{"none"} to get an empty matrix.
+An embedder fails when it raises, or returns the wrong number of rows,
+vectors with no dimensions, or missing or non-finite values. The built-in
+\code{"api"} embedder also fails on a reply that leaves a text without a usable
+vector (missing, empty or all zeros), gives vectors of different lengths,
+or labels them with \code{index} fields that are not one for each text sent
+(vectors are matched to texts by \code{index} when the reply gives it). It
+retries a rate limit (HTTP 429), a server error or a dropped connection up
+to the client's \code{max_retries}, as \code{\link[=gr_call]{gr_call()}} does, and the warning names
+the HTTP status and the provider's message. A refused key (HTTP 401 or
+403) is a failure like the others rather than a stop, since a key can be
+allowed to chat and not to embed; a missing key stops the run.}
 
 \item{embedder}{A registered embedder name (see \code{\link[=gr_embedders]{gr_embedders()}}), or a
-function of \verb{(texts, params)}. Defaults to the embed function supplied with
-the client, if any, and otherwise to \code{gr_options("embedder")}.}
+function of \verb{(texts, params)}. When it is \code{NULL} the first of these is
+used: \code{gr_options("embedder")} when it names one, then the embed function
+supplied with the client (a \code{\link[=gr_mock_client]{gr_mock_client()}}'s \code{embed_handler}, or the
+\code{embed} given to \code{\link[=gr_backend_client]{gr_backend_client()}} or \code{\link[=gr_ellmer_client]{gr_ellmer_client()}}), then the
+built-in \code{"api"}. So an embedder named in \code{\link[=gr_options]{gr_options()}} wins over the
+client's own embed function.}
 }
 \value{
 A numeric matrix, one row per input, carrying an \code{"embedding_source"}

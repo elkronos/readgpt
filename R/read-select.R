@@ -36,8 +36,9 @@
 #'
 #' @param rel Numeric relevance per candidate. `-Inf` marks a candidate that
 #'   must not be selected at all.
-#' @param emb Row-per-candidate embedding matrix, L2-normalised, so a
-#'   cross-product is cosine similarity.
+#' @param emb Row-per-candidate embedding matrix. Its rows are L2-normalised
+#'   here, so a cross-product is cosine similarity whatever the embedder
+#'   returned.
 #' @param k How many to select.
 #' @param lambda 1 = pure relevance, 0 = pure diversity.
 #' @return Selected indices, in selection order (most relevant first).
@@ -73,6 +74,14 @@ mmr_select <- function(rel, emb, k, lambda = 1) {
   # answer for "we cannot tell how redundant this is".
   bad_row <- !is.finite(rowSums(emb))
   if (any(bad_row)) emb[bad_row, ] <- 0
+  # Normalised here, not assumed. The API and lexical embedders return unit
+  # rows, but an embed function passed to gr_backend_client() or
+  # gr_ellmer_client() is used as it comes, and many local models return
+  # vectors of norm 20 or 30. Redundancy was then a raw dot product in the
+  # hundreds against a relevance of at most 1, and `mmr < 1` picked whatever
+  # was least like the first choice in magnitude: an irrelevant chunk. A zero
+  # row stays zero.
+  emb <- emb / pmax(sqrt(rowSums(emb^2)), .Machine$double.eps)
 
   sel <- eligible[which.max(rel[eligible])]
   best_sim <- rep(-Inf, n)

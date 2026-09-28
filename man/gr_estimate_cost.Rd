@@ -14,7 +14,9 @@ are summed).}
 }
 \value{
 A single numeric USD figure, or \code{NA_real_} when the model has no
-pricing in the registry. Pricing is seeded from the registry's \code{as_of}
+pricing in the registry, or no output price and \code{output_tokens} above zero
+(an embedding model's missing output price counts as zero, since it
+produces no output tokens). Pricing is seeded from the registry's \code{as_of}
 snapshot. Treat it as an estimate, and use \code{\link[=gr_register_model]{gr_register_model()}} to
 correct it.
 }

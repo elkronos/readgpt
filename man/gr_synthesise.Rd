@@ -32,7 +32,9 @@ shaped like its \verb{$table}.}
 unless you give them directly.}
 
 \item{outline}{The sections, as a named character vector: names are headings,
-values say what that section has to cover. As \code{\link[=gr_protocol]{gr_protocol()}}.}
+values say what that section has to cover. As \code{\link[=gr_protocol]{gr_protocol()}}. A heading
+with a blank brief is dropped, unless the claim assignment (see \code{claims})
+places claims in it: then its heading is its brief.}
 
 \item{question}{The review question, for framing.}
 
@@ -63,11 +65,25 @@ keep the marker form so the check can be re-run on the published prose.}
 \item{bib}{Which columns carry bibliographic identity, as a named list of
 \code{citation}, \code{authors}, \code{year}, \code{title}, \code{venue}, \code{doi}. Omitted, the
 conventional names are looked for, which is why
-\code{gr_protocols("bibliography")} works without configuration. The most
+\code{gr_protocols("bibliography")} works without configuration: \code{citation}
+(or \code{cite}, \code{citation_key}, \code{cite_key}), \code{authors} (or \code{author}), \code{year},
+\code{title}, \code{venue} (or \code{journal}) and \code{doi}, in any case. Names that are as
+often findings -- \code{date}, \code{source}, \code{url}, \code{published}, \code{publication} --
+are not taken for bibliographic ones unless named here. A column found
+this way is withheld from the writing prompts and used for the citations
+and references; give a role as \code{NA} to keep a column of that name as a
+finding (\code{bib = list(venue = NA)}). The most
 reliable route is a \code{citation} field asked for during extraction: parsing
 an arbitrary author list is a heuristic, and where it cannot be done
 confidently the run falls back to markers rather than printing a name that
-may be wrong.}
+may be wrong.
+
+Pass the same \code{bib} to \code{\link[=gr_claims]{gr_claims()}} and \code{\link[=gr_gaps]{gr_gaps()}}. The claims model is
+shown every column its own \code{bib} did not withhold, so a claim, and the
+moderator it names, can carry a column this write-up withholds, and the
+claims reach the writing prompts as they are. With \code{claims} drawn under
+a \code{bib} that withheld less than this one, the run warns
+(\code{gr_claims_bib_mismatch}) and names the columns.}
 
 \item{style}{A register instruction appended to the writing prompts, such as
 \code{"formal academic; hedge claims; past tense for findings"}. It governs how
@@ -78,9 +94,22 @@ claim and inventing nothing hold whatever voice is asked for.}
 three, \code{FALSE} for none, or any of \code{"structure"} (reorder and merge),
 \code{"cut"} (remove repetition) and \code{"register"} (polish sentences) by name.
 Each pass is forbidden from doing the others' job, and each is discarded
-(with \verb{$draft} kept) if it changed the citations, arrived truncated,
-or strengthened a claim. Off by default: each is a call, and each is a
-chance for a model to touch finished prose.}
+(with \verb{$draft} kept, and the reason in \verb{$coherence}) if it changed which
+studies are cited, wrote a citation the check cannot read, cited a study
+more often than the draft did, or took the citation marker off a claim
+sentence that stays (each a \code{gr_coherence_rejected} warning); if it
+arrived truncated (\code{gr_coherence_truncated}); or if it strengthened a
+claim (\code{gr_revision_escalated}). Off by default: each is a call, and each
+is a chance for a model to touch finished prose.
+
+The check that refuses a revision which strengthens a claim reads English
+hedges and boosters, so a draft it judges not to be in English is not
+revised at all: a warning (\code{gr_revision_unguarded}) says so, no pass is
+sent, and every pass is reported with \code{ran = FALSE} and that reason. The
+judgment counts letters outside the Latin alphabet and common function
+words, so a very short draft can be misjudged: an English one naming an
+accented author left unrevised, or a sentence or two of a language that
+has no accents taken for English.}
 
 \item{references}{Append a \verb{## References} section built from the studies the
 finished text actually cites. Alphabetical under \code{"author-year"}, numbered
@@ -89,16 +118,31 @@ point into it. The alphabetical order follows a fixed rule rather than the
 session's locale, so it is the same on every machine: it ignores case,
 accents and apostrophes, filing an accented name with its base letter.
 Two papers by the same authors in the same year are lettered (2019a,
-2019b) in title order.}
+2019b) in title order; a key that does not end in a year is lettered
+after a hyphen ("in press-a"). Under \code{"author-year"}, an entry whose key
+came from a \code{citation} field leads with that key, so the prose can be
+followed to it.}
 
 \item{claims}{A \code{\link[=gr_claims]{gr_claims()}} result. With it each section argues that
 section's claims and sees only the studies those claims rest on, rather
 than being handed every study and writing a paragraph per row. Needs an
-\code{outline} from \code{\link[=gr_outline]{gr_outline()}}, which carries the assignment.}
+\code{outline} from \code{\link[=gr_outline]{gr_outline()}}, which carries the assignment, and it must be
+an outline derived from these same claims: the run stops
+(\code{gr_claims_mismatch}) when the outline says it came from other claims,
+and (\code{gr_claims_unplaced}) when the assignment places a claim in a heading
+the outline does not have -- a heading renamed after \code{\link[=gr_outline]{gr_outline()}}, say;
+rename it in \code{attr(outline, "claims")$section} too. A section given no
+claims is written from the rows, as without \code{claims}, except the closing
+section, which is written from \code{gaps} alone and is left out when there
+are none. A section too large for one prompt is written a few claims at a
+time, each batch sent only its claims' studies, and merged.}
 
 \item{gaps}{A \code{\link[=gr_gaps]{gr_gaps()}} result, or lines of text. Given to the closing
-section \code{\link[=gr_outline]{gr_outline()}} named, with an instruction to state those gaps and
-no others.}
+section \code{\link[=gr_outline]{gr_outline()}} named, \code{attr(outline, "closing")}, with an
+instruction to state those gaps and no others. When the outline has no
+such section they reach none, and a warning (\code{gr_gaps_unused}) says so.
+They are cut, at a line, to a quarter of the model's input room, with a
+warning (\code{gr_gaps_truncated}), and the closing section is then partial.}
 
 \item{trace}{A \code{\link[=gr_trace]{gr_trace()}} to fold this write-up's accounting into, as in
 \code{\link[=gr_read_many]{gr_read_many()}}. It is a parent, not this stage's counter: \verb{$trace} is
@@ -120,22 +164,38 @@ asked for.}
 \code{pass} (which of \code{"structure"}, \code{"cut"}, \code{"register"}), \code{ran}, \code{kept},
 \code{lost} and \code{added} (citations, if the revision changed them), and
 \code{reason} for anything discarded.}
+\item{\code{unrendered}}{Studies a section cited honestly that \code{text} still
+shows as \verb{[study N]} somewhere, because a kept revision moved or
+reworded a citation of the same study that another section made
+without being given it, and the two could no longer be told apart.
+Leaving both is the safe side of that doubt; \verb{$draft} renders each
+section's own citations. Empty when nothing was in doubt.}
 \item{\code{sections}}{One row per section: \code{section}, \code{brief}, \code{text},
 \code{n_cited}, \code{n_unknown} (citations to a row that does not exist),
 \code{n_unsupplied} (citations to a study that exists but was not given to
 the call that wrote them: with \code{claims}, a study not behind that
 section's claims; for a section written in batches, a study outside
-that batch. They are left as markers and kept out of the reference
+that batch, or one the merge of the batch drafts cited that no draft
+did. They are left as markers and kept out of the reference
 list, with one exception: once batch drafts are merged, a study that
 another batch of the same section was given and cited cannot be told
 apart, so it is rendered, and still counted), \code{n_unparsed} (brackets
 that open like a citation, such as \verb{[studies 1 to 7]}, but cannot be
 read as one, so the studies they name were not checked), \code{n_truncated} (replies,
 including batch drafts and merges, that stopped at the reply limit),
+\code{n_claims} and \code{claims_missed} (the claims it was given, and those it
+did not write up), \code{lost_batches} (batches of studies whose call
+failed), \code{capped_batches} (batches not sent because the run reached
+its call or cost ceiling), \code{merge_failed} (its batch drafts could not
+be merged, so it is those drafts joined end to end), and
 \code{partial}. A section is partial when any of those counts is non-zero
-(\code{n_cited} aside), when it came back empty, when a batch of studies
-was lost or not read, when its batch drafts could not be merged, or,
-with \code{claims}, when it did not write up a claim it was given.}
+(\code{n_cited} and \code{n_claims} aside), when it came back empty, when a batch of studies
+was lost or not read, when its batch drafts could not be merged or
+one had to be cut to fit the merge, when (without \code{claims}) none of
+the studies of a batch it was drafted from is cited in it, when it
+could not be sent at all (its brief and gaps leave no room in the
+window), when the gaps given to it were cut, or, with \code{claims}, when
+it did not write up a claim it was given.}
 \item{\code{citations}}{Every citation, resolved to the row it points at, in
 long form: \code{section}, \code{study}, \code{document}, \code{document_id}.}
 \item{\code{studies}}{The rows that were written from, with the \code{study} number
@@ -144,6 +204,9 @@ each was cited by.}
 its \verb{$lost} names studies whose claims batch contributed nothing, the
 run warns (\code{gr_claims_partial}), and print() and the audit report say
 the review was written without them.}
+\item{\code{claim_sections}}{With \code{claims}, which section each claim was
+given to: a data frame of \code{section} and \code{claim_id}, the outline's
+assignment. \code{NULL} without \code{claims}.}
 \item{\code{trace}}{As \code{\link[=gr_extract]{gr_extract()}}.}
 }
 }
@@ -167,6 +230,14 @@ a hundred rows of a ten-field schema is a few thousand tokens. A table too
 large for one prompt is written in batches and merged, so a section costs
 batches + merges instead. Either way the cost is per \emph{section}, not per
 document: the expensive reading has already happened.
+
+The merge folds every batch draft into one reply of at most
+\code{max_section_tokens}, the same limit each draft had, so a section drafted
+from a very large table covers only what that one reply can hold. Nothing
+checks that it cites every study -- a section need not -- but without
+\code{claims} a batch none of whose studies the merged section cites is
+reported (\code{gr_synth_batch_dropped}) and marks it partial. Raise
+\code{max_section_tokens}, or divide the table between narrower sections.
 }
 
 \examples{

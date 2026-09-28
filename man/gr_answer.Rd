@@ -52,8 +52,23 @@ that answered \code{NOT_IN_DOCUMENT} was read and paid for but is not listed.
 \item{\code{reader}, \code{signature}}{Which strategy ran, and its traversal
 signature (see \code{\link[=gr_reader_signature]{gr_reader_signature()}}).}
 \item{\code{question}}{The question, as asked.}
-\item{\code{trace}}{The \link{gr_trace} for this run. In a \code{\link[=gr_compare]{gr_compare()}} the trace is
-shared across recipes, so it records every recipe's calls.}
+\item{\code{trace}}{The \link{gr_trace} for this run. From \code{\link[=answer_document]{answer_document()}} it
+holds the whole run: ingestion, segmentation and the read. \strong{An answer
+taken from a \code{\link[=gr_compare]{gr_compare()}} holds only its own recipe's segmentation and
+read} (its segmentation requests, which \code{semantic}, \code{proposition} and
+\code{contextual} with \code{context_source = "llm"} bill, the pre-flight check and
+the reader's requests), because each recipe is counted apart. Ingestion
+and the other recipes are in the comparison's own trace, \code{cmp$trace}:
+cost or save that one as the record of what the comparison did. A trace
+passed in with \verb{trace =} is shared, not copied: this field is that trace
+itself, which still holds every run recorded into it, those before this
+one and those after it. \code{trace_steps} says which of its steps are this
+run's.}
+\item{\code{trace_steps}}{Integer \code{c(first, last)}: the steps of \code{trace} this
+run made, or \code{NULL} when no trace was kept. \code{\link[=as_json]{as_json()}}, \code{print()} and
+the audit report (\code{\link[=gr_audit_report]{gr_audit_report()}}) use only these, so an answer read
+with a trace shared across runs does not carry other runs' prompts,
+calls or cost.}
 \item{\code{recipe}, \code{document}, \code{segmentation}}{Added by \code{\link[=answer_document]{answer_document()}} and
 \code{\link[=gr_compare]{gr_compare()}}: the recipe name, the source and ingestion stats, and the
 chunk statistics the reader saw.}
@@ -62,9 +77,11 @@ chunk statistics the reader saw.}
 
 \section{Methods}{
 
-\code{print()} shows the answer, the calls, tokens and cost, where the evidence
-came from, and, when the answer is partial, why; \code{\link[=as_json]{as_json()}} serialises the
-answer together with every prompt and response from the same run.
+\code{print()} shows the answer, this run's calls, tokens and cost, where the
+evidence came from, and, when the answer is partial, why; \code{\link[=as_json]{as_json()}}
+serialises the answer together with every prompt and response this run made
+(the steps of its \code{trace} that \code{trace_steps} names; for an answer from
+\code{\link[=gr_compare]{gr_compare()}}, its recipe's read alone; see \code{trace} above).
 }
 
 \examples{

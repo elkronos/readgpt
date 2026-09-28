@@ -44,8 +44,9 @@ strategy for at least one database \emph{so that it could be repeated}.
 \details{
 This function computes nothing. It exists so the answer travels with the run
 instead of living in a lab notebook. It reaches \code{\link[=gr_flow]{gr_flow()}} and the audit
-report, and it round-trips through \code{\link[=gr_protocol_save]{gr_protocol_save()}} alongside the
-criteria, so what was searched and what was eligible are one artifact.
+report, and, given to \code{\link[=gr_protocol]{gr_protocol()}} as \code{search}, it round-trips through
+\code{\link[=gr_protocol_save]{gr_protocol_save()}} alongside the criteria, so what was searched and what
+was eligible are one artifact.
 }
 \examples{
 gr_search(

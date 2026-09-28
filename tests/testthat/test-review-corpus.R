@@ -28,7 +28,10 @@ outage_client <- function(state) {
       if (grepl("randomised trial of 400", seen, fixed = TRUE)) {
         return('{"decision":"include","reason":"An RCT in adults.","criterion":null,"quote":null}')
       }
-      return('{"decision":"exclude","reason":"Not a trial.","criterion":null,"quote":null}')
+      # Names the protocol's criterion: an exclusion that names none is held
+      # back as "unclear" (model-output-12), and this client is about outages.
+      return(paste0('{"decision":"exclude","reason":"Not a trial.",',
+                    '"criterion":"A randomised trial in adults","quote":null}'))
     }
     if (identical(params$schema_name, "extraction")) return('{"n":400,"n__quote":null}')
     "The sample size was 400."

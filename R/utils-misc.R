@@ -85,7 +85,38 @@ source_label <- function(source, inline = "<inline text>") {
 #' Is `x` a usable, non-blank single string?
 #' @noRd
 is_nonblank <- function(x) {
-  !is.null(x) && length(x) == 1L && is.character(x) && !is.na(x) && nzchar(trimws(x))
+  !is.null(x) && length(x) == 1L && is.character(x) && !is.na(x) && has_visible(x)
+}
+
+#' The white space a line can be made of besides ASCII space and tab: the
+#' no-break space, the Ogham space, the en quad to the hair space, the narrow
+#' no-break space, the medium mathematical space and the ideographic space. As
+#' the inside of a regex character class.
+#' @noRd
+.gr_uspace <- "\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000"
+
+#' Whether each string has a character that is not white space.
+#'
+#' `nzchar(trimws(x))` asked this with a regular expression, which stops with
+#' "input string 1 is invalid UTF-8" on bytes in another encoding (a question
+#' read from a CP1252 file), so a check that only asks whether anything is
+#' there crashed the call. And trimws() strips ASCII space alone, so a line of
+#' no-break or ideographic spaces, which is how HTML and Word exports and
+#' Chinese and Japanese text leave a blank line, counted as content. The bytes
+#' are looked at first; only a string whose first byte past ASCII space is not
+#' ASCII can still be all space, and only that is read as characters. Bytes
+#' that are not valid UTF-8 are content.
+#' @noRd
+has_visible <- function(x) {
+  x <- as.character(x)
+  out <- !is.na(x) & grepl("[^ \t\r\n]", x, perl = TRUE, useBytes = TRUE)
+  chk <- which(out & grepl("^[ \t\r\n]*[^\\x01-\\x7f]", x, perl = TRUE, useBytes = TRUE))
+  chk <- chk[validUTF8(x[chk])]
+  if (length(chk)) {
+    out[chk] <- grepl(sprintf("[^ \t\r\n\u2028\u2029%s]", .gr_uspace), mark_utf8(x[chk]),
+                      perl = TRUE)
+  }
+  out
 }
 
 #' Fall back to a default when a setting is missing, and say so.
@@ -173,7 +204,7 @@ warn_near_miss <- function(dots, formals, what) {
 has_content <- function(x) {
   if (is.null(x) || length(x) == 0L) return(logical(0))
   x <- vapply(x, as_chr1, character(1), USE.NAMES = FALSE)
-  nzchar(trimws(x))
+  has_visible(x)
 }
 
 #' Safe integer sequence: `seq_len2(from, to)` is empty when `to < from`.
@@ -316,6 +347,7 @@ hash_parts <- function(x, prefix = "", depth = 0L) {
     if (!length(x)) return(paste0(prefix, "=<empty:", class(x)[1], ">"))
     nms <- names(x)
     if (is.null(nms)) nms <- rep("", length(x))
+    nms <- hash_escape(nms)
     return(c(sprintf("%s=<%s:%d>", prefix, class(x)[1], length(x)),
              unlist(lapply(seq_along(x), function(i) {
                hash_parts(x[[i]],
@@ -335,11 +367,37 @@ hash_parts <- function(x, prefix = "", depth = 0L) {
     return(paste0(prefix, "=function:", paste(deparse(x), collapse = "\n"),
                   "@", env_identity(environment(x))))
   }
-  v <- tryCatch(as.character(x), error = function(e) class(x)[1])
-  nms <- names(x)
+  v <- hash_escape(tryCatch(as.character(x), error = function(e) class(x)[1]))
+  nms <- hash_escape(names(x))
   paste0(prefix, "=", class(x)[1], ":",
          if (is.null(nms)) "" else paste0("[", paste(nms, collapse = ","), "]"),
          paste(v, collapse = "\u0002"))
+}
+
+#' Escape the characters hash_parts() and gr_hash() join with.
+#'
+#' The elements of a vector are joined with U+0002 and the parts with U+0001,
+#' so a string holding either could stand for two: one message whose content
+#' was "Say A<U+0002>user<U+0002>Say B" hashed as the two messages "Say A" and
+#' "Say B", and the response cache and the replay served one prompt's answer
+#' for the other. So U+0003 escapes itself and the two separators, which is
+#' reversible, and so never maps two inputs to one. A string with none of the
+#' three is left as it is, and every key it was in stays what it was: saved
+#' caches, recordings and stores are still found.
+#' @noRd
+hash_escape <- function(v) {
+  if (!length(v)) return(v)
+  hit <- which(grepl("[\\x01-\\x03]", v, perl = TRUE, useBytes = TRUE))
+  if (!length(hit)) return(v)
+  e <- v[hit]
+  enc <- Encoding(e)
+  e <- gsub("\u0003", "\u0003\u0003", e, fixed = TRUE, useBytes = TRUE)
+  e <- gsub("\u0001", "\u00031", e, fixed = TRUE, useBytes = TRUE)
+  e <- gsub("\u0002", "\u00032", e, fixed = TRUE, useBytes = TRUE)
+  # Only ASCII bytes changed, so the declared encoding still holds.
+  Encoding(e) <- enc
+  v[hit] <- e
+  v
 }
 
 #' What a function's environment is, for a hash: its name when it has one,
@@ -392,8 +450,64 @@ mark_utf8 <- function(x) {
 #' match, on that machine only. The common cased scripts are mapped here code point by code
 #' point, which `chartr()` does the same way in every locale; `tolower()` then
 #' does what else the locale can.
+#'
+#' Both read every character of the text, and where the locale is not UTF-8
+#' each took most of a second over 80,000 Chinese characters, none of which
+#' has a case. Both map one character to one character, so a long UTF-8
+#' string is lowered one distinct code point at a time instead (lower_long()):
+#' the same result, at the cost of the few letters that have a case.
+#'
+#' The text is labelled UTF-8 first where its bytes are UTF-8. In a C locale
+#' chartr() reads an unlabelled string as native bytes and rewrote the bytes
+#' of a Greek or accented letter into something that is not UTF-8 at all, so
+#' the lowered text matched nothing and broke whatever printed it. The names
+#' and other attributes stay as they were.
 #' @noRd
-lower_text <- function(x) tolower(chartr(.gr_case_map$upper, .gr_case_map$lower, x))
+lower_text <- function(x) {
+  if (!is.character(x)) return(lower_chars(x))
+  if (length(x)) x[] <- mark_utf8(x)
+  long <- which(!is.na(x) & nchar(x, type = "bytes") > 512L)
+  if (!length(long)) return(lower_chars(x))
+  out <- lower_chars(replace(x, long, ""))
+  for (i in long) out[i] <- lower_long(x[i])
+  out
+}
+
+#' lower_text() the direct way, character by character.
+#' @noRd
+lower_chars <- function(x) {
+  # Bytes that are not UTF-8 (a CP1252 string in a UTF-8 session) are left as
+  # they came. chartr() and tolower() read them as the locale's multibyte text
+  # and stop with "invalid input multibyte string" under a C locale on Linux;
+  # both sides of a comparison go through here, so leaving them is consistent.
+  bad <- !is.na(x) & !validUTF8(x)
+  if (!any(bad)) return(tolower(chartr(.gr_case_map$upper, .gr_case_map$lower, x)))
+  x[!bad] <- tolower(chartr(.gr_case_map$upper, .gr_case_map$lower, x[!bad]))
+  x
+}
+
+#' lower_text() of one long string: only the distinct code points that have a
+#' case (a capital, a title-case letter, a Roman numeral or a circled capital)
+#' are lowered, together, and put back where they stand. A string that is not
+#' UTF-8 goes the direct way.
+#' @noRd
+lower_long <- function(s) {
+  utf8 <- Encoding(s) == "UTF-8" || (isTRUE(l10n_info()[["UTF-8"]]) && validUTF8(s))
+  cp <- if (utf8) utf8ToInt(s) else NA_integer_
+  if (anyNA(cp)) return(lower_chars(s))
+  up <- cp >= 65L & (cp <= 90L | cp > 127L)
+  if (!any(up)) return(s)
+  u <- unique(cp[up])
+  cased <- grepl("[\\p{Lu}\\p{Lt}\\p{Nl}\u24b6-\u24cf]", intToUtf8(u, multiple = TRUE), perl = TRUE)
+  if (!any(cased)) return(s)
+  u <- u[cased]
+  low <- utf8ToInt(lower_chars(intToUtf8(u)))
+  if (length(low) != length(u) || anyNA(low)) return(lower_chars(s))
+  hit <- match(cp, u)
+  at <- !is.na(hit)
+  cp[at] <- low[hit[at]]
+  intToUtf8(cp)
+}
 
 #' Upper- and lower-case letters for lower_text(), as two strings of the same
 #' length: Latin-1, Latin Extended-A and Additional (Vietnamese), Greek,
@@ -497,35 +611,89 @@ normalise_newlines <- function(x) {
   out
 }
 
+#' `strsplit(x, pattern, perl = TRUE)[[1]]` for one string, in time in
+#' proportion to its length.
+#'
+#' strsplit() with a Perl pattern starts again on what is left after each
+#' piece, and took time in proportion to the length times the number of
+#' pieces: 16,000 paragraphs took six seconds to find, and a long block as
+#' long to cut into sentences. The places are marked in one pass with gsub()
+#' instead, which also keeps what comes before each place in view of a
+#' look-behind, and the marks are split on as bytes. A string that already
+#' holds the mark is split the old way.
+#' @noRd
+split_perl <- function(x, pattern) {
+  if (is.na(x) || grepl("\u0004", x, fixed = TRUE, useBytes = TRUE)) {
+    return(strsplit(x, pattern, perl = TRUE)[[1]])
+  }
+  out <- strsplit(gsub(pattern, "\u0004", x, perl = TRUE), "\u0004", fixed = TRUE,
+                  useBytes = TRUE)[[1]]
+  # Split as bytes, the pieces come back unlabelled.
+  if (identical(Encoding(x), "latin1")) {
+    Encoding(out) <- "latin1"
+    out
+  } else mark_utf8(out)
+}
+
 #' Split text into words, dropping the empty leading token that
 #' `strsplit(" a", "\\s+")` produces.
 #' @noRd
 words_of <- function(text) {
   text <- as_chr1(text)
-  if (!nzchar(trimws(text))) return(character(0))
-  w <- unlist(strsplit(trimws(text), "[[:space:]]+"), use.names = FALSE)
+  if (!has_visible(text)) return(character(0))
+  # Bytes that are not valid UTF-8 are split as bytes: a regex reading them as
+  # characters stops the call.
+  bytes <- !validUTF8(text)
+  w <- unlist(strsplit(text, "[[:space:]]+", useBytes = bytes), use.names = FALSE)
   w[nzchar(w)]
 }
 
 #' Split text into paragraphs on blank lines. Always returns a character vector
 #' (possibly length 0) -- never NULL.
+#'
+#' A line of no-break or ideographic spaces is a blank line too: HTML and Word
+#' exports separate paragraphs with one, and Chinese and Japanese text with a
+#' line of ideographic spaces, and both paragraphs came out as one block.
 #' @noRd
 paragraphs_of <- function(text) {
-  text <- normalise_newlines(as_chr1(text))
-  if (!nzchar(trimws(text))) return(character(0))
-  p <- unlist(strsplit(text, "\n[ \t]*\n[ \t\n]*", perl = TRUE), use.names = FALSE)
+  text <- mark_utf8(normalise_newlines(as_chr1(text)))
+  if (!has_visible(text)) return(character(0))
+  blank <- sprintf("\n[ \t%s]*\n[ \t\n%s]*", .gr_uspace, .gr_uspace)
+  p <- split_perl(text, blank)
   p <- trimws(p, which = "right")
   # Re-label. In a non-UTF-8 locale `paste`, `strsplit` and `trimws` all return
   # unmarked strings even when the input was marked UTF-8, and every downstream
   # UTF-8 pattern then silently stops matching.
-  mark_utf8(p[nzchar(trimws(p))])
+  p <- mark_utf8(p)
+  p[has_visible(p)]
 }
+
+#' Where one sentence ends and the next begins, for strsplit().
+#'
+#' After a full stop, question or exclamation mark (and the Arabic, Urdu and
+#' Devanagari ones) and a space, before a capital, a letter of a script with
+#' no case (Arabic, Hebrew, Devanagari, Chinese, Korean ...) or a digit, which
+#' an opening quote or bracket may precede; and after the ideographic full
+#' stop and the full-width marks, where no space follows, unless a closing
+#' quote or bracket does, and then after that. The first rule wanted an ASCII
+#' capital or digit, so Russian, Greek, Arabic and Chinese paragraphs came
+#' back as one sentence, and a French or German sentence starting with a
+#' capital with an accent was glued to the one before; every segmenter,
+#' overlap and cap that cuts at sentences then cut inside one. The Greek
+#' question mark is the semicolon, and is not a sentence end here.
+#' @noRd
+.gr_sentence_split <- paste0(
+  "(?<=[.!?\u061f\u06d4\u0964\u0965])[ \t]+",
+  "(?=[\"'(\\[\u00ab\u201c\u201e\u2018\u00bf\u00a1\u300c\u300e]?[\\p{Lu}\\p{Lt}\\p{Lo}\\p{N}])",
+  "|(?<=[\u3002\uff01\uff1f])(?![\u300d\u300f\uff09\u201d\u2019\"')\\]])[ \t]*",
+  "|(?<=[\u3002\uff01\uff1f][\u300d\u300f\uff09\u201d\u2019])[ \t]*",
+  "|\n{2,}")
 
 #' Split text into sentences using a conservative abbreviation-aware regex.
 #' @noRd
 sentences_of <- function(text) {
-  text <- as_chr1(text)
-  if (!nzchar(trimws(text))) return(character(0))
+  text <- mark_utf8(as_chr1(text))
+  if (!has_visible(text)) return(character(0))
   # Protect common abbreviations and decimals from being treated as boundaries.
   guarded <- text
   abbrevs <- c("Mr", "Mrs", "Ms", "Dr", "Prof", "Sr", "Jr", "St", "vs", "etc",
@@ -535,8 +703,7 @@ sentences_of <- function(text) {
                     guarded, perl = TRUE)
   }
   guarded <- gsub("(\\d)\\.(\\d)", "\\1\u0001\\2", guarded, perl = TRUE)
-  parts <- unlist(strsplit(guarded, "(?<=[.!?])[ \t]+(?=[\"'(\\[]?[A-Z0-9])|\n{2,}", perl = TRUE),
-                  use.names = FALSE)
+  parts <- split_perl(mark_utf8(guarded), .gr_sentence_split)
   parts <- gsub("\u0001", ".", parts, fixed = TRUE)
   parts <- trimws(parts)
   parts[nzchar(parts)]
@@ -561,10 +728,20 @@ cosine_similarity <- function(a, b) {
 #' destroying reproducibility of anything else in the user's session. Nothing in
 #' this package may call `set.seed()`; where randomness is needed, use a
 #' local, restored RNG (see `with_private_rng()`).
+#'
+#' Two ids made in the same millisecond were told apart only by the clock
+#' going into the hash, which R before 4.3 turned into text to the whole
+#' second; and the counter meant to separate them was never counted. Two
+#' clients built back to back then shared a `.client_id`, the identity the
+#' response cache keys on, and one was served the other's answers. The counter
+#' now goes up on every call, so no two ids of a session hash the same input.
+#' `now` is for tests.
 #' @noRd
-gr_new_id <- function(prefix = "run") {
-  paste0(prefix, "_", format(Sys.time(), "%Y%m%d%H%M%OS3"), "_",
-         substr(gr_hash(list(Sys.time(), Sys.getpid(), gr_state$counter)), 1, 6))
+gr_new_id <- function(prefix = "run", now = Sys.time()) {
+  gr_state$counter <- (gr_state$counter %||% 0) + 1
+  paste0(prefix, "_", format(now, "%Y%m%d%H%M%OS3"), "_",
+         substr(gr_hash(list(format(now, "%Y%m%d%H%M%OS6"), Sys.getpid(), gr_state$counter)),
+                1, 6))
 }
 
 #' Run an expression with a private RNG stream, restoring the caller's state.

@@ -98,7 +98,7 @@ test_that("a read with a cheaper skim or summary model replays from its file", {
   }
 })
 
-test_that("a recording without the note, or with conflicting notes, falls back as before", {
+test_that("a recording without the note, or with conflicting notes, takes the read's model", {
   local_registries()
   local_clean_cache()
   ch <- quiet(gr_segment(gr_ingest(sample_doc(3, 3)), list(method = "paragraph", max_tokens = 120)))
@@ -108,10 +108,13 @@ test_that("a recording without the note, or with conflicting notes, falls back a
   pf <- which(vapply(obj$steps, function(s) identical(s$label, "preflight"), logical(1)))
   expect_length(pf, 1L)
 
-  # An older trace: no `model` on the pre-flight note. The most frequent model.
+  # An older trace: no `model` on the pre-flight note. Not the most frequent
+  # model, which is the skim_model the note's settings name (review 5, cross-3:
+  # that guess made 0.5.0 recordings with a skim_model miss on the answer
+  # call), but the one model left that no setting names.
   old <- obj
   old$steps[[pf]]$detail$model <- NULL
-  expect_identical(gr_replay_client(old)$model, "gpt-4o-mini")
+  expect_identical(gr_replay_client(old)$model, "mock-model")
 
   # A read whose settings named its model asks for it again on replay, so its
   # note says nothing about the client's model.
@@ -119,12 +122,14 @@ test_that("a recording without the note, or with conflicting notes, falls back a
   named$steps[[pf]]$detail$settings <- list(model = "mock-model")
   expect_identical(gr_replay_client(named)$model, "gpt-4o-mini")
 
-  # Reads through clients with different models: no one answer, so the guess.
+  # Reads through clients with different models: the noted model most calls
+  # were recorded under, never a skim_model that outnumbers it (review 5,
+  # cross-3); the other noted model answers what this one does not hold.
   two <- obj
   other <- obj$steps[[pf]]
   other$detail$model <- "another-model"
   two$steps <- c(two$steps, list(other))
-  expect_identical(gr_replay_client(two)$model, "gpt-4o-mini")
+  expect_identical(gr_replay_client(two)$model, "mock-model")
 
   # Both reads following the same client agree, and that model is taken.
   same <- obj

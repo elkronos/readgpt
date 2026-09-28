@@ -26,7 +26,13 @@ gr_audit_report(
 
 \item{protocol}{The \code{\link[=gr_protocol]{gr_protocol()}} the run was made under. Worth passing even
 when the other objects carry its pieces: the criteria as \emph{written} are what
-a reader checks the decisions against.}
+a reader checks the decisions against. The report compares it with what
+each stage recorded using (the screening's question and criteria, the
+extraction's schema, the write-up's question and outline). Where they
+differ, as they do for a protocol edited after the run, it says so at the
+top of the protocol section and shows what each stage actually used,
+rather than presenting the edited criteria as the ones fixed in advance.
+Where no stage recorded anything to compare it with, it says that too.}
 
 \item{title}{A heading for the report.}
 
@@ -84,6 +90,10 @@ it, and it does not mean the value is right. A verified quote and a wrong
 reading of it look identical here; what the check rules out is the quote
 having been invented. The report says so, in the report, because a column a
 reader over-reads is worse than no column.
+
+A page is given to a span found on one page of the document. A span found on
+several pages, or not found at all, keeps the page of the chunk it was
+credited to, so an unverified quote shown with a page was not found on it.
 }
 
 \section{It does not flatter the run}{
@@ -117,10 +127,40 @@ A passage over 6,000 characters, such as a whole document sent in one
 request, is cut to the text around what is highlighted, with each cut shown
 as "[...]".
 Last comes one row per request, from \code{as.data.frame()} on the answer's
-trace (see \code{\link[=gr_trace]{gr_trace()}}), without the prompts and replies.
+trace (see \code{\link[=gr_trace]{gr_trace()}}), without the prompts and replies. Where the answer
+records which steps of a trace shared with other runs are its own, the
+requests, the rows and the cost are those steps only.
 
 A \code{gr_corpus} gives one row per document, then each document's answer and
 passages. Answers are there only if the run kept them (\code{keep_answers}).
+
+"Not partial" is said only when the reader did not mark the answer partial
+and no request on its trace failed. A failed request is flagged even when
+the reader did not count it; a trace shared with other runs flags their
+failures too, because an error cannot always be put in one run. An answer
+that is "not found" because the request that would have given it failed is
+shown as no answer, not as a finding about the document.
+}
+
+\section{Web addresses}{
+
+A document fetched from a web address is shown without the user name,
+password, query string or fragment in the address, which is where presigned
+and tokenised links carry their credentials. The query is replaced by a short
+fingerprint, so two addresses that differ only there stay apart. This covers
+the document names, the error and warning text the report shows, and the
+answer's document. It does not change what the objects themselves hold.
+}
+
+\section{Claims and the write-up}{
+
+The claims table has a \code{section} column only when the synthesis recorded
+which section each claim was given to. When a revision pass
+(\code{coherence}) was kept, "What was written" shows the published text and the
+studies each of its headings cites, then the sections as first drafted,
+with their checks, under "Draft before revision", and the passes that ran.
+The cost table includes the calls \code{\link[=gr_claims]{gr_claims()}} made and, when it was left
+to record on the claims' trace, \code{\link[=gr_outline]{gr_outline()}}.
 }
 
 \examples{

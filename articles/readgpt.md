@@ -89,7 +89,7 @@ install only what you use:
 | read scanned pages and images (OCR) | `tesseract` and `magick` |
 | use a provider other than OpenAI | `ellmer` |
 | run many requests at once | `future` and `future.apply` |
-| count tokens exactly as OpenAI does | `reticulate`, with Python’s `tiktoken` |
+| count tokens with OpenAI’s own tokenizer | `reticulate`, with Python’s `tiktoken` |
 | use the point-and-click app | `shiny` |
 
 If you ask for something that needs a package you do not have, readgpt
@@ -208,7 +208,7 @@ bad <- answer_document(readgpt_example(), "What was revenue in 2024?",
 bad
 #> <gr_answer> reader=stuff (PARTIAL)
 #>   Q: What was revenue in 2024?
-#>   1 model call(s), 0 in / 0 out tokens, 1 error(s), $0.0000 across mock-model
+#>   1 model call(s), 611 in / 0 out tokens, 1 error(s), $0.0000 across mock-model
 #>   ---
 #> Not found in the part of the document that was read.
 #>   ---
@@ -277,7 +277,7 @@ tokens both used.
 
 gr_trace_summary(ans$trace)[, c("calls", "tokens_in", "tokens_out")]
 #>   calls tokens_in tokens_out
-#> 1     1       599         13
+#> 1     1       611         13
 gr_trace_cost(ans$trace)[, c("model", "calls", "usd")]
 #>        model calls usd
 #> 1 mock-model     1   0
@@ -291,7 +291,7 @@ row per request, with its cost and how long it took. The `prompt` and
 
 as.data.frame(ans$trace)[, c("stage", "tokens_in", "tokens_out", "usd", "seconds")]
 #>          stage tokens_in tokens_out usd seconds
-#> 1 stuff.answer       599         13   0   0.001
+#> 1 stuff.answer       611         13   0   0.001
 ```
 
 `usd` is priced from readgpt’s list of known models

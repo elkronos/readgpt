@@ -150,7 +150,11 @@ gr_read_spec(
   Ask for chunk-level citations (`[chunk 3]`) in the answer. Map those
   ids back to pages via `ans$evidence`. Forced off for `hierarchical`,
   which answers from summaries: summaries carry no `[chunk N]` ids, so
-  asking for citations there asks the model to invent them.
+  asking for citations there asks the model to invent them. For `skim`,
+  when its evidence has to be consolidated to fit and no `[chunk N]`
+  label survives the consolidation, citations are not asked for either
+  (`notes$cite_dropped = TRUE`); when some survive, a citation is
+  checked against those.
 
 - skim_model, summary_model:
 

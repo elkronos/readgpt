@@ -69,7 +69,9 @@ are summed).</p></dd>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
     <p>A single numeric USD figure, or <code>NA_real_</code> when the model has no
-pricing in the registry. Pricing is seeded from the registry's <code>as_of</code>
+pricing in the registry, or no output price and <code>output_tokens</code> above zero
+(an embedding model's missing output price counts as zero, since it
+produces no output tokens). Pricing is seeded from the registry's <code>as_of</code>
 snapshot. Treat it as an estimate, and use <code><a href="gr_register_model.html">gr_register_model()</a></code> to
 correct it.</p>
     </div>

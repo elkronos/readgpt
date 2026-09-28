@@ -60,7 +60,9 @@ An object of class `gr_search`.
 This function computes nothing. It exists so the answer travels with the
 run instead of living in a lab notebook. It reaches
 [`gr_flow()`](https://elkronos.github.io/readgpt/reference/gr_flow.md)
-and the audit report, and it round-trips through
+and the audit report, and, given to
+[`gr_protocol()`](https://elkronos.github.io/readgpt/reference/gr_protocol.md)
+as `search`, it round-trips through
 [`gr_protocol_save()`](https://elkronos.github.io/readgpt/reference/gr_protocol_save.md)
 alongside the criteria, so what was searched and what was eligible are
 one artifact.

@@ -68,7 +68,8 @@ from an argument instead of from rows.</p>
 <span>  temperature <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  max_claim_tokens <span class="op">=</span> <span class="fl">1600L</span>,</span>
 <span>  include_unclear <span class="op">=</span> <span class="cn">FALSE</span>,</span>
-<span>  trace <span class="op">=</span> <span class="cn">NULL</span></span>
+<span>  trace <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  bib <span class="op">=</span> <span class="cn">NULL</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -109,6 +110,15 @@ same as <code><a href="gr_synthesise.html">gr_synthesise()</a></code>.</p></dd>
 <dt id="arg-trace">trace<a class="anchor" aria-label="anchor" href="#arg-trace"></a></dt>
 <dd><p>A <code><a href="gr_trace.html">gr_trace()</a></code> to record into.</p></dd>
 
+
+<dt id="arg-bib">bib<a class="anchor" aria-label="anchor" href="#arg-bib"></a></dt>
+<dd><p>Which columns carry bibliographic identity, as in
+<code><a href="gr_synthesise.html">gr_synthesise()</a></code>: a named list of <code>citation</code>, <code>authors</code>, <code>year</code>, <code>title</code>,
+<code>venue</code>, <code>doi</code>. Those columns are withheld from the model, so a claim
+cannot attribute a finding to a name, and cannot be moderated by one.
+Omitted, only the conventional names are withheld. Pass the same <code>bib</code> to
+<code><a href="gr_synthesise.html">gr_synthesise()</a></code> and <code><a href="gr_gaps.html">gr_gaps()</a></code>.</p></dd>
+
 </dl></div>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
@@ -134,6 +144,13 @@ for a call or cost limit.</p></dd>
 <dt><code>lost</code></dt>
 <dd><p>The study numbers of those studies.</p></dd>
 
+<dt><code>unmerged</code></dt>
+<dd><p><code>TRUE</code> when claims from several batches could not be
+reconciled, so one finding may appear as more than one claim.</p></dd>
+
+<dt><code>hidden</code></dt>
+<dd><p>The columns withheld from the model as bibliographic.</p></dd>
+
 
 </dl></div>
     <div class="section level2">
@@ -145,9 +162,12 @@ for a call or cost limit.</p></dd>
 claim was drawn from: a claim may only name studies its call was shown. A
 number that fails either is dropped and counted rather than trusted, a claim
 left with no supporting study is dropped entirely, and a <code>moderator</code> naming a
-column the table does not have is cleared: it is an invented explanation for
-a real disagreement. <code>$dropped</code> records all of it, so a claims table that
-looks thin can be told apart from a literature that is.</p>
+column the model was not shown is cleared: it is an invented explanation for
+a real disagreement. So is a moderator that does not tell the two sides of a
+contested claim apart by counting: a column the table does not report for
+the studies on one side, a value reported on both sides, or numbers whose
+ranges overlap. <code>$dropped</code> records all of it, so a claims table that looks
+thin can be told apart from a literature that is.</p>
 <p>The study numbers are the same ones <code><a href="gr_synthesise.html">gr_synthesise()</a></code> cites, because both
 derive them from one function. A claim resting on study 3 and a sentence
 citing <code>[study 3]</code> point at the same row by construction.</p>
@@ -161,7 +181,17 @@ further call that sees only the claim TEXTS. Without it a claim holding across
 the whole corpus comes back once per batch with disjoint support, which reads
 as several narrow claims instead of one broad one. The reconcile pass may only
 group claims that already exist: every claim it fails to place stays on its
-own rather than disappearing.</p>
+own rather than disappearing. When it cannot run – a call or cost limit, a
+failed or cut-off reply, a reply that is not a list of groups, or more claims
+than fit one prompt – the claims are kept unmerged, with a warning, and
+<code>$unmerged</code> is <code>TRUE</code>.</p>
+<p>What the reconcile pass cannot check is MEANING. A merged claim keeps one
+member's wording and the union of every member's studies, so if the model
+groups two claims that say different things, the studies behind one are
+listed as supporting the other's wording. Such a merge is not detectable by
+counting; the merged claim's <code>note</code> names every other wording it absorbed so
+that it can be seen, and a group mixing claims of different <code>kind</code> is warned
+about.</p>
 <p>A batch is limited by the reply as well as by the context window, because the
 reply names every study it uses: with the default <code>max_claim_tokens</code> a batch
 holds about 30 studies. A batch whose reply is cut off, or whose call fails,

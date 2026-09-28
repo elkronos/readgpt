@@ -63,15 +63,15 @@ ans <- answer_document(readgpt_example(), "What was revenue?", "thorough", clien
 #> Reading with 'map_reduce' (all|N+logN|tree) over 1 chunk(s).
 gr_trace_summary(ans$trace)
 #>                          run_id calls cached steps tokens_in tokens_out errors
-#> 1 run_20260927025653.118_4b5540     1      0     4       595         10      0
+#> 1 run_20260928020049.369_fda772     1      0     4       607         10      0
 #>   elapsed_s embed_calls embed_tokens
-#> 1      0.02           0            0
+#> 1      0.03           0            0
 
 # What the run cost, each request priced at its own model (nothing, for a
 # mock), and what its model calls would cost at another model's prices.
 gr_trace_cost(ans$trace)
 #>        model calls paid_calls paid_in paid_out usd
-#> 1 mock-model     1          1     595       10   0
+#> 1 mock-model     1          1     607       10   0
 gr_estimate_cost("gpt-4o", ans$trace$tokens_in, ans$trace$tokens_out)
-#> [1] 0.0015875
+#> [1] 0.0016175
 ```

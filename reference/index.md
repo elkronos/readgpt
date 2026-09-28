@@ -205,6 +205,8 @@ hand-screened sample.
   : Cache statistics
 - [`gr_cache_clear()`](https://elkronos.github.io/readgpt/reference/gr_cache_clear.md)
   : Delete every entry in a cache
+- [`gr_flush_caches()`](https://elkronos.github.io/readgpt/reference/gr_flush_caches.md)
+  : Clear the session's document and embedding caches
 - [`gr_replay_client()`](https://elkronos.github.io/readgpt/reference/gr_replay_client.md)
   : A client that answers from a recorded run
 

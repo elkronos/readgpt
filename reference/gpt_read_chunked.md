@@ -63,12 +63,11 @@ Other v1 compatibility:
 cl <- gr_mock_client(function(m, p) "45.2 million dollars")
 chunks <- suppressWarnings(parse_text(readgpt_example(), chunk_token_limit = 200))
 #> Extracting 'annual_report.md' with the 'md' extractor.
-#> Ingested 17 block(s), ~573 tokens (11 chars removed by cleaning).
+#> Ingested 17 block(s), ~574 tokens (12 chars removed by cleaning).
 #> Segmenting with 'paragraph' (cap 200 tokens, overlap 0).
 
 # v1 style, still works, warns once.
 suppressWarnings(gpt_read_chunked(chunks, "What was revenue?", client = cl))
-#> Ingested 17 block(s), ~573 tokens (0 chars removed by cleaning).
 #> Reading with 'map_reduce' (all|N+logN|tree) over 4 chunk(s).
 #> [1] "45.2 million dollars"
 

@@ -192,7 +192,11 @@ at two recipes differing only in this and find out.</p></dd>
 <dd><p>Ask for chunk-level citations (<code>[chunk 3]</code>) in the answer. Map
 those ids back to pages via <code>ans$evidence</code>. Forced off for <code>hierarchical</code>,
 which answers from summaries: summaries carry no <code>[chunk N]</code> ids, so asking
-for citations there asks the model to invent them.</p></dd>
+for citations there asks the model to invent them. For <code>skim</code>, when its
+evidence has to be consolidated to fit and no <code>[chunk N]</code> label survives
+the consolidation, citations are not asked for either
+(<code>notes$cite_dropped = TRUE</code>); when some survive, a citation is checked
+against those.</p></dd>
 
 
 <dt id="arg-skim-model-summary-model">skim_model, summary_model<a class="anchor" aria-label="anchor" href="#arg-skim-model-summary-model"></a></dt>

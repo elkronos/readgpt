@@ -32,7 +32,13 @@ gr_clean(text, steps = NULL, opts = list())
 
 - opts:
 
-  Named list passed to every step.
+  Named list passed to every step. Each step also finds in it `.blocks`,
+  all the blocks as they stand before that step, for a step that decides
+  by what the rest of the document says (as `hyphenation` and
+  `headers_footers` do); and `.pages`, a page per block, where the
+  caller gives one
+  ([`gr_ingest()`](https://elkronos.github.io/readgpt/reference/gr_ingest.md)
+  does).
 
 ## Value
 

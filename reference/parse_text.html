@@ -109,7 +109,8 @@
     <h2 id="ref-examples">Examples<a class="anchor" aria-label="anchor" href="#ref-examples"></a></h2>
     <div class="sourceCode"><pre class="sourceCode r"><code><span class="r-in"><span><span class="co"># v1 style, still works, warns once.</span></span></span>
 <span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/length.html" class="external-link">length</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/warning.html" class="external-link">suppressWarnings</a></span><span class="op">(</span><span class="fu">parse_text</span><span class="op">(</span><span class="fu"><a href="readgpt_example.html">readgpt_example</a></span><span class="op">(</span><span class="op">)</span>, chunk_token_limit <span class="op">=</span> <span class="fl">200</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span></span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Using cached ingestion for this document + settings.</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'annual_report.md' with the 'md' extractor.</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Ingested 17 block(s), ~574 tokens (12 chars removed by cleaning).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Segmenting with 'paragraph' (cap 200 tokens, overlap 0).</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> [1] 4</span>
 <span class="r-in"><span></span></span>
@@ -119,7 +120,7 @@
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Using cached ingestion for this document + settings.</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Segmenting with 'paragraph' (cap 200 tokens, overlap 0).</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>      method n total_tokens min median  mean max over_cap</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1 paragraph 4          525  34    156 131.2 179        0</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1 paragraph 4          533  34    159 133.2 181        0</span>
 </code></pre></div>
     </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>

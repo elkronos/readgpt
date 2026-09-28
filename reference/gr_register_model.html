@@ -86,7 +86,10 @@ precedence over everything built in.</p>
 
 
 <dt id="arg-input-usd-output-usd">input_usd, output_usd<a class="anchor" aria-label="anchor" href="#arg-input-usd-output-usd"></a></dt>
-<dd><p>Price per 1M tokens; used for cost estimates.</p></dd>
+<dd><p>Price per 1M tokens; used for cost estimates.
+Give both or neither for a chat model: one without the other is an error,
+since a cost with half its price missing cannot be estimated. An embedding
+model needs only <code>input_usd</code>.</p></dd>
 
 
 <dt id="arg-reasoning">reasoning<a class="anchor" aria-label="anchor" href="#arg-reasoning"></a></dt>

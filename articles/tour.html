@@ -164,8 +164,8 @@ before trusting the answer.</strong> When it is <code>TRUE</code>,
 <code>$notes</code> says what happened.</p>
 <div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/base/names.html" class="external-link">names</a></span><span class="op">(</span><span class="va">ans</span><span class="op">$</span><span class="va">notes</span><span class="op">)</span></span>
-<span><span class="co">#&gt; [1] "chunks"          "answered"        "failed_calls"    "truncated_calls"</span></span>
-<span><span class="co">#&gt; [5] "merge_levels"    "merge_ok"</span></span></code></pre></div>
+<span><span class="co">#&gt; [1] "chunks"          "answered"        "failed_calls"    "merge_failures" </span></span>
+<span><span class="co">#&gt; [5] "truncated_calls" "truncations"     "merge_levels"    "merge_ok"</span></span></code></pre></div>
 <p><code>$evidence</code> is what the answer rests on. What
 <code>text</code> holds depends on the reader: verbatim chunk text for
 <code>stuff</code>, <code>retrieve</code>, <code>rerank</code> and
@@ -181,7 +181,7 @@ first.</p>
 <div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/gr_trace_summary.html">gr_trace_summary</a></span><span class="op">(</span><span class="va">ans</span><span class="op">$</span><span class="va">trace</span><span class="op">)</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"calls"</span>, <span class="st">"cached"</span>, <span class="st">"tokens_in"</span>, <span class="st">"tokens_out"</span><span class="op">)</span><span class="op">]</span></span>
 <span><span class="co">#&gt;   calls cached tokens_in tokens_out</span></span>
-<span><span class="co">#&gt; 1     1      0       595         13</span></span></code></pre></div>
+<span><span class="co">#&gt; 1     1      0       607         13</span></span></code></pre></div>
 </div>
 <div class="section level2">
 <h2 id="did-the-model-quote-the-document-or-invent-the-quote">Did the model quote the document, or invent the quote?<a class="anchor" aria-label="anchor" href="#did-the-model-quote-the-document-or-invent-the-quote"></a>
@@ -248,9 +248,9 @@ nothing before spending anything on reading:</p>
 <span>  <span class="fu"><a href="../reference/gr_chunk_stats.html">gr_chunk_stats</a></span><span class="op">(</span><span class="fu"><a href="../reference/gr_segment.html">gr_segment</a></span><span class="op">(</span><span class="va">doc</span>, <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>method <span class="op">=</span> <span class="va">m</span>, max_tokens <span class="op">=</span> <span class="fl">120</span><span class="op">)</span><span class="op">)</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
 <span><span class="co">#&gt;       method n total_tokens min median  mean max over_cap</span></span>
 <span><span class="co">#&gt; 1      fixed 5          528  49  120.0 105.6 120        0</span></span>
-<span><span class="co">#&gt; 2  paragraph 6          532  47   90.0  88.7 116        0</span></span>
-<span><span class="co">#&gt; 3   sentence 6          532  47   92.5  88.7 106        0</span></span>
-<span><span class="co">#&gt; 4 structural 8          562  31   75.0  70.2 101        0</span></span></code></pre></div>
+<span><span class="co">#&gt; 2  paragraph 6          539  48   92.0  89.8 116        0</span></span>
+<span><span class="co">#&gt; 3   sentence 6          534  47   92.5  89.0 107        0</span></span>
+<span><span class="co">#&gt; 4 structural 8          557  16   76.5  69.6 102        0</span></span></code></pre></div>
 <p><code>over_cap</code> is the column to watch: a chunk over the cap is
 one the reader will have to truncate or drop.
 <code><a href="../reference/gr_segmenters.html">gr_segmenters()</a></code> lists all nine, with which of them need a
@@ -262,8 +262,8 @@ lost by both chunks:</p>
 <span>  <span class="fu"><a href="../reference/gr_chunk_stats.html">gr_chunk_stats</a></span><span class="op">(</span><span class="fu"><a href="../reference/gr_segment.html">gr_segment</a></span><span class="op">(</span><span class="va">doc</span>, <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>method <span class="op">=</span> <span class="st">"sentence"</span>, max_tokens <span class="op">=</span> <span class="fl">120</span>,</span>
 <span>                                      overlap_tokens <span class="op">=</span> <span class="va">ov</span><span class="op">)</span><span class="op">)</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
 <span><span class="co">#&gt;     method n total_tokens min median mean max over_cap</span></span>
-<span><span class="co">#&gt; 1 sentence 6          532  47   92.5 88.7 106        0</span></span>
-<span><span class="co">#&gt; 2 sentence 8          752  79   97.0 94.0 106        0</span></span></code></pre></div>
+<span><span class="co">#&gt; 1 sentence 6          534  47   92.5 89.0 107        0</span></span>
+<span><span class="co">#&gt; 2 sentence 8          757  79   97.0 94.6 107        0</span></span></code></pre></div>
 </div>
 <div class="section level2">
 <h2 id="axis-3-each-reader-works-differently">Axis 3: each reader works differently<a class="anchor" aria-label="anchor" href="#axis-3-each-reader-works-differently"></a>
@@ -273,19 +273,32 @@ it selects chunks, how many calls it makes, and what state it carries
 between them:</p>
 <div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/gr_readers.html">gr_readers</a></span><span class="op">(</span><span class="op">)</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"name"</span>, <span class="st">"signature"</span>, <span class="st">"cost_calls"</span><span class="op">)</span><span class="op">]</span></span>
-<span><span class="co">#&gt;            name             signature                    cost_calls</span></span>
-<span><span class="co">#&gt; 1      ensemble   ensemble|sum+1|none            sum of members + 1</span></span>
-<span><span class="co">#&gt; 2       extract  all|N+conflicts|none N + one per disagreeing field</span></span>
-<span><span class="co">#&gt; 3  hierarchical     all|N+tree+1|tree         N + fan-in levels + 1</span></span>
-<span><span class="co">#&gt; 4     iterative topk|rounds*2|forward          up to 2 x max_rounds</span></span>
-<span><span class="co">#&gt; 5    map_reduce       all|N+logN|tree                    N + merges</span></span>
-<span><span class="co">#&gt; 6       preview    planned|1+s+1|none      1 + skimmed sections + 1</span></span>
-<span><span class="co">#&gt; 7        refine         all|N|forward                             N</span></span>
-<span><span class="co">#&gt; 8        rerank         topk|m+1|none                         m + 1</span></span>
-<span><span class="co">#&gt; 9      retrieve           topk|1|none                1 + embeddings</span></span>
-<span><span class="co">#&gt; 10       screen           head|1|none                             1</span></span>
-<span><span class="co">#&gt; 11         skim          all|N+1|none                         N + 1</span></span>
-<span><span class="co">#&gt; 12        stuff            all|1|none                             1</span></span></code></pre></div>
+<span><span class="co">#&gt;            name             signature</span></span>
+<span><span class="co">#&gt; 1      ensemble   ensemble|sum+1|none</span></span>
+<span><span class="co">#&gt; 2       extract  all|N+conflicts|none</span></span>
+<span><span class="co">#&gt; 3  hierarchical     all|N+tree+1|tree</span></span>
+<span><span class="co">#&gt; 4     iterative topk|rounds*2|forward</span></span>
+<span><span class="co">#&gt; 5    map_reduce       all|N+logN|tree</span></span>
+<span><span class="co">#&gt; 6       preview    planned|1+s+1|none</span></span>
+<span><span class="co">#&gt; 7        refine         all|N|forward</span></span>
+<span><span class="co">#&gt; 8        rerank         topk|m+1|none</span></span>
+<span><span class="co">#&gt; 9      retrieve           topk|1|none</span></span>
+<span><span class="co">#&gt; 10       screen           head|1|none</span></span>
+<span><span class="co">#&gt; 11         skim          all|N+1|none</span></span>
+<span><span class="co">#&gt; 12        stuff            all|1|none</span></span>
+<span><span class="co">#&gt;                                    cost_calls</span></span>
+<span><span class="co">#&gt; 1                          sum of members + 1</span></span>
+<span><span class="co">#&gt; 2  N (+1 per conflict with resolve = 'model')</span></span>
+<span><span class="co">#&gt; 3                       N + fan-in levels + 1</span></span>
+<span><span class="co">#&gt; 4                        up to 2 x max_rounds</span></span>
+<span><span class="co">#&gt; 5                                  N + merges</span></span>
+<span><span class="co">#&gt; 6                    1 + skimmed sections + 1</span></span>
+<span><span class="co">#&gt; 7                                           N</span></span>
+<span><span class="co">#&gt; 8                                       m + 1</span></span>
+<span><span class="co">#&gt; 9                              1 + embeddings</span></span>
+<span><span class="co">#&gt; 10                                          1</span></span>
+<span><span class="co">#&gt; 11                                      N + 1</span></span>
+<span><span class="co">#&gt; 12                                          1</span></span></code></pre></div>
 <p>The built-in readers all have different signatures, and
 <code>ensemble</code> refuses members that share one. Two recipes that
 resolve to the same ingestion, the same segmentation and the same read
@@ -306,7 +319,7 @@ comparison:</p>
 <div class="sourceCode" id="cb15"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/gr_trace_summary.html">gr_trace_summary</a></span><span class="op">(</span><span class="va">cmp</span><span class="op">$</span><span class="va">trace</span><span class="op">)</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"calls"</span>, <span class="st">"cached"</span>, <span class="st">"tokens_in"</span><span class="op">)</span><span class="op">]</span></span>
 <span><span class="co">#&gt;   calls cached tokens_in</span></span>
-<span><span class="co">#&gt; 1     5      0      2024</span></span></code></pre></div>
+<span><span class="co">#&gt; 1     5      0      2057</span></span></code></pre></div>
 <p><code>not_found</code> distinguishes “the document does not say” from
 a failure. So does <code><a href="../reference/is_not_found.html">is_not_found()</a></code> on any answer. A model
 that invents an answer is a worse outcome than one that admits the
@@ -628,7 +641,7 @@ counting:</p>
 <span><span class="va">from_claims</span><span class="op">$</span><span class="va">sections</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"section"</span>, <span class="st">"n_claims"</span>, <span class="st">"claims_missed"</span>, <span class="st">"partial"</span><span class="op">)</span><span class="op">]</span></span>
 <span><span class="co">#&gt;                   section n_claims claims_missed partial</span></span>
 <span><span class="co">#&gt; 1 Where revenue is higher        2             0   FALSE</span></span>
-<span><span class="co">#&gt; 2         What is missing        0             0   FALSE</span></span></code></pre></div>
+<span><span class="co">#&gt; 2         What is missing        0             0    TRUE</span></span></code></pre></div>
 <p>Each section now argues its own claims and is shown only the studies
 those claims rest on. <code>claims_missed</code> is the citation check
 run backwards: a section handed a claim and not writing it up did not do

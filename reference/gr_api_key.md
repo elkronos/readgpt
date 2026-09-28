@@ -17,7 +17,18 @@ gr_api_key(key = NULL)
 
 ## Value
 
-The key string. Raises a `gr_auth_error` if none is found.
+The key string. Raises a `gr_auth_error` if none is found, or if the key
+contains a control character.
+
+## Details
+
+Spaces and line endings around the key are dropped, so a key read from a
+file with [`readLines()`](https://rdrr.io/r/base/readLines.html) or
+[`readChar()`](https://rdrr.io/r/base/readChar.html) works as written. A
+key with a control character inside it (a line break in the middle, say)
+is refused with a `gr_auth_error`: sent as it is, it would end the
+`Authorization` header and start another one, and every request would
+fail as a transport error that never mentions the key.
 
 ## No key set
 

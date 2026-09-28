@@ -94,9 +94,9 @@ includes a short example, an annual report written in Markdown:</p>
 <code class="sourceCode R"><span><span class="va">doc</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/gr_ingest.html">gr_ingest</a></span><span class="op">(</span><span class="fu"><a href="../reference/readgpt_example.html">readgpt_example</a></span><span class="op">(</span><span class="op">)</span><span class="op">)</span></span>
 <span><span class="va">doc</span></span>
 <span><span class="co">#&gt; &lt;gr_document&gt; /home/runner/work/_temp/Library/readgpt/extdata/annual_report.md</span></span>
-<span><span class="co">#&gt;   17 blocks, ~573 tokens, 1847 chars (11 removed by cleaning)</span></span>
+<span><span class="co">#&gt;   17 blocks, ~574 tokens, 1846 chars (12 removed by cleaning)</span></span>
 <span><span class="co">#&gt;   cleaners: page_numbers, hyphenation, control_chars, ligatures, collapse_whitespace</span></span>
-<span><span class="co">#&gt;   first block: # Northwind Instruments -- Annual Report 2024</span></span></code></pre></div>
+<span><span class="co">#&gt;   first block: # Northwind Instruments — Annual Report 2024</span></span></code></pre></div>
 <p>Each block records where it came from: the page, for formats that
 have pages, and the section heading it sits under:</p>
 <div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
@@ -117,7 +117,7 @@ here because Markdown has no pages; a PDF fills it in.</p>
 <div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/base/unlist.html" class="external-link">unlist</a></span><span class="op">(</span><span class="va">doc</span><span class="op">$</span><span class="va">stats</span><span class="op">[</span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"blocks"</span>, <span class="st">"chars"</span>, <span class="st">"tokens"</span>, <span class="st">"chars_removed"</span><span class="op">)</span><span class="op">]</span><span class="op">)</span></span>
 <span><span class="co">#&gt;        blocks         chars        tokens chars_removed </span></span>
-<span><span class="co">#&gt;            17          1847           573            11</span></span></code></pre></div>
+<span><span class="co">#&gt;            17          1846           574            12</span></span></code></pre></div>
 <p>You rarely need to call <code><a href="../reference/gr_ingest.html">gr_ingest()</a></code> yourself, since
 <code><a href="../reference/answer_document.html">answer_document()</a></code> does it for you. Calling it directly
 shows you what the model will get.</p>
@@ -332,9 +332,11 @@ and never perfect, so readgpt uses it only where it is needed:</p>
 <code>magick</code>. Without them a scanned page comes back nearly empty
 and readgpt warns (<code>gr_ocr_unavailable</code>). The document lists
 those pages in <code>doc$stats$unread_pages</code>, and an answer drawn
-from it is marked partial. A document with too little text left is
-refused outright, as the next section shows. The <code>"scanned"</code>
-recipe is set up for this kind of document.</p>
+from it is marked partial. The same holds with
+<code>ocr = "never"</code>: a page with no text, or only a stamp or a
+running head, is listed as unread. A document with too little text left
+is refused outright, as the next section shows. The
+<code>"scanned"</code> recipe is set up for this kind of document.</p>
 </div>
 <div class="section level2">
 <h2 id="cleaning">Cleaning<a class="anchor" aria-label="anchor" href="#cleaning"></a>
@@ -432,7 +434,7 @@ included; for comparison only</td>
 <span><span class="fu"><a href="https://rdrr.io/r/base/lapply.html" class="external-link">vapply</a></span><span class="op">(</span><span class="va">presets</span>, <span class="kw">function</span><span class="op">(</span><span class="va">p</span><span class="op">)</span> <span class="fu"><a href="../reference/gr_ingest.html">gr_ingest</a></span><span class="op">(</span><span class="fu"><a href="../reference/readgpt_example.html">readgpt_example</a></span><span class="op">(</span><span class="op">)</span>, <span class="fu"><a href="../reference/gr_ingest_spec.html">gr_ingest_spec</a></span><span class="op">(</span>clean <span class="op">=</span> <span class="va">p</span><span class="op">)</span><span class="op">)</span><span class="op">$</span><span class="va">stats</span><span class="op">$</span><span class="va">chars</span>,</span>
 <span>       <span class="fu"><a href="https://rdrr.io/r/base/integer.html" class="external-link">integer</a></span><span class="op">(</span><span class="fl">1</span><span class="op">)</span><span class="op">)</span></span>
 <span><span class="co">#&gt;     none  minimal standard academic     scan   legacy </span></span>
-<span><span class="co">#&gt;     1858     1858     1847     1766     1847     1659</span></span></code></pre></div>
+<span><span class="co">#&gt;     1858     1858     1846     1765     1846     1659</span></span></code></pre></div>
 <p>Or name the cleaners yourself:</p>
 <div class="sourceCode" id="cb15"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">tidy</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/gr_ingest.html">gr_ingest</a></span><span class="op">(</span><span class="fu"><a href="../reference/readgpt_example.html">readgpt_example</a></span><span class="op">(</span><span class="op">)</span>,</span>
@@ -447,7 +449,7 @@ included; for comparison only</td>
 <div class="sourceCode" id="cb16"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/base/lapply.html" class="external-link">vapply</a></span><span class="op">(</span><span class="va">doc</span><span class="op">$</span><span class="va">stats</span><span class="op">$</span><span class="va">clean_log</span>, <span class="kw">function</span><span class="op">(</span><span class="va">step</span><span class="op">)</span> <span class="va">step</span><span class="op">$</span><span class="va">chars_removed</span>, <span class="fu"><a href="https://rdrr.io/r/base/integer.html" class="external-link">integer</a></span><span class="op">(</span><span class="fl">1</span><span class="op">)</span><span class="op">)</span></span>
 <span><span class="co">#&gt;        page_numbers         hyphenation       control_chars           ligatures </span></span>
-<span><span class="co">#&gt;                  12                   0                   0                  -1 </span></span>
+<span><span class="co">#&gt;                  12                   0                   0                   0 </span></span>
 <span><span class="co">#&gt; collapse_whitespace </span></span>
 <span><span class="co">#&gt;                   0</span></span></code></pre></div>
 <p>A negative number means a cleaner added characters, for example by
@@ -511,10 +513,10 @@ calling a model and without an API key:</p>
 <span></span>
 <span><span class="va">inv</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/gr_inventory.html">gr_inventory</a></span><span class="op">(</span><span class="va">inbox</span><span class="op">)</span></span>
 <span><span class="va">inv</span></span>
-<span><span class="co">#&gt; &lt;gr_inventory&gt; /tmp/RtmpeFX7tV/inbox</span></span>
+<span><span class="co">#&gt; &lt;gr_inventory&gt; /tmp/RtmpJ5kPkx/inbox</span></span>
 <span><span class="co">#&gt;   4 file(s), 1.9 KB; 2 readable</span></span>
 <span><span class="co">#&gt;   2 ready, 1 no_extractor, 1 empty</span></span>
-<span><span class="co">#&gt;   tokens: 536   cost floor: $0.01 (gpt-5.6-terra, one call per document)</span></span>
+<span><span class="co">#&gt;   tokens: 549   cost floor: $0.01 (gpt-5.6-terra, one call per document)</span></span>
 <span><span class="co">#&gt;   ! 1 file(s) would be skipped: .doc (1). gr_register_extractor() adds a format.</span></span></code></pre></div>
 <p>It lists every file, including the ones that will not be read,
 because “one file will be skipped” is exactly what you need to know
@@ -522,7 +524,7 @@ before the run:</p>
 <div class="sourceCode" id="cb20"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">inv</span><span class="op">$</span><span class="va">files</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"file"</span>, <span class="st">"extractor"</span>, <span class="st">"status"</span>, <span class="st">"tokens"</span><span class="op">)</span><span class="op">]</span></span>
 <span><span class="co">#&gt;               file extractor       status tokens</span></span>
-<span><span class="co">#&gt; 1 annual_report.md        md        ready    518</span></span>
+<span><span class="co">#&gt; 1 annual_report.md        md        ready    531</span></span>
 <span><span class="co">#&gt; 2        empty.txt       txt        empty     NA</span></span>
 <span><span class="co">#&gt; 3      minutes.doc      &lt;NA&gt; no_extractor     NA</span></span>
 <span><span class="co">#&gt; 4        notes.txt       txt        ready     18</span></span></code></pre></div>
@@ -573,7 +575,7 @@ until they are read by OCR are not in the total;
 <div class="sourceCode" id="cb21"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/base/unlist.html" class="external-link">unlist</a></span><span class="op">(</span><span class="va">inv</span><span class="op">$</span><span class="va">totals</span><span class="op">[</span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"readable"</span>, <span class="st">"tokens"</span>, <span class="st">"cost_floor_usd"</span><span class="op">)</span><span class="op">]</span><span class="op">)</span></span>
 <span><span class="co">#&gt;       readable         tokens cost_floor_usd </span></span>
-<span><span class="co">#&gt;       2.000000     536.000000       0.013072</span></span></code></pre></div>
+<span><span class="co">#&gt;       2.000000     549.000000       0.013098</span></span></code></pre></div>
 </div>
 <div class="section level2">
 <h2 id="adding-your-own">Adding your own<a class="anchor" aria-label="anchor" href="#adding-your-own"></a>

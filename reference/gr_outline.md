@@ -20,7 +20,8 @@ gr_outline(
   temperature = NULL,
   max_sections = 6L,
   closing = "What is missing",
-  trace = NULL
+  trace = NULL,
+  max_outline_tokens = NULL
 )
 ```
 
@@ -61,13 +62,30 @@ gr_outline(
   [`gr_trace()`](https://elkronos.github.io/readgpt/reference/gr_trace.md)
   to record into.
 
+- max_outline_tokens:
+
+  The reply limit for the outline call. The reply names every claim and
+  writes a heading, brief and rationale per section, so by default it
+  grows with both: `400 + 8` per claim `+ 60` per section, never below
+  1200, plus 4000 on a model registered as a reasoning model, which
+  spends part of the same limit before it writes. Clamped to what the
+  model can emit. A reply cut off at it puts every claim in one section,
+  with a warning.
+
 ## Value
 
 A named character vector shaped exactly like the `outline` argument of
 [`gr_synthesise()`](https://elkronos.github.io/readgpt/reference/gr_synthesise.md)
 (headings as names, briefs as values), carrying `attr(, "claims")` (a
-`section`/`claim_id` frame), `attr(, "rationale")` and
-`attr(, "closing")`.
+`section`/`claim_id` frame), `attr(, "rationale")`, `attr(, "closing")`
+and `attr(, "claims_fingerprint")`, a hash of the claims' numbers and
+texts. A claim number means something only within one
+[`gr_claims()`](https://elkronos.github.io/readgpt/reference/gr_claims.md)
+result, so
+[`gr_synthesise()`](https://elkronos.github.io/readgpt/reference/gr_synthesise.md)
+refuses the outline (`gr_claims_mismatch`) when the `claims` it is given
+are not the ones the outline was derived from: a re-run, or claims
+edited or reordered since.
 
 ## What is verified
 
@@ -118,6 +136,8 @@ o
 #> "Gaps, and anything the structure could not place" 
 #> attr(,"closing")
 #> [1] "What is missing"
+#> attr(,"claims_fingerprint")
+#> [1] "28ca983a36369f10"
 attr(o, "claims")
 #>         section claim_id
 #> 1 What it finds        1

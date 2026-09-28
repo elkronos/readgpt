@@ -37,13 +37,15 @@ first time it is called, so they appear in
 afterwards. Its default handler returns plain text, so readers that need
 JSON-schema output (`rerank`, `iterative`) take their documented
 degraded path unless your handler returns valid JSON for those prompts.
-And its `embed_handler` is used by
+And
 [`gr_embed()`](https://elkronos.github.io/readgpt/reference/gr_embed.md)
-in preference to any registered embedder, reporting
-`embedding_source = "api"`, so an offline run gets semantic-shaped
-vectors rather than the lexical fallback. A mock embed handler that
-fails or returns the wrong number of rows is still caught and still
-degrades, like any other.
+uses its `embed_handler` unless `gr_options(embedder =)` names a
+registered embedder (see the `embedder` argument of
+[`gr_embed()`](https://elkronos.github.io/readgpt/reference/gr_embed.md)),
+reporting `embedding_source = "api"`, so an offline run gets
+semantic-shaped vectors rather than the lexical fallback. A mock embed
+handler that fails or returns the wrong number of rows is still caught
+and still degrades, like any other.
 
 ## See also
 

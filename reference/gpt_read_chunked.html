@@ -111,12 +111,11 @@ outgrew the context window. For v1's actual behaviour, use
     <div class="sourceCode"><pre class="sourceCode r"><code><span class="r-in"><span><span class="va">cl</span> <span class="op">&lt;-</span> <span class="fu"><a href="gr_mock_client.html">gr_mock_client</a></span><span class="op">(</span><span class="kw">function</span><span class="op">(</span><span class="va">m</span>, <span class="va">p</span><span class="op">)</span> <span class="st">"45.2 million dollars"</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="va">chunks</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/warning.html" class="external-link">suppressWarnings</a></span><span class="op">(</span><span class="fu"><a href="parse_text.html">parse_text</a></span><span class="op">(</span><span class="fu"><a href="readgpt_example.html">readgpt_example</a></span><span class="op">(</span><span class="op">)</span>, chunk_token_limit <span class="op">=</span> <span class="fl">200</span><span class="op">)</span><span class="op">)</span></span></span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'annual_report.md' with the 'md' extractor.</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Ingested 17 block(s), ~573 tokens (11 chars removed by cleaning).</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Ingested 17 block(s), ~574 tokens (12 chars removed by cleaning).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Segmenting with 'paragraph' (cap 200 tokens, overlap 0).</span>
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="co"># v1 style, still works, warns once.</span></span></span>
 <span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/warning.html" class="external-link">suppressWarnings</a></span><span class="op">(</span><span class="fu">gpt_read_chunked</span><span class="op">(</span><span class="va">chunks</span>, <span class="st">"What was revenue?"</span>, client <span class="op">=</span> <span class="va">cl</span><span class="op">)</span><span class="op">)</span></span></span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Ingested 17 block(s), ~573 tokens (0 chars removed by cleaning).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Reading with 'map_reduce' (all|N+logN|tree) over 4 chunk(s).</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> [1] "45.2 million dollars"</span>
 <span class="r-in"><span></span></span>

@@ -43,17 +43,30 @@ Other reading functions:
 # `all|...` readers see every chunk, `topk|...` readers see a selection.
 r <- gr_readers()
 r[order(r$signature), c("name", "signature", "cost_calls")]
-#>            name             signature                    cost_calls
-#> 12        stuff            all|1|none                             1
-#> 11         skim          all|N+1|none                         N + 1
-#> 2       extract  all|N+conflicts|none N + one per disagreeing field
-#> 5    map_reduce       all|N+logN|tree                    N + merges
-#> 3  hierarchical     all|N+tree+1|tree         N + fan-in levels + 1
-#> 7        refine         all|N|forward                             N
-#> 1      ensemble   ensemble|sum+1|none            sum of members + 1
-#> 10       screen           head|1|none                             1
-#> 6       preview    planned|1+s+1|none      1 + skimmed sections + 1
-#> 9      retrieve           topk|1|none                1 + embeddings
-#> 8        rerank         topk|m+1|none                         m + 1
-#> 4     iterative topk|rounds*2|forward          up to 2 x max_rounds
+#>            name             signature
+#> 12        stuff            all|1|none
+#> 11         skim          all|N+1|none
+#> 2       extract  all|N+conflicts|none
+#> 5    map_reduce       all|N+logN|tree
+#> 3  hierarchical     all|N+tree+1|tree
+#> 7        refine         all|N|forward
+#> 1      ensemble   ensemble|sum+1|none
+#> 10       screen           head|1|none
+#> 6       preview    planned|1+s+1|none
+#> 9      retrieve           topk|1|none
+#> 8        rerank         topk|m+1|none
+#> 4     iterative topk|rounds*2|forward
+#>                                    cost_calls
+#> 12                                          1
+#> 11                                      N + 1
+#> 2  N (+1 per conflict with resolve = 'model')
+#> 5                                  N + merges
+#> 3                       N + fan-in levels + 1
+#> 7                                           N
+#> 1                          sum of members + 1
+#> 10                                          1
+#> 6                    1 + skimmed sections + 1
+#> 9                              1 + embeddings
+#> 8                                       m + 1
+#> 4                        up to 2 x max_rounds
 ```

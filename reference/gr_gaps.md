@@ -11,7 +11,13 @@ by counting.
 ## Usage
 
 ``` r
-gr_gaps(claims, extraction = NULL, max_cells = 40L, min_reported = 0.5)
+gr_gaps(
+  claims,
+  extraction = NULL,
+  max_cells = 40L,
+  min_reported = 0.5,
+  bib = NULL
+)
 ```
 
 ## Arguments
@@ -39,6 +45,17 @@ gr_gaps(claims, extraction = NULL, max_cells = 40L, min_reported = 0.5)
 
   A field missing for more than this fraction of studies is reported as
   not reported.
+
+- bib:
+
+  Which columns carry bibliographic identity, as in
+  [`gr_claims()`](https://elkronos.github.io/readgpt/reference/gr_claims.md)
+  and
+  [`gr_synthesise()`](https://elkronos.github.io/readgpt/reference/gr_synthesise.md).
+  They are not dimensions of the evidence – "every study reports
+  'Lancet'" is not a gap in a literature – and a gap line goes to the
+  writing model, which is never told who wrote a study. The columns
+  `claims` withheld are left out whatever this says; `bib` adds to them.
 
 ## Value
 

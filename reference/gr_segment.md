@@ -45,7 +45,9 @@ records the fallback in `$method`, e.g. `"semantic->paragraph"` when no
 `source_text` column: the document text each chunk was made from,
 without the rewrite or the context line, which is what a quote from the
 chunk is checked against. When no `trace` was passed, `$trace` is the
-one this call recorded into.
+one this call recorded into. `page` keeps blocks that have no page
+number, in a document whose other blocks have one, as chunks of their
+own with page `NA`, and warns.
 
 ## See also
 
@@ -77,7 +79,7 @@ do.call(rbind, lapply(c("fixed", "paragraph", "sentence", "structural"),
 #> Segmenting with 'structural' (cap 120 tokens, overlap 0).
 #>       method n total_tokens min median  mean max over_cap
 #> 1      fixed 5          528  49  120.0 105.6 120        0
-#> 2  paragraph 6          532  47   90.0  88.7 116        0
-#> 3   sentence 6          532  47   92.5  88.7 106        0
-#> 4 structural 8          562  31   75.0  70.2 101        0
+#> 2  paragraph 6          539  48   92.0  89.8 116        0
+#> 3   sentence 6          534  47   92.5  89.0 107        0
+#> 4 structural 8          557  16   76.5  69.6 102        0
 ```

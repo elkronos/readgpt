@@ -1,10 +1,14 @@
 # Truncate text to at most `n` tokens
 
-Truncation happens at a word boundary where the text has whitespace, and
-at a character boundary where it does not (base64, a data URI, a CJK
-run, a minified line); otherwise the cap would be unenforceable for
-exactly the inputs that most need it. Returns `""` for empty input and
-never returns `NA`.
+The result is the start of `text` as written – line breaks, indentation
+and paragraph breaks kept – followed by `marker`. The cut falls at the
+end of a word where the text has whitespace. When the next unit is too
+long to be a word (a CJK run, base64, a data URI, minified JSON, a long
+URL: anything that alone would cost more than 16 tokens) the cut goes
+inside it at a character, so a long unbroken run fills the budget
+instead of being dropped whole; otherwise the cap would be
+unenforceable, or nearly all of it wasted, for exactly the inputs that
+most need it. Returns `""` for empty input and never returns `NA`.
 
 ## Usage
 
@@ -24,7 +28,8 @@ gr_truncate_tokens(text, n, marker = " ...[truncated]")
 
 - marker:
 
-  Appended when truncation occurred; set `""` to suppress.
+  Appended when truncation occurred; set `""` to suppress. It is dropped
+  when it would cost half the budget or more.
 
 ## Value
 
@@ -50,7 +55,12 @@ Other cost and token functions:
 
 ``` r
 gr_truncate_tokens(paste(rep("alpha beta gamma", 40), collapse = " "), 20)
-#> [1] "alpha beta gamma alpha beta gamma alpha beta ...[truncated]"
+#> [1] "alpha beta gamma alpha beta gamma alpha ...[truncated]"
 gr_truncate_tokens("short enough already", 100)
 #> [1] "short enough already"
+
+# A table keeps its rows.
+cat(gr_truncate_tokens("Arm | N | Events\nA | 482 | 31\nB | 479 | 44\nC | 470 | 50", 24))
+#> Arm | N | Events
+#> A | 482 | ...[truncated]
 ```

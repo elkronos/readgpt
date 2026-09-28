@@ -66,7 +66,17 @@ Never prints or logs the key.</p>
 </dl></div>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
-    <p>The key string. Raises a <code>gr_auth_error</code> if none is found.</p>
+    <p>The key string. Raises a <code>gr_auth_error</code> if none is found, or if the
+key contains a control character.</p>
+    </div>
+    <div class="section level2">
+    <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
+    <p>Spaces and line endings around the key are dropped, so a key read from a
+file with <code><a href="https://rdrr.io/r/base/readLines.html" class="external-link">readLines()</a></code> or <code><a href="https://rdrr.io/r/base/readChar.html" class="external-link">readChar()</a></code> works as written. A key with a
+control character inside it (a line break in the middle, say) is refused
+with a <code>gr_auth_error</code>: sent as it is, it would end the <code>Authorization</code>
+header and start another one, and every request would fail as a transport
+error that never mentions the key.</p>
     </div>
     <div class="section level2">
     <h2 id="no-key-set">No key set<a class="anchor" aria-label="anchor" href="#no-key-set"></a></h2>

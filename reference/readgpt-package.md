@@ -114,6 +114,11 @@ for the full object, and `vignette`-free quick reference:
     print(ans$trace)          # calls, tokens, first error
     as_json(ans)              # every prompt and response from this one run
 
+An answer taken from a
+[`gr_compare()`](https://elkronos.github.io/readgpt/reference/gr_compare.md)
+carries its own recipe's segmentation and read only; the comparison's
+`cmp$trace` has the ingestion and every recipe.
+
 ## Extending it
 
 Each axis is a registry, so additions behave exactly like built-ins:

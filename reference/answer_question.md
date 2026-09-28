@@ -84,7 +84,7 @@ cl <- gr_mock_client(function(m, p) "45.2 million dollars")
 suppressWarnings(
   answer_question(readgpt_example(), "What was revenue?", mode = "Chunked", client = cl))
 #> Extracting 'annual_report.md' with the 'md' extractor.
-#> Ingested 17 block(s), ~573 tokens (11 chars removed by cleaning).
+#> Ingested 17 block(s), ~574 tokens (12 chars removed by cleaning).
 #> Segmenting with 'paragraph' (cap 1200 tokens, overlap 0).
 #> Reading with 'map_reduce' (all|N+logN|tree) over 1 chunk(s).
 #> [1] "45.2 million dollars"
@@ -93,7 +93,7 @@ suppressWarnings(
 answer_document(readgpt_example(), "What was revenue?", "thorough",
                 client = cl, return = "text")
 #> Extracting 'annual_report.md' with the 'md' extractor.
-#> Ingested 17 block(s), ~573 tokens (11 chars removed by cleaning).
+#> Ingested 17 block(s), ~574 tokens (12 chars removed by cleaning).
 #> Segmenting with 'paragraph' (cap 1200 tokens, overlap 120).
 #> Reading with 'map_reduce' (all|N+logN|tree) over 1 chunk(s).
 #> [1] "45.2 million dollars"

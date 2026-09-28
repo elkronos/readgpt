@@ -76,8 +76,10 @@ gr_read_many(
   below) is read again by the next run. An entry is restored only for
   the same document, question, recipe, tokenizer and client
   configuration: model, endpoint, `extra_body`, embedding model and
-  embedder. An entry that is not plain data, as a file planted in a
-  shared directory could be, is ignored and the document read again.
+  embedder. A file is the same document when its path, size and content
+  are, whatever its modification time or the session's time zone. An
+  entry that is not plain data, as a file planted in a shared directory
+  could be, is ignored and the document read again.
 
 - on_error:
 
@@ -88,7 +90,8 @@ gr_read_many(
 - max_total_usd:
 
   Stop once the run has spent this much, marking the remaining documents
-  `"skipped"`. This is a *corpus* ceiling and is separate from
+  `"skipped"`, except any restored from `store`, which costs nothing.
+  This is a *corpus* ceiling and is separate from
   `gr_options(max_cost_usd =)`, which is a limit per document. It needs
   a model with a registered price: against one without, cost is
   *unknown* rather than zero, the ceiling cannot be enforced, and you
@@ -101,11 +104,16 @@ gr_read_many(
 
 - max_total_calls:
 
-  Stop *before* a document once the run has made this many model calls,
-  marking the rest `"skipped"`. The counterpart to `max_total_usd` for
-  runs whose model has no registered price, and the only ceiling that
-  bounds the run rather than each document: `gr_options(max_calls =)` is
-  per document, so a corpus can make `length(sources)` times that many.
+  Stop *before* a document once the run has made this many requests,
+  marking the rest `"skipped"`, except any restored from `store`, which
+  makes no request. Requests are counted as `gr_options(max_calls =)`
+  counts them: model calls and requests to an embeddings endpoint alike,
+  so a document read with `"needle"` through an API embedder spends more
+  of it than its model calls alone, and more than the "model calls" a
+  printed trace shows. The counterpart to `max_total_usd` for runs whose
+  model has no registered price, and the only ceiling that bounds the
+  run rather than each document: `gr_options(max_calls =)` is per
+  document, so a corpus can make `length(sources)` times that many.
   Checked before each document, because a call ceiling noticed after the
   calls is not a ceiling. This means the run can overshoot by at most
   one document's worth, exactly as `max_total_usd` does.
@@ -179,13 +187,19 @@ for): `error` says how many and gives the first error, the partial
 answer is in `answers`, and a resumed run reads it again rather than
 restoring what the failure left. A request the pipeline recovered from
 does not count: an embeddings request that failed and was replaced by
-lexical vectors leaves the document `"ok"`, with `partial` set. A row
-that a limit or a failed request stopped keeps `document_id`, `reader`
-and the chunk counts, since the text was read; only `answer` and
-`not_found` are left `NA`. A restored row keeps the numbers from when
-that document was first read, so its `cost_usd` is what it cost then,
-not what this run spent. That is why the run's own spend comes from
-`gr_trace_cost(x$trace)` and not from summing the column.
+lexical vectors leaves the document `"ok"` and stored. `partial` is set
+when those vectors ranked the chunks the reader sent (`retrieve`,
+`rerank`, `iterative`), but not when they only placed a semantic
+segmenter's cuts; that, like a proposition batch kept as written, shows
+in `warnings`, and a contextual header that could not be written only in
+the trace's `errors` (see
+[`gr_trace()`](https://elkronos.github.io/readgpt/reference/gr_trace.md)).
+A row that a limit or a failed request stopped keeps `document_id`,
+`reader` and the chunk counts, since the text was read; only `answer`
+and `not_found` are left `NA`. A restored row keeps the numbers from
+when that document was first read, so its `cost_usd` is what it cost
+then, not what this run spent. That is why the run's own spend comes
+from `gr_trace_cost(x$trace)` and not from summing the column.
 
 ## Documents that are the same document
 
@@ -194,11 +208,12 @@ Each source is extracted and cleaned, and a document whose cleaned text
 (and set of unread pages) is identical to one already read this run is
 **not read again**: its row is filled in from the first copy, except for
 `warnings`, which are its own; `status` is `"duplicate"` and
-`duplicate_of` names the row it repeats. Nothing is dropped (every
-source you passed still has a row), so
-`subset(x$summary, is.na(duplicate_of))` is the deduplicated set and
-`sum(!is.na(x$summary$duplicate_of))` is the number to report as
-removed.
+`duplicate_of` names the row it repeats. That is decided afresh in every
+run, a restored row included: a copy whose first copy is not in this run
+is the first copy now. Nothing is dropped (every source you passed still
+has a row), so `subset(x$summary, is.na(duplicate_of))` is the
+deduplicated set and `sum(!is.na(x$summary$duplicate_of))` is the number
+to report as removed.
 
 This is about the table, not the bill: a
 [`gr_cache_client()`](https://elkronos.github.io/readgpt/reference/gr_cache_client.md)
@@ -252,25 +267,25 @@ b <- tempfile(fileext = ".txt"); writeLines("Revenue was 51.8 million.", b)
 
 out <- gr_read_many(c(a, b), "What was revenue?", "fast", client = cl)
 #> 2 document(s), and gr_options(max_calls) is 400 PER DOCUMENT, so this run may make up to 800 call(s). Pass max_total_calls = to cap the run.
-#> [1/2] file1ceb4cf147d7.txt
-#> Extracting 'file1ceb4cf147d7.txt' with the 'txt' extractor.
+#> [1/2] file1cea23bc4052.txt
+#> Extracting 'file1cea23bc4052.txt' with the 'txt' extractor.
 #> Ingested 1 block(s), ~11 tokens (0 chars removed by cleaning).
 #> Segmenting with 'paragraph' (cap 4000 tokens, overlap 0).
 #> Reading with 'stuff' (all|1|none) over 1 chunk(s).
-#> [2/2] file1ceb36e5713c.txt
-#> Extracting 'file1ceb36e5713c.txt' with the 'txt' extractor.
+#> [2/2] file1cea6fac47e8.txt
+#> Extracting 'file1cea6fac47e8.txt' with the 'txt' extractor.
 #> Ingested 1 block(s), ~11 tokens (0 chars removed by cleaning).
 #> Segmenting with 'paragraph' (cap 4000 tokens, overlap 0).
 #> Reading with 'stuff' (all|1|none) over 1 chunk(s).
 out$summary[, c("document", "answer", "not_found", "status")]
 #>               document                            answer not_found status
-#> 1 file1ceb4cf147d7.txt Revenue was 45.2 million dollars.     FALSE     ok
-#> 2 file1ceb36e5713c.txt Revenue was 45.2 million dollars.     FALSE     ok
+#> 1 file1cea23bc4052.txt Revenue was 45.2 million dollars.     FALSE     ok
+#> 2 file1cea6fac47e8.txt Revenue was 45.2 million dollars.     FALSE     ok
 
 # A missing file is one bad row, not a failed run.
 bad <- gr_read_many(c(a, "no-such-file.txt"), "What was revenue?", "fast", client = cl)
 #> 2 document(s), and gr_options(max_calls) is 400 PER DOCUMENT, so this run may make up to 800 call(s). Pass max_total_calls = to cap the run.
-#> [1/2] file1ceb4cf147d7.txt
+#> [1/2] file1cea23bc4052.txt
 #> Using cached ingestion for this document + settings.
 #> Segmenting with 'paragraph' (cap 4000 tokens, overlap 0).
 #> Reading with 'stuff' (all|1|none) over 1 chunk(s).
@@ -278,7 +293,7 @@ bad <- gr_read_many(c(a, "no-such-file.txt"), "What was revenue?", "fast", clien
 #> Warning: Document 'no-such-file.txt' failed: File not found: 'no-such-file.txt'. If you meant to pass document text rather than a path, it must not end in something that looks like a file extension.
 bad$summary[, c("document", "status", "error")]
 #>               document status
-#> 1 file1ceb4cf147d7.txt     ok
+#> 1 file1cea23bc4052.txt     ok
 #> 2     no-such-file.txt failed
 #>                                                                                                                                                       error
 #> 1                                                                                                                                                      <NA>
@@ -287,5 +302,5 @@ bad$summary[, c("document", "status", "error")]
 # What the run actually cost, counting only calls that were really issued.
 gr_trace_cost(out$trace)
 #>        model calls paid_calls paid_in paid_out usd
-#> 1 mock-model     2          2     184       26   0
+#> 1 mock-model     2          2     190       26   0
 ```

@@ -113,8 +113,25 @@ signature (see <code><a href="gr_reader_signature.html">gr_reader_signature()</a
 <dd><p>The question, as asked.</p></dd>
 
 <dt><code>trace</code></dt>
-<dd><p>The <a href="gr_trace.html">gr_trace</a> for this run. In a <code><a href="gr_compare.html">gr_compare()</a></code> the trace is
-shared across recipes, so it records every recipe's calls.</p></dd>
+<dd><p>The <a href="gr_trace.html">gr_trace</a> for this run. From <code><a href="answer_document.html">answer_document()</a></code> it
+holds the whole run: ingestion, segmentation and the read. <strong>An answer
+taken from a <code><a href="gr_compare.html">gr_compare()</a></code> holds only its own recipe's segmentation and
+read</strong> (its segmentation requests, which <code>semantic</code>, <code>proposition</code> and
+<code>contextual</code> with <code>context_source = "llm"</code> bill, the pre-flight check and
+the reader's requests), because each recipe is counted apart. Ingestion
+and the other recipes are in the comparison's own trace, <code>cmp$trace</code>:
+cost or save that one as the record of what the comparison did. A trace
+passed in with <code>trace =</code> is shared, not copied: this field is that trace
+itself, which still holds every run recorded into it, those before this
+one and those after it. <code>trace_steps</code> says which of its steps are this
+run's.</p></dd>
+
+<dt><code>trace_steps</code></dt>
+<dd><p>Integer <code>c(first, last)</code>: the steps of <code>trace</code> this
+run made, or <code>NULL</code> when no trace was kept. <code><a href="as_json.html">as_json()</a></code>, <code><a href="https://rdrr.io/r/base/print.html" class="external-link">print()</a></code> and
+the audit report (<code><a href="gr_audit_report.html">gr_audit_report()</a></code>) use only these, so an answer read
+with a trace shared across runs does not carry other runs' prompts,
+calls or cost.</p></dd>
 
 <dt><code>recipe</code>, <code>document</code>, <code>segmentation</code></dt>
 <dd><p>Added by <code><a href="answer_document.html">answer_document()</a></code> and
@@ -127,9 +144,11 @@ chunk statistics the reader saw.</p></dd>
     <h2 id="methods">Methods<a class="anchor" aria-label="anchor" href="#methods"></a></h2>
 
 
-<p><code><a href="https://rdrr.io/r/base/print.html" class="external-link">print()</a></code> shows the answer, the calls, tokens and cost, where the evidence
-came from, and, when the answer is partial, why; <code><a href="as_json.html">as_json()</a></code> serialises the
-answer together with every prompt and response from the same run.</p>
+<p><code><a href="https://rdrr.io/r/base/print.html" class="external-link">print()</a></code> shows the answer, this run's calls, tokens and cost, where the
+evidence came from, and, when the answer is partial, why; <code><a href="as_json.html">as_json()</a></code>
+serialises the answer together with every prompt and response this run made
+(the steps of its <code>trace</code> that <code>trace_steps</code> names; for an answer from
+<code><a href="gr_compare.html">gr_compare()</a></code>, its recipe's read alone; see <code>trace</code> above).</p>
     </div>
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>

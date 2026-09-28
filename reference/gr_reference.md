@@ -29,7 +29,8 @@ gr_reference(
 
 - n:
 
-  How many to draw. `Inf` takes the whole frame.
+  How many to draw: a whole number of at least 1. `Inf` takes the whole
+  frame, as does any `n` larger than it.
 
 - of:
 
@@ -38,10 +39,10 @@ gr_reference(
 
 - seed:
 
-  Passed to
-  [`withr::with_seed()`](https://withr.r-lib.org/reference/with_seed.html)
-  so the draw is reproducible. A calibration sample is part of the
-  method and has to be re-drawable.
+  A seed for the draw, so it is reproducible: the sample is drawn after
+  `set.seed(seed)` and your session's random number stream is put back
+  afterwards. A calibration sample is part of the method and has to be
+  re-drawable.
 
 - path:
 
@@ -51,7 +52,13 @@ gr_reference(
 
   Leave the model's decision and reason out of the file. On by default:
   a person shown the answer agrees with it, and the resulting figure
-  measures nothing.
+  measures nothing. A blind sheet does not name its frame either, since
+  "excluded" on every row says what the model decided: `sampled_from`
+  holds an opaque key that
+  [`gr_calibrate()`](https://elkronos.github.io/readgpt/reference/gr_calibrate.md)
+  reads back as the frame and its size. With `blind = FALSE` the file
+  has `model_decision`, `model_reason`, and the frame in plain words
+  (`sampled_from`, `frame_n`, `screened_n`).
 
 ## Value
 
@@ -78,6 +85,16 @@ hand-screening effort you have.
 knows which frame it was given and will not compute a corpus-wide figure
 from a sample that cannot support one.
 
+## The file
+
+The CSV is written as UTF-8 with a byte-order mark, which is what makes
+Excel open accented names and titles correctly; save it back as "CSV
+UTF-8".
+[`gr_calibrate()`](https://elkronos.github.io/readgpt/reference/gr_calibrate.md)
+reads it the same way in any locale, reads a sheet a spreadsheet
+re-saved as Windows-1252 as that, and matches a row whose name still
+does not agree by its `document_id`.
+
 ## See also
 
 [`gr_calibrate()`](https://elkronos.github.io/readgpt/reference/gr_calibrate.md),
@@ -98,8 +115,8 @@ tab <- data.frame(document = paste0("d", 1:6, ".pdf"),
                   reason = "because", stringsAsFactors = FALSE)
 gr_reference(structure(list(table = tab), class = "gr_screening"),
              n = 3, of = "excluded", seed = 1)
-#>   document human_decision human_note sampled_from frame_n screened_n
-#> 1   d2.pdf           <NA>       <NA>     excluded       3          6
-#> 2   d3.pdf           <NA>       <NA>     excluded       3          6
-#> 3   d5.pdf           <NA>       <NA>     excluded       3          6
+#>   document human_decision human_note                       sampled_from
+#> 1   d2.pdf           <NA>       <NA> grd5b346bbe4d898050402719dd5027962
+#> 2   d3.pdf           <NA>       <NA> grd5b346bbe4d898050402719dd5027962
+#> 3   d5.pdf           <NA>       <NA> grd5b346bbe4d898050402719dd5027962
 ```

@@ -38,7 +38,16 @@ gr_call(
 - max_output:
 
   Maximum completion tokens. Clamped to the model's limit and to what
-  the context window actually leaves after the prompt.
+  the context window actually leaves after the prompt. A value that is
+  not a single number (`NA`, text) warns and uses the model's limit, as
+  `NULL` does. For a reasoning model (see
+  [`gr_model_info()`](https://elkronos.github.io/readgpt/reference/gr_model_info.md))
+  the cap an API request carries also bounds the model's hidden
+  reasoning, so a small cap is sent as at least 2048 tokens (within the
+  model's limit and the context window); otherwise the reasoning can use
+  all of it and the reply come back empty. The reply is then no longer
+  held to the smaller cap by the API, and the extra tokens are billed if
+  the model uses them.
 
 - temperature:
 

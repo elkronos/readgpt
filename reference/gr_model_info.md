@@ -28,6 +28,15 @@ A named list: `id`, `context_window`, `max_output`, `input_usd` and
 came from a family regex or the fallback; verify before relying on it
 for cost control.
 
+## Details
+
+An alias (`"chatgpt-4o-latest"`, say) takes the entry of the model it
+names, a registered override of that model included, and reports the
+alias as its `id`. A family-regex match and the default both warn with
+class `gr_unknown_model`; under
+`gr_options(unknown_model_action = "error")` both stop instead, because
+neither id is in the registry.
+
 ## See also
 
 [`gr_register_model()`](https://elkronos.github.io/readgpt/reference/gr_register_model.md),

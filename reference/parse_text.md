@@ -65,7 +65,8 @@ Other v1 compatibility:
 ``` r
 # v1 style, still works, warns once.
 length(suppressWarnings(parse_text(readgpt_example(), chunk_token_limit = 200)))
-#> Using cached ingestion for this document + settings.
+#> Extracting 'annual_report.md' with the 'md' extractor.
+#> Ingested 17 block(s), ~574 tokens (12 chars removed by cleaning).
 #> Segmenting with 'paragraph' (cap 200 tokens, overlap 0).
 #> [1] 4
 
@@ -75,5 +76,5 @@ gr_chunk_stats(gr_segment(gr_ingest(readgpt_example()),
 #> Using cached ingestion for this document + settings.
 #> Segmenting with 'paragraph' (cap 200 tokens, overlap 0).
 #>      method n total_tokens min median  mean max over_cap
-#> 1 paragraph 4          525  34    156 131.2 179        0
+#> 1 paragraph 4          533  34    159 133.2 181        0
 ```

@@ -104,14 +104,14 @@ vapply(c("none", "minimal", "standard", "academic", "scan"),
        integer(1))
 #> Using cached ingestion for this document + settings.
 #> Extracting 'annual_report.md' with the 'md' extractor.
-#> Ingested 19 block(s), ~582 tokens (0 chars removed by cleaning).
+#> Ingested 19 block(s), ~586 tokens (0 chars removed by cleaning).
 #> Using cached ingestion for this document + settings.
 #> Extracting 'annual_report.md' with the 'md' extractor.
-#> Ingested 15 block(s), ~540 tokens (92 chars removed by cleaning).
+#> Ingested 15 block(s), ~541 tokens (93 chars removed by cleaning).
 #> Extracting 'annual_report.md' with the 'md' extractor.
-#> Ingested 17 block(s), ~573 tokens (11 chars removed by cleaning).
+#> Ingested 17 block(s), ~574 tokens (12 chars removed by cleaning).
 #>     none  minimal standard academic     scan 
-#>     1858     1858     1847     1766     1847 
+#>     1858     1858     1846     1765     1846 
 
 # Or name the steps yourself; see gr_cleaners() for what is available.
 gr_ingest_spec(clean = c("page_numbers", "references"), ocr = "never")$clean

@@ -54,7 +54,7 @@ ans <- answer_document(readgpt_example(), "What was revenue?", "fast", client = 
 #> Reading with 'stuff' (all|1|none) over 1 chunk(s).
 gr_trace_cost(ans$trace)
 #>        model calls paid_calls paid_in paid_out usd
-#> 1 mock-model     1          1     595       13   0
+#> 1 mock-model     1          1     607       13   0
 
 # Priced by the model each step records: a mock's own model, at no cost.
 # A cached re-run costs nothing for a different reason: paid_calls falls

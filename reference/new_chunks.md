@@ -95,7 +95,7 @@ Other segmentation functions:
 ``` r
 # One chunk per bullet, with the source block recorded.
 doc <- gr_ingest("Findings:\n\n- Revenue rose.\n- Costs fell.\n- Margin widened.")
-#> Ingested 2 block(s), ~21 tokens (0 chars removed by cleaning).
+#> Ingested 2 block(s), ~22 tokens (0 chars removed by cleaning).
 ch <- new_chunks(trimws(strsplit(doc$text, "\n(?=-)", perl = TRUE)[[1]]),
                  method = "by_bullet", spec = gr_segment_spec(max_tokens = 100),
                  block_id = 1L)

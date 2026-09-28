@@ -5,7 +5,11 @@ Wrap a client with
 and every successful model call is written to disk, keyed on the exact
 request. Re-issuing the same request returns the stored response without
 touching the network: free, instant, and byte-identical even at a
-temperature above zero.
+temperature above zero. A failed call is never written, and neither is a
+reply cut off at the output cap or a structured (JSON-schema) reply that
+does not parse, so re-running asks again. An unparseable structured
+reply that an earlier version did store is asked again rather than
+replayed.
 
 ## Usage
 
@@ -17,8 +21,14 @@ gr_cache(dir = NULL, read = TRUE, write = TRUE)
 
 - dir:
 
-  Directory for cache entries. Defaults to the `cache_dir` option.
-  Created on first write, not here.
+  Directory for cache entries. Defaults to the `cache_dir` option, and
+  to a directory under
+  [`tempdir()`](https://rdrr.io/r/base/tempfile.html) when that is not
+  set either. Created on first write, not here. An empty string or `NA`
+  is an error rather than a directory: it is what
+  [`Sys.getenv()`](https://rdrr.io/r/base/Sys.getenv.html) returns for a
+  variable that is not set, and taken as a path it pointed the cache at
+  the root of the filesystem.
 
 - read, write:
 
@@ -91,7 +101,7 @@ for reproducing a recorded run
 ``` r
 cache <- gr_cache(dir = file.path(tempdir(), "readgpt-example-cache"))
 cache
-#> <gr_cache> /tmp/RtmpLoLTxN/readgpt-example-cache
+#> <gr_cache> /tmp/Rtmp2dpV7t/readgpt-example-cache
 #>   0 entries, 0.0 B on disk; 0 hit(s), 0 miss(es), 0 write(s)
 
 # Nothing is written until a call is cached.

@@ -51,7 +51,7 @@ do.call(rbind, lapply(c(0, 30, 60), function(ov)
 #> Segmenting with 'sentence' (cap 120 tokens, overlap 30).
 #> Segmenting with 'sentence' (cap 120 tokens, overlap 60).
 #>     method n total_tokens min median mean max over_cap
-#> 1 sentence 6          532  47   92.5 88.7 106        0
-#> 2 sentence 7          666  74   99.0 95.1 106        0
-#> 3 sentence 9          860  79   94.0 95.6 109        0
+#> 1 sentence 6          534  47   92.5 89.0 107        0
+#> 2 sentence 7          668  74   99.0 95.4 107        0
+#> 3 sentence 9          863  79   94.0 95.9 109        0
 ```

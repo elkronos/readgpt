@@ -80,6 +80,14 @@ Treat that as "verify before trusting for cost control".</p>
 or the fallback; verify before relying on it for cost control.</p>
     </div>
     <div class="section level2">
+    <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
+    <p>An alias (<code>"chatgpt-4o-latest"</code>, say) takes the entry of the model it names,
+a registered override of that model included, and reports the alias as its
+<code>id</code>. A family-regex match and the default both warn with class
+<code>gr_unknown_model</code>; under <code>gr_options(unknown_model_action = "error")</code> both
+stop instead, because neither id is in the registry.</p>
+    </div>
+    <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>
     <div class="dont-index"><p><code><a href="gr_register_model.html">gr_register_model()</a></code>, <code><a href="gr_models.html">gr_models()</a></code>, <code><a href="gr_budget.html">gr_budget()</a></code></p>
 <p>Other cost and token functions:

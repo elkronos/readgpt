@@ -67,8 +67,12 @@ no network and no spend.</p>
 
 
 <dl><dt id="arg-source">source<a class="anchor" aria-label="anchor" href="#arg-source"></a></dt>
-<dd><p>A <code>gr_trace</code>, a path to a file written by <code><a href="gr_trace_save.html">gr_trace_save()</a></code>, or
-an already-parsed list in that shape.</p></dd>
+<dd><p>A <code>gr_trace</code>; a path to a file written by <code><a href="gr_trace_save.html">gr_trace_save()</a></code>;
+the JSON text <code><a href="as_json.html">as_json()</a></code> writes for a trace or for an answer (whose trace
+is used); or an already-parsed list in that shape. Parse a file yourself
+with <code>jsonlite::fromJSON(path, simplifyVector = FALSE)</code>: the default
+simplification turns the steps into a data frame, which loses what a
+replay needs, and is refused with a message that says so.</p></dd>
 
 
 <dt id="arg-strict">strict<a class="anchor" aria-label="anchor" href="#arg-strict"></a></dt>
@@ -98,7 +102,16 @@ recording of exactly what went wrong.</p>
 <p>A response is matched on the exact prompt messages plus the model id the
 call asked for. That can differ from the model the trace records as
 answering: a <code><a href="gr_ellmer_client.html">gr_ellmer_client()</a></code> answers with its chat's model whatever the
-recipe asked for, and its runs replay all the same. When a
+recipe asked for, and its runs replay all the same.</p>
+<p>The replay client's own model, which a read that names none asks for, is
+the model the recorded reads asked for. One trace can hold reads through
+clients built for different models, and a recording made by readgpt 0.5.0
+asked for <code>gr_options("model")</code> on a read and for the client's model
+everywhere else; a call that asks for the replay client's model and finds
+nothing under it is answered from the one other such model that holds the
+same prompt. A model the recorded settings named (<code>model</code>, <code>skim_model</code>,
+<code>summary_model</code>) is never used that way, so a replay that leaves one out
+misses. When a
 run issued the same prompt more than once (which happens at a temperature
 above zero, and in readers that revisit a chunk), the recorded responses are
 returned in the order they were produced. Once they are exhausted the last
@@ -111,17 +124,38 @@ one repeats.</p>
 <p>A trace records each request to an embeddings endpoint (a step labelled
 <code>"embed.request"</code>, counted in <code>calls</code> and priced like any other request),
 but not the vectors that came back, so a replay has nothing to answer those
-requests with. Whether a replay reproduces a run's chunk <em>ranking</em> therefore
-depends on how the run embedded, and that is checked rather than assumed.
-The ranking reproduces exactly when the recording used a <strong>deterministic</strong>
-embedder and the replay uses the <strong>same</strong> one; both conditions, because
-replaying an API-embedded run with a deterministic local embedder would
-compute vectors the original never saw while looking exact. Anything else
-falls back to hashed lexical vectors and warns with class
-<code>gr_replay_no_embeddings</code>; every recorded answer is still reproduced, but the
-ranking may differ. Record a run you intend to publish with
-<code>gr_options(embedder = "lexical")</code>, or with your own embedder registered as
-<code>deterministic = TRUE</code>.</p>
+requests with. A run that embedded (the <code>semantic</code> segmenter, the
+<code>retrieve</code> and <code>iterative</code> readers, <code>rerank</code> when word overlap finds
+nothing, and so the <code>"needle"</code> recipe) therefore replays only when the
+recording used a <strong>deterministic</strong> embedder and the replay uses the
+<strong>same</strong> one: the vectors are then computed again, exactly. Both
+conditions, because replaying an API-embedded run with a deterministic
+local embedder would compute vectors the original never saw while looking
+exact. Anything else, including a run recorded with the default <code>"api"</code>
+embedder (or a <code><a href="gr_mock_client.html">gr_mock_client()</a></code>'s embed handler), warns with class
+<code>gr_replay_no_embeddings</code> and falls back to hashed lexical vectors. Those
+place semantic cuts and rank chunks differently, so such a replay usually
+sends prompts the recording does not hold: a strict replay stops with
+<code>gr_replay_miss</code>, whose message names this cause, and a non-strict one gets
+failed calls for them and does not give the recorded answer. Record a run
+you intend to publish or replay with <code>gr_options(embedder = "lexical")</code>, or
+with your own embedder registered as <code>deterministic = TRUE</code>.</p>
+    </div>
+    <div class="section level2">
+    <h2 id="limits">Limits<a class="anchor" aria-label="anchor" href="#limits"></a></h2>
+
+
+<p>A saved trace says whether a limit cut the run short (<code>budget_stop</code>,
+<code>stop_reason</code>), and a replay of such a run stops where it stopped when it
+runs under the limits it was recorded with. Replayed calls count against
+<code>max_calls</code> as they did when recorded. When the spending limit stopped the
+recorded run, each replayed call also counts what it cost when recorded
+against <code>max_cost_usd</code> (in the trace's <code>replayed_usd</code>; nothing is spent);
+for any other run it counts nothing, so a replay of an expensive run is not
+stopped by the replaying session's limit. A replay under a higher limit, or
+none, that asks for a call past the recorded stop gets a <code>gr_replay_miss</code>
+saying so, and one under a lower limit stops sooner, marked partial as the
+run would have been.</p>
     </div>
     <div class="section level2">
     <h2 id="the-recipe-auto-chose">The recipe "auto" chose<a class="anchor" aria-label="anchor" href="#the-recipe-auto-chose"></a></h2>

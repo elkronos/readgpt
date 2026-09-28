@@ -115,20 +115,47 @@ reason not to do it.</p>
 
 <p><code>match</code> is 1 for an exact quotation once whitespace, quote marks, dashes and
 case are folded away. These are the differences a faithful quotation introduces.
+Guillemets and the corner brackets of Chinese and Japanese count as quote
+marks, a full-width letter, digit or number sign as its ASCII form, the
+ideographic space as a space, and a letter written with combining accents
+(as macOS tools write text) as the accented letter, for Latin, Greek,
+Cyrillic and Korean letters. readgpt does no other Unicode normalisation,
+so a quotation that differs from its document only in how some other
+letter is encoded is reported unverified, never verified by mistake.
 It has to match whole words and whole numbers: "5%" is not found in "25%",
 nor "12%" in "-12%", nor "20" in "200", nor "200" in "1 200" written with a
-thin space. Chinese, Japanese and Thai put no spaces between words, so a
-clause quoted from them may start and end anywhere; numbers in them are
-still whole. Markdown bold is not text, in the quotation or the document.
+thin space, nor ".45" in "1.45", nor "65 years" in a range broken across
+two lines ("aged 18-" at the end of one). A hyphen between two letters that
+the quotation writes and the document does not, as where the cleaner joined
+a word broken at a line end ("investigator-blinded"), is not a difference
+in a quotation of one passage. Chinese, Japanese and Thai put no spaces
+between words, so a clause quoted from them may start and end anywhere;
+numbers in them are still whole, and a circled list number before one is
+not part of it. That includes ending inside a word: a quotation that stops
+at a verb's stem verifies where the document goes on to a negating ending
+written on to it, as an English quotation that stops before "not" does,
+with or without a full stop the model added. Markdown bold is not text, in
+the quotation or the document.
 A span made of several passages (in paragraphs, as a list, in separate
 quote marks, or joined by "..." or "[...]") is checked passage by passage
 and is verified when every passage is found, the parts either side of an
 elision in that order. What an elision leaves out may not be a negation
 ("the drug did ... reduce mortality" is not in "the drug did not reduce
-mortality"), and where it leaves out the end of a sentence the part after
+mortality"). That is checked in the major European languages, Russian,
+Greek, Turkish, Arabic, Hebrew, Hindi and Bengali by their negation words,
+and in Chinese, Japanese, Korean and Thai by the characters and endings
+that negate; what an elision leaves out in a script none of those cover is
+refused. Where an elision leaves out the end of a sentence the part after
 it has to start one ("Revenue ... rose 30%" is not in "Revenue fell 12%.
-Costs rose 30%."). A line break inside a sentence is a line wrap, not a
-new passage: the lines are checked as one.
+Costs rose 30%."); a full stop inside a bracketed citation does not end
+one. A line break inside a sentence is a line wrap, not a new passage: the
+lines are checked as one, even where the next line opens with a capital,
+unless the document ends a sentence after the first line or starts one
+with the second. Passages the quotation separates (by a blank line, as a
+list, in quote marks) may come from anywhere in the document, but not from
+one sentence with words left out between them, which is an elision the
+quotation did not mark. None of this reads meaning: a quotation that stops
+before a negation later in its sentence still verifies, as it always has.
 Below 1 it is the fraction of the span's words carried by its longest
 consecutive <strong>run</strong> in the source, for the passage that matches worst; in
 a script written without spaces, the fraction of its characters.</p>

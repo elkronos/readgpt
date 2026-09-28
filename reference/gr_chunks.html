@@ -82,7 +82,11 @@ supplied, or <code>"page-&gt;paragraph"</code> for a source with no page provena
 <dt><code>extra</code></dt>
 <dd><p>Method-specific detail: <code>boundaries</code> and
 <code>embedding_source</code> for <code>semantic</code>, <code>propositions</code> for <code>proposition</code>,
-<code>cap_enforced</code> when oversized chunks had to be split.</p></dd>
+<code>context_source</code> for <code>contextual</code> (<code>"metadata"</code> or <code>"llm"</code>, the one that
+ran, so <code>"metadata"</code> when <code>"llm"</code> was asked for without a client) and,
+for <code>"llm"</code>, <code>blurbs_missing</code> (chunks left without a context line) and
+<code>blurbs_at_limit</code> (of those, how many were skipped at the run's call or
+cost limit), <code>cap_enforced</code> when oversized chunks had to be split.</p></dd>
 
 <dt><code>trace</code></dt>
 <dd><p>Set only when <code><a href="gr_segment.html">gr_segment()</a></code> was called without a <code>trace</code>
@@ -127,11 +131,11 @@ segmenter</p>
 <span class="r-out co"><span class="r-pr">#&gt;</span> [1] "sentence"</span>
 <span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/utils/head.html" class="external-link">head</a></span><span class="op">(</span><span class="va">ch</span><span class="op">$</span><span class="va">chunks</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"chunk_id"</span>, <span class="st">"tokens"</span>, <span class="st">"section"</span><span class="op">)</span><span class="op">]</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   chunk_id tokens      section</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1        1     88         &lt;NA&gt;</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1        1     89         &lt;NA&gt;</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 2        2     92         &lt;NA&gt;</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 3        3     93         &lt;NA&gt;</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 4        4    106 Risk factors</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 5        5    106         &lt;NA&gt;</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 5        5    107         &lt;NA&gt;</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 6        6     47         &lt;NA&gt;</span>
 </code></pre></div>
     </div>

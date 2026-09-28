@@ -20,7 +20,7 @@ Absolute path to the file.
 gr_ingest(readgpt_example())
 #> Using cached ingestion for this document + settings.
 #> <gr_document> /home/runner/work/_temp/Library/readgpt/extdata/annual_report.md
-#>   17 blocks, ~573 tokens, 1847 chars (11 removed by cleaning)
+#>   17 blocks, ~574 tokens, 1846 chars (12 removed by cleaning)
 #>   cleaners: page_numbers, hyphenation, control_chars, ligatures, collapse_whitespace
-#>   first block: # Northwind Instruments -- Annual Report 2024
+#>   first block: # Northwind Instruments — Annual Report 2024
 ```

@@ -131,6 +131,9 @@ object, and <code>vignette</code>-free quick reference:</p>
 <span><span class="va">ans</span><span class="op">$</span><span class="va">notes</span>       <span class="co"># what: dropped_chunks, failed_calls, error, degraded_to_bm25</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/print.html" class="external-link">print</a></span><span class="op">(</span><span class="va">ans</span><span class="op">$</span><span class="va">trace</span><span class="op">)</span>          <span class="co"># calls, tokens, first error</span></span>
 <span><span class="fu"><a href="../reference/as_json.html">as_json</a></span><span class="op">(</span><span class="va">ans</span><span class="op">)</span>              <span class="co"># every prompt and response from this one run</span></span></code></pre><p></p></div>
+<p>An answer taken from a <code><a href="gr_compare.html">gr_compare()</a></code> carries its own recipe's segmentation
+and read only; the comparison's <code>cmp$trace</code> has the ingestion and every
+recipe.</p>
     </div>
     <div class="section level2">
     <h2 id="extending-it">Extending it<a class="anchor" aria-label="anchor" href="#extending-it"></a></h2>

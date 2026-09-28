@@ -59,15 +59,36 @@ gr_embed(
   not meaning, so `semantic` segmentation and `retrieve` ranking become
   markedly less accurate. The substitution warns and is recorded, but
   the run continues. Use `"error"` to fail fast, or `"none"` to get an
-  empty matrix.
+  empty matrix. An embedder fails when it raises, or returns the wrong
+  number of rows, vectors with no dimensions, or missing or non-finite
+  values. The built-in `"api"` embedder also fails on a reply that
+  leaves a text without a usable vector (missing, empty or all zeros),
+  gives vectors of different lengths, or labels them with `index` fields
+  that are not one for each text sent (vectors are matched to texts by
+  `index` when the reply gives it). It retries a rate limit (HTTP 429),
+  a server error or a dropped connection up to the client's
+  `max_retries`, as
+  [`gr_call()`](https://elkronos.github.io/readgpt/reference/gr_call.md)
+  does, and the warning names the HTTP status and the provider's
+  message. A refused key (HTTP 401 or 403) is a failure like the others
+  rather than a stop, since a key can be allowed to chat and not to
+  embed; a missing key stops the run.
 
 - embedder:
 
   A registered embedder name (see
   [`gr_embedders()`](https://elkronos.github.io/readgpt/reference/gr_embedders.md)),
-  or a function of `(texts, params)`. Defaults to the embed function
-  supplied with the client, if any, and otherwise to
-  `gr_options("embedder")`.
+  or a function of `(texts, params)`. When it is `NULL` the first of
+  these is used: `gr_options("embedder")` when it names one, then the
+  embed function supplied with the client (a
+  [`gr_mock_client()`](https://elkronos.github.io/readgpt/reference/gr_mock_client.md)'s
+  `embed_handler`, or the `embed` given to
+  [`gr_backend_client()`](https://elkronos.github.io/readgpt/reference/gr_backend_client.md)
+  or
+  [`gr_ellmer_client()`](https://elkronos.github.io/readgpt/reference/gr_ellmer_client.md)),
+  then the built-in `"api"`. So an embedder named in
+  [`gr_options()`](https://elkronos.github.io/readgpt/reference/gr_options.md)
+  wins over the client's own embed function.
 
 ## Value
 

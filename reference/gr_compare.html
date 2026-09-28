@@ -125,8 +125,9 @@ different <code>top_k</code> share a signature and are genuinely different runs.
 <code><a href="gr_options.html">gr_options()</a></code> is checked against what every recipe and every segmentation
 has spent so far, so a recipe that reaches it stops <code>partial</code> and the ones
 after it are refused and recorded as failed. <code>max_calls</code> is counted for
-each recipe on its own, so a recipe's answer does not depend on its
-position in the list.</p>
+each recipe on its own, its segmentation included, so a recipe's answer
+does not depend on its position in the list. A segmentation that a limit
+cut short is not shared with a later recipe.</p>
     </div>
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>
@@ -157,9 +158,9 @@ position in the list.</p>
 <span class="r-in"><span><span class="co"># One trace covers all three, so this is the cost of the whole comparison.</span></span></span>
 <span class="r-in"><span><span class="fu"><a href="gr_trace_summary.html">gr_trace_summary</a></span><span class="op">(</span><span class="va">cmp</span><span class="op">$</span><span class="va">trace</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>                          run_id calls cached steps tokens_in tokens_out errors</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1 run_20260927025642.929_29588c     5      0    16      2098         65      0</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1 run_20260928020038.691_ecfd0d     5      0    16      2122         65      0</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   elapsed_s embed_calls embed_tokens</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1       0.1           0            0</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1      0.12           0            0</span>
 </code></pre></div>
     </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>

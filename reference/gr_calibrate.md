@@ -25,7 +25,11 @@ gr_calibrate(
 - screening:
 
   A `gr_screening` from
-  [`gr_screen()`](https://elkronos.github.io/readgpt/reference/gr_screen.md).
+  [`gr_screen()`](https://elkronos.github.io/readgpt/reference/gr_screen.md),
+  or a data frame shaped like its `$table`, for instance read back from
+  a CSV. Its `decision` must be `"include"`, `"exclude"`, `"unclear"` or
+  empty (never read), in any case; a row whose `status` says it was not
+  read counts as never read.
 
 - reference:
 
@@ -36,19 +40,24 @@ gr_calibrate(
 
 - positive:
 
-  Which human decision counts as eligible.
+  Which human decision counts as eligible: `"include"` or `"exclude"`.
 
 - min_positives:
 
-  Below this many eligible studies in the sample, the sensitivity
-  estimate is reported but marked inadequate.
+  For an `"all"` sample: below this many eligible studies the
+  sensitivity estimate is reported but marked inadequate. A sample of
+  one stratum is judged by its interval instead; see "What a small
+  sample cannot do".
 
 - of:
 
   Which part of the screening run the reference was drawn from:
-  `"excluded"`, `"kept"` or `"all"`. Normally recovered from the file
+  `"excluded"`, `"kept"` or `"all"`; anything else is an error. Normally
+  recovered from the file
   [`gr_reference()`](https://elkronos.github.io/readgpt/reference/gr_reference.md)
-  wrote; give it explicitly for a reference built by hand.
+  wrote; give it explicitly for a reference built by hand. Given over a
+  file that records a different frame, it wins with a warning, and the
+  file's frame size is not used.
 
 ## Value
 
@@ -73,7 +82,15 @@ An object of class `gr_calibration`:
 
 - `adequate`:
 
-  Whether the sample supports a sensitivity claim.
+  Whether the sample supports a claim from its frame's headline rate:
+  sensitivity in an `"all"` sample, the frame's own rate in an
+  `"excluded"` or `"kept"` one.
+
+- `adequacy`:
+
+  How that was judged: `rule` (`"positives"`, `"interval"` or
+  `"whole frame"`), `bar`, `width`, and `note`, a sentence saying why
+  the sample fell short (`NA` when it did not).
 
 - `frame`:
 
@@ -108,6 +125,30 @@ observations is not a finding. The intervals are Wilson score intervals,
 which stay sensible at zero and one where the textbook interval
 collapses to a point, and `$adequate` says whether there was enough to
 support a claim at all.
+
+What "enough" means depends on the frame, because what the headline rate
+rests on does. In an `"all"` sample it is sensitivity, estimated from
+the eligible studies alone, so the sample needs `min_positives` of them.
+In an `"excluded"` or `"kept"` sample the headline rate ("eligible among
+the excluded", "eligible among those kept") is taken over every row
+sampled, so a sample of 500 clean exclusions is a good one, not one
+resting on no observations. There the sample is adequate when that
+rate's interval is at most 10 percentage points wide, or when every
+record in the stratum was judged (nothing is left to sample, and the
+rate is a count for this run). The bar is a floor, not a verdict: 10
+points is wide for an omission rate near zero across a large pile of
+exclusions, and the projected count of lost studies, printed with its
+interval, is the figure to judge that by. `$adequacy$note` says in a
+sentence why a sample fell short.
+
+## One row per document
+
+The reference is matched to the screening by document name, compared as
+UTF-8 whatever the session's locale, and by `document_id` for a row
+whose name still does not match. A document judged twice (two reviewers'
+sheets stacked, say) is counted once when the copies agree, with a
+warning, and is refused when they disagree: reconcile dual screening
+into one consensus decision per document first.
 
 ## See also
 

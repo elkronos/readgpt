@@ -102,8 +102,12 @@ either meets or does not.</p></dd>
 start of the document. Leaving it unset shows as much as the model's context
 allows. Setting it to a few hundred is title-and-abstract screening, done
 deliberately: cheaper, and closer to what a human screener sees at this
-stage. Either way the <code>truncated</code> and <code>seen_tokens</code> columns say what was
-actually read.</p></dd>
+stage. The opening is whole chunks while they fit; when the first chunk is
+longer than the cap on its own (a structural chunk of title, abstract and
+introduction can be), it is cut to the cap and that is what is screened. A
+cap too small to show any of the document at all fails the document, with
+an <code>error</code> naming <code>screen_tokens</code>. Either way the <code>truncated</code> and
+<code>seen_tokens</code> columns say what was actually read.</p></dd>
 
 
 <dt id="arg-max-total-calls-trace">max_total_calls, trace<a class="anchor" aria-label="anchor" href="#arg-max-total-calls-trace"></a></dt>
@@ -120,8 +124,9 @@ while each stage keeps its own for its own cost and its own ceiling.</p></dd>
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
     <p>An object of class <code>gr_screening</code>:</p><dl><dt><code>table</code></dt>
 <dd><p>One row per document: <code>document</code>, <code>document_id</code>,
-<code>decision</code>, <code>reason</code>, <code>criterion</code>, <code>quote</code>, <code>verified</code>, <code>seen_tokens</code>,
-<code>document_tokens</code>, <code>truncated</code>, <code>status</code>, <code>duplicate_of</code>, <code>error</code>.</p></dd>
+<code>decision</code>, <code>reason</code>, <code>criterion</code>, <code>criterion_valid</code>, <code>quote</code>,
+<code>verified</code>, <code>seen_tokens</code>, <code>document_tokens</code>, <code>truncated</code>, <code>status</code>,
+<code>duplicate_of</code>, <code>error</code>.</p></dd>
 
 <dt><code>included</code></dt>
 <dd><p>The distinct sources whose decision was <code>"include"</code>
@@ -157,14 +162,34 @@ not the JSON asked for: no model judged it, so it is not "unclear" either.
 <code>error</code> says what happened, and with a <code>store</code> the next run screens it again.</p>
     </div>
     <div class="section level2">
+    <h2 id="the-criterion-is-checked">The criterion is checked<a class="anchor" aria-label="anchor" href="#the-criterion-is-checked"></a></h2>
+
+
+<p><code>criterion</code> is the criterion the model said decided it, in the protocol's
+own words when it matches one of <code>include</code> or <code>exclude</code> (case, spacing, a
+leading list marker, surrounding quotes and closing punctuation aside);
+<code>criterion_valid</code> says whether it did, and is <code>NA</code> when the model named
+none. An exclusion has to name one of the protocol's criteria: an exclusion
+criterion it meets, or an inclusion criterion it fails. One that names
+another criterion, or none, is recorded as <code>"unclear"</code> so that a person
+decides, with <code>criterion_valid = FALSE</code> (or <code>NA</code>) and a <code>reason</code> saying
+so. The match is on the wording, so a paraphrased criterion is held back
+too; that costs a person a look, where accepting an invented one would cost
+a study.</p>
+<p>The quote is checked against the excerpt the model was shown and attributed
+to the chunk that contains it; a quote spanning two chunks, or one that does
+not verify, has no chunk.</p>
+    </div>
+    <div class="section level2">
     <h2 id="reporting-it">Reporting it<a class="anchor" aria-label="anchor" href="#reporting-it"></a></h2>
 
 
 <p><code>table(x$table$decision)</code> is the screening result and
-<code>table(x$table$criterion)</code> is the breakdown by exclusion criterion, which is
-what a flow diagram asks for. Duplicates were removed before screening, so
-<code>sum(!is.na(x$table$duplicate_of))</code> is the "duplicates removed" count and
-every one of them still has a row; see <code><a href="gr_read_many.html">gr_read_many()</a></code>.</p>
+<code>table(x$table$criterion[x$table$decision %in% "exclude"])</code> is the
+breakdown of exclusions by criterion, which is what a flow diagram asks for;
+every one names a criterion of the protocol. Duplicates were removed before
+screening, so <code>sum(!is.na(x$table$duplicate_of))</code> is the "duplicates
+removed" count and every one of them still has a row; see <code><a href="gr_read_many.html">gr_read_many()</a></code>.</p>
     </div>
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>
@@ -184,14 +209,14 @@ every one of them still has a row; see <code><a href="gr_read_many.html">gr_read
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="va">s</span> <span class="op">&lt;-</span> <span class="fu">gr_screen</span><span class="op">(</span><span class="va">f</span>, question <span class="op">=</span> <span class="st">"Does the treatment work?"</span>,</span></span>
 <span class="r-in"><span>               include <span class="op">=</span> <span class="st">"Reports a randomised comparison"</span>, client <span class="op">=</span> <span class="va">cl</span><span class="op">)</span></span></span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> [1/1] file1ceb1486321d.txt</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'file1ceb1486321d.txt' with the 'txt' extractor.</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> [1/1] file1cea42e402c5.txt</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'file1cea42e402c5.txt' with the 'txt' extractor.</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Ingested 1 block(s), ~15 tokens (0 chars removed by cleaning).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Segmenting with 'structural' (cap 900 tokens, overlap 90).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Reading with 'screen' (head|1|none) over 1 chunk(s).</span>
 <span class="r-in"><span><span class="va">s</span><span class="op">$</span><span class="va">table</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"document"</span>, <span class="st">"decision"</span>, <span class="st">"reason"</span><span class="op">)</span><span class="op">]</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>               document decision                           reason</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1 file1ceb1486321d.txt  include Reports a randomised comparison.</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1 file1cea42e402c5.txt  include Reports a randomised comparison.</span>
 </code></pre></div>
     </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>

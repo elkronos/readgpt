@@ -78,7 +78,8 @@ claim with a number attached.</p>
 
 
 <dt id="arg-n">n<a class="anchor" aria-label="anchor" href="#arg-n"></a></dt>
-<dd><p>How many to draw. <code>Inf</code> takes the whole frame.</p></dd>
+<dd><p>How many to draw: a whole number of at least 1. <code>Inf</code> takes the
+whole frame, as does any <code>n</code> larger than it.</p></dd>
 
 
 <dt id="arg-of">of<a class="anchor" aria-label="anchor" href="#arg-of"></a></dt>
@@ -87,8 +88,10 @@ unclear), or <code>"all"</code>.</p></dd>
 
 
 <dt id="arg-seed">seed<a class="anchor" aria-label="anchor" href="#arg-seed"></a></dt>
-<dd><p>Passed to <code><a href="https://withr.r-lib.org/reference/with_seed.html" class="external-link">withr::with_seed()</a></code> so the draw is reproducible. A
-calibration sample is part of the method and has to be re-drawable.</p></dd>
+<dd><p>A seed for the draw, so it is reproducible: the sample is drawn
+after <code>set.seed(seed)</code> and your session's random number stream is put back
+afterwards. A calibration sample is part of the method and has to be
+re-drawable.</p></dd>
 
 
 <dt id="arg-path">path<a class="anchor" aria-label="anchor" href="#arg-path"></a></dt>
@@ -98,7 +101,11 @@ calibration sample is part of the method and has to be re-drawable.</p></dd>
 <dt id="arg-blind">blind<a class="anchor" aria-label="anchor" href="#arg-blind"></a></dt>
 <dd><p>Leave the model's decision and reason out of the file. On by
 default: a person shown the answer agrees with it, and the resulting figure
-measures nothing.</p></dd>
+measures nothing. A blind sheet does not name its frame either, since
+"excluded" on every row says what the model decided: <code>sampled_from</code> holds
+an opaque key that <code><a href="gr_calibrate.html">gr_calibrate()</a></code> reads back as the frame and its size.
+With <code>blind = FALSE</code> the file has <code>model_decision</code>, <code>model_reason</code>, and the
+frame in plain words (<code>sampled_from</code>, <code>frame_n</code>, <code>screened_n</code>).</p></dd>
 
 </dl></div>
     <div class="section level2">
@@ -125,6 +132,16 @@ the screener kept, plus a sample of what it discarded: <code>of = "kept"</code> 
 corpus-wide figure from a sample that cannot support one.</p>
     </div>
     <div class="section level2">
+    <h2 id="the-file">The file<a class="anchor" aria-label="anchor" href="#the-file"></a></h2>
+
+
+<p>The CSV is written as UTF-8 with a byte-order mark, which is what makes
+Excel open accented names and titles correctly; save it back as "CSV UTF-8".
+<code><a href="gr_calibrate.html">gr_calibrate()</a></code> reads it the same way in any locale, reads a sheet a
+spreadsheet re-saved as Windows-1252 as that, and matches a row whose name
+still does not agree by its <code>document_id</code>.</p>
+    </div>
+    <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>
     <div class="dont-index"><p><code><a href="gr_calibrate.html">gr_calibrate()</a></code>, <code><a href="gr_screen.html">gr_screen()</a></code></p>
 <p>Other corpus functions:
@@ -142,10 +159,10 @@ corpus-wide figure from a sample that cannot support one.</p>
 <span class="r-in"><span>                  reason <span class="op">=</span> <span class="st">"because"</span>, stringsAsFactors <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="fu">gr_reference</span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/structure.html" class="external-link">structure</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>table <span class="op">=</span> <span class="va">tab</span><span class="op">)</span>, class <span class="op">=</span> <span class="st">"gr_screening"</span><span class="op">)</span>,</span></span>
 <span class="r-in"><span>             n <span class="op">=</span> <span class="fl">3</span>, of <span class="op">=</span> <span class="st">"excluded"</span>, seed <span class="op">=</span> <span class="fl">1</span><span class="op">)</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>   document human_decision human_note sampled_from frame_n screened_n</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1   d2.pdf           &lt;NA&gt;       &lt;NA&gt;     excluded       3          6</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 2   d3.pdf           &lt;NA&gt;       &lt;NA&gt;     excluded       3          6</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 3   d5.pdf           &lt;NA&gt;       &lt;NA&gt;     excluded       3          6</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>   document human_decision human_note                       sampled_from</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1   d2.pdf           &lt;NA&gt;       &lt;NA&gt; grd5b346bbe4d898050402719dd5027962</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 2   d3.pdf           &lt;NA&gt;       &lt;NA&gt; grd5b346bbe4d898050402719dd5027962</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 3   d5.pdf           &lt;NA&gt;       &lt;NA&gt; grd5b346bbe4d898050402719dd5027962</span>
 </code></pre></div>
     </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>

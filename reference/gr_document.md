@@ -78,10 +78,10 @@ Other ingest functions:
 doc <- gr_ingest(readgpt_example())
 #> Using cached ingestion for this document + settings.
 doc$stats$tokens
-#> [1] 573
+#> [1] 574
 vapply(doc$stats$clean_log, function(s) s$chars_removed, integer(1))
 #>        page_numbers         hyphenation       control_chars           ligatures 
-#>                  12                   0                   0                  -1 
+#>                  12                   0                   0                   0 
 #> collapse_whitespace 
 #>                   0 
 ```

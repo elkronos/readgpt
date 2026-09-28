@@ -98,17 +98,17 @@ from (see <code>errors</code> in <code><a href="gr_trace.html">gr_trace()</a></c
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Reading with 'map_reduce' (all|N+logN|tree) over 1 chunk(s).</span>
 <span class="r-in"><span><span class="fu">gr_trace_summary</span><span class="op">(</span><span class="va">ans</span><span class="op">$</span><span class="va">trace</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>                          run_id calls cached steps tokens_in tokens_out errors</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1 run_20260927025653.118_4b5540     1      0     4       595         10      0</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1 run_20260928020049.369_fda772     1      0     4       607         10      0</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   elapsed_s embed_calls embed_tokens</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1      0.02           0            0</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1      0.03           0            0</span>
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="co"># What the run cost, each request priced at its own model (nothing, for a</span></span></span>
 <span class="r-in"><span><span class="co"># mock), and what its model calls would cost at another model's prices.</span></span></span>
 <span class="r-in"><span><span class="fu"><a href="gr_trace_cost.html">gr_trace_cost</a></span><span class="op">(</span><span class="va">ans</span><span class="op">$</span><span class="va">trace</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>        model calls paid_calls paid_in paid_out usd</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1 mock-model     1          1     595       10   0</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1 mock-model     1          1     607       10   0</span>
 <span class="r-in"><span><span class="fu"><a href="gr_estimate_cost.html">gr_estimate_cost</a></span><span class="op">(</span><span class="st">"gpt-4o"</span>, <span class="va">ans</span><span class="op">$</span><span class="va">trace</span><span class="op">$</span><span class="va">tokens_in</span>, <span class="va">ans</span><span class="op">$</span><span class="va">trace</span><span class="op">$</span><span class="va">tokens_out</span><span class="op">)</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> [1] 0.0015875</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> [1] 0.0016175</span>
 </code></pre></div>
     </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>

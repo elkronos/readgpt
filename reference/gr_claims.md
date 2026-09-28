@@ -17,7 +17,8 @@ gr_claims(
   temperature = NULL,
   max_claim_tokens = 1600L,
   include_unclear = FALSE,
-  trace = NULL
+  trace = NULL,
+  bib = NULL
 )
 ```
 
@@ -62,6 +63,19 @@ gr_claims(
   [`gr_trace()`](https://elkronos.github.io/readgpt/reference/gr_trace.md)
   to record into.
 
+- bib:
+
+  Which columns carry bibliographic identity, as in
+  [`gr_synthesise()`](https://elkronos.github.io/readgpt/reference/gr_synthesise.md):
+  a named list of `citation`, `authors`, `year`, `title`, `venue`,
+  `doi`. Those columns are withheld from the model, so a claim cannot
+  attribute a finding to a name, and cannot be moderated by one.
+  Omitted, only the conventional names are withheld. Pass the same `bib`
+  to
+  [`gr_synthesise()`](https://elkronos.github.io/readgpt/reference/gr_synthesise.md)
+  and
+  [`gr_gaps()`](https://elkronos.github.io/readgpt/reference/gr_gaps.md).
+
 ## Value
 
 An object of class `gr_claims`:
@@ -94,6 +108,15 @@ An object of class `gr_claims`:
 
   The study numbers of those studies.
 
+- `unmerged`:
+
+  `TRUE` when claims from several batches could not be reconciled, so
+  one finding may appear as more than one claim.
+
+- `hidden`:
+
+  The columns withheld from the model as bibliographic.
+
 ## What makes a claim checkable
 
 Every study number a claim names is verified against the table, exactly
@@ -101,10 +124,13 @@ as a `[study N]` marker in finished prose already is, and against the
 batch the claim was drawn from: a claim may only name studies its call
 was shown. A number that fails either is dropped and counted rather than
 trusted, a claim left with no supporting study is dropped entirely, and
-a `moderator` naming a column the table does not have is cleared: it is
-an invented explanation for a real disagreement. `$dropped` records all
-of it, so a claims table that looks thin can be told apart from a
-literature that is.
+a `moderator` naming a column the model was not shown is cleared: it is
+an invented explanation for a real disagreement. So is a moderator that
+does not tell the two sides of a contested claim apart by counting: a
+column the table does not report for the studies on one side, a value
+reported on both sides, or numbers whose ranges overlap. `$dropped`
+records all of it, so a claims table that looks thin can be told apart
+from a literature that is.
 
 The study numbers are the same ones
 [`gr_synthesise()`](https://elkronos.github.io/readgpt/reference/gr_synthesise.md)
@@ -119,7 +145,18 @@ in one further call that sees only the claim TEXTS. Without it a claim
 holding across the whole corpus comes back once per batch with disjoint
 support, which reads as several narrow claims instead of one broad one.
 The reconcile pass may only group claims that already exist: every claim
-it fails to place stays on its own rather than disappearing.
+it fails to place stays on its own rather than disappearing. When it
+cannot run – a call or cost limit, a failed or cut-off reply, a reply
+that is not a list of groups, or more claims than fit one prompt – the
+claims are kept unmerged, with a warning, and `$unmerged` is `TRUE`.
+
+What the reconcile pass cannot check is MEANING. A merged claim keeps
+one member's wording and the union of every member's studies, so if the
+model groups two claims that say different things, the studies behind
+one are listed as supporting the other's wording. Such a merge is not
+detectable by counting; the merged claim's `note` names every other
+wording it absorbed so that it can be seen, and a group mixing claims of
+different `kind` is warned about.
 
 A batch is limited by the reply as well as by the context window,
 because the reply names every study it uses: with the default

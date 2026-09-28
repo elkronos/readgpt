@@ -88,8 +88,9 @@ with one row per input.</p></dd>
 time it is called, so they appear in <code><a href="gr_models.html">gr_models()</a></code> afterwards. Its default
 handler returns plain text, so readers that need JSON-schema output
 (<code>rerank</code>, <code>iterative</code>) take their documented degraded path unless your
-handler returns valid JSON for those prompts. And its <code>embed_handler</code> is used
-by <code><a href="gr_embed.html">gr_embed()</a></code> in preference to any registered embedder, reporting
+handler returns valid JSON for those prompts. And <code><a href="gr_embed.html">gr_embed()</a></code> uses its
+<code>embed_handler</code> unless <code>gr_options(embedder =)</code> names a registered embedder
+(see the <code>embedder</code> argument of <code><a href="gr_embed.html">gr_embed()</a></code>), reporting
 <code>embedding_source = "api"</code>, so an offline run gets semantic-shaped vectors
 rather than the lexical fallback. A mock embed handler that fails or returns
 the wrong number of rows is still caught and still degrades, like any other.</p>

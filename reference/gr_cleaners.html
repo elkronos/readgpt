@@ -62,6 +62,17 @@ applied <code>"early"</code> stage first, whatever order you list them in.</p>
 <code>description</code>.</p>
     </div>
     <div class="section level2">
+    <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
+    <p>Two steps can only judge by what the document shows them. <code>hyphenation</code>
+cannot tell a word split at a line end from a compound broken at its own
+hyphen ("placebo-" / "controlled"); it keeps the hyphen when the document
+writes the compound whole somewhere, and otherwise joins the two halves.
+<code>headers_footers</code> finds running heads by where they stand on their pages
+(a PDF's, form feeds in text, or <code>.pages</code> given to <code><a href="gr_clean.html">gr_clean()</a></code>); without
+pages it takes a short line with a letter in it repeated at the edge of its
+block, so a label that is a block of its own and recurs can go with them.</p>
+    </div>
+    <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>
     <div class="dont-index"><p><code><a href="gr_clean.html">gr_clean()</a></code>, <code><a href="gr_register_cleaner.html">gr_register_cleaner()</a></code>, <code><a href="gr_ingest_spec.html">gr_ingest_spec()</a></code></p>
 <p>Other ingest functions:
@@ -92,21 +103,21 @@ applied <code>"early"</code> stage first, whatever order you list them in.</p>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 12           lowercase  late    block      FALSE</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 13      remove_numbers  late    block      FALSE</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 14  remove_punctuation  late    block      FALSE</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>                                                                                                                                                                       description</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1                                                                                                Drop figure/table caption lines (OFF by default: destroys table-heavy documents)</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 2                                                                                                                                                          Remove email addresses</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 3                                                                                                                         Drop short lines repeated on many pages (running heads)</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 4  Rejoin words split across line breaks by PDF layout ('mito-\\nchondria', 'LIA-\\nBLE' in capitals); number ranges ('18-\\n65') and compounds ('Anglo-\\nSaxon') are left alone</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 5                                                                                     Drop decorated page-number lines ('Page 4', '- 12 -', '[12]', '12.'); bare numbers are kept</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 6                                                                                                 Drop a trailing bibliography, from a References/Bibliography heading to the end</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 7                                                                                                                         Remove URLs (OFF by default: URLs are often the answer)</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 8                                                                                                                    Transliterate to ASCII (drops accents and non-Latin scripts)</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 9                                                                   Collapse runs of spaces/tabs and 2+ consecutive blank lines, and trim block edges; preserves paragraph breaks</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 10                                                                                                            Strip control and zero-width characters that survive PDF extraction</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 11                                                                                                                 Expand typographic ligatures and normalise smart quotes/dashes</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 12                                                                                                                    Lowercase everything (loses proper-noun and acronym signal)</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 13                                                                       Replace every digit with a space. OFF by default: this makes figures, dates and percentages unanswerable</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 14                                                                                                  Replace punctuation with spaces. OFF by default: destroys sentence boundaries</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>                                                                                                                                                                                                                                                        description</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1                                                       Drop figure/table caption lines: 'Table 2.', 'Figure 3:', 'Fig. 3 |', 'Table 2 Baseline ...' or the label alone, not 'Table 2 shows ...' (OFF by default: a caption can be the only statement of a result)</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 2                                                                                                                                                                                                                                           Remove email addresses</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 3                                                                                                                         Drop running heads and feet: short lines repeated at the top or bottom of many pages, or at the edge of blocks where pages are not known</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 4  Rejoin words split across line breaks by PDF layout ('mito-\\nchondria', 'LIA-\\nBLE' in capitals); a compound the document writes with its hyphen elsewhere ('follow-up') keeps it; number ranges ('18-\\n65') and compounds ('Anglo-\\nSaxon') are left alone</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 5                                                                                                                           Drop decorated page-number lines ('Page 4', '- 12 -', '[12]', and '12.' unless the line before runs on into it); bare numbers are kept</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 6                                                                                                                                                                                  Drop a trailing bibliography, from a References/Bibliography heading to the end</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 7                                                                                                                                                                                                          Remove URLs (OFF by default: URLs are often the answer)</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 8                                                                                                                                                                                                     Transliterate to ASCII (drops accents and non-Latin scripts)</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 9                                                                                                                                                    Collapse runs of spaces/tabs and 2+ consecutive blank lines, and trim block edges; preserves paragraph breaks</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 10                                                                                                                                                                                             Strip control and zero-width characters that survive PDF extraction</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 11                                                                                                                                                                             Expand typographic ligatures and straighten smart quotes; en and em dashes are kept</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 12                                                                                                                                                                                                     Lowercase everything (loses proper-noun and acronym signal)</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 13                                                                                                                                                        Replace every digit with a space. OFF by default: this makes figures, dates and percentages unanswerable</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 14                                                                                                                                                                                   Replace punctuation with spaces. OFF by default: destroys sentence boundaries</span>
 <span class="r-in"><span><span class="co"># The steps the "standard" preset runs:</span></span></span>
 <span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/subset.html" class="external-link">subset</a></span><span class="op">(</span><span class="fu">gr_cleaners</span><span class="op">(</span><span class="op">)</span>, <span class="va">default_on</span><span class="op">)</span><span class="op">$</span><span class="va">name</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> [1] "hyphenation"         "page_numbers"        "collapse_whitespace"</span>

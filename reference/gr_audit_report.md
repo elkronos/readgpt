@@ -44,7 +44,14 @@ gr_audit_report(
   [`gr_protocol()`](https://elkronos.github.io/readgpt/reference/gr_protocol.md)
   the run was made under. Worth passing even when the other objects
   carry its pieces: the criteria as *written* are what a reader checks
-  the decisions against.
+  the decisions against. The report compares it with what each stage
+  recorded using (the screening's question and criteria, the
+  extraction's schema, the write-up's question and outline). Where they
+  differ, as they do for a protocol edited after the run, it says so at
+  the top of the protocol section and shows what each stage actually
+  used, rather than presenting the edited criteria as the ones fixed in
+  advance. Where no stage recorded anything to compare it with, it says
+  that too.
 
 - title:
 
@@ -121,6 +128,11 @@ wrong reading of it look identical here; what the check rules out is the
 quote having been invented. The report says so, in the report, because a
 column a reader over-reads is worse than no column.
 
+A page is given to a span found on one page of the document. A span
+found on several pages, or not found at all, keeps the page of the chunk
+it was credited to, so an unverified quote shown with a page was not
+found on it.
+
 ## It does not flatter the run
 
 Unverified quotes, documents that could not be read, screening calls the
@@ -156,11 +168,43 @@ shown as "\[...\]". Last comes one row per request, from
 [`as.data.frame()`](https://rdrr.io/r/base/as.data.frame.html) on the
 answer's trace (see
 [`gr_trace()`](https://elkronos.github.io/readgpt/reference/gr_trace.md)),
-without the prompts and replies.
+without the prompts and replies. Where the answer records which steps of
+a trace shared with other runs are its own, the requests, the rows and
+the cost are those steps only.
 
 A `gr_corpus` gives one row per document, then each document's answer
 and passages. Answers are there only if the run kept them
 (`keep_answers`).
+
+"Not partial" is said only when the reader did not mark the answer
+partial and no request on its trace failed. A failed request is flagged
+even when the reader did not count it; a trace shared with other runs
+flags their failures too, because an error cannot always be put in one
+run. An answer that is "not found" because the request that would have
+given it failed is shown as no answer, not as a finding about the
+document.
+
+## Web addresses
+
+A document fetched from a web address is shown without the user name,
+password, query string or fragment in the address, which is where
+presigned and tokenised links carry their credentials. The query is
+replaced by a short fingerprint, so two addresses that differ only there
+stay apart. This covers the document names, the error and warning text
+the report shows, and the answer's document. It does not change what the
+objects themselves hold.
+
+## Claims and the write-up
+
+The claims table has a `section` column only when the synthesis recorded
+which section each claim was given to. When a revision pass
+(`coherence`) was kept, "What was written" shows the published text and
+the studies each of its headings cites, then the sections as first
+drafted, with their checks, under "Draft before revision", and the
+passes that ran. The cost table includes the calls
+[`gr_claims()`](https://elkronos.github.io/readgpt/reference/gr_claims.md)
+made and, when it was left to record on the claims' trace,
+[`gr_outline()`](https://elkronos.github.io/readgpt/reference/gr_outline.md).
 
 ## See also
 
@@ -181,14 +225,14 @@ cl <- gr_mock_client(function(messages, params) {
 })
 f <- tempfile(fileext = ".txt"); writeLines("We ran a randomised trial.", f)
 x <- gr_extract(f, fields, client = cl)
-#> [1/1] file1ceb649290c1.txt
-#> Extracting 'file1ceb649290c1.txt' with the 'txt' extractor.
+#> [1/1] file1cea7ab7d12b.txt
+#> Extracting 'file1cea7ab7d12b.txt' with the 'txt' extractor.
 #> Ingested 1 block(s), ~10 tokens (0 chars removed by cleaning).
 #> Segmenting with 'structural' (cap 900 tokens, overlap 90).
 #> Reading with 'extract' (all|N+conflicts|none) over 1 chunk(s).
 
 out <- gr_audit_report(tempfile(fileext = ".html"), extraction = x, open = FALSE)
-#> Audit report written to /tmp/RtmpLoLTxN/file1ceb69c24936.html
+#> Audit report written to /tmp/Rtmp2dpV7t/file1cea57de4375.html
 file.exists(out)
 #> [1] TRUE
 
@@ -199,5 +243,5 @@ ans <- answer_document(readgpt_example(), "What was revenue?", "fast", client = 
 #> Segmenting with 'paragraph' (cap 4000 tokens, overlap 0).
 #> Reading with 'stuff' (all|1|none) over 1 chunk(s).
 page <- gr_audit_report(tempfile(fileext = ".html"), answer = ans, open = FALSE)
-#> Audit report written to /tmp/RtmpLoLTxN/file1ceb3c00fb10.html
+#> Audit report written to /tmp/Rtmp2dpV7t/file1cea62158ff7.html
 ```

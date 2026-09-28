@@ -23,7 +23,9 @@ gr_register_cleaner(
 
 - fn:
 
-  Function of `(text, opts)` returning cleaned text.
+  Function of `(text, opts)` returning cleaned text. `opts` holds what
+  [`gr_clean()`](https://elkronos.github.io/readgpt/reference/gr_clean.md)
+  was given, and `.blocks`, the whole document's blocks.
 
 - stage:
 

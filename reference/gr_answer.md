@@ -79,10 +79,31 @@ and, with three extra fields, by
 
   The
   [gr_trace](https://elkronos.github.io/readgpt/reference/gr_trace.md)
-  for this run. In a
+  for this run. From
+  [`answer_document()`](https://elkronos.github.io/readgpt/reference/answer_document.md)
+  it holds the whole run: ingestion, segmentation and the read. **An
+  answer taken from a
   [`gr_compare()`](https://elkronos.github.io/readgpt/reference/gr_compare.md)
-  the trace is shared across recipes, so it records every recipe's
-  calls.
+  holds only its own recipe's segmentation and read** (its segmentation
+  requests, which `semantic`, `proposition` and `contextual` with
+  `context_source = "llm"` bill, the pre-flight check and the reader's
+  requests), because each recipe is counted apart. Ingestion and the
+  other recipes are in the comparison's own trace, `cmp$trace`: cost or
+  save that one as the record of what the comparison did. A trace passed
+  in with `trace =` is shared, not copied: this field is that trace
+  itself, which still holds every run recorded into it, those before
+  this one and those after it. `trace_steps` says which of its steps are
+  this run's.
+
+- `trace_steps`:
+
+  Integer `c(first, last)`: the steps of `trace` this run made, or
+  `NULL` when no trace was kept.
+  [`as_json()`](https://elkronos.github.io/readgpt/reference/as_json.md),
+  [`print()`](https://rdrr.io/r/base/print.html) and the audit report
+  ([`gr_audit_report()`](https://elkronos.github.io/readgpt/reference/gr_audit_report.md))
+  use only these, so an answer read with a trace shared across runs does
+  not carry other runs' prompts, calls or cost.
 
 - `recipe`, `document`, `segmentation`:
 
@@ -95,12 +116,15 @@ and, with three extra fields, by
 
 ## Methods
 
-[`print()`](https://rdrr.io/r/base/print.html) shows the answer, the
-calls, tokens and cost, where the evidence came from, and, when the
-answer is partial, why;
+[`print()`](https://rdrr.io/r/base/print.html) shows the answer, this
+run's calls, tokens and cost, where the evidence came from, and, when
+the answer is partial, why;
 [`as_json()`](https://elkronos.github.io/readgpt/reference/as_json.md)
-serialises the answer together with every prompt and response from the
-same run.
+serialises the answer together with every prompt and response this run
+made (the steps of its `trace` that `trace_steps` names; for an answer
+from
+[`gr_compare()`](https://elkronos.github.io/readgpt/reference/gr_compare.md),
+its recipe's read alone; see `trace` above).
 
 ## See also
 

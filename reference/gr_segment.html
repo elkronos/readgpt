@@ -90,7 +90,9 @@ falls back and records the fallback in <code>$method</code>, e.g.
 <code>contextual</code> chunks carry a <code>source_text</code> column: the document text each
 chunk was made from, without the rewrite or the context line, which is
 what a quote from the chunk is checked against. When no <code>trace</code> was
-passed, <code>$trace</code> is the one this call recorded into.</p>
+passed, <code>$trace</code> is the one this call recorded into. <code>page</code> keeps blocks
+that have no page number, in a document whose other blocks have one, as
+chunks of their own with page <code>NA</code>, and warns.</p>
     </div>
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>
@@ -118,9 +120,9 @@ passed, <code>$trace</code> is the one this call recorded into.</p>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Segmenting with 'structural' (cap 120 tokens, overlap 0).</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>       method n total_tokens min median  mean max over_cap</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 1      fixed 5          528  49  120.0 105.6 120        0</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 2  paragraph 6          532  47   90.0  88.7 116        0</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 3   sentence 6          532  47   92.5  88.7 106        0</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 4 structural 8          562  31   75.0  70.2 101        0</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 2  paragraph 6          539  48   92.0  89.8 116        0</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 3   sentence 6          534  47   92.5  89.0 107        0</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 4 structural 8          557  16   76.5  69.6 102        0</span>
 </code></pre></div>
     </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>

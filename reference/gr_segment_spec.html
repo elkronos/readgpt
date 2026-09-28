@@ -77,14 +77,21 @@
 <dt id="arg-max-tokens">max_tokens<a class="anchor" aria-label="anchor" href="#arg-max-tokens"></a></dt>
 <dd><p>Hard cap on chunk size, in tokens. Always enforced: a
 segmenter cannot emit an oversized chunk, which the old <code>chunk_text_semantic()</code>
-routinely did.</p></dd>
+routinely did. An oversized chunk is re-split, down to single characters
+if it has to be; if the active tokenizer counts even one character as more
+than the cap, <code><a href="gr_segment.html">gr_segment()</a></code> stops with an error of class
+<code>"gr_cap_unenforceable"</code> rather than pass the chunk on.</p></dd>
 
 
 <dt id="arg-overlap-tokens">overlap_tokens<a class="anchor" aria-label="anchor" href="#arg-overlap-tokens"></a></dt>
 <dd><p>Tokens of trailing context copied into the start of the
 next chunk. Overlap is what stops an answer straddling a boundary from being
 lost by both chunks. Honoured by every segmenter except <code>page</code> (a page is
-the unit) and <code>proposition</code> (propositions are already self-contained).</p></dd>
+the unit) and <code>proposition</code> (propositions are already self-contained).
+It is cut at sentences, then words; text written without spaces (Chinese,
+Japanese, Thai) is cut by characters. A chunk's page, section and block
+count the overlap it opens with, so one that carries a sentence from the
+page before reports <code>NA</code> rather than the page it goes on to.</p></dd>
 
 
 <dt id="arg-min-tokens">min_tokens<a class="anchor" aria-label="anchor" href="#arg-min-tokens"></a></dt>
@@ -93,11 +100,18 @@ chunk before it. Ignored by <code>page</code> and <code>fixed</code>.</p></dd>
 
 
 <dt id="arg-separators">separators<a class="anchor" aria-label="anchor" href="#arg-separators"></a></dt>
-<dd><p>For <code>method = "recursive"</code>: the cascade, strongest first.</p></dd>
+<dd><p>For <code>method = "recursive"</code>: the cascade, strongest first.
+Each piece keeps the separator it was cut at; past the last one, text is
+cut at sentence ends, then whitespace, then characters, the same way. With
+no overlap, the chunks joined end to end are the document text exactly.</p></dd>
 
 
 <dt id="arg-prefix-section">prefix_section<a class="anchor" aria-label="anchor" href="#arg-prefix-section"></a></dt>
-<dd><p>For <code>method = "structural"</code>: prepend the heading.</p></dd>
+<dd><p>For <code>method = "structural"</code>: prepend the heading.
+When the extractor supplies no sections, headings are found inline: a
+markdown <code>#</code> line, or a short line that is numbered and starts with a
+capital of any script (or a letter of a script without case), or is in
+capitals.</p></dd>
 
 
 <dt id="arg-semantic-window-semantic-percentile">semantic_window, semantic_percentile<a class="anchor" aria-label="anchor" href="#arg-semantic-window-semantic-percentile"></a></dt>
@@ -108,7 +122,15 @@ boundary (higher = fewer, larger chunks).</p></dd>
 
 <dt id="arg-context-source">context_source<a class="anchor" aria-label="anchor" href="#arg-context-source"></a></dt>
 <dd><p>For <code>method = "contextual"</code>: <code>"metadata"</code> (free) or
-<code>"llm"</code> (one call per chunk).</p></dd>
+<code>"llm"</code> (one call per chunk). Room for the context line is held back from
+each chunk's text before packing – 90 tokens for <code>"llm"</code>, the longest
+header the document could need for <code>"metadata"</code>, never more than half of
+<code>max_tokens</code> – so no chunk is cut again once its header is added, and a
+header that still does not fit is shortened, never the text. Under
+<code>"llm"</code>, a chunk whose call failed or was skipped at the run's limits
+keeps its text without a context line; <code>$extra$blurbs_missing</code> counts
+them and a <code>"gr_segment_fallback"</code> warning says so, which also reaches
+the answer's warnings.</p></dd>
 
 
 <dt id="arg-proposition-batch-tokens">proposition_batch_tokens<a class="anchor" aria-label="anchor" href="#arg-proposition-batch-tokens"></a></dt>

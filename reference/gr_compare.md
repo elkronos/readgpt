@@ -75,8 +75,9 @@ A comparison is one run for the spending limit: `max_cost_usd` in
 is checked against what every recipe and every segmentation has spent so
 far, so a recipe that reaches it stops `partial` and the ones after it
 are refused and recorded as failed. `max_calls` is counted for each
-recipe on its own, so a recipe's answer does not depend on its position
-in the list.
+recipe on its own, its segmentation included, so a recipe's answer does
+not depend on its position in the list. A segmentation that a limit cut
+short is not shared with a later recipe.
 
 ## See also
 
@@ -110,7 +111,7 @@ cmp$summary[, c("recipe", "segmenter", "chunks", "reader", "signature", "chunks_
 # One trace covers all three, so this is the cost of the whole comparison.
 gr_trace_summary(cmp$trace)
 #>                          run_id calls cached steps tokens_in tokens_out errors
-#> 1 run_20260927025642.929_29588c     5      0    16      2098         65      0
+#> 1 run_20260928020038.691_ecfd0d     5      0    16      2122         65      0
 #>   elapsed_s embed_calls embed_tokens
-#> 1       0.1           0            0
+#> 1      0.12           0            0
 ```

@@ -21,8 +21,8 @@ gr_inventory(
 
 - sources:
 
-  A directory, or a character vector of paths. A directory is walked;
-  anything else is taken as given.
+  A directory, or a character vector of paths. A directory is walked, on
+  its own or among other paths; a file is taken as given.
 
 - recursive:
 
@@ -44,9 +44,15 @@ gr_inventory(
 
 - max_pdf_pages:
 
-  Pages sampled per PDF for the text-layer probe. The whole point is to
-  be fast on a big folder; a scan is obvious from a few pages. `Inf`
-  reads every page.
+  Pages sampled per PDF for the text-layer probe, spread across the
+  document (the middle of each of that many equal stretches of it)
+  rather than its first pages, which are its least typical: a cover
+  image, a blank page, a text cover sheet in front of a scan. Only those
+  pages are extracted, so the probe stays fast on long documents. The
+  whole point is to be fast on a big folder; a scan is obvious from a
+  few pages. `Inf` reads every page. A sample is a sample: a PDF whose
+  scanned pages all fall between the sampled ones is reported as having
+  a text layer, so raise this for a folder where that matters.
 
 ## Value
 
@@ -55,9 +61,13 @@ An object of class `gr_inventory`:
 - `files`:
 
   One row per file found, readable or not: `file` (the path relative to
-  `sources`, so the folder it came from survives), `folder`, `ext`,
-  `bytes`, `extractor` (`NA` when none claims it), `status`, `pages`,
-  `ocr_pages`, `tokens` and `note`.
+  `sources`, so the folder it came from survives; for a vector of paths,
+  relative to the folder they all sit in), `folder`, `ext`, `bytes`,
+  `extractor` (`NA` when none claims it), `status`, `pages`, `ocr_pages`
+  (pages with no text layer, estimated from the sampled pages when not
+  every page was read, which `note` then says), `tokens`, `note`, and
+  `path`, the file as found, to hand on to
+  [`gr_read_many()`](https://elkronos.github.io/readgpt/reference/gr_read_many.md).
 
 - `by_status`:
 
@@ -117,12 +127,13 @@ it takes) and pass each group to the recipe you chose.
 ## Tokens, and what is left unknown
 
 `tokens` is counted exactly where counting is cheap: plain text,
-markdown, HTML, CSV, and PDFs from the pages actually probed, scaled by
-page count. For formats needing an optional package that is not
-installed, and for scans whose text does not exist until OCR runs, it is
-`NA`, not a guess. Those files are counted in `totals$tokens_unknown`
-rather than folded into the sum as zeroes, so the total is always a
-floor and always says how far from complete it is.
+markdown, HTML (with its markup, so a page's count runs high), CSV, and
+PDFs from the pages actually probed, scaled by page count. For formats
+needing an optional package that is not installed, and for scans whose
+text does not exist until OCR runs, it is `NA`, not a guess. Those files
+are counted in `totals$tokens_unknown` rather than folded into the sum
+as zeroes, so the total is always a floor and always says how far from
+complete it is.
 
 `cost_floor_usd` is a floor: what a single call per document over that
 much input would cost. Every per-chunk reader costs more, most of them
@@ -152,7 +163,7 @@ writeLines("notes", file.path(d, "notes.doc"))   # no extractor claims .doc
 
 inv <- gr_inventory(d)
 inv
-#> <gr_inventory> /tmp/RtmpLoLTxN/file1ceb7d3ae668
+#> <gr_inventory> /tmp/Rtmp2dpV7t/file1cea66157a25
 #>   2 file(s), 44.0 B; 1 readable
 #>   1 ready, 1 no_extractor
 #>   tokens: 16   cost floor: $0.01 (gpt-5.6-terra, one call per document)

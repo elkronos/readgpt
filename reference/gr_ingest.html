@@ -74,9 +74,22 @@ came from.</p>
 string of raw text. An address starting <code>http://</code> or <code>https://</code> is
 downloaded and read with the extractor for what came back: a specific type
 the server declares, else the extension in the address, else the file's
-first bytes. A download that fails is an error (<code>gr_url_error</code>), one no
-extractor reads is refused (<code>gr_unsupported_format</code>), and the document's
-<code>source</code> is the address. A one-line string ending in an
+first bytes. The charset the server declares is used for HTML and text. A
+download that fails is an error (<code>gr_url_error</code>), one past 512 MB is
+refused (<code>gr_too_large</code>, which is also a <code>gr_url_error</code>), and one no
+extractor reads is refused (<code>gr_unsupported_format</code>). An address on this
+machine or a private network (localhost, 10.x, 172.16/12, 192.168.x,
+169.254.x, the IPv6 local ranges), and a host name that resolves to one,
+is refused (<code>gr_url_error</code>), after a redirect too, unless
+<code>options(readgpt.allow_local_urls = TRUE)</code>; behind a proxy that looks
+names up itself, a name that cannot be looked up here is not checked. The
+request uses the address in full, but the document's <code>source</code>, the
+messages and the errors show it without a user name and password and with
+its query replaced by a short fingerprint (<code>[query hidden 1a2b3c]</code>), since
+a presigned link carries its credentials there; two addresses that differ
+only in the query keep different fingerprints. A Word file, fetched or on
+disk, whose text parts would unpack to more than 512 MB is refused
+(<code>gr_too_large</code>). A one-line string ending in an
 extension some extractor claims is taken as a path, and is an error
 (<code>gr_file_not_found</code>) when no such file exists. Any other string is read as
 text; one that looks like a path (a directory separator and an extension no
@@ -91,7 +104,11 @@ extractor claims) also raises a <code>gr_path_as_text</code> warning.</p></dd>
 <dd><p>Use the session document cache. The cache key includes the file's
 size and mtime plus every ingestion option; for a web address, the address,
 so it is downloaded once a session. Registering a cleaner or extractor the
-ingestion uses again (as when fixing it) starts a new cache entry.</p></dd>
+ingestion uses again (as when fixing it) starts a new cache entry. The
+cache lives in memory for the session, is shared by everything running in
+the R process (every Shiny session of one app, say), and holds about
+256 MB of documents; past that the documents used least recently are
+dropped, and read again when next asked for.</p></dd>
 
 
 <dt id="arg-trace">trace<a class="anchor" aria-label="anchor" href="#arg-trace"></a></dt>
@@ -121,7 +138,8 @@ back, <code><a href="gr_segment.html">gr_segment()</a></code> for the next axis<
     <div class="section level2">
     <h2 id="ref-examples">Examples<a class="anchor" aria-label="anchor" href="#ref-examples"></a></h2>
     <div class="sourceCode"><pre class="sourceCode r"><code><span class="r-in"><span><span class="va">doc</span> <span class="op">&lt;-</span> <span class="fu">gr_ingest</span><span class="op">(</span><span class="fu"><a href="readgpt_example.html">readgpt_example</a></span><span class="op">(</span><span class="op">)</span><span class="op">)</span></span></span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Using cached ingestion for this document + settings.</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'annual_report.md' with the 'md' extractor.</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Ingested 17 block(s), ~574 tokens (12 chars removed by cleaning).</span>
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="co"># Provenance survives cleaning; this is what `ans$evidence` points back at.</span></span></span>
 <span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/utils/head.html" class="external-link">head</a></span><span class="op">(</span><span class="va">doc</span><span class="op">$</span><span class="va">blocks</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"block_id"</span>, <span class="st">"page"</span>, <span class="st">"section"</span>, <span class="st">"kind"</span><span class="op">)</span><span class="op">]</span>, <span class="fl">4</span><span class="op">)</span></span></span>
@@ -134,17 +152,17 @@ back, <code><a href="gr_segment.html">gr_segment()</a></code> for the next axis<
 <span class="r-in"><span><span class="co"># What each cleaning step actually removed, in characters.</span></span></span>
 <span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/lapply.html" class="external-link">vapply</a></span><span class="op">(</span><span class="va">doc</span><span class="op">$</span><span class="va">stats</span><span class="op">$</span><span class="va">clean_log</span>, <span class="kw">function</span><span class="op">(</span><span class="va">s</span><span class="op">)</span> <span class="va">s</span><span class="op">$</span><span class="va">chars_removed</span>, <span class="fu"><a href="https://rdrr.io/r/base/integer.html" class="external-link">integer</a></span><span class="op">(</span><span class="fl">1</span><span class="op">)</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>        page_numbers         hyphenation       control_chars           ligatures </span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>                  12                   0                   0                  -1 </span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>                  12                   0                   0                   0 </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> collapse_whitespace </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>                   0 </span>
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="co"># Cleaning is a choice, not a default. Compare before committing to it.</span></span></span>
 <span class="r-in"><span><span class="va">raw</span> <span class="op">&lt;-</span> <span class="fu">gr_ingest</span><span class="op">(</span><span class="fu"><a href="readgpt_example.html">readgpt_example</a></span><span class="op">(</span><span class="op">)</span>, <span class="fu"><a href="gr_ingest_spec.html">gr_ingest_spec</a></span><span class="op">(</span>clean <span class="op">=</span> <span class="st">"none"</span><span class="op">)</span><span class="op">)</span></span></span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'annual_report.md' with the 'md' extractor.</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Ingested 19 block(s), ~582 tokens (0 chars removed by cleaning).</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Ingested 19 block(s), ~586 tokens (0 chars removed by cleaning).</span>
 <span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span>standard <span class="op">=</span> <span class="va">doc</span><span class="op">$</span><span class="va">stats</span><span class="op">$</span><span class="va">chars</span>, none <span class="op">=</span> <span class="va">raw</span><span class="op">$</span><span class="va">stats</span><span class="op">$</span><span class="va">chars</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> standard     none </span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>     1847     1858 </span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>     1846     1858 </span>
 </code></pre></div>
     </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>

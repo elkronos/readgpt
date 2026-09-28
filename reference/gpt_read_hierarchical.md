@@ -69,7 +69,6 @@ chunks <- suppressWarnings(parse_text(readgpt_example(), chunk_token_limit = 200
 #> Using cached ingestion for this document + settings.
 #> Segmenting with 'paragraph' (cap 200 tokens, overlap 0).
 suppressWarnings(gpt_read_hierarchical(chunks, "What was revenue?", client = cl))
-#> Using cached ingestion for this document + settings.
 #> Reading with 'hierarchical' (all|N+tree+1|tree) over 4 chunk(s).
 #> [1] "45.2 million dollars"
 

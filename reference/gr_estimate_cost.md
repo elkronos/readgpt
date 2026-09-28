@@ -21,8 +21,10 @@ gr_estimate_cost(model, input_tokens, output_tokens = 0)
 ## Value
 
 A single numeric USD figure, or `NA_real_` when the model has no pricing
-in the registry. Pricing is seeded from the registry's `as_of` snapshot.
-Treat it as an estimate, and use
+in the registry, or no output price and `output_tokens` above zero (an
+embedding model's missing output price counts as zero, since it produces
+no output tokens). Pricing is seeded from the registry's `as_of`
+snapshot. Treat it as an estimate, and use
 [`gr_register_model()`](https://elkronos.github.io/readgpt/reference/gr_register_model.md)
 to correct it.
 

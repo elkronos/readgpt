@@ -32,7 +32,12 @@ gr_segment_spec(
 
   Hard cap on chunk size, in tokens. Always enforced: a segmenter cannot
   emit an oversized chunk, which the old `chunk_text_semantic()`
-  routinely did.
+  routinely did. An oversized chunk is re-split, down to single
+  characters if it has to be; if the active tokenizer counts even one
+  character as more than the cap,
+  [`gr_segment()`](https://elkronos.github.io/readgpt/reference/gr_segment.md)
+  stops with an error of class `"gr_cap_unenforceable"` rather than pass
+  the chunk on.
 
 - overlap_tokens:
 
@@ -40,6 +45,11 @@ gr_segment_spec(
   Overlap is what stops an answer straddling a boundary from being lost
   by both chunks. Honoured by every segmenter except `page` (a page is
   the unit) and `proposition` (propositions are already self-contained).
+  It is cut at sentences, then words; text written without spaces
+  (Chinese, Japanese, Thai) is cut by characters. A chunk's page,
+  section and block count the overlap it opens with, so one that carries
+  a sentence from the page before reports `NA` rather than the page it
+  goes on to.
 
 - min_tokens:
 
@@ -48,11 +58,17 @@ gr_segment_spec(
 
 - separators:
 
-  For `method = "recursive"`: the cascade, strongest first.
+  For `method = "recursive"`: the cascade, strongest first. Each piece
+  keeps the separator it was cut at; past the last one, text is cut at
+  sentence ends, then whitespace, then characters, the same way. With no
+  overlap, the chunks joined end to end are the document text exactly.
 
 - prefix_section:
 
-  For `method = "structural"`: prepend the heading.
+  For `method = "structural"`: prepend the heading. When the extractor
+  supplies no sections, headings are found inline: a markdown `#` line,
+  or a short line that is numbered and starts with a capital of any
+  script (or a letter of a script without case), or is in capitals.
 
 - semantic_window, semantic_percentile:
 
@@ -63,7 +79,15 @@ gr_segment_spec(
 - context_source:
 
   For `method = "contextual"`: `"metadata"` (free) or `"llm"` (one call
-  per chunk).
+  per chunk). Room for the context line is held back from each chunk's
+  text before packing – 90 tokens for `"llm"`, the longest header the
+  document could need for `"metadata"`, never more than half of
+  `max_tokens` – so no chunk is cut again once its header is added, and
+  a header that still does not fit is shortened, never the text. Under
+  `"llm"`, a chunk whose call failed or was skipped at the run's limits
+  keeps its text without a context line; `$extra$blurbs_missing` counts
+  them and a `"gr_segment_fallback"` warning says so, which also reaches
+  the answer's warnings.
 
 - proposition_batch_tokens:
 

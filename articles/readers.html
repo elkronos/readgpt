@@ -128,7 +128,7 @@ service; more on that below.</p>
 <span>                     <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>method <span class="op">=</span> <span class="st">"structural"</span>, max_tokens <span class="op">=</span> <span class="fl">120</span><span class="op">)</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/gr_chunk_stats.html">gr_chunk_stats</a></span><span class="op">(</span><span class="va">chunks</span><span class="op">)</span></span>
 <span><span class="co">#&gt;       method n total_tokens min median mean max over_cap</span></span>
-<span><span class="co">#&gt; 1 structural 8          562  31     75 70.2 101        0</span></span></code></pre></div>
+<span><span class="co">#&gt; 1 structural 8          557  16   76.5 69.6 102        0</span></span></code></pre></div>
 <p>Eight chunks. A real report would have hundreds, and the differences
 below would be correspondingly larger.</p>
 </div>
@@ -137,19 +137,32 @@ below would be correspondingly larger.</p>
 </h2>
 <div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/gr_readers.html">gr_readers</a></span><span class="op">(</span><span class="op">)</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"name"</span>, <span class="st">"signature"</span>, <span class="st">"cost_calls"</span><span class="op">)</span><span class="op">]</span></span>
-<span><span class="co">#&gt;            name             signature                    cost_calls</span></span>
-<span><span class="co">#&gt; 1      ensemble   ensemble|sum+1|none            sum of members + 1</span></span>
-<span><span class="co">#&gt; 2       extract  all|N+conflicts|none N + one per disagreeing field</span></span>
-<span><span class="co">#&gt; 3  hierarchical     all|N+tree+1|tree         N + fan-in levels + 1</span></span>
-<span><span class="co">#&gt; 4     iterative topk|rounds*2|forward          up to 2 x max_rounds</span></span>
-<span><span class="co">#&gt; 5    map_reduce       all|N+logN|tree                    N + merges</span></span>
-<span><span class="co">#&gt; 6       preview    planned|1+s+1|none      1 + skimmed sections + 1</span></span>
-<span><span class="co">#&gt; 7        refine         all|N|forward                             N</span></span>
-<span><span class="co">#&gt; 8        rerank         topk|m+1|none                         m + 1</span></span>
-<span><span class="co">#&gt; 9      retrieve           topk|1|none                1 + embeddings</span></span>
-<span><span class="co">#&gt; 10       screen           head|1|none                             1</span></span>
-<span><span class="co">#&gt; 11         skim          all|N+1|none                         N + 1</span></span>
-<span><span class="co">#&gt; 12        stuff            all|1|none                             1</span></span></code></pre></div>
+<span><span class="co">#&gt;            name             signature</span></span>
+<span><span class="co">#&gt; 1      ensemble   ensemble|sum+1|none</span></span>
+<span><span class="co">#&gt; 2       extract  all|N+conflicts|none</span></span>
+<span><span class="co">#&gt; 3  hierarchical     all|N+tree+1|tree</span></span>
+<span><span class="co">#&gt; 4     iterative topk|rounds*2|forward</span></span>
+<span><span class="co">#&gt; 5    map_reduce       all|N+logN|tree</span></span>
+<span><span class="co">#&gt; 6       preview    planned|1+s+1|none</span></span>
+<span><span class="co">#&gt; 7        refine         all|N|forward</span></span>
+<span><span class="co">#&gt; 8        rerank         topk|m+1|none</span></span>
+<span><span class="co">#&gt; 9      retrieve           topk|1|none</span></span>
+<span><span class="co">#&gt; 10       screen           head|1|none</span></span>
+<span><span class="co">#&gt; 11         skim          all|N+1|none</span></span>
+<span><span class="co">#&gt; 12        stuff            all|1|none</span></span>
+<span><span class="co">#&gt;                                    cost_calls</span></span>
+<span><span class="co">#&gt; 1                          sum of members + 1</span></span>
+<span><span class="co">#&gt; 2  N (+1 per conflict with resolve = 'model')</span></span>
+<span><span class="co">#&gt; 3                       N + fan-in levels + 1</span></span>
+<span><span class="co">#&gt; 4                        up to 2 x max_rounds</span></span>
+<span><span class="co">#&gt; 5                                  N + merges</span></span>
+<span><span class="co">#&gt; 6                    1 + skimmed sections + 1</span></span>
+<span><span class="co">#&gt; 7                                           N</span></span>
+<span><span class="co">#&gt; 8                                       m + 1</span></span>
+<span><span class="co">#&gt; 9                              1 + embeddings</span></span>
+<span><span class="co">#&gt; 10                                          1</span></span>
+<span><span class="co">#&gt; 11                                      N + 1</span></span>
+<span><span class="co">#&gt; 12                                          1</span></span></code></pre></div>
 <p><code>cost_calls</code> is how many requests a reader makes, as a
 formula in <strong>N</strong>, the number of chunks. A reader whose
 count grows with N makes a hundred times as many requests on a document

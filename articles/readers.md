@@ -64,7 +64,7 @@ chunks <- gr_segment(gr_ingest(readgpt_example()),
                      list(method = "structural", max_tokens = 120))
 gr_chunk_stats(chunks)
 #>       method n total_tokens min median mean max over_cap
-#> 1 structural 8          562  31     75 70.2 101        0
+#> 1 structural 8          557  16   76.5 69.6 102        0
 ```
 
 Eight chunks. A real report would have hundreds, and the differences
@@ -75,19 +75,32 @@ below would be correspondingly larger.
 ``` r
 
 gr_readers()[, c("name", "signature", "cost_calls")]
-#>            name             signature                    cost_calls
-#> 1      ensemble   ensemble|sum+1|none            sum of members + 1
-#> 2       extract  all|N+conflicts|none N + one per disagreeing field
-#> 3  hierarchical     all|N+tree+1|tree         N + fan-in levels + 1
-#> 4     iterative topk|rounds*2|forward          up to 2 x max_rounds
-#> 5    map_reduce       all|N+logN|tree                    N + merges
-#> 6       preview    planned|1+s+1|none      1 + skimmed sections + 1
-#> 7        refine         all|N|forward                             N
-#> 8        rerank         topk|m+1|none                         m + 1
-#> 9      retrieve           topk|1|none                1 + embeddings
-#> 10       screen           head|1|none                             1
-#> 11         skim          all|N+1|none                         N + 1
-#> 12        stuff            all|1|none                             1
+#>            name             signature
+#> 1      ensemble   ensemble|sum+1|none
+#> 2       extract  all|N+conflicts|none
+#> 3  hierarchical     all|N+tree+1|tree
+#> 4     iterative topk|rounds*2|forward
+#> 5    map_reduce       all|N+logN|tree
+#> 6       preview    planned|1+s+1|none
+#> 7        refine         all|N|forward
+#> 8        rerank         topk|m+1|none
+#> 9      retrieve           topk|1|none
+#> 10       screen           head|1|none
+#> 11         skim          all|N+1|none
+#> 12        stuff            all|1|none
+#>                                    cost_calls
+#> 1                          sum of members + 1
+#> 2  N (+1 per conflict with resolve = 'model')
+#> 3                       N + fan-in levels + 1
+#> 4                        up to 2 x max_rounds
+#> 5                                  N + merges
+#> 6                    1 + skimmed sections + 1
+#> 7                                           N
+#> 8                                       m + 1
+#> 9                              1 + embeddings
+#> 10                                          1
+#> 11                                      N + 1
+#> 12                                          1
 ```
 
 `cost_calls` is how many requests a reader makes, as a formula in **N**,

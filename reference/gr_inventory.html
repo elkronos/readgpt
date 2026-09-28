@@ -74,7 +74,7 @@ model calls and needs no API key.</p>
 
 <dl><dt id="arg-sources">sources<a class="anchor" aria-label="anchor" href="#arg-sources"></a></dt>
 <dd><p>A directory, or a character vector of paths. A directory is
-walked; anything else is taken as given.</p></dd>
+walked, on its own or among other paths; a file is taken as given.</p></dd>
 
 
 <dt id="arg-recursive">recursive<a class="anchor" aria-label="anchor" href="#arg-recursive"></a></dt>
@@ -96,18 +96,28 @@ what ingestion will do.</p></dd>
 
 
 <dt id="arg-max-pdf-pages">max_pdf_pages<a class="anchor" aria-label="anchor" href="#arg-max-pdf-pages"></a></dt>
-<dd><p>Pages sampled per PDF for the text-layer probe. The
-whole point is to be fast on a big folder; a scan is obvious from a few
-pages. <code>Inf</code> reads every page.</p></dd>
+<dd><p>Pages sampled per PDF for the text-layer probe, spread
+across the document (the middle of each of that many equal stretches of
+it) rather than its first pages, which are its least typical: a cover
+image, a blank page, a text cover sheet in front of a scan. Only those
+pages are extracted, so the probe stays fast on long documents. The whole
+point is to be fast on a big folder; a scan is obvious from a few pages.
+<code>Inf</code> reads every page. A sample is a sample: a PDF whose scanned pages
+all fall between the sampled ones is reported as having a text layer, so
+raise this for a folder where that matters.</p></dd>
 
 </dl></div>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
     <p>An object of class <code>gr_inventory</code>:</p><dl><dt><code>files</code></dt>
 <dd><p>One row per file found, readable or not: <code>file</code> (the path
-relative to <code>sources</code>, so the folder it came from survives), <code>folder</code>,
+relative to <code>sources</code>, so the folder it came from survives; for a
+vector of paths, relative to the folder they all sit in), <code>folder</code>,
 <code>ext</code>, <code>bytes</code>, <code>extractor</code> (<code>NA</code> when none claims it), <code>status</code>,
-<code>pages</code>, <code>ocr_pages</code>, <code>tokens</code> and <code>note</code>.</p></dd>
+<code>pages</code>, <code>ocr_pages</code> (pages with no text layer, estimated from the
+sampled pages when not every page was read, which <code>note</code> then says),
+<code>tokens</code>, <code>note</code>, and <code>path</code>, the file as found, to hand on to
+<code><a href="gr_read_many.html">gr_read_many()</a></code>.</p></dd>
 
 <dt><code>by_status</code></dt>
 <dd><p>Counts and sizes per status.</p></dd>
@@ -160,7 +170,8 @@ is usually all it takes) and pass each group to the recipe you chose.</p>
 
 
 <p><code>tokens</code> is counted exactly where counting is cheap: plain text, markdown,
-HTML, CSV, and PDFs from the pages actually probed, scaled by page count. For
+HTML (with its markup, so a page's count runs high), CSV, and PDFs from the
+pages actually probed, scaled by page count. For
 formats needing an optional package that is not installed, and for scans
 whose text does not exist until OCR runs, it is <code>NA</code>, not a guess. Those
 files are counted in <code>totals$tokens_unknown</code> rather than folded into the sum
@@ -190,7 +201,7 @@ four dollars from four hundred), not to be a quote.</p>
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="va">inv</span> <span class="op">&lt;-</span> <span class="fu">gr_inventory</span><span class="op">(</span><span class="va">d</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="va">inv</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;gr_inventory&gt; /tmp/RtmpLoLTxN/file1ceb7d3ae668</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;gr_inventory&gt; /tmp/Rtmp2dpV7t/file1cea66157a25</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   2 file(s), 44.0 B; 1 readable</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   1 ready, 1 no_extractor</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   tokens: 16   cost floor: $0.01 (gpt-5.6-terra, one call per document)</span>

@@ -29,9 +29,9 @@ readgpt includes a short example, an annual report written in Markdown:
 doc <- gr_ingest(readgpt_example())
 doc
 #> <gr_document> /home/runner/work/_temp/Library/readgpt/extdata/annual_report.md
-#>   17 blocks, ~573 tokens, 1847 chars (11 removed by cleaning)
+#>   17 blocks, ~574 tokens, 1846 chars (12 removed by cleaning)
 #>   cleaners: page_numbers, hyphenation, control_chars, ligatures, collapse_whitespace
-#>   first block: # Northwind Instruments -- Annual Report 2024
+#>   first block: # Northwind Instruments — Annual Report 2024
 ```
 
 Each block records where it came from: the page, for formats that have
@@ -61,7 +61,7 @@ document:
 
 unlist(doc$stats[c("blocks", "chars", "tokens", "chars_removed")])
 #>        blocks         chars        tokens chars_removed 
-#>            17          1847           573            11
+#>            17          1846           574            12
 ```
 
 You rarely need to call
@@ -255,9 +255,11 @@ gr_ingest("scan.pdf", gr_ingest_spec(ocr_lang = "deu", ocr_dpi = 400))
 OCR on PDFs needs both `tesseract` and `magick`. Without them a scanned
 page comes back nearly empty and readgpt warns (`gr_ocr_unavailable`).
 The document lists those pages in `doc$stats$unread_pages`, and an
-answer drawn from it is marked partial. A document with too little text
-left is refused outright, as the next section shows. The `"scanned"`
-recipe is set up for this kind of document.
+answer drawn from it is marked partial. The same holds with
+`ocr = "never"`: a page with no text, or only a stamp or a running head,
+is listed as unread. A document with too little text left is refused
+outright, as the next section shows. The `"scanned"` recipe is set up
+for this kind of document.
 
 ## Cleaning
 
@@ -325,7 +327,7 @@ presets <- c("none", "minimal", "standard", "academic", "scan", "legacy")
 vapply(presets, function(p) gr_ingest(readgpt_example(), gr_ingest_spec(clean = p))$stats$chars,
        integer(1))
 #>     none  minimal standard academic     scan   legacy 
-#>     1858     1858     1847     1766     1847     1659
+#>     1858     1858     1846     1765     1846     1659
 ```
 
 Or name the cleaners yourself:
@@ -346,7 +348,7 @@ Every document records what each cleaner took out, in characters:
 
 vapply(doc$stats$clean_log, function(step) step$chars_removed, integer(1))
 #>        page_numbers         hyphenation       control_chars           ligatures 
-#>                  12                   0                   0                  -1 
+#>                  12                   0                   0                   0 
 #> collapse_whitespace 
 #>                   0
 ```
@@ -420,10 +422,10 @@ invisible(file.create(file.path(inbox, "empty.txt")))
 
 inv <- gr_inventory(inbox)
 inv
-#> <gr_inventory> /tmp/RtmpeFX7tV/inbox
+#> <gr_inventory> /tmp/RtmpJ5kPkx/inbox
 #>   4 file(s), 1.9 KB; 2 readable
 #>   2 ready, 1 no_extractor, 1 empty
-#>   tokens: 536   cost floor: $0.01 (gpt-5.6-terra, one call per document)
+#>   tokens: 549   cost floor: $0.01 (gpt-5.6-terra, one call per document)
 #>   ! 1 file(s) would be skipped: .doc (1). gr_register_extractor() adds a format.
 ```
 
@@ -435,7 +437,7 @@ run:
 
 inv$files[, c("file", "extractor", "status", "tokens")]
 #>               file extractor       status tokens
-#> 1 annual_report.md        md        ready    518
+#> 1 annual_report.md        md        ready    531
 #> 2        empty.txt       txt        empty     NA
 #> 3      minutes.doc      <NA> no_extractor     NA
 #> 4        notes.txt       txt        ready     18
@@ -463,7 +465,7 @@ OCR are not in the total; `tokens_unknown` counts them.
 
 unlist(inv$totals[c("readable", "tokens", "cost_floor_usd")])
 #>       readable         tokens cost_floor_usd 
-#>       2.000000     536.000000       0.013072
+#>       2.000000     549.000000       0.013098
 ```
 
 ## Adding your own

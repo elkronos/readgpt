@@ -17,7 +17,8 @@ gr_protocol(
   fields = NULL,
   outline = NULL,
   recipe = "research",
-  description = ""
+  description = "",
+  search = NULL
 )
 ```
 
@@ -60,6 +61,13 @@ gr_protocol(
 
   One line, for
   [`gr_protocols()`](https://elkronos.github.io/readgpt/reference/gr_protocols.md).
+
+- search:
+
+  A
+  [`gr_search()`](https://elkronos.github.io/readgpt/reference/gr_search.md):
+  how the search was run. Optional, and kept with the criteria so that a
+  saved protocol states what was searched as well as what was eligible.
 
 ## Value
 

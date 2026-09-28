@@ -111,8 +111,8 @@ When it is `TRUE`, `$notes` says what happened.
 ``` r
 
 names(ans$notes)
-#> [1] "chunks"          "answered"        "failed_calls"    "truncated_calls"
-#> [5] "merge_levels"    "merge_ok"
+#> [1] "chunks"          "answered"        "failed_calls"    "merge_failures" 
+#> [5] "truncated_calls" "truncations"     "merge_levels"    "merge_ok"
 ```
 
 `$evidence` is what the answer rests on. What `text` holds depends on
@@ -134,7 +134,7 @@ one run, not from a second run made to explain the first.
 
 gr_trace_summary(ans$trace)[, c("calls", "cached", "tokens_in", "tokens_out")]
 #>   calls cached tokens_in tokens_out
-#> 1     1      0       595         13
+#> 1     1      0       607         13
 ```
 
 ## Did the model quote the document, or invent the quote?
@@ -210,9 +210,9 @@ do.call(rbind, lapply(c("fixed", "paragraph", "sentence", "structural"), functio
   gr_chunk_stats(gr_segment(doc, list(method = m, max_tokens = 120)))))
 #>       method n total_tokens min median  mean max over_cap
 #> 1      fixed 5          528  49  120.0 105.6 120        0
-#> 2  paragraph 6          532  47   90.0  88.7 116        0
-#> 3   sentence 6          532  47   92.5  88.7 106        0
-#> 4 structural 8          562  31   75.0  70.2 101        0
+#> 2  paragraph 6          539  48   92.0  89.8 116        0
+#> 3   sentence 6          534  47   92.5  89.0 107        0
+#> 4 structural 8          557  16   76.5  69.6 102        0
 ```
 
 `over_cap` is the column to watch: a chunk over the cap is one the
@@ -230,8 +230,8 @@ do.call(rbind, lapply(c(0, 40), function(ov)
   gr_chunk_stats(gr_segment(doc, list(method = "sentence", max_tokens = 120,
                                       overlap_tokens = ov)))))
 #>     method n total_tokens min median mean max over_cap
-#> 1 sentence 6          532  47   92.5 88.7 106        0
-#> 2 sentence 8          752  79   97.0 94.0 106        0
+#> 1 sentence 6          534  47   92.5 89.0 107        0
+#> 2 sentence 8          757  79   97.0 94.6 107        0
 ```
 
 ## Axis 3: each reader works differently
@@ -243,19 +243,32 @@ between them:
 ``` r
 
 gr_readers()[, c("name", "signature", "cost_calls")]
-#>            name             signature                    cost_calls
-#> 1      ensemble   ensemble|sum+1|none            sum of members + 1
-#> 2       extract  all|N+conflicts|none N + one per disagreeing field
-#> 3  hierarchical     all|N+tree+1|tree         N + fan-in levels + 1
-#> 4     iterative topk|rounds*2|forward          up to 2 x max_rounds
-#> 5    map_reduce       all|N+logN|tree                    N + merges
-#> 6       preview    planned|1+s+1|none      1 + skimmed sections + 1
-#> 7        refine         all|N|forward                             N
-#> 8        rerank         topk|m+1|none                         m + 1
-#> 9      retrieve           topk|1|none                1 + embeddings
-#> 10       screen           head|1|none                             1
-#> 11         skim          all|N+1|none                         N + 1
-#> 12        stuff            all|1|none                             1
+#>            name             signature
+#> 1      ensemble   ensemble|sum+1|none
+#> 2       extract  all|N+conflicts|none
+#> 3  hierarchical     all|N+tree+1|tree
+#> 4     iterative topk|rounds*2|forward
+#> 5    map_reduce       all|N+logN|tree
+#> 6       preview    planned|1+s+1|none
+#> 7        refine         all|N|forward
+#> 8        rerank         topk|m+1|none
+#> 9      retrieve           topk|1|none
+#> 10       screen           head|1|none
+#> 11         skim          all|N+1|none
+#> 12        stuff            all|1|none
+#>                                    cost_calls
+#> 1                          sum of members + 1
+#> 2  N (+1 per conflict with resolve = 'model')
+#> 3                       N + fan-in levels + 1
+#> 4                        up to 2 x max_rounds
+#> 5                                  N + merges
+#> 6                    1 + skimmed sections + 1
+#> 7                                           N
+#> 8                                       m + 1
+#> 9                              1 + embeddings
+#> 10                                          1
+#> 11                                      N + 1
+#> 12                                          1
 ```
 
 The built-in readers all have different signatures, and `ensemble`
@@ -284,7 +297,7 @@ chunking costs one chunking. One trace covers the whole comparison:
 
 gr_trace_summary(cmp$trace)[, c("calls", "cached", "tokens_in")]
 #>   calls cached tokens_in
-#> 1     5      0      2024
+#> 1     5      0      2057
 ```
 
 `not_found` distinguishes “the document does not say” from a failure. So
@@ -676,7 +689,7 @@ from_claims <- gr_synthesise(table, outline = outline, question = protocol$quest
 from_claims$sections[, c("section", "n_claims", "claims_missed", "partial")]
 #>                   section n_claims claims_missed partial
 #> 1 Where revenue is higher        2             0   FALSE
-#> 2         What is missing        0             0   FALSE
+#> 2         What is missing        0             0    TRUE
 ```
 
 Each section now argues its own claims and is shown only the studies

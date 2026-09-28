@@ -355,9 +355,9 @@ do.call(rbind, lapply(c("fixed", "paragraph", "sentence", "structural"),
   function(m) gr_chunk_stats(gr_segment(doc, list(method = m, max_tokens = 120)))))
 #>       method n total_tokens min median  mean max over_cap
 #> 1      fixed 5          528  49  120.0 105.6 120        0
-#> 2  paragraph 6          532  47   90.0  88.7 116        0
-#> 3   sentence 6          532  47   92.5  88.7 106        0
-#> 4 structural 8          562  31   75.0  70.2 101        0
+#> 2  paragraph 6          539  48   92.0  89.8 116        0
+#> 3   sentence 6          534  47   92.5  89.0 107        0
+#> 4 structural 8          557  16   76.5  69.6 102        0
 ```
 
 `semantic` needs a client for its embedding pass, so pass one (a
@@ -373,9 +373,9 @@ do.call(rbind, lapply(c(0, 30, 60), function(ov)
   gr_chunk_stats(gr_segment(doc, list(method = "sentence", max_tokens = 120,
                                       overlap_tokens = ov)))))
 #>     method n total_tokens min median mean max over_cap
-#> 1 sentence 6          532  47   92.5 88.7 106        0
-#> 2 sentence 7          666  74   99.0 95.1 106        0
-#> 3 sentence 9          860  79   94.0 95.6 109        0
+#> 1 sentence 6          534  47   92.5 89.0 107        0
+#> 2 sentence 7          668  74   99.0 95.4 107        0
+#> 3 sentence 9          863  79   94.0 95.9 109        0
 ```
 
 ## Axis 3: read
@@ -416,9 +416,9 @@ print(ans$trace)
 as.data.frame(ans$trace)   # one row per request: stage, tokens, usd, seconds, prompt, reply
 gr_trace_summary(ans$trace)
 #>                          run_id calls cached steps tokens_in tokens_out errors
-#> 1 run_20260926192818.570_430322     1      0     4       595         13      0
+#> 1 run_20260927012100.805_91a431     1      0     4       607         13      0
 #>   elapsed_s embed_calls embed_tokens
-#> 1      0.07           0            0
+#> 1      0.09           0            0
 
 gr_estimate_cost("gpt-4o", ans$trace$tokens_in, ans$trace$tokens_out)
 as_json(ans)    # answer plus every prompt and response, from the same single run
@@ -773,8 +773,8 @@ cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
 run <- answer_document(readgpt_example(), "What was revenue?", "fast", client = cl,
                        model = "gpt-5.6-terra")
 gr_trace_cost(run$trace)
-#>           model calls paid_calls paid_in paid_out      usd
-#> 1 gpt-5.6-terra     1          1     595       13 0.001346
+#>           model calls paid_calls paid_in paid_out     usd
+#> 1 gpt-5.6-terra     1          1     607       13 0.00137
 ```
 
 This is why the token totals on
@@ -916,9 +916,9 @@ gr_calibrate(screened, check)
       rec329.pdf
       rec330.pdf
       rec340.pdf
-  ! only 3 eligible studies in the sample. Every rate above rests on
-    those 3 observations, which is why the intervals are as wide as they are.
-    Hand-screen more before quoting a figure.
+  ! the interval on 'eligible among the excluded' is 12.0 points wide
+    (n=60). A sample of one stratum needs it within 10 points, or the
+    whole stratum judged. Hand-screen more before quoting a figure.
 ```
 
 Four things about that are deliberate.
@@ -931,6 +931,9 @@ or flattering, and neither is a fact about the screener.
 reports what the frame supports and refuses the rest. The frame travels
 as a column in the CSV, because that file gets emailed, opened in Excel
 and read back a fortnight later, and an attribute survives none of that.
+In a blind sheet the column is an opaque key, so the person filling it
+in cannot tell from it what the model decided, and the CSV is UTF-8 with
+a byte-order mark so Excel opens accented names intact.
 
 **`"unclear"` is a deferral, not a miss.** A record the screener could
 not settle goes to a person, so counting it as a failure would punish
@@ -946,9 +949,12 @@ notices.
 **A rate from three observations is not a finding.** The intervals are
 Wilson score intervals, which stay sensible at zero and one where the
 textbook interval collapses to a point, and `$adequate` says out loud
-when there were too few eligible studies to support a claim. `$missed`
-is the list of studies the screener discarded and a person did not,
-which is usually more use than any rate.
+when the sample cannot support a claim. What is enough depends on the
+frame: eligible studies for sensitivity in a sample of everything
+screened, and for a sample of one stratum (exclusions, or kept records)
+an interval no wider than 10 points, or the whole stratum judged.
+`$missed` is the list of studies the screener discarded and a person did
+not, which is usually more use than any rate.
 
 Pass the result to `gr_audit_report(calibration = )` and it becomes a
 section of the report, so the figure a reviewer asks for sits next to
@@ -1037,9 +1043,10 @@ for.
 **Extraction gives you a typed table, not prose.** A paragraph about one
 paper cannot be compared with a paragraph about two hundred others; a
 table can be sorted, counted, filtered and published. Each field is
-filled from every chunk and then reconciled. That is free where the
-chunks agree and costs one call where the document contradicts itself,
-and `conflicts` records that it did.
+filled from every chunk and then reconciled, at no cost by default.
+Where the document contradicts itself, `conflicts` names the field and
+the earliest chunk’s value is kept; `resolve = "model"` spends one call
+per disagreeing field to have the model choose instead.
 
 `n_unverified` is the column to look at before believing a row: zero
 means every value in it can be pointed at in the document.
@@ -1340,7 +1347,7 @@ second <- answer_document(readgpt_example(), "What was revenue?", "thorough", cl
 
 gr_trace_summary(second$trace)[c("calls", "cached", "tokens_in")]
 #>   calls cached tokens_in
-#> 1     1      1       595
+#> 1     1      1       607
 ```
 
 `cached` counts the calls answered from the cache rather than the
@@ -1401,18 +1408,23 @@ recording, and a result that looks like the original but is not is worse
 than no replay at all. Pass `strict = FALSE` to run a partial recording
 anyway.
 
-Embeddings are not model calls, so a trace does not contain them.
-Whether a replay can reproduce a run’s chunk *ranking* therefore depends
-on how the run embedded, and the answer is checked rather than assumed:
-the replay reproduces the ranking exactly when the recording used a
-**deterministic** embedder and the replay uses the **same** one. Both
-conditions, not either: replaying an API-embedded run with a
-deterministic local embedder would compute vectors the original never
-saw while looking exact. Anything else warns (`gr_replay_no_embeddings`)
-and falls back to lexical vectors; every recorded answer is still
-reproduced, but the ranking may differ. So a run you intend to publish
-is worth recording with `gr_options(embedder = "lexical")`, or with your
-own embedder registered as `deterministic = TRUE`:
+A trace records each embeddings request and what it cost, but not the
+vectors that came back. Whether a replay can reproduce a run’s chunk
+*ranking* therefore depends on how the run embedded, and the answer is
+checked rather than assumed: the replay reproduces the ranking exactly
+when the recording used a **deterministic** embedder and the replay uses
+the **same** one. Both conditions, not either: replaying an API-embedded
+run with a deterministic local embedder would compute vectors the
+original never saw while looking exact. Anything else warns
+(`gr_replay_no_embeddings`) and falls back to lexical vectors. Those
+place semantic cuts and rank chunks differently, so a replay of a run
+that embedded (the `needle` recipe, the `retrieve` and `iterative`
+readers, the `semantic` segmenter) usually sends prompts the recording
+does not hold: a strict replay stops with `gr_replay_miss`, whose
+message names this cause, and a non-strict one does not give the
+recorded answer. So a run you intend to publish is worth recording with
+`gr_options(embedder = "lexical")`, or with your own embedder registered
+as `deterministic = TRUE`:
 
 ``` r
 
@@ -1459,10 +1471,13 @@ quiet rather than wrong.
 [`gr_register_model()`](https://elkronos.github.io/readgpt/reference/gr_register_model.md)
 fixes that in one line.
 
-`gr_set_tokenizer("tiktoken")` switches to exact counts where the
-reticulate package and Python’s `tiktoken` are installed; the default,
-`"heuristic"`, needs neither. Without them it stops rather than falling
-back, because a silent fallback would change every budget calculation.
+`gr_set_tokenizer("tiktoken")` switches to OpenAI’s own tokenizer where
+the reticulate package and Python’s `tiktoken` are installed: it counts
+in a model’s encoding when one is given and otherwise, as the package’s
+budgets do, in the larger of `cl100k_base` and `o200k_base`; for a model
+that is not OpenAI’s it is an estimate. The default, `"heuristic"`,
+needs neither. Without them it stops rather than falling back, because a
+silent fallback would change every budget calculation.
 
 [`gr_reader_signature()`](https://elkronos.github.io/readgpt/reference/gr_reader_signature.md)
 answers “are these strategies different?”. It reports how each one
@@ -1557,12 +1572,21 @@ cleaners, segmenter, `max_tokens`, overlap, minimum chunk size, reader
 (tick several to compare), top-k, citations, model, temperature, cost
 cap. A free “Preview chunking” button shows how your settings break the
 document up before you spend anything, and the trace tab shows the trace
-of the run that produced the answer, not a second billed pass.
+of the run that produced the answer, not a second billed pass. `extract`
+and `screen` are not offered: they read against a protocol rather than
+answer a question, so use
+[`gr_extract()`](https://elkronos.github.io/readgpt/reference/gr_extract.md)
+and
+[`gr_screen()`](https://elkronos.github.io/readgpt/reference/gr_screen.md).
+A blank cost cap leaves the R session’s `gr_options("max_cost_usd")` in
+force rather than lifting the limit.
 
 Set `GPTREAD_DOC_ROOTS` (colon-separated) to control which folders the
 app can read. **Unset, it defaults to `~/Documents`, falling back to
 your entire home directory**. Set it explicitly before exposing the app
-to anyone else.
+to anyone else. The app opens only the files its document menu lists:
+PDF, Word, text, Markdown, HTML and image files under those folders,
+never hidden files or hidden folders.
 
 ## Optional packages
 
@@ -1576,7 +1600,7 @@ install or to run anything that does not touch it.
 | `xml2` | HTML **and DOCX** extraction |
 | `future` + `future.apply` | `parallel = TRUE` (without them it warns and runs sequentially) |
 | `shiny` | the bundled app |
-| `reticulate` | the exact `tiktoken` tokenizer |
+| `reticulate` | OpenAI’s `tiktoken` tokenizer |
 | `readtext` | DOCX fallback when the `xml2` path yields nothing |
 
 Missing `pdftools`/`xml2`/`tesseract` at extraction time raises a clear
@@ -1589,19 +1613,23 @@ returns those pages empty.
 bash run-tests.sh              # install deps if needed, install, run the suite
 bash run-tests.sh --check      # full R CMD check instead
 bash run-tests.sh --no-install # skip dependency installation
+bash run-tests.sh --deps       # list the R packages it needs, then stop
 ```
 
 Works from the package directory or the repository root. It uses a
 personal R library, so it will not fail on a read-only system library.
 
-Running the suite needs `testthat`, `withr`, `jsonlite` and `httr`, plus
-`knitr` for the vignette check and `future` + `future.apply` for the
-tests that check a parallel run accounts for itself. The rest of
-`Suggests` gates optional features (PDF, OCR, HTML) that the tests do
-not exercise. Tests that need an absent package skip rather than fail,
-which is why CI installs the ones above explicitly: `parallel = TRUE`
-once shipped under-reporting every run it sped up, and the tests that
-would have caught it were skipping silently.
+Running the suite needs the packages readgpt imports (`digest`, `httr`,
+`jsonlite`) and `testthat` and `withr`; `--check` also needs `knitr`,
+`rmarkdown` and pandoc to build the vignettes. The script installs the R
+packages it finds missing. Add `knitr` for the vignette check and
+`future` + `future.apply` for the tests that check a parallel run
+accounts for itself, which skip without them. The rest of `Suggests`
+gates optional features (PDF, OCR, HTML) that the tests do not exercise.
+Tests that need an absent package skip rather than fail, which is why CI
+installs the ones above explicitly: `parallel = TRUE` once shipped
+under-reporting every run it sped up, and the tests that would have
+caught it were skipping silently.
 
 Every test uses an offline mock client, so **no API key is needed and no
 requests are made**. By hand:

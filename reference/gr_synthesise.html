@@ -93,7 +93,9 @@ unless you give them directly.</p></dd>
 
 <dt id="arg-outline">outline<a class="anchor" aria-label="anchor" href="#arg-outline"></a></dt>
 <dd><p>The sections, as a named character vector: names are headings,
-values say what that section has to cover. As <code><a href="gr_protocol.html">gr_protocol()</a></code>.</p></dd>
+values say what that section has to cover. As <code><a href="gr_protocol.html">gr_protocol()</a></code>. A heading
+with a blank brief is dropped, unless the claim assignment (see <code>claims</code>)
+places claims in it: then its heading is its brief.</p></dd>
 
 
 <dt id="arg-question">question<a class="anchor" aria-label="anchor" href="#arg-question"></a></dt>
@@ -135,11 +137,24 @@ keep the marker form so the check can be re-run on the published prose.</p></dd>
 <dd><p>Which columns carry bibliographic identity, as a named list of
 <code>citation</code>, <code>authors</code>, <code>year</code>, <code>title</code>, <code>venue</code>, <code>doi</code>. Omitted, the
 conventional names are looked for, which is why
-<code>gr_protocols("bibliography")</code> works without configuration. The most
+<code>gr_protocols("bibliography")</code> works without configuration: <code>citation</code>
+(or <code>cite</code>, <code>citation_key</code>, <code>cite_key</code>), <code>authors</code> (or <code>author</code>), <code>year</code>,
+<code>title</code>, <code>venue</code> (or <code>journal</code>) and <code>doi</code>, in any case. Names that are as
+often findings – <code>date</code>, <code>source</code>, <code>url</code>, <code>published</code>, <code>publication</code> –
+are not taken for bibliographic ones unless named here. A column found
+this way is withheld from the writing prompts and used for the citations
+and references; give a role as <code>NA</code> to keep a column of that name as a
+finding (<code>bib = list(venue = NA)</code>). The most
 reliable route is a <code>citation</code> field asked for during extraction: parsing
 an arbitrary author list is a heuristic, and where it cannot be done
 confidently the run falls back to markers rather than printing a name that
-may be wrong.</p></dd>
+may be wrong.</p>
+<p>Pass the same <code>bib</code> to <code><a href="gr_claims.html">gr_claims()</a></code> and <code><a href="gr_gaps.html">gr_gaps()</a></code>. The claims model is
+shown every column its own <code>bib</code> did not withhold, so a claim, and the
+moderator it names, can carry a column this write-up withholds, and the
+claims reach the writing prompts as they are. With <code>claims</code> drawn under
+a <code>bib</code> that withheld less than this one, the run warns
+(<code>gr_claims_bib_mismatch</code>) and names the columns.</p></dd>
 
 
 <dt id="arg-style">style<a class="anchor" aria-label="anchor" href="#arg-style"></a></dt>
@@ -154,9 +169,21 @@ claim and inventing nothing hold whatever voice is asked for.</p></dd>
 three, <code>FALSE</code> for none, or any of <code>"structure"</code> (reorder and merge),
 <code>"cut"</code> (remove repetition) and <code>"register"</code> (polish sentences) by name.
 Each pass is forbidden from doing the others' job, and each is discarded
-(with <code>$draft</code> kept) if it changed the citations, arrived truncated,
-or strengthened a claim. Off by default: each is a call, and each is a
-chance for a model to touch finished prose.</p></dd>
+(with <code>$draft</code> kept, and the reason in <code>$coherence</code>) if it changed which
+studies are cited, wrote a citation the check cannot read, cited a study
+more often than the draft did, or took the citation marker off a claim
+sentence that stays (each a <code>gr_coherence_rejected</code> warning); if it
+arrived truncated (<code>gr_coherence_truncated</code>); or if it strengthened a
+claim (<code>gr_revision_escalated</code>). Off by default: each is a call, and each
+is a chance for a model to touch finished prose.</p>
+<p>The check that refuses a revision which strengthens a claim reads English
+hedges and boosters, so a draft it judges not to be in English is not
+revised at all: a warning (<code>gr_revision_unguarded</code>) says so, no pass is
+sent, and every pass is reported with <code>ran = FALSE</code> and that reason. The
+judgment counts letters outside the Latin alphabet and common function
+words, so a very short draft can be misjudged: an English one naming an
+accented author left unrevised, or a sentence or two of a language that
+has no accents taken for English.</p></dd>
 
 
 <dt id="arg-references">references<a class="anchor" aria-label="anchor" href="#arg-references"></a></dt>
@@ -167,20 +194,35 @@ point into it. The alphabetical order follows a fixed rule rather than the
 session's locale, so it is the same on every machine: it ignores case,
 accents and apostrophes, filing an accented name with its base letter.
 Two papers by the same authors in the same year are lettered (2019a,
-2019b) in title order.</p></dd>
+2019b) in title order; a key that does not end in a year is lettered
+after a hyphen ("in press-a"). Under <code>"author-year"</code>, an entry whose key
+came from a <code>citation</code> field leads with that key, so the prose can be
+followed to it.</p></dd>
 
 
 <dt id="arg-claims">claims<a class="anchor" aria-label="anchor" href="#arg-claims"></a></dt>
 <dd><p>A <code><a href="gr_claims.html">gr_claims()</a></code> result. With it each section argues that
 section's claims and sees only the studies those claims rest on, rather
 than being handed every study and writing a paragraph per row. Needs an
-<code>outline</code> from <code><a href="gr_outline.html">gr_outline()</a></code>, which carries the assignment.</p></dd>
+<code>outline</code> from <code><a href="gr_outline.html">gr_outline()</a></code>, which carries the assignment, and it must be
+an outline derived from these same claims: the run stops
+(<code>gr_claims_mismatch</code>) when the outline says it came from other claims,
+and (<code>gr_claims_unplaced</code>) when the assignment places a claim in a heading
+the outline does not have – a heading renamed after <code><a href="gr_outline.html">gr_outline()</a></code>, say;
+rename it in <code>attr(outline, "claims")$section</code> too. A section given no
+claims is written from the rows, as without <code>claims</code>, except the closing
+section, which is written from <code>gaps</code> alone and is left out when there
+are none. A section too large for one prompt is written a few claims at a
+time, each batch sent only its claims' studies, and merged.</p></dd>
 
 
 <dt id="arg-gaps">gaps<a class="anchor" aria-label="anchor" href="#arg-gaps"></a></dt>
 <dd><p>A <code><a href="gr_gaps.html">gr_gaps()</a></code> result, or lines of text. Given to the closing
-section <code><a href="gr_outline.html">gr_outline()</a></code> named, with an instruction to state those gaps and
-no others.</p></dd>
+section <code><a href="gr_outline.html">gr_outline()</a></code> named, <code>attr(outline, "closing")</code>, with an
+instruction to state those gaps and no others. When the outline has no
+such section they reach none, and a warning (<code>gr_gaps_unused</code>) says so.
+They are cut, at a line, to a quarter of the model's input room, with a
+warning (<code>gr_gaps_truncated</code>), and the closing section is then partial.</p></dd>
 
 
 <dt id="arg-trace">trace<a class="anchor" aria-label="anchor" href="#arg-trace"></a></dt>
@@ -216,23 +258,41 @@ asked for.</p></dd>
 <code>lost</code> and <code>added</code> (citations, if the revision changed them), and
 <code>reason</code> for anything discarded.</p></dd>
 
+<dt><code>unrendered</code></dt>
+<dd><p>Studies a section cited honestly that <code>text</code> still
+shows as <code>[study N]</code> somewhere, because a kept revision moved or
+reworded a citation of the same study that another section made
+without being given it, and the two could no longer be told apart.
+Leaving both is the safe side of that doubt; <code>$draft</code> renders each
+section's own citations. Empty when nothing was in doubt.</p></dd>
+
 <dt><code>sections</code></dt>
 <dd><p>One row per section: <code>section</code>, <code>brief</code>, <code>text</code>,
 <code>n_cited</code>, <code>n_unknown</code> (citations to a row that does not exist),
 <code>n_unsupplied</code> (citations to a study that exists but was not given to
 the call that wrote them: with <code>claims</code>, a study not behind that
 section's claims; for a section written in batches, a study outside
-that batch. They are left as markers and kept out of the reference
+that batch, or one the merge of the batch drafts cited that no draft
+did. They are left as markers and kept out of the reference
 list, with one exception: once batch drafts are merged, a study that
 another batch of the same section was given and cited cannot be told
 apart, so it is rendered, and still counted), <code>n_unparsed</code> (brackets
 that open like a citation, such as <code>[studies 1 to 7]</code>, but cannot be
 read as one, so the studies they name were not checked), <code>n_truncated</code> (replies,
 including batch drafts and merges, that stopped at the reply limit),
+<code>n_claims</code> and <code>claims_missed</code> (the claims it was given, and those it
+did not write up), <code>lost_batches</code> (batches of studies whose call
+failed), <code>capped_batches</code> (batches not sent because the run reached
+its call or cost ceiling), <code>merge_failed</code> (its batch drafts could not
+be merged, so it is those drafts joined end to end), and
 <code>partial</code>. A section is partial when any of those counts is non-zero
-(<code>n_cited</code> aside), when it came back empty, when a batch of studies
-was lost or not read, when its batch drafts could not be merged, or,
-with <code>claims</code>, when it did not write up a claim it was given.</p></dd>
+(<code>n_cited</code> and <code>n_claims</code> aside), when it came back empty, when a batch of studies
+was lost or not read, when its batch drafts could not be merged or
+one had to be cut to fit the merge, when (without <code>claims</code>) none of
+the studies of a batch it was drafted from is cited in it, when it
+could not be sent at all (its brief and gaps leave no room in the
+window), when the gaps given to it were cut, or, with <code>claims</code>, when
+it did not write up a claim it was given.</p></dd>
 
 <dt><code>citations</code></dt>
 <dd><p>Every citation, resolved to the row it points at, in
@@ -247,6 +307,11 @@ each was cited by.</p></dd>
 its <code>$lost</code> names studies whose claims batch contributed nothing, the
 run warns (<code>gr_claims_partial</code>), and print() and the audit report say
 the review was written without them.</p></dd>
+
+<dt><code>claim_sections</code></dt>
+<dd><p>With <code>claims</code>, which section each claim was
+given to: a data frame of <code>section</code> and <code>claim_id</code>, the outline's
+assignment. <code>NULL</code> without <code>claims</code>.</p></dd>
 
 <dt><code>trace</code></dt>
 <dd><p>As <code><a href="gr_extract.html">gr_extract()</a></code>.</p></dd>
@@ -271,6 +336,13 @@ a hundred rows of a ten-field schema is a few thousand tokens. A table too
 large for one prompt is written in batches and merged, so a section costs
 batches + merges instead. Either way the cost is per <em>section</em>, not per
 document: the expensive reading has already happened.</p>
+<p>The merge folds every batch draft into one reply of at most
+<code>max_section_tokens</code>, the same limit each draft had, so a section drafted
+from a very large table covers only what that one reply can hold. Nothing
+checks that it cites every study – a section need not – but without
+<code>claims</code> a batch none of whose studies the merged section cites is
+reported (<code>gr_synth_batch_dropped</code>) and marks it partial. Raise
+<code>max_section_tokens</code>, or divide the table between narrower sections.</p>
     </div>
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>
@@ -293,8 +365,8 @@ document: the expensive reading has already happened.</p>
 <span class="r-in"><span><span class="va">f</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".txt"</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/writeLines.html" class="external-link">writeLines</a></span><span class="op">(</span><span class="st">"We ran a randomised trial. We enrolled 120 people."</span>, <span class="va">f</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="va">x</span> <span class="op">&lt;-</span> <span class="fu"><a href="gr_extract.html">gr_extract</a></span><span class="op">(</span><span class="va">f</span>, <span class="va">fields</span>, client <span class="op">=</span> <span class="va">cl</span><span class="op">)</span></span></span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> [1/1] file1ceb13fe4ae1.txt</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'file1ceb13fe4ae1.txt' with the 'txt' extractor.</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> [1/1] file1cea1826f6c0.txt</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'file1cea1826f6c0.txt' with the 'txt' extractor.</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Ingested 1 block(s), ~18 tokens (0 chars removed by cleaning).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Segmenting with 'structural' (cap 900 tokens, overlap 90).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Reading with 'extract' (all|N+conflicts|none) over 1 chunk(s).</span>

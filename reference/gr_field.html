@@ -69,7 +69,14 @@ length.</p></dd>
 <code>"enum"</code>. An <code>"integer"</code> value above <code>.Machine$integer.max</code> is kept as a
 whole double, so that column is a double whenever one such value is
 present. A value that carries more than one number, such as "120 (60 per
-arm)", is recorded as missing rather than run together.</p></dd>
+arm)", is recorded as missing rather than run together, and so is one
+that reads more than one way: a scale word or suffix ("3 million",
+"12k"), a comma that is neither between groups of three digits nor after
+a lone zero ("1,5"; "1,204" and "0,85" are read), a fraction in an
+integer field, and a boolean that is not a plain yes or no ("unclear").
+<code><a href="gr_extract.html">gr_extract()</a></code> counts such a value in <code>n_unverified</code> rather than reporting
+the field as not reported. Digits of other scripts (Arabic-Indic,
+Persian, full-width) and a typeset minus sign are read as they are meant.</p></dd>
 
 
 <dt id="arg-values">values<a class="anchor" aria-label="anchor" href="#arg-values"></a></dt>

@@ -41,7 +41,7 @@ A `gr_trace`. It is an environment, so it accumulates by reference: pass
 the same trace to several calls and they all record into it. Fields:
 `run_id`, `started`, `meta`, `steps`, `calls`, `cached`, `tokens_in`,
 `tokens_out`, `embed_tokens`, `errors`, `budget_stop`, `stop_reason`,
-`spent_usd`. `cached` counts the calls answered from a
+`spent_usd`, `replayed_usd`. `cached` counts the calls answered from a
 [`gr_cache()`](https://elkronos.github.io/readgpt/reference/gr_cache.md)
 or a
 [`gr_replay_client()`](https://elkronos.github.io/readgpt/reference/gr_replay_client.md)
@@ -52,21 +52,41 @@ not in `tokens_in`, so `tokens_in` and `tokens_out` stay the size of the
 model calls' prompts and replies.
 
 `errors` has one entry per request that failed: its `step`, `label` and
-`error`. A failure the run recovered from without losing any input, such
-as an embeddings request replaced by
+`error`. A failure the run recovered from without losing any input also
+carries `recovered = TRUE`: the document was read in full, and
+[`gr_read_many()`](https://elkronos.github.io/readgpt/reference/gr_read_many.md)
+does not count it as failed. Only some fallbacks mark the answer
+partial. An embeddings request replaced by
 [`gr_embed()`](https://elkronos.github.io/readgpt/reference/gr_embed.md)'s
-lexical fallback, also carries `recovered = TRUE`. The answer still says
-what the fallback cost it (it is marked partial), but the document was
-read in full.
+lexical fallback does when the vectors ranked the chunks a reader sent
+(the `retrieve`, `rerank` and `iterative` readers). The same fallback
+while
+[`gr_segment()`](https://elkronos.github.io/readgpt/reference/gr_segment.md)
+made semantic cuts, and a proposition batch kept as written, leave the
+answer unmarked and say so in its `$warnings`. A contextual header that
+could not be written leaves no mark on the answer at all, and this entry
+is the record of it.
 
 `budget_stop` is `TRUE` once a limit stopped the run, and `stop_reason`
 says which: `"calls"` for `max_calls`, `"cost"` for `max_cost_usd` (see
 [`gr_options()`](https://elkronos.github.io/readgpt/reference/gr_options.md)).
-`spent_usd` is what the calls so far cost, the figure `max_cost_usd` is
-checked against. A call to a model with no registered price adds nothing
-to it, so
+`spent_usd` is what the calls so far cost. A call to a model with no
+registered price adds nothing to it, so
 [`gr_trace_cost()`](https://elkronos.github.io/readgpt/reference/gr_trace_cost.md)
-is the full account.
+is the full account. `replayed_usd` is what the calls a
+[`gr_replay_client()`](https://elkronos.github.io/readgpt/reference/gr_replay_client.md)
+answered cost when they were recorded, counted when the spending limit
+stopped the recorded run: nothing was paid for them, but `max_cost_usd`
+is checked against `spent_usd + replayed_usd`, so the replay stops at
+the same call. A call answered from a
+[`gr_cache()`](https://elkronos.github.io/readgpt/reference/gr_cache.md)
+adds to neither, so a re-run through a warm cache under the same limit
+reads further than the run that filled it.
+[`as_json()`](https://elkronos.github.io/readgpt/reference/as_json.md)
+and
+[`gr_trace_save()`](https://elkronos.github.io/readgpt/reference/gr_trace_save.md)
+write `budget_stop`, `stop_reason`, `spent_usd` and `replayed_usd`, so a
+saved run says whether it was cut short.
 
 [`as.data.frame()`](https://rdrr.io/r/base/as.data.frame.html) on a
 trace returns one row per request; see below.
@@ -144,7 +164,7 @@ ch <- gr_segment(readgpt_example(), list(method = "sentence", max_tokens = 150))
 invisible(gr_read(ch, "What was revenue?", cl, "map_reduce", trace = tr))
 #> Reading with 'map_reduce' (all|N+logN|tree) over 5 chunk(s).
 print(tr)
-#> <gr_trace run_20260927025652.369_a71b04>  7 steps, 6 model calls, 1079 in / 36 out tokens, 0 error(s)
+#> <gr_trace run_20260928020048.562_a999da>  7 steps, 6 model calls, 1118 in / 36 out tokens, 0 error(s)
 #>   steps: map.answer x5, preflight x1, reduce x1 
 #>   cost: $0.0000 across mock-model
 
@@ -152,10 +172,10 @@ print(tr)
 reqs <- as.data.frame(tr)
 reqs[, c("step", "stage", "tokens_in", "tokens_out", "usd", "seconds")]
 #>   step      stage tokens_in tokens_out usd seconds
-#> 1    2 map.answer       196          6   0   0.001
-#> 2    3 map.answer       206          6   0   0.000
-#> 3    4 map.answer       183          6   0   0.001
-#> 4    5 map.answer       189          6   0   0.000
-#> 5    6 map.answer       160          6   0   0.000
-#> 6    7     reduce       145          6   0   0.000
+#> 1    2 map.answer       201          6   0   0.001
+#> 2    3 map.answer       210          6   0   0.001
+#> 3    4 map.answer       187          6   0   0.001
+#> 4    5 map.answer       193          6   0   0.001
+#> 5    6 map.answer       163          6   0   0.001
+#> 6    7     reduce       164          6   0   0.001
 ```

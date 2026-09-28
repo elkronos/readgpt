@@ -71,8 +71,12 @@ silently disappeared from the JSON whenever a call failed.</p>
 
 <dl><dt id="arg-x">x<a class="anchor" aria-label="anchor" href="#arg-x"></a></dt>
 <dd><p>Object to serialise. Methods exist for <a href="gr_answer.html">gr_answer</a>, <code>gr_trace</code>,
-<a href="gr_chunks.html">gr_chunks</a> and <a href="gr_document.html">gr_document</a>; anything else falls back to a plain
-<code>jsonlite</code> conversion.</p></dd>
+<a href="gr_chunks.html">gr_chunks</a> and <a href="gr_document.html">gr_document</a>; anything else (a review stage such as a
+screening or an extraction, a corpus, a comparison, a list of answers)
+falls back to a plain <code>jsonlite</code> conversion, in which a trace, answer,
+chunk set or document found at any depth is written as its own method
+writes it, and any other environment, a function, or a client (which
+holds the API key), none of which is data, is written as <code>null</code>.</p></dd>
 
 
 <dt id="arg-pretty">pretty<a class="anchor" aria-label="anchor" href="#arg-pretty"></a></dt>
@@ -90,7 +94,10 @@ silently disappeared from the JSON whenever a call failed.</p>
 significant digits as it takes to read back as the same number: 15 for
 most, 16 or 17 for the few that need them (<code><a href="https://jeroen.r-universe.dev/jsonlite/reference/fromJSON.html" class="external-link">jsonlite::toJSON()</a></code> on its own
 rounds to four decimal places, and its <code>digits = NA</code> keeps 15 significant
-digits). Pass <code>digits</code> to round them.</p>
+digits). Pass <code>digits</code> to round them. Otherwise a vector of length one is
+written as a scalar, except in the fields of a trace that list things (a
+comparison's <code>recipes</code>, the scores a ranking kept, the cleaning steps an
+ingest ran), which are arrays at every length.</p>
     </div>
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>

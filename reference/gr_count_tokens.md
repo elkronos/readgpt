@@ -22,18 +22,35 @@ gr_count_tokens(text, model = NULL)
 
 ## Value
 
-Integer vector of token counts: a conservative upper bound under the
-default tokenizer.
+Integer vector of token counts: under the default tokenizer, an estimate
+built to err high (see above for the one kind of text where it can fall
+short).
 
 ## Details
 
 The default `"heuristic"` tokenizer is a deliberate **over-estimate**,
 not an exact count: it classifies each word, sums the per-script
-contributions, and adds a small per-message framing allowance.
+contributions, and adds a small per-message framing allowance. For
+numbers, tables, code and short lines it also counts the pieces a BPE
+tokenizer splits text into first (digit groups, punctuation runs, line
+breaks, indentation) and keeps the larger figure, line by line.
 Overcounting wastes a little context; undercounting produces a hard API
-failure after you have paid for the request. For exact counts install
-reticulate plus Python `tiktoken` and call
-`gr_set_tokenizer("tiktoken")`.
+failure after you have paid for the request. Rare long words (technical
+and medical vocabulary) can still come in under the real count, by about
+a tenth for a table of medical terms; that is what the `safety_margin`
+of
+[`gr_budget()`](https://elkronos.github.io/readgpt/reference/gr_budget.md)
+is for.
+
+For counts from OpenAI's own tokenizer install reticulate plus Python
+`tiktoken` and call `gr_set_tokenizer("tiktoken")`. Given `model`, it
+counts in that model's encoding. Without one, which is how the package's
+own budgets call it, it counts in both encodings current OpenAI models
+use (`cl100k_base` and `o200k_base`) and keeps the larger, so the count
+holds for any of them. Models from other providers tokenize differently,
+and for them it is an estimate without the heuristic's padding. Text
+that spells a special token (`<|endoftext|>`, in a paper about language
+models) is counted as the plain text it is.
 
 ## See also
 

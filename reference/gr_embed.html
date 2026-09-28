@@ -102,13 +102,28 @@ embedded, on word overlap, so nothing was left unread.</p></dd>
 <code>"lexical"</code></strong>: hashed bag-of-words vectors that measure word overlap, not
 meaning, so <code>semantic</code> segmentation and <code>retrieve</code> ranking become markedly
 less accurate. The substitution warns and is recorded, but the run
-continues. Use <code>"error"</code> to fail fast, or <code>"none"</code> to get an empty matrix.</p></dd>
+continues. Use <code>"error"</code> to fail fast, or <code>"none"</code> to get an empty matrix.
+An embedder fails when it raises, or returns the wrong number of rows,
+vectors with no dimensions, or missing or non-finite values. The built-in
+<code>"api"</code> embedder also fails on a reply that leaves a text without a usable
+vector (missing, empty or all zeros), gives vectors of different lengths,
+or labels them with <code>index</code> fields that are not one for each text sent
+(vectors are matched to texts by <code>index</code> when the reply gives it). It
+retries a rate limit (HTTP 429), a server error or a dropped connection up
+to the client's <code>max_retries</code>, as <code><a href="gr_call.html">gr_call()</a></code> does, and the warning names
+the HTTP status and the provider's message. A refused key (HTTP 401 or
+403) is a failure like the others rather than a stop, since a key can be
+allowed to chat and not to embed; a missing key stops the run.</p></dd>
 
 
 <dt id="arg-embedder">embedder<a class="anchor" aria-label="anchor" href="#arg-embedder"></a></dt>
 <dd><p>A registered embedder name (see <code><a href="gr_embedders.html">gr_embedders()</a></code>), or a
-function of <code>(texts, params)</code>. Defaults to the embed function supplied with
-the client, if any, and otherwise to <code>gr_options("embedder")</code>.</p></dd>
+function of <code>(texts, params)</code>. When it is <code>NULL</code> the first of these is
+used: <code>gr_options("embedder")</code> when it names one, then the embed function
+supplied with the client (a <code><a href="gr_mock_client.html">gr_mock_client()</a></code>'s <code>embed_handler</code>, or the
+<code>embed</code> given to <code><a href="gr_backend_client.html">gr_backend_client()</a></code> or <code><a href="gr_ellmer_client.html">gr_ellmer_client()</a></code>), then the
+built-in <code>"api"</code>. So an embedder named in <code><a href="gr_options.html">gr_options()</a></code> wins over the
+client's own embed function.</p></dd>
 
 </dl></div>
     <div class="section level2">

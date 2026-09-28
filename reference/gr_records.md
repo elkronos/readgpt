@@ -23,9 +23,13 @@ gr_records(
 
 - exports:
 
-  Paths to `.ris`, `.txt`, `.bib` or `.bibtex` files, or a directory
-  containing them. Several exports from several databases is the normal
-  case and is what the duplicate counts are for.
+  Paths to `.ris`, `.txt`, `.bib`, `.bibtex` or `.nbib` files, or
+  directories containing them. Several exports from several databases is
+  the normal case and is what the duplicate counts are for. The format
+  is read from the content, not the extension: RIS, BibTeX, or PubMed's
+  own format (what its "Send to: Citation manager" writes, usually
+  `.nbib`). A file that is not UTF-8 is read as Windows-1252, with a
+  warning naming it.
 
 - files:
 
@@ -47,15 +51,19 @@ gr_records(
   what catches the same conference paper indexed twice, or indexed once
   with its DOI and once without. The title fallback also needs the first
   author's surname to agree as a whole name ("Smith, J." and "Smith JA"
-  agree, "Li" and "Lin" do not), or, when a record has no authors, the
-  venue. It ignores titles shorter than 12 letters ("Reply",
+  agree, "Li" and "Lin" do not) and the first initials not to differ
+  ("Wang, L." and "Wang, H." are two people), or, when a record has no
+  authors, the venue. An organisation agrees with its acronym ("WHO" and
+  "World Health Organization"). Between two records without DOIs, a
+  surname that is the other record's given name ("Li, W." and "Li Wei")
+  also agrees when the initial bears it out and the venues do not
+  disagree. It ignores titles shorter than 12 letters ("Reply",
   "Editorial") and never merges records carrying two different DOIs. A
   record without a DOI is merged with one that has a DOI, and a title
   with fewer than 12 Latin letters or digits is merged at all, only when
-  the venues do not disagree, the first authors' initials do not differ,
-  and the author or the venue confirms it. The kept row takes any field
-  it lacks (the DOI, the journal) from the rows merged into it. `"none"`
-  keeps everything.
+  the venues do not disagree and the surname (not a given name) or the
+  venue confirms it. The kept row takes any field it lacks (the DOI, the
+  journal) from the rows merged into it. `"none"` keeps everything.
 
 ## Value
 
@@ -129,7 +137,7 @@ writeLines(c("TY  - JOUR", "AU  - Smith, J.", "TI  - A trial of spacing",
 recs <- gr_records(ris)
 recs
 #> <gr_records> 1 record(s) from 1 export(s)
-#>   file1ceb16f3e1e8.ris 1
+#>   file1ceaaeb8b9e.ris 1
 #>   records identified       1
 #>   duplicates removed       0
 #>   records screened         1

@@ -43,8 +43,12 @@ Summarise with
 - `extra`:
 
   Method-specific detail: `boundaries` and `embedding_source` for
-  `semantic`, `propositions` for `proposition`, `cap_enforced` when
-  oversized chunks had to be split.
+  `semantic`, `propositions` for `proposition`, `context_source` for
+  `contextual` (`"metadata"` or `"llm"`, the one that ran, so
+  `"metadata"` when `"llm"` was asked for without a client) and, for
+  `"llm"`, `blurbs_missing` (chunks left without a context line) and
+  `blurbs_at_limit` (of those, how many were skipped at the run's call
+  or cost limit), `cap_enforced` when oversized chunks had to be split.
 
 - `trace`:
 
@@ -99,10 +103,10 @@ ch$method
 #> [1] "sentence"
 head(ch$chunks[, c("chunk_id", "tokens", "section")])
 #>   chunk_id tokens      section
-#> 1        1     88         <NA>
+#> 1        1     89         <NA>
 #> 2        2     92         <NA>
 #> 3        3     93         <NA>
 #> 4        4    106 Risk factors
-#> 5        5    106         <NA>
+#> 5        5    107         <NA>
 #> 6        6     47         <NA>
 ```

@@ -131,7 +131,7 @@ as JSON instead of the answer string.</p></dd>
 <span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/warning.html" class="external-link">suppressWarnings</a></span><span class="op">(</span></span></span>
 <span class="r-in"><span>  <span class="fu">answer_question</span><span class="op">(</span><span class="fu"><a href="readgpt_example.html">readgpt_example</a></span><span class="op">(</span><span class="op">)</span>, <span class="st">"What was revenue?"</span>, mode <span class="op">=</span> <span class="st">"Chunked"</span>, client <span class="op">=</span> <span class="va">cl</span><span class="op">)</span><span class="op">)</span></span></span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'annual_report.md' with the 'md' extractor.</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Ingested 17 block(s), ~573 tokens (11 chars removed by cleaning).</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Ingested 17 block(s), ~574 tokens (12 chars removed by cleaning).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Segmenting with 'paragraph' (cap 1200 tokens, overlap 0).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Reading with 'map_reduce' (all|N+logN|tree) over 1 chunk(s).</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> [1] "45.2 million dollars"</span>
@@ -140,7 +140,7 @@ as JSON instead of the answer string.</p></dd>
 <span class="r-in"><span><span class="fu"><a href="answer_document.html">answer_document</a></span><span class="op">(</span><span class="fu"><a href="readgpt_example.html">readgpt_example</a></span><span class="op">(</span><span class="op">)</span>, <span class="st">"What was revenue?"</span>, <span class="st">"thorough"</span>,</span></span>
 <span class="r-in"><span>                client <span class="op">=</span> <span class="va">cl</span>, return <span class="op">=</span> <span class="st">"text"</span><span class="op">)</span></span></span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'annual_report.md' with the 'md' extractor.</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Ingested 17 block(s), ~573 tokens (11 chars removed by cleaning).</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Ingested 17 block(s), ~574 tokens (12 chars removed by cleaning).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Segmenting with 'paragraph' (cap 1200 tokens, overlap 120).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Reading with 'map_reduce' (all|N+logN|tree) over 1 chunk(s).</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> [1] "45.2 million dollars"</span>

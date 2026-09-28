@@ -71,17 +71,31 @@ encoding-specific (e.g. <code>"tiktoken"</code>).</p></dd>
 </dl></div>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
-    <p>Integer vector of token counts: a conservative upper bound under the
-default tokenizer.</p>
+    <p>Integer vector of token counts: under the default tokenizer, an
+estimate built to err high (see above for the one kind of text where it
+can fall short).</p>
     </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
     <p>The default <code>"heuristic"</code> tokenizer is a deliberate <strong>over-estimate</strong>, not an
 exact count: it classifies each word, sums the per-script contributions, and
-adds a small per-message framing allowance. Overcounting wastes a little
-context; undercounting produces a hard API failure after you have paid for the
-request. For exact counts install reticulate plus Python <code>tiktoken</code> and call
-<code>gr_set_tokenizer("tiktoken")</code>.</p>
+adds a small per-message framing allowance. For numbers, tables, code and
+short lines it also counts the pieces a BPE tokenizer splits text into first
+(digit groups, punctuation runs, line breaks, indentation) and keeps the
+larger figure, line by line. Overcounting wastes a little context;
+undercounting produces a hard API failure after you have paid for the
+request. Rare long words (technical and medical vocabulary) can still come in
+under the real count, by about a tenth for a table of medical terms; that is
+what the <code>safety_margin</code> of <code><a href="gr_budget.html">gr_budget()</a></code> is for.</p>
+<p>For counts from OpenAI's own tokenizer install reticulate plus Python
+<code>tiktoken</code> and call <code>gr_set_tokenizer("tiktoken")</code>. Given <code>model</code>, it counts
+in that model's encoding. Without one, which is how the package's own budgets
+call it, it counts in both encodings current OpenAI models use (<code>cl100k_base</code>
+and <code>o200k_base</code>) and keeps the larger, so the count holds for any of them.
+Models from other providers tokenize differently, and for them it is an
+estimate without the heuristic's padding. Text that spells a special token
+(<code>&lt;|endoftext|&gt;</code>, in a paper about language models) is counted as the plain
+text it is.</p>
     </div>
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>

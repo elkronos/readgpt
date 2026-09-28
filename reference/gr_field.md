@@ -23,7 +23,16 @@ gr_field(description, type = "string", values = NULL)
   An `"integer"` value above `.Machine$integer.max` is kept as a whole
   double, so that column is a double whenever one such value is present.
   A value that carries more than one number, such as "120 (60 per arm)",
-  is recorded as missing rather than run together.
+  is recorded as missing rather than run together, and so is one that
+  reads more than one way: a scale word or suffix ("3 million", "12k"),
+  a comma that is neither between groups of three digits nor after a
+  lone zero ("1,5"; "1,204" and "0,85" are read), a fraction in an
+  integer field, and a boolean that is not a plain yes or no
+  ("unclear").
+  [`gr_extract()`](https://elkronos.github.io/readgpt/reference/gr_extract.md)
+  counts such a value in `n_unverified` rather than reporting the field
+  as not reported. Digits of other scripts (Arabic-Indic, Persian,
+  full-width) and a typeset minus sign are read as they are meant.
 
 - values:
 

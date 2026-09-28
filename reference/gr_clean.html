@@ -80,7 +80,11 @@ figure filters that need digits to match.</p></dd>
 
 
 <dt id="arg-opts">opts<a class="anchor" aria-label="anchor" href="#arg-opts"></a></dt>
-<dd><p>Named list passed to every step.</p></dd>
+<dd><p>Named list passed to every step. Each step also finds in it
+<code>.blocks</code>, all the blocks as they stand before that step, for a step that
+decides by what the rest of the document says (as <code>hyphenation</code> and
+<code>headers_footers</code> do); and <code>.pages</code>, a page per block, where the caller
+gives one (<code><a href="gr_ingest.html">gr_ingest()</a></code> does).</p></dd>
 
 </dl></div>
     <div class="section level2">

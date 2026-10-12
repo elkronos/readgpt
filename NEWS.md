@@ -1475,9 +1475,8 @@
   Neither check sends anything, but a refused pass means the next pass is sent
   the text before it, so a strict replay of a run recorded before this change,
   in which such a pass was kept, misses at that next pass.
-* `gr_compare()`'s settings column, and the settings line in a read's trace,
-  show a named setting with its names (`effort=map:low+high`) rather than its
-  values alone.
+* `gr_compare()`'s settings column shows a named setting with its names
+  (`effort=map:low+high`) rather than its values alone.
 * Stored results written by earlier versions are read again once: the store key
   now covers the client's `extra_body`, embedding model and embedder. Response
   cache entries made through an ellmer chat are not reused either, since the

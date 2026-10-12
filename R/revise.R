@@ -632,5 +632,15 @@ revise_once <- function(drafted, question, client, spec, trace, style, pass) {
             class = "gr_revision_escalated")
     return(list(ran = TRUE, kept = FALSE, reason = st$reason))
   }
+  # And same words, other numbers. Every check above passed a pass that turned
+  # the draft's "d = 0.41 [study 3]" into "d = 0.61 [study 3]": the markers,
+  # the hedges and the claims were all where they had been. No pass may add
+  # anything, so a figure the draft does not have is never an edit.
+  fg <- figure_guard(drafted, res$text)
+  if (!isTRUE(fg$ok)) {
+    gr_warn(sprintf("The '%s' pass was discarded: %s.", pass, fg$reason),
+            class = "gr_revision_new_figure")
+    return(list(ran = TRUE, kept = FALSE, reason = fg$reason))
+  }
   list(ran = TRUE, kept = TRUE, text = res$text, reason = NA_character_)
 }

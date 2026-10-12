@@ -99,9 +99,12 @@ Each pass is forbidden from doing the others' job, and each is discarded
 studies are cited, wrote a citation the check cannot read, cited a study
 more often than the draft did, or took the citation marker off a claim
 sentence that stays (each a \code{gr_coherence_rejected} warning); if it
-arrived truncated (\code{gr_coherence_truncated}); or if it strengthened a
-claim (\code{gr_revision_escalated}). Off by default: each is a call, and each
-is a chance for a model to touch finished prose.
+arrived truncated (\code{gr_coherence_truncated}); if it strengthened a
+claim (\code{gr_revision_escalated}); or if it introduced a figure the draft
+did not have (\code{gr_revision_new_figure}): one the draft gives in no form,
+so a figure changed or rounded counts, and 0.61 written as .61 does not.
+Off by default: each is a call, and each is a chance for a model to
+touch finished prose.
 
 The check that refuses a revision which strengthens a claim reads English
 hedges and boosters, so a draft it judges not to be in English is not
@@ -205,9 +208,20 @@ one had to be cut to fit the merge, when (without \code{claims}) none of
 the studies of a batch it was drafted from is cited in it, when it
 could not be sent at all (its brief and gaps leave no room in the
 window), when the gaps given to it were cut, or, with \code{claims}, when
-it did not write up a claim it was given.}
+it did not write up a claim it was given. Last, \code{n_unbacked}: the
+figures in the section that are not in the rows their sentence cites
+(see "Figures" below). It does not make a section partial, which
+says that a citation cannot be trusted, and a figure's citation may
+be sound.}
 \item{\code{citations}}{Every citation, resolved to the row it points at, in
 long form: \code{section}, \code{study}, \code{document}, \code{document_id}.}
+\item{\code{figures}}{Every figure in a sentence of the write-up, checked
+against the rows it cites: \code{stage} (\code{"draft"} for the sections as
+written, \code{"final"} for the revised text when a revision pass was
+kept), \code{section} (the heading it stands under), \code{sentence}, \code{number}
+(as written), \code{studies} (the studies the sentence cites, comma-joined,
+or NA), \code{backed}, and \code{basis}, what it was found in (NA when it was
+not). See "Figures" below.}
 \item{\code{studies}}{The rows that were written from, with the \code{study} number
 each was cited by.}
 \item{\code{claims}}{The \code{\link[=gr_claims]{gr_claims()}} result written from, or \code{NULL}. When
@@ -250,6 +264,49 @@ reported (\code{gr_synth_batch_dropped}) and marks it partial. Raise
 \code{max_section_tokens}, or divide the table between narrower sections.
 }
 
+\section{Figures}{
+
+The citation check says which rows a sentence rests on, not what it says
+they found, and the numbers are what a reader copies out of a review. So
+every number in every sentence is looked for in what the writer was shown
+for that sentence: the rows it cites, as the writing prompt showed them; the
+question, the section's heading and brief, \code{style}, and the gaps a closing
+section was given; and with \code{claims}, the claims given to the section that
+rest on a cited study. A sentence that cites nothing is checked against
+every row its section was shown. This runs on the draft, and again on the
+revised text when a revision pass was kept; it sends nothing, so it is
+always on, and it changes no request.
+
+A figure counts as found in any form a faithful copy may give it: \code{.61} for
+0.61, \code{45.20} for 45.2, \code{1204} for 1,204, a minus sign or none, either side
+of a dash in a range, \verb{45.2 million} for 45,200,000, \verb{45\%} for 0.45, \code{12}
+for "twelve", and rounded to the places it is written to (0.61 or 0.6 for
+0.613, never 0.62). A row's percentage read as a proportion, or its scaled
+figure at full value, must match exactly: rounded as well, a pooled
+estimate no study reported matched a row's unrelated percentage. A figure
+is also allowed when it is the total of a numeric field over the rows the
+sentence cites; worked out from two other figures of the same sentence
+("120 of 1,020 (11.8\%)"); a difference in points between two figures of the
+cited rows; a year a cited row carries in any column; the number of studies
+the sentence cites, its section was shown or the review was written from;
+or, after "about", "more than", "fewer than" and their like, within a tenth
+(about) or a quarter (a bound) of a value it could have come from. Not read
+as figures: a citation's ids, a whole number below ten that is not a
+percentage or scaled (a review writes "2 of the trials" as it likes), a
+number joined to a name ("COVID-19", "IL-6"), an ordinal, a decade, an
+interval's level (\verb{95\% CI}) and a significance threshold (\code{p < .001}).
+Numbers written in words are not checked.
+
+A figure found nowhere is reported in \verb{$figures} and counted in
+\verb{$sections$n_unbacked}, and the run warns (\code{gr_synth_unbacked_figures})
+about the text as published. It is arithmetic the sentence does not show,
+a pooled estimate no study reported, or a number the writer made up, and
+nothing here can tell which. Found means copied, not right: a figure the
+cited row carries can still be the wrong one for the sentence. The section
+is not marked partial, because \code{partial} is about whether its citations
+can be trusted, and those are checked apart.
+}
+
 \examples{
 fields <- gr_fields(design = "The study design",
                     n = gr_field("Participants", type = "integer"))
@@ -269,7 +326,9 @@ x <- gr_extract(f, fields, client = cl)
 s <- gr_synthesise(x, question = "Does it work?",
                    outline = c("Included studies" = "How many, of what design"),
                    client = cl)
-s$sections[, c("section", "n_cited", "n_unknown")]
+s$sections[, c("section", "n_cited", "n_unknown", "n_unbacked")]
+# The 120 in the section, found in the row it cites.
+s$figures[, c("number", "studies", "backed", "basis")]
 }
 \seealso{
 \code{\link[=gr_extract]{gr_extract()}}, \code{\link[=gr_protocol]{gr_protocol()}}, \code{\link[=gr_screen]{gr_screen()}}

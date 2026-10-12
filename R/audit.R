@@ -870,10 +870,17 @@ audit_synthesis <- function(synthesis) {
                    "was written from failed or was not sent, or the batches could not be merged, ",
                    "so studies may be missing from it. The warnings the run raised say which.</p>")
     }
+    # Apart from `fl`: a figure no row states does not make a section partial,
+    # and in `fl` it would have stood in for the reason a partial section has.
+    unbacked <- if (isTRUE(col("n_unbacked", i) > 0L))
+      sprintf(paste0("<p class='flag'>%d figure(s) in this section are not in the rows their ",
+                     "sentence cites; they are listed under \"Figures checked against the ",
+                     "rows\".</p>"), as.integer(s$n_unbacked[i]))
     c(sprintf("<%s>%s</%s>", lvl, esc(s$section[i]), lvl),
       sprintf("<p class='sub'>Must cover: %s</p>", esc(s$brief[i])),
       if (!blank) sprintf("<blockquote>%s</blockquote>", esc(s$text[i])),
       fl,
+      unbacked,
       if (!blank && isTRUE(col("n_cited", i) == 0L))
         "<p class='flag'>This section cites nothing.</p>",
       if (!is.null(ci) && nrow(ci))
@@ -912,6 +919,7 @@ audit_synthesis <- function(synthesis) {
       "<h3>Revision passes</h3>",
       html_table(rep_df[, intersect(c("pass", "ran", "kept", "reason"), names(rep_df)),
                         drop = FALSE])),
+    audit_figures(synthesis, revised),
     if (isTRUE(synthesis$skipped > 0L))
       sprintf(paste0("<p class='sub'>%d row(s) were left out of the write-up: a duplicate, a ",
                      "document that could not be read in full, or one with nothing ",
@@ -951,6 +959,43 @@ synthesis_published <- function(synthesis) {
     else c("<p class='sub'>The studies each heading of the published text cites.</p>",
            html_table(tab, numeric_cols = "study",
                       flag = list(document = function(v) is.na(v)))))
+}
+
+#' The figures check of a synthesis (see synth_figures()): what the published
+#' text's figures were found in, and every figure, draft or revision, found in
+#' nothing its sentence was written from.
+#'
+#' The citation tables above show which rows a sentence rests on and say
+#' nothing of what it says they found, so a review quoting 0.61 from a row of
+#' 0.41 read as fully sourced here. `revised` is whether a revision was kept,
+#' and so whether the published text is the "final" stage or the draft.
+#' @noRd
+audit_figures <- function(synthesis, revised = FALSE) {
+  fig <- synthesis$figures
+  # A synthesis made before the check has no `$figures`; nothing ran to report.
+  if (!is.data.frame(fig)) return(NULL)
+  stage <- if (isTRUE(revised)) "final" else "draft"
+  pub <- fig[fig$stage == stage, , drop = FALSE]
+  bad <- fig[!isTRUE_vec(fig$backed), , drop = FALSE]
+  found <- if (nrow(pub) && any(isTRUE_vec(pub$backed)))
+    as.data.frame(table(`found in` = pub$basis[isTRUE_vec(pub$backed)]),
+                  responseName = "figures", stringsAsFactors = FALSE)
+  c("<h3>Figures checked against the rows</h3>",
+    sprintf(paste0("<p class='sub'>Every number in a sentence of the %s was looked for in the ",
+                   "rows that sentence cites, as the writer was shown them (a sentence citing ",
+                   "nothing: every row its section was shown), and in the question, the ",
+                   "section's brief and, with claims, the claims behind those rows. %d figure(s) ",
+                   "were checked. Found means copied, not right: a figure the row carries can ",
+                   "still be the wrong one for the sentence.</p>"),
+            if (stage == "final") "published text" else "text", nrow(pub)),
+    if (!is.null(found)) html_table(found, numeric_cols = "figures"),
+    if (nrow(bad)) c(
+      paste0("<p class='flag'>These figures are in nothing the sentence was written from. ",
+             "Each is arithmetic the sentence does not show, or the writer's invention. The ",
+             "sections are not marked partial for them: that is about citations.</p>"),
+      html_table(bad[, intersect(c("stage", "section", "number", "studies", "sentence"),
+                                 names(bad)), drop = FALSE]))
+    else if (nrow(fig)) "<p class='ok'>Every figure was found in what its sentence was written from.</p>")
 }
 
 #' @noRd

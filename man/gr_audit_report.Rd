@@ -158,7 +158,8 @@ The claims table has a \code{section} column only when the synthesis recorded
 which section each claim was given to. When a revision pass
 (\code{coherence}) was kept, "What was written" shows the published text and the
 studies each of its headings cites, then the sections as first drafted,
-with their checks, under "Draft before revision", and the passes that ran.
+with their checks, under "Draft before revision", and the passes that ran,
+with the words of prose each was given and gave back.
 The cost table includes the calls \code{\link[=gr_claims]{gr_claims()}} made and, when it was left
 to record on the claims' trace, \code{\link[=gr_outline]{gr_outline()}}. When any request was sent
 with a reasoning effort (\code{effort} in \code{\link[=gr_read_spec]{gr_read_spec()}}), the cost table says

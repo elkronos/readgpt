@@ -280,7 +280,8 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims 
 #' which section each claim was given to. When a revision pass
 #' (`coherence`) was kept, "What was written" shows the published text and the
 #' studies each of its headings cites, then the sections as first drafted,
-#' with their checks, under "Draft before revision", and the passes that ran.
+#' with their checks, under "Draft before revision", and the passes that ran,
+#' with the words of prose each was given and gave back.
 #' The cost table includes the calls [gr_claims()] made and, when it was left
 #' to record on the claims' trace, [gr_outline()]. When any request was sent
 #' with a reasoning effort (`effort` in [gr_read_spec()]), the cost table says
@@ -917,8 +918,11 @@ audit_synthesis <- function(synthesis) {
     drafts,
     if (is.data.frame(rep_df) && nrow(rep_df)) c(
       "<h3>Revision passes</h3>",
-      html_table(rep_df[, intersect(c("pass", "ran", "kept", "reason"), names(rep_df)),
-                        drop = FALSE])),
+      # The word counts too: a kept pass that halved the review is no fault
+      # any check refuses, and the reader is the one left to see it.
+      html_table(rep_df[, intersect(c("pass", "ran", "kept", "words_before", "words_after",
+                                      "reason"), names(rep_df)), drop = FALSE],
+                 numeric_cols = c("words_before", "words_after"))),
     audit_figures(synthesis, revised),
     if (isTRUE(synthesis$skipped > 0L))
       sprintf(paste0("<p class='sub'>%d row(s) were left out of the write-up: a duplicate, a ",

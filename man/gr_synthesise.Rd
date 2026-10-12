@@ -106,6 +106,15 @@ so a figure changed or rounded counts, and 0.61 written as .61 does not.
 Off by default: each is a call, and each is a chance for a model to
 touch finished prose.
 
+The \code{"cut"} pass is also discarded when the cut pass did not shorten the
+review (\code{gr_revision_uncut}): its revision must have strictly fewer words
+of prose than the text it was given, headings and citation markers left
+out of the count. Fewer by any amount will do, since how much a draft can
+lose depends on how much it repeats itself. Only the cut is held to a
+length: a polish that keeps every sentence can remove half the words of
+padded prose, so no bound on the other two passes would tell their job
+from cutting. Their counts are in \verb{$coherence} all the same.
+
 The check that refuses a revision which strengthens a claim reads English
 hedges and boosters, so a draft it judges not to be in English is not
 revised at all: a warning (\code{gr_revision_unguarded}) says so, no pass is
@@ -175,8 +184,12 @@ what the citation check ran on.}
 asked for.}
 \item{\code{coherence}}{One row per revision pass, or \code{NULL} if none ran:
 \code{pass} (which of \code{"structure"}, \code{"cut"}, \code{"register"}), \code{ran}, \code{kept},
-\code{lost} and \code{added} (citations, if the revision changed them), and
-\code{reason} for anything discarded.}
+\code{lost} and \code{added} (citations, if the revision changed them),
+\code{reason} for anything discarded, and \code{words_before} and \code{words_after}
+(integer: words of prose, headings and citation markers left out, in
+the text the pass was given and in its revision; \code{NA} for a pass
+that was not sent, or was refused by a check made before the length
+check, which comes last).}
 \item{\code{unrendered}}{Studies a section cited honestly that \code{text} still
 shows as \verb{[study N]} somewhere, because a kept revision moved or
 reworded a citation of the same study that another section made

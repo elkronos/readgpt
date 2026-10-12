@@ -237,6 +237,19 @@ is_not_found(bad$answer)
 For `bad`, the marker means “no answer came back”, and `partial` says
 that was a failure rather than a finding.
 
+A question can also assume something the document contradicts, such as
+“Why did revenue fall?” of a report in which revenue rose. The model
+then either answers as if the assumption were true or replies with the
+marker. Add `premise = TRUE` to the call and the model is told that,
+when the document says the opposite, it should say so in one sentence
+giving what the document states. That sentence is the answer and
+`ans$premise`, and
+[`is_not_found()`](https://elkronos.github.io/readgpt/reference/is_not_found.md)
+is `FALSE` for it. A document that is merely silent still gets the
+marker. It is off by default, and the correction is the model’s reading,
+not a check readgpt makes
+([`?gr_read_spec`](https://elkronos.github.io/readgpt/reference/gr_read_spec.md)).
+
 **`evidence` shows what the answer rests on.** Each row is a chunk the
 answer drew on, with where it came from: the page, for a PDF, and the
 heading it sits under. This short report fitted in a single chunk
@@ -324,6 +337,30 @@ unlist(gr_options()[c("max_cost_usd", "max_calls")])
 Change them with
 [`gr_options()`](https://elkronos.github.io/readgpt/reference/gr_options.md),
 for example `gr_options(max_cost_usd = 20)`.
+
+The default models also *reason* before they answer: they work through
+the question in text you never see, and it is charged as text the model
+writes back. `effort` sets how much, for example `"low"` or `"high"`.
+Unless you set it, nothing is sent and the provider’s default applies.
+readgpt sends it only to a model it knows reasons. The mock is not one,
+so here it is given the default model’s name to stand in for it:
+
+``` r
+
+low <- answer_document(readgpt_example(), "What was revenue in 2024?",
+                       client = cl, model = gr_options("model"), effort = "low")
+as.data.frame(low$trace)[, c("stage", "model", "effort")]
+#>          stage         model effort
+#> 1 stuff.answer gpt-5.6-terra    low
+```
+
+With a real client on the default model, `effort = "low"` alone is
+enough. The trace records the effort each request carried; the `effort`
+column appears only when a request carried one. Less reasoning costs
+less. `effort` can also differ by stage, low for the many routine
+requests and high for the few that judge;
+[`?gr_read_spec`](https://elkronos.github.io/readgpt/reference/gr_read_spec.md)
+lists the stages and suggests a starting point.
 
 ## Choosing a recipe
 

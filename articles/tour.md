@@ -377,6 +377,32 @@ gr_trace_cost(ans$trace)[, c("model", "calls", "paid_calls", "usd")]
 #> 1 mock-model     1          1   0
 ```
 
+The default models reason before they reply, and that reasoning is
+billed as output. `effort` sets how much of it each call does. Unset,
+nothing is sent and the provider decides. Set, it is sent only to a
+model whose
+[`gr_model_info()`](https://elkronos.github.io/readgpt/reference/gr_model_info.md)
+says `reasoning = TRUE`, and the trace records each request’s effort. A
+corpus run makes many mechanical calls and a few that judge, so name the
+stages: `effort = c(extract = "low", synthesise = "high")`. A name
+covers every call under it (`extract` covers `extract.chunk` and
+`extract.resolve`). An unnamed element covers the calls no name does,
+and without one those calls are sent none. The same vector can go to
+every stage.
+[`gr_screen()`](https://elkronos.github.io/readgpt/reference/gr_screen.md)
+and
+[`gr_extract()`](https://elkronos.github.io/readgpt/reference/gr_extract.md)
+take it as a recipe override, as they take any read setting, and
+[`gr_claims()`](https://elkronos.github.io/readgpt/reference/gr_claims.md),
+[`gr_outline()`](https://elkronos.github.io/readgpt/reference/gr_outline.md)
+and
+[`gr_synthesise()`](https://elkronos.github.io/readgpt/reference/gr_synthesise.md)
+take it as an argument.
+[`?gr_read_spec`](https://elkronos.github.io/readgpt/reference/gr_read_spec.md)
+lists every label, and
+[`vignette("readers")`](https://elkronos.github.io/readgpt/articles/readers.md)
+shows it on one document.
+
 ## Making a re-run free, and a result checkable
 
 Every stage of this package except the model call is a pure function of
@@ -599,7 +625,8 @@ rows it rests on:
 ``` r
 
 writer <- gr_mock_client(function(messages, params) {
-  "Revenue was higher in the southern region [study 2] than the northern [study 1]."
+  paste("Revenue was higher in the southern region, at 51.8 million dollars [study 2],",
+        "than in the northern, at 45.2 million [study 1].")
 })
 
 review <- gr_synthesise(table, protocol, client = writer)
@@ -610,13 +637,46 @@ review$citations
 cat(review$text)
 #> ## Findings
 #> 
-#> Revenue was higher in the southern region [study 2] than the northern [study 1].
+#> Revenue was higher in the southern region, at 51.8 million dollars [study 2], than in the northern, at 45.2 million [study 1].
 #> 
 #> ## References
 #> 
 #> 1. (2024).
 #> 2. (2025).
 ```
+
+The citation check says which rows a sentence rests on, not what it says
+they found, and the figures are what a reader copies out of a review. So
+every number in the write-up is also looked for in the rows its sentence
+cites, as the writer was shown them:
+
+``` r
+
+review$sections[, c("section", "n_cited", "n_unbacked")]
+#>    section n_cited n_unbacked
+#> 1 Findings       2          0
+review$figures[, c("number", "studies", "backed", "basis")]
+#>   number studies backed     basis
+#> 1   51.8    1, 2   TRUE cited row
+#> 2   45.2    1, 2   TRUE cited row
+```
+
+The check forgives form, such as `.61` for 0.61 or `1204` for 1,204, but
+not a changed digit. A figure found nowhere, such as 54.2 written for
+45.2, has `backed = FALSE`, is counted in `n_unbacked` and is warned
+about. It does not make the section partial, which is about citations.
+Found means copied, not right: a figure the cited row carries can still
+be the wrong one for the sentence.
+
+`coherence = TRUE` adds revision passes over the finished draft: one
+reorders and merges, one cuts repetition and one polishes sentences.
+Each is a call, so they are off by default, and each revision is checked
+rather than trusted. One that changes which studies are cited,
+strengthens a claim or writes a figure the draft did not have is
+discarded, and so is a cut that did not shorten the review. `$draft`
+keeps the text from before the passes. `$coherence` has a row per pass
+saying whether it was kept and why not, with `words_before` and
+`words_after`, so a pass that halved the review can be seen.
 
 ### Writing from claims instead of from rows
 
@@ -640,6 +700,12 @@ claim_writer <- gr_mock_client(function(messages, params) {
                   '{"claim":"The northern region reported for fiscal 2024.",',
                   '"kind":"finding","supported_by":[1],"contradicted_by":[],',
                   '"moderator":null,"scope":"one report"}]}'))
+  }
+  # Asked for a second outline (see below), it groups the claims another way.
+  if (grepl("<earlier_outlines>", messages[[length(messages)]]$content, fixed = TRUE)) {
+    return(paste0('{"sections":[{"heading":"The comparison","brief":"south against ',
+                  'north","claims":[1],"rationale":"findings"},{"heading":"The reports",',
+                  '"brief":"what each covers","claims":[2],"rationale":"coverage"}]}'))
   }
   if (grepl("sections of a review", sys, fixed = TRUE)) {
     return(paste0('{"sections":[{"heading":"Where revenue is higher","brief":"the ',
@@ -680,6 +746,31 @@ gr_gaps(cm, extraction = table)[, c("kind", "dimension", "detail")]
 #>           kind dimension                                        detail
 #> 1 unreplicated   claim 2 The northern region reported for fiscal 2024.
 ```
+
+That outline is one grouping of the claims, and the grouping is the
+review’s argument. `alternatives = 2` asks for a second, shown the first
+and asked to group the claims by a different principle. How far apart
+two outlines are is counted, not asked: `distance` is how far each lies
+from the first, the share of pairs of claims that one puts together and
+the other apart. One that groups the claims as an earlier one did,
+whatever its headings, is dropped. Nothing ranks them, and
+[`gr_outline_pick()`](https://elkronos.github.io/readgpt/reference/gr_outline_pick.md)
+hands back the one you choose:
+
+``` r
+
+two <- gr_outline(cm, client = claim_writer, alternatives = 2)
+attr(two, "comparison")[, c("alternative", "sections", "claims_per_section", "distance")]
+#>   alternative sections claims_per_section distance
+#> 1           1        2               2, 0        0
+#> 2           2        3            1, 1, 0        1
+names(gr_outline_pick(two, 2))
+#> [1] "The comparison"  "The reports"     "What is missing"
+```
+
+Each ends with the closing section for the gaps, which holds no claims
+here. The first outline is the same whatever `alternatives` says, and a
+review written from a picked one records which it was.
 
 ``` r
 

@@ -405,6 +405,65 @@ gr_embedders()[, c("name", "deterministic", "description")]
 #> 2 Hashed bag-of-words; free, offline, word overlap not meaning
 ```
 
+## Reasoning effort, stage by stage
+
+The default models reason before they answer. That reasoning is billed
+as output and counts against the same cap as the reply, so it is part of
+what every request costs. `effort` in
+[`gr_read_spec()`](https://elkronos.github.io/readgpt/reference/gr_read_spec.md)
+sets how much of it to do: one value, such as `"low"`, for every
+request, or a vector named by stage. It is sent only to models readgpt
+lists as reasoning models (`gr_model_info(model)$reasoning`). By default
+nothing is sent, and each request goes out at the provider’s default.
+
+Every request a reader makes carries a label naming its stage:
+
+| reader | one request per chunk | the rest |
+|----|----|----|
+| `stuff` | none | `stuff.answer` |
+| `map_reduce` | `map.answer` | `reduce` |
+| `refine` | `refine.draft`, then `refine.revise` | none (the last revision is the answer) |
+| `skim` | `skim.extract` | `skim.consolidate` (only if the passages do not fit), `skim.answer` |
+| `hierarchical` | `hier.summarise.L1` | `hier.summarise.L2` and up, `hier.answer` |
+| `retrieve` | none | `retrieve.answer` |
+| `rerank` | `rerank.score` (each shortlisted chunk) | `rerank.answer` |
+| `iterative` | none | `iterative.step` (one a round), `iterative.final` (only if no step could answer) |
+| `preview` | `preview.skim` (each skimmed section) | `preview.plan`, `preview.answer` |
+| `ensemble` | as its members | as its members, then `ensemble.adjudicate` |
+
+The per-chunk requests are many and each does a small job, so they are
+where a lower effort saves most;
+[`?gr_read_spec`](https://elkronos.github.io/readgpt/reference/gr_read_spec.md)
+suggests a starting profile. A name covers its own label and every label
+that starts with it and a dot, so `map` covers `map.answer`, and an
+unnamed value covers the rest.
+
+[`gr_trace()`](https://elkronos.github.io/readgpt/reference/gr_trace.md)
+records every request a run makes. Here `map_reduce` reads the eight
+chunks at low effort and merges at high:
+
+``` r
+
+spec <- gr_read_spec("map_reduce", model = "gpt-5.6-luna",
+                     effort = c(map = "low", reduce = "high"))
+tr <- gr_trace()
+ans <- gr_read(chunks, "What was revenue in 2024?", gr_mock_client(stand_in), spec,
+               trace = tr)
+with(as.data.frame(tr), table(stage, effort))
+#>             effort
+#> stage        high low
+#>   map.answer    0   8
+#>   reduce        1   0
+```
+
+`model = "gpt-5.6-luna"` names a reasoning model: with the stand-in’s
+own model nothing would be sent, and the trace would have no `effort`
+column. A request at `"high"` can spend the whole output cap reasoning
+and come back cut off, so give it room with `max_answer_tokens`.
+[`gr_compare()`](https://elkronos.github.io/readgpt/reference/gr_compare.md)
+(below) counts recipes that differ only in effort as different, so you
+can test what a lower effort costs.
+
 ## Asking for citations
 
 With `cite = TRUE` the model is asked to cite the chunks it used, as
@@ -458,6 +517,60 @@ quote marks). A quotation that is not in the document, such as a changed
 figure or an invented sentence, scores lower and is marked
 `verified = FALSE`. `ans$notes$unverified_evidence` counts such
 quotations, and any one of them makes the answer partial.
+
+## Questions that assume something false
+
+A question can take for granted something the document contradicts: “Why
+did revenue fall in 2024?” of a report in which revenue rose. A reader
+then either answers on the question’s terms or says the answer is not in
+the document, and either way what the document does say is lost. With
+`premise = TRUE` in
+[`gr_read_spec()`](https://elkronos.github.io/readgpt/reference/gr_read_spec.md),
+the model is told that if the excerpts state the opposite of something
+the question assumes, it should say so in one sentence and give what
+they state instead. That sentence is `ans$answer` and `ans$premise`, and
+[`is_not_found()`](https://elkronos.github.io/readgpt/reference/is_not_found.md)
+is `FALSE` for it. Excerpts that are merely silent still count as not
+found.
+
+A reader that answers in one request (`stuff`, `retrieve`, `rerank`,
+`skim`, `hierarchical`, `preview`) gives that request’s verdict.
+`map_reduce` passes a chunk that contradicts the question to its merge
+as a finding, and `ans$notes$premise_chunks` lists the chunks that said
+so, whatever the merge decided; `ensemble` does the same with its
+members (`ans$notes$premise_members`).
+[`?gr_read_spec`](https://elkronos.github.io/readgpt/reference/gr_read_spec.md)
+describes the rest.
+
+This stand-in plays a model that finds the summary contradicts the
+question and the other chunks silent. `FALSE_PREMISE:` is how the model
+is asked to open such a reply:
+
+``` r
+
+loaded <- gr_mock_client(function(messages, params) {
+  sent <- paste(vapply(messages[-1], function(m) m$content, character(1)),
+                collapse = "\n")
+  if (grepl("45.2 million", sent, fixed = TRUE)) {
+    return("FALSE_PREMISE: Revenue rose to 45.2 million dollars, from 38.7 million.")
+  }
+  "NOT_IN_DOCUMENT"
+})
+ans <- gr_read(chunks, "Why did revenue fall in 2024?", loaded,
+               gr_read_spec("map_reduce", premise = TRUE))
+ans$premise
+#> [1] "Revenue rose to 45.2 million dollars, from 38.7 million."
+is_not_found(ans$answer)
+#> [1] FALSE
+ans$notes$premise_chunks
+#> [1] 2
+```
+
+The verdict is the model’s reading of the excerpts, not something
+readgpt checks, so weigh it as you would any answer. The check is off by
+default because it makes the prompts longer, so a cache or a recorded
+run made without it does not answer a run with it. `extract` and
+`screen` ignore it.
 
 ## Trying readers on your own documents
 

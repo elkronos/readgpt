@@ -183,12 +183,12 @@ writeLines("We randomly assigned participants to two groups.", f)
 
 s <- gr_screen(f, question = "Does the treatment work?",
                include = "Reports a randomised comparison", client = cl)
-#> [1/1] file1d6c112ae8b0.txt
-#> Extracting 'file1d6c112ae8b0.txt' with the 'txt' extractor.
+#> [1/1] file1cef4cea8231.txt
+#> Extracting 'file1cef4cea8231.txt' with the 'txt' extractor.
 #> Ingested 1 block(s), ~15 tokens (0 chars removed by cleaning).
 #> Segmenting with 'structural' (cap 900 tokens, overlap 90).
 #> Reading with 'screen' (head|1|none) over 1 chunk(s).
 s$table[, c("document", "decision", "reason")]
 #>               document decision                           reason
-#> 1 file1d6c112ae8b0.txt  include Reports a randomised comparison.
+#> 1 file1cef4cea8231.txt  include Reports a randomised comparison.
 ```

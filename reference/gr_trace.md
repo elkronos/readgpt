@@ -171,7 +171,7 @@ ch <- gr_segment(readgpt_example(), list(method = "sentence", max_tokens = 150))
 invisible(gr_read(ch, "What was revenue?", cl, "map_reduce", trace = tr))
 #> Reading with 'map_reduce' (all|N+logN|tree) over 5 chunk(s).
 print(tr)
-#> <gr_trace run_20261012043804.548_ebf46d>  7 steps, 6 model calls, 1118 in / 36 out tokens, 0 error(s)
+#> <gr_trace run_20261012050034.512_9aeed4>  7 steps, 6 model calls, 1118 in / 36 out tokens, 0 error(s)
 #>   steps: map.answer x5, preflight x1, reduce x1 
 #>   cost: $0.0000 across mock-model
 
@@ -183,6 +183,6 @@ reqs[, c("step", "stage", "tokens_in", "tokens_out", "usd", "seconds")]
 #> 2    3 map.answer       210          6   0   0.001
 #> 3    4 map.answer       187          6   0   0.001
 #> 4    5 map.answer       193          6   0   0.001
-#> 5    6 map.answer       163          6   0   0.001
+#> 5    6 map.answer       163          6   0   0.000
 #> 6    7     reduce       164          6   0   0.001
 ```

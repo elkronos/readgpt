@@ -114,7 +114,7 @@ cmp$summary[, c("recipe", "segmenter", "chunks", "reader", "signature", "chunks_
 # One trace covers all three, so this is the cost of the whole comparison.
 gr_trace_summary(cmp$trace)
 #>                          run_id calls cached steps tokens_in tokens_out errors
-#> 1 run_20261012043754.124_855865     5      0    16      2122         65      0
+#> 1 run_20261012050023.846_32d6f3     5      0    16      2122         65      0
 #>   elapsed_s embed_calls embed_tokens
 #> 1      0.12           0            0
 ```

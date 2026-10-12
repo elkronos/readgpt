@@ -20,7 +20,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">readgpt</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.5.1</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.6.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -381,6 +381,24 @@ which is not the same as the tokens it moved:</p>
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/gr_trace_cost.html">gr_trace_cost</a></span><span class="op">(</span><span class="va">ans</span><span class="op">$</span><span class="va">trace</span><span class="op">)</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"model"</span>, <span class="st">"calls"</span>, <span class="st">"paid_calls"</span>, <span class="st">"usd"</span><span class="op">)</span><span class="op">]</span></span>
 <span><span class="co">#&gt;        model calls paid_calls usd</span></span>
 <span><span class="co">#&gt; 1 mock-model     1          1   0</span></span></code></pre></div>
+<p>The default models reason before they reply, and that reasoning is
+billed as output. <code>effort</code> sets how much of it each call
+does. Unset, nothing is sent and the provider decides. Set, it is sent
+only to a model whose <code><a href="../reference/gr_model_info.html">gr_model_info()</a></code> says
+<code>reasoning = TRUE</code>, and the trace records each request’s
+effort. A corpus run makes many mechanical calls and a few that judge,
+so name the stages:
+<code>effort = c(extract = "low", synthesise = "high")</code>. A name
+covers every call under it (<code>extract</code> covers
+<code>extract.chunk</code> and <code>extract.resolve</code>). An unnamed
+element covers the calls no name does, and without one those calls are
+sent none. The same vector can go to every stage.
+<code><a href="../reference/gr_screen.html">gr_screen()</a></code> and <code><a href="../reference/gr_extract.html">gr_extract()</a></code> take it as a
+recipe override, as they take any read setting, and
+<code><a href="../reference/gr_claims.html">gr_claims()</a></code>, <code><a href="../reference/gr_outline.html">gr_outline()</a></code> and
+<code><a href="../reference/gr_synthesise.html">gr_synthesise()</a></code> take it as an argument.
+<code><a href="../reference/gr_read_spec.html">?gr_read_spec</a></code> lists every label, and
+<code><a href="../articles/readers.html">vignette("readers")</a></code> shows it on one document.</p>
 </div>
 <div class="section level2">
 <h2 id="making-a-re-run-free-and-a-result-checkable">Making a re-run free, and a result checkable<a class="anchor" aria-label="anchor" href="#making-a-re-run-free-and-a-result-checkable"></a>
@@ -564,7 +582,8 @@ there.</p>
 rows it rests on:</p>
 <div class="sourceCode" id="cb27"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">writer</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/gr_mock_client.html">gr_mock_client</a></span><span class="op">(</span><span class="kw">function</span><span class="op">(</span><span class="va">messages</span>, <span class="va">params</span><span class="op">)</span> <span class="op">{</span></span>
-<span>  <span class="st">"Revenue was higher in the southern region [study 2] than the northern [study 1]."</span></span>
+<span>  <span class="fu"><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste</a></span><span class="op">(</span><span class="st">"Revenue was higher in the southern region, at 51.8 million dollars [study 2],"</span>,</span>
+<span>        <span class="st">"than in the northern, at 45.2 million [study 1]."</span><span class="op">)</span></span>
 <span><span class="op">}</span><span class="op">)</span></span>
 <span></span>
 <span><span class="va">review</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/gr_synthesise.html">gr_synthesise</a></span><span class="op">(</span><span class="va">table</span>, <span class="va">protocol</span>, client <span class="op">=</span> <span class="va">writer</span><span class="op">)</span></span>
@@ -575,12 +594,42 @@ rows it rests on:</p>
 <span><span class="fu"><a href="https://rdrr.io/r/base/cat.html" class="external-link">cat</a></span><span class="op">(</span><span class="va">review</span><span class="op">$</span><span class="va">text</span><span class="op">)</span></span>
 <span><span class="co">#&gt; ## Findings</span></span>
 <span><span class="co">#&gt; </span></span>
-<span><span class="co">#&gt; Revenue was higher in the southern region [study 2] than the northern [study 1].</span></span>
+<span><span class="co">#&gt; Revenue was higher in the southern region, at 51.8 million dollars [study 2], than in the northern, at 45.2 million [study 1].</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; ## References</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; 1. (2024).</span></span>
 <span><span class="co">#&gt; 2. (2025).</span></span></code></pre></div>
+<p>The citation check says which rows a sentence rests on, not what it
+says they found, and the figures are what a reader copies out of a
+review. So every number in the write-up is also looked for in the rows
+its sentence cites, as the writer was shown them:</p>
+<div class="sourceCode" id="cb28"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">review</span><span class="op">$</span><span class="va">sections</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"section"</span>, <span class="st">"n_cited"</span>, <span class="st">"n_unbacked"</span><span class="op">)</span><span class="op">]</span></span>
+<span><span class="co">#&gt;    section n_cited n_unbacked</span></span>
+<span><span class="co">#&gt; 1 Findings       2          0</span></span>
+<span><span class="va">review</span><span class="op">$</span><span class="va">figures</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"number"</span>, <span class="st">"studies"</span>, <span class="st">"backed"</span>, <span class="st">"basis"</span><span class="op">)</span><span class="op">]</span></span>
+<span><span class="co">#&gt;   number studies backed     basis</span></span>
+<span><span class="co">#&gt; 1   51.8    1, 2   TRUE cited row</span></span>
+<span><span class="co">#&gt; 2   45.2    1, 2   TRUE cited row</span></span></code></pre></div>
+<p>The check forgives form, such as <code>.61</code> for 0.61 or
+<code>1204</code> for 1,204, but not a changed digit. A figure found
+nowhere, such as 54.2 written for 45.2, has <code>backed = FALSE</code>,
+is counted in <code>n_unbacked</code> and is warned about. It does not
+make the section partial, which is about citations. Found means copied,
+not right: a figure the cited row carries can still be the wrong one for
+the sentence.</p>
+<p><code>coherence = TRUE</code> adds revision passes over the finished
+draft: one reorders and merges, one cuts repetition and one polishes
+sentences. Each is a call, so they are off by default, and each revision
+is checked rather than trusted. One that changes which studies are
+cited, strengthens a claim or writes a figure the draft did not have is
+discarded, and so is a cut that did not shorten the review.
+<code>$draft</code> keeps the text from before the passes.
+<code>$coherence</code> has a row per pass saying whether it was kept
+and why not, with <code>words_before</code> and
+<code>words_after</code>, so a pass that halved the review can be
+seen.</p>
 <div class="section level3">
 <h3 id="writing-from-claims-instead-of-from-rows">Writing from claims instead of from rows<a class="anchor" aria-label="anchor" href="#writing-from-claims-instead-of-from-rows"></a>
 </h3>
@@ -591,7 +640,7 @@ review is a hypothesis rather than a finding.</p>
 <p><code><a href="../reference/gr_claims.html">gr_claims()</a></code> computes the relations between studies
 first. Each claim names what supports it, what contradicts it, and which
 field distinguishes the two:</p>
-<div class="sourceCode" id="cb28"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb29"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">claim_writer</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/gr_mock_client.html">gr_mock_client</a></span><span class="op">(</span><span class="kw">function</span><span class="op">(</span><span class="va">messages</span>, <span class="va">params</span><span class="op">)</span> <span class="op">{</span></span>
 <span>  <span class="va">sys</span> <span class="op">&lt;-</span> <span class="va">messages</span><span class="op">[[</span><span class="fl">1</span><span class="op">]</span><span class="op">]</span><span class="op">$</span><span class="va">content</span></span>
 <span>  <span class="kw">if</span> <span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/grep.html" class="external-link">grepl</a></span><span class="op">(</span><span class="st">"turn a table of studies"</span>, <span class="va">sys</span>, fixed <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span><span class="op">)</span> <span class="op">{</span></span>
@@ -601,6 +650,12 @@ field distinguishes the two:</p>
 <span>                  <span class="st">'{"claim":"The northern region reported for fiscal 2024.",'</span>,</span>
 <span>                  <span class="st">'"kind":"finding","supported_by":[1],"contradicted_by":[],'</span>,</span>
 <span>                  <span class="st">'"moderator":null,"scope":"one report"}]}'</span><span class="op">)</span><span class="op">)</span></span>
+<span>  <span class="op">}</span></span>
+<span>  <span class="co"># Asked for a second outline (see below), it groups the claims another way.</span></span>
+<span>  <span class="kw">if</span> <span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/grep.html" class="external-link">grepl</a></span><span class="op">(</span><span class="st">"&lt;earlier_outlines&gt;"</span>, <span class="va">messages</span><span class="op">[[</span><span class="fu"><a href="https://rdrr.io/r/base/length.html" class="external-link">length</a></span><span class="op">(</span><span class="va">messages</span><span class="op">)</span><span class="op">]</span><span class="op">]</span><span class="op">$</span><span class="va">content</span>, fixed <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span><span class="op">)</span> <span class="op">{</span></span>
+<span>    <span class="kw"><a href="https://rdrr.io/r/base/function.html" class="external-link">return</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste0</a></span><span class="op">(</span><span class="st">'{"sections":[{"heading":"The comparison","brief":"south against '</span>,</span>
+<span>                  <span class="st">'north","claims":[1],"rationale":"findings"},{"heading":"The reports",'</span>,</span>
+<span>                  <span class="st">'"brief":"what each covers","claims":[2],"rationale":"coverage"}]}'</span><span class="op">)</span><span class="op">)</span></span>
 <span>  <span class="op">}</span></span>
 <span>  <span class="kw">if</span> <span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/grep.html" class="external-link">grepl</a></span><span class="op">(</span><span class="st">"sections of a review"</span>, <span class="va">sys</span>, fixed <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span><span class="op">)</span> <span class="op">{</span></span>
 <span>    <span class="kw"><a href="https://rdrr.io/r/base/function.html" class="external-link">return</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste0</a></span><span class="op">(</span><span class="st">'{"sections":[{"heading":"Where revenue is higher","brief":"the '</span>,</span>
@@ -627,14 +682,35 @@ can be told apart from a thin literature.</p>
 and <code><a href="../reference/gr_gaps.html">gr_gaps()</a></code> computes what the corpus does not contain. It
 makes no model call, so the gap list is something you can check by
 counting:</p>
-<div class="sourceCode" id="cb29"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb30"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">outline</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/gr_outline.html">gr_outline</a></span><span class="op">(</span><span class="va">cm</span>, client <span class="op">=</span> <span class="va">claim_writer</span><span class="op">)</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/names.html" class="external-link">names</a></span><span class="op">(</span><span class="va">outline</span><span class="op">)</span></span>
 <span><span class="co">#&gt; [1] "Where revenue is higher" "What is missing"</span></span>
 <span><span class="fu"><a href="../reference/gr_gaps.html">gr_gaps</a></span><span class="op">(</span><span class="va">cm</span>, extraction <span class="op">=</span> <span class="va">table</span><span class="op">)</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"kind"</span>, <span class="st">"dimension"</span>, <span class="st">"detail"</span><span class="op">)</span><span class="op">]</span></span>
 <span><span class="co">#&gt;           kind dimension                                        detail</span></span>
 <span><span class="co">#&gt; 1 unreplicated   claim 2 The northern region reported for fiscal 2024.</span></span></code></pre></div>
-<div class="sourceCode" id="cb30"><pre class="downlit sourceCode r">
+<p>That outline is one grouping of the claims, and the grouping is the
+review’s argument. <code>alternatives = 2</code> asks for a second,
+shown the first and asked to group the claims by a different principle.
+How far apart two outlines are is counted, not asked:
+<code>distance</code> is how far each lies from the first, the share of
+pairs of claims that one puts together and the other apart. One that
+groups the claims as an earlier one did, whatever its headings, is
+dropped. Nothing ranks them, and <code><a href="../reference/gr_outline_pick.html">gr_outline_pick()</a></code> hands
+back the one you choose:</p>
+<div class="sourceCode" id="cb31"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">two</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/gr_outline.html">gr_outline</a></span><span class="op">(</span><span class="va">cm</span>, client <span class="op">=</span> <span class="va">claim_writer</span>, alternatives <span class="op">=</span> <span class="fl">2</span><span class="op">)</span></span>
+<span><span class="fu"><a href="https://rdrr.io/r/base/attr.html" class="external-link">attr</a></span><span class="op">(</span><span class="va">two</span>, <span class="st">"comparison"</span><span class="op">)</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"alternative"</span>, <span class="st">"sections"</span>, <span class="st">"claims_per_section"</span>, <span class="st">"distance"</span><span class="op">)</span><span class="op">]</span></span>
+<span><span class="co">#&gt;   alternative sections claims_per_section distance</span></span>
+<span><span class="co">#&gt; 1           1        2               2, 0        0</span></span>
+<span><span class="co">#&gt; 2           2        3            1, 1, 0        1</span></span>
+<span><span class="fu"><a href="https://rdrr.io/r/base/names.html" class="external-link">names</a></span><span class="op">(</span><span class="fu"><a href="../reference/gr_outline_pick.html">gr_outline_pick</a></span><span class="op">(</span><span class="va">two</span>, <span class="fl">2</span><span class="op">)</span><span class="op">)</span></span>
+<span><span class="co">#&gt; [1] "The comparison"  "The reports"     "What is missing"</span></span></code></pre></div>
+<p>Each ends with the closing section for the gaps, which holds no
+claims here. The first outline is the same whatever
+<code>alternatives</code> says, and a review written from a picked one
+records which it was.</p>
+<div class="sourceCode" id="cb32"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">from_claims</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/gr_synthesise.html">gr_synthesise</a></span><span class="op">(</span><span class="va">table</span>, outline <span class="op">=</span> <span class="va">outline</span>, question <span class="op">=</span> <span class="va">protocol</span><span class="op">$</span><span class="va">question</span>,</span>
 <span>                             client <span class="op">=</span> <span class="va">claim_writer</span>, claims <span class="op">=</span> <span class="va">cm</span>,</span>
 <span>                             gaps <span class="op">=</span> <span class="fu"><a href="../reference/gr_gaps.html">gr_gaps</a></span><span class="op">(</span><span class="va">cm</span>, extraction <span class="op">=</span> <span class="va">table</span><span class="op">)</span><span class="op">)</span></span>
@@ -648,7 +724,7 @@ run backwards: a section handed a claim and not writing it up did not do
 what the outline promised, and says so.</p>
 <p><code><a href="../reference/gr_audit_report.html">gr_audit_report()</a></code> writes the whole chain out as one
 self-contained HTML file for somebody who did not run it:</p>
-<div class="sourceCode" id="cb31"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb33"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/gr_audit_report.html">gr_audit_report</a></span><span class="op">(</span><span class="st">"audit.html"</span>, screening <span class="op">=</span> <span class="va">screened</span>, extraction <span class="op">=</span> <span class="va">table</span>,</span>
 <span>                synthesis <span class="op">=</span> <span class="va">review</span>, protocol <span class="op">=</span> <span class="va">protocol</span><span class="op">)</span></span></code></pre></div>
 <p>Every <code>[study n]</code> is parsed back out and checked against
@@ -664,7 +740,7 @@ to walk.</p>
 <h2 id="using-a-real-model">Using a real model<a class="anchor" aria-label="anchor" href="#using-a-real-model"></a>
 </h2>
 <p>Everything above used a mock. In production you need a client:</p>
-<div class="sourceCode" id="cb32"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb34"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># An OpenAI-compatible endpoint:</span></span>
 <span><span class="va">cl</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/gr_client.html">gr_client</a></span><span class="op">(</span>model <span class="op">=</span> <span class="st">"gpt-4o"</span><span class="op">)</span>          <span class="co"># key from OPENAI_API_KEY</span></span>
 <span></span>
@@ -681,7 +757,7 @@ subscription key, and many require a cost-centre or correlation id.
 <code>headers</code> covers those. Naming any header makes the API key
 optional, so a gateway with its own scheme needs no
 <code>OPENAI_API_KEY</code> set at all:</p>
-<div class="sourceCode" id="cb33"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb35"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">cl</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/gr_client.html">gr_client</a></span><span class="op">(</span></span>
 <span>  base_url <span class="op">=</span> <span class="st">"https://gateway.example.com/openai/v1"</span>, api <span class="op">=</span> <span class="st">"chat"</span>,</span>
 <span>  headers  <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"api-key"</span> <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/Sys.getenv.html" class="external-link">Sys.getenv</a></span><span class="op">(</span><span class="st">"GATEWAY_KEY"</span><span class="op">)</span>,</span>
@@ -705,7 +781,7 @@ that authenticates through <code>headers</code> needs no key.</p>
 <p>Every axis is a registry, and an addition behaves exactly like a
 built-in. It gets the same token caps, provenance and reporting, and it
 can be named in a recipe or put in an <code>ensemble</code>.</p>
-<div class="sourceCode" id="cb34"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb36"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/gr_register_segmenter.html">gr_register_segmenter</a></span><span class="op">(</span><span class="st">"by_bullet"</span>, description <span class="op">=</span> <span class="st">"one chunk per bullet"</span>,</span>
 <span>  fn <span class="op">=</span> <span class="kw">function</span><span class="op">(</span><span class="va">doc</span>, <span class="va">spec</span>, <span class="va">client</span>, <span class="va">trace</span><span class="op">)</span> <span class="op">{</span></span>
 <span>    <span class="va">units</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/unlist.html" class="external-link">unlist</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/strsplit.html" class="external-link">strsplit</a></span><span class="op">(</span><span class="va">doc</span><span class="op">$</span><span class="va">text</span>, <span class="st">"\n(?=[-*])"</span>, perl <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span><span class="op">)</span></span>

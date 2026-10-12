@@ -63,7 +63,7 @@ ans <- answer_document(readgpt_example(), "What was revenue?", "thorough", clien
 #> Reading with 'map_reduce' (all|N+logN|tree) over 1 chunk(s).
 gr_trace_summary(ans$trace)
 #>                          run_id calls cached steps tokens_in tokens_out errors
-#> 1 run_20261012043805.337_93a40f     1      0     4       607         10      0
+#> 1 run_20261012050035.313_b52be0     1      0     4       607         10      0
 #>   elapsed_s embed_calls embed_tokens
 #> 1      0.02           0            0
 

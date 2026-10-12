@@ -101,7 +101,7 @@ for reproducing a recorded run
 ``` r
 cache <- gr_cache(dir = file.path(tempdir(), "readgpt-example-cache"))
 cache
-#> <gr_cache> /tmp/RtmpfTWp6b/readgpt-example-cache
+#> <gr_cache> /tmp/RtmpNP8Tfa/readgpt-example-cache
 #>   0 entries, 0.0 B on disk; 0 hit(s), 0 miss(es), 0 write(s)
 
 # Nothing is written until a call is cached.

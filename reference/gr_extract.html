@@ -11,7 +11,7 @@ per field, with a separate long table saying where every value came from."></hea
 
     <a class="navbar-brand me-2" href="../index.html">readgpt</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.5.1</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.6.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -310,14 +310,14 @@ the sentence it was taken from and a check that the sentence is really there.</p
 <span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/writeLines.html" class="external-link">writeLines</a></span><span class="op">(</span><span class="st">"We ran a randomised controlled trial. We enrolled 120 participants."</span>, <span class="va">f</span><span class="op">)</span></span></span>
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="va">x</span> <span class="op">&lt;-</span> <span class="fu">gr_extract</span><span class="op">(</span><span class="va">f</span>, <span class="va">fields</span>, client <span class="op">=</span> <span class="va">cl</span><span class="op">)</span></span></span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> [1/1] file1d6c2eab7b69.txt</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'file1d6c2eab7b69.txt' with the 'txt' extractor.</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> [1/1] file1cef3732cd00.txt</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'file1cef3732cd00.txt' with the 'txt' extractor.</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Ingested 1 block(s), ~22 tokens (0 chars removed by cleaning).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Segmenting with 'structural' (cap 900 tokens, overlap 90).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Reading with 'extract' (all|N+conflicts|none) over 1 chunk(s).</span>
 <span class="r-in"><span><span class="va">x</span><span class="op">$</span><span class="va">table</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"document"</span>, <span class="st">"design"</span>, <span class="st">"n"</span>, <span class="st">"n_unverified"</span>, <span class="st">"status"</span><span class="op">)</span><span class="op">]</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>               document                      design   n n_unverified status</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1 file1d6c2eab7b69.txt randomised controlled trial 120            0     ok</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1 file1cef3732cd00.txt randomised controlled trial 120            0     ok</span>
 <span class="r-in"><span><span class="va">x</span><span class="op">$</span><span class="va">evidence</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"field"</span>, <span class="st">"quote"</span>, <span class="st">"verified"</span><span class="op">)</span><span class="op">]</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>    field                                 quote verified</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 1 design We ran a randomised controlled trial.     TRUE</span>

@@ -20,7 +20,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">readgpt</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.5.1</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.6.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -304,6 +304,16 @@ answer:</p>
 <span><span class="co">#&gt; [1] TRUE</span></span></code></pre></div>
 <p>For <code>bad</code>, the marker means “no answer came back”, and
 <code>partial</code> says that was a failure rather than a finding.</p>
+<p>A question can also assume something the document contradicts, such
+as “Why did revenue fall?” of a report in which revenue rose. The model
+then either answers as if the assumption were true or replies with the
+marker. Add <code>premise = TRUE</code> to the call and the model is
+told that, when the document says the opposite, it should say so in one
+sentence giving what the document states. That sentence is the answer
+and <code>ans$premise</code>, and <code><a href="../reference/is_not_found.html">is_not_found()</a></code> is
+<code>FALSE</code> for it. A document that is merely silent still gets
+the marker. It is off by default, and the correction is the model’s
+reading, not a check readgpt makes (<code><a href="../reference/gr_read_spec.html">?gr_read_spec</a></code>).</p>
 <p><strong><code>evidence</code> shows what the answer rests
 on.</strong> Each row is a chunk the answer drew on, with where it came
 from: the page, for a PDF, and the heading it sits under. This short
@@ -367,6 +377,26 @@ requests, or one whose chunks would cost more than $5 to send once:</p>
 <span><span class="co">#&gt;            5          400</span></span></code></pre></div>
 <p>Change them with <code><a href="../reference/gr_options.html">gr_options()</a></code>, for example
 <code>gr_options(max_cost_usd = 20)</code>.</p>
+<p>The default models also <em>reason</em> before they answer: they work
+through the question in text you never see, and it is charged as text
+the model writes back. <code>effort</code> sets how much, for example
+<code>"low"</code> or <code>"high"</code>. Unless you set it, nothing is
+sent and the provider’s default applies. readgpt sends it only to a
+model it knows reasons. The mock is not one, so here it is given the
+default model’s name to stand in for it:</p>
+<div class="sourceCode" id="cb18"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">low</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/answer_document.html">answer_document</a></span><span class="op">(</span><span class="fu"><a href="../reference/readgpt_example.html">readgpt_example</a></span><span class="op">(</span><span class="op">)</span>, <span class="st">"What was revenue in 2024?"</span>,</span>
+<span>                       client <span class="op">=</span> <span class="va">cl</span>, model <span class="op">=</span> <span class="fu"><a href="../reference/gr_options.html">gr_options</a></span><span class="op">(</span><span class="st">"model"</span><span class="op">)</span>, effort <span class="op">=</span> <span class="st">"low"</span><span class="op">)</span></span>
+<span><span class="fu"><a href="https://rdrr.io/r/base/as.data.frame.html" class="external-link">as.data.frame</a></span><span class="op">(</span><span class="va">low</span><span class="op">$</span><span class="va">trace</span><span class="op">)</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"stage"</span>, <span class="st">"model"</span>, <span class="st">"effort"</span><span class="op">)</span><span class="op">]</span></span>
+<span><span class="co">#&gt;          stage         model effort</span></span>
+<span><span class="co">#&gt; 1 stuff.answer gpt-5.6-terra    low</span></span></code></pre></div>
+<p>With a real client on the default model, <code>effort = "low"</code>
+alone is enough. The trace records the effort each request carried; the
+<code>effort</code> column appears only when a request carried one. Less
+reasoning costs less. <code>effort</code> can also differ by stage, low
+for the many routine requests and high for the few that judge;
+<code><a href="../reference/gr_read_spec.html">?gr_read_spec</a></code> lists the stages and suggests a starting
+point.</p>
 </div>
 <div class="section level2">
 <h2 id="choosing-a-recipe">Choosing a recipe<a class="anchor" aria-label="anchor" href="#choosing-a-recipe"></a>
@@ -378,11 +408,11 @@ requests, or one whose chunks would cost more than $5 to send once:</p>
 up to 50,000 tokens (less on a model with a small context window), and
 <code>"thorough"</code>, one request per chunk, for anything longer.
 <code>ans$recipe</code> says which it picked:</p>
-<div class="sourceCode" id="cb18"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb19"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">ans</span><span class="op">$</span><span class="va">recipe</span></span>
 <span><span class="co">#&gt; [1] "fast"</span></span></code></pre></div>
 <p>The built-in recipes:</p>
-<div class="sourceCode" id="cb19"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb20"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/base/do.call.html" class="external-link">do.call</a></span><span class="op">(</span><span class="va">rbind</span>, <span class="fu"><a href="https://rdrr.io/r/base/lapply.html" class="external-link">lapply</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/names.html" class="external-link">names</a></span><span class="op">(</span><span class="fu"><a href="../reference/gr_recipes.html">gr_recipes</a></span><span class="op">(</span><span class="op">)</span><span class="op">)</span>, <span class="kw">function</span><span class="op">(</span><span class="va">n</span><span class="op">)</span> <span class="op">{</span></span>
 <span>  <span class="va">r</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/gr_recipes.html">gr_recipes</a></span><span class="op">(</span><span class="va">n</span><span class="op">)</span></span>
 <span>  <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span>recipe <span class="op">=</span> <span class="va">n</span>, chunks <span class="op">=</span> <span class="va">r</span><span class="op">$</span><span class="va">segment</span><span class="op">$</span><span class="va">method</span>, reading <span class="op">=</span> <span class="va">r</span><span class="op">$</span><span class="va">read</span><span class="op">$</span><span class="va">reader</span><span class="op">)</span></span>
@@ -440,7 +470,7 @@ up to 50,000 tokens (less on a model with a small context window), and
 </tbody>
 </table>
 <p>Pass the name as the third argument:</p>
-<div class="sourceCode" id="cb20"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb21"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">fast</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/answer_document.html">answer_document</a></span><span class="op">(</span><span class="fu"><a href="../reference/readgpt_example.html">readgpt_example</a></span><span class="op">(</span><span class="op">)</span>, <span class="st">"What was revenue in 2024?"</span>, <span class="st">"fast"</span>,</span>
 <span>                        client <span class="op">=</span> <span class="va">cl</span><span class="op">)</span></span>
 <span><span class="va">fast</span><span class="op">$</span><span class="va">reader</span></span>

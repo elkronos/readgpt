@@ -105,6 +105,7 @@ reference:
   - gr_extract
   - gr_claims
   - gr_outline
+  - gr_outline_pick
   - gr_gaps
   - gr_synthesise
   - gr_flow

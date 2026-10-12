@@ -207,6 +207,11 @@ the review was written without them.}
 \item{\code{claim_sections}}{With \code{claims}, which section each claim was
 given to: a data frame of \code{section} and \code{claim_id}, the outline's
 assignment. \code{NULL} without \code{claims}.}
+\item{\code{outline_alternative}}{Present only when the outline is one of
+several \code{\link[=gr_outline]{gr_outline()}} compared (\code{alternatives} above 1): which one
+it was, as \code{alternative}, \code{of} (how many were asked for), \code{distinct}
+(how many came back distinct) and \code{distance} from the first proposal.
+The trace's meta records \code{outline_alternative} and \code{outline_of} too.}
 \item{\code{trace}}{As \code{\link[=gr_extract]{gr_extract()}}.}
 }
 }

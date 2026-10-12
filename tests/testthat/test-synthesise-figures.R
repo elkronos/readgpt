@@ -99,6 +99,56 @@ test_that("ids, names, ordinals, decades, conventions and small counts are not f
   expect_identical(f("An OR of 1.0 [study 1]."), "1")
 })
 
+test_that("a bare id ends the list at a comma, so the figure after it is read", {
+  f <- function(s) readgpt:::figure_find(s)$value
+  # Read with the marker's list grammar and no bracket to end it, "study 3,
+  # 860" was two ids, and the 860 was never checked.
+  expect_identical(f("In study 3, 860 patients were enrolled [study 3]."), "860")
+  expect_identical(f("In study 12, 45% of patients improved [study 12]."), "45")
+  expect_identical(f("Under claim 3, 860 patients were enrolled [study 3]."), "860")
+  expect_false(readgpt:::figure_guard("In study 3, 86 patients were enrolled [study 3].",
+                                      "In study 3, 860 patients were enrolled [study 3].")$ok)
+  # A list in prose is still ids: closed by "and", or the word repeated.
+  ids <- c("studies 11, 12 and 14", "studies 11, 12, and 14", "studies 11 and 14",
+           "study 11, study 12 and study 14", "studies 11-14", "studies 11 & 14",
+           "study 11; study 17", "claims 3 and 14")
+  for (s in sprintf("In %s, 860 took part.", ids)) expect_identical(f(s), "860", info = s)
+  # A list closes once, and only after the plural.
+  expect_identical(f("In study 3, 120 and 900 adults took part [study 3]."), c("120", "900"))
+  expect_identical(f("In studies 3 and 12, 120 and 900 adults took part."), c("120", "900"))
+})
+
+test_that("a range of bare ids written out is ids, and a range of weeks is not", {
+  f <- function(s) readgpt:::figure_find(s)$value
+  expect_identical(f("Studies 12 to 15 were conducted in the USA."), character(0))
+  expect_identical(f("Studies 12 through 15 were conducted in the USA."), character(0))
+  expect_identical(f("Studies 3, 12 to 15 and 18 were conducted in the USA."), character(0))
+  expect_identical(f("Study 4 ran for 12 to 15 weeks."), c("12", "15"))
+  expect_true(readgpt:::figure_guard(
+    "Four trials were in the USA [studies 12-15].",
+    "Studies 12 to 15, all in the USA [studies 12-15], were trials.")$ok)
+})
+
+test_that("thresholds, significance levels and age decades are conventions, values are not", {
+  f <- function(s) readgpt:::figure_find(s)$value
+  # Before, a threshold had to be written as .05 is, after a symbol.
+  expect_identical(f("No trial found an effect (all p > 0.10) [study 3]."), character(0))
+  expect_identical(f("It was significant (p < 0.050) [study 3]."), character(0))
+  expect_identical(f("The difference was significant (p value below 0.05) [study 3]."),
+                   character(0))
+  expect_identical(f("The p-value was less than 0.05 [study 3]."), character(0))
+  expect_identical(f("Effects were significant at the 5% level [study 1]."), character(0))
+  expect_identical(f("Effects were significant at the 0.05 significance level [study 1]."),
+                   character(0))
+  expect_identical(f("Participants were mostly in their 60s [study 1]."), character(0))
+  expect_identical(f("Most were in their 50s and 60s, in the 1990s [study 1]."), character(0))
+  # A reported p value and a time in seconds are figures.
+  expect_identical(f("The difference was p = 0.05 [study 3]."), "0.05")
+  expect_identical(f("A p value of 0.05 was reported [study 3]."), "0.05")
+  expect_identical(f("Rest intervals of 60s were used [study 3]."), "60")
+  expect_identical(f("Attrition reached a 15% level at 12 weeks [study 3]."), c("15", "12"))
+})
+
 test_that("figures compare in one canonical form", {
   canon <- readgpt:::figure_canon
   expect_identical(canon(c(".61", "0.610", "45.20", "1,204", "007", "0.0", "1\u00a0204")),
@@ -132,6 +182,18 @@ test_that("a figure is compared at the precision it was written to", {
   # pooled 0.38 is not a row's 38.5% read as 0.385.
   expect_false(hit("d = 0.38", "remission 38.5%"))
   expect_true(hit("0.385", "remission 38.5%"))
+  # A numeric field as render_studies() shows a large or small double is the
+  # row's figure: "1e+05" was 1 and 5.
+  expect_true(hit("100,000 people", "n: 1e+05"))
+  expect_true(hit("p = 0.00004", "p_value: 4e-05"))
+  expect_true(hit("p = 0.00004", "p_value: 4.12e-05"))
+  expect_false(hit("p = 0.00005", "p_value: 4e-05"))
+  # A power of ten in the sentence scales its figure, either way, and its 10
+  # is no figure of its own.
+  expect_true(hit("p = 4 x 10^-4", "p = 0.0004"))
+  expect_true(hit("p = 4 \u00d7 10\u207b\u2074", "p = 0.0004"))
+  expect_false(hit("p = 7 x 10^-4", "p = 0.0004"))
+  expect_identical(readgpt:::figure_find("It was strong (p = 4 x 10^-12) [study 6].")$value, "4")
 })
 
 # ---------------------------------------------------------------------------
@@ -206,6 +268,114 @@ test_that("arithmetic on the page, and points between two cited figures, are not
   # The same figure, not in points, is a figure of its own.
   s <- quiet(fig_synth("The odds ratio was 0.9 [study 2]."))
   expect_false(s$figures$backed)
+})
+
+test_that("a ratio read as a change from no effect is worked out in the sentence", {
+  s <- quiet(fig_synth(paste("The odds ratio of 1.8 means the odds were 80% higher [study 2].",
+                             "The odds ratio of 1.8 means the odds were 30% higher [study 2].")))
+  fig <- s$figures
+  expect_identical(fig$basis[fig$number == "80"], "worked out in the sentence")
+  expect_false(fig$backed[fig$number == "30"])
+  w <- function(ops, own) readgpt:::figure_worked(ops, own, pct = TRUE)
+  # HR 0.78 is a 22% lower hazard, RR 1.25 a 25% higher risk, OR 2.10 110%
+  # higher odds.
+  expect_true(any(abs(w(c(0.78, 22), 22) - 22) < 1e-9))
+  expect_true(any(abs(w(c(1.25, 25), 25) - 25) < 1e-9))
+  expect_true(any(abs(w(c(2.10, 110), 110) - 110) < 1e-9))
+  # A whole number is a count, not a ratio: "3 arms" backs no 200%.
+  expect_length(w(c(3, 200), 200), 0L)
+})
+
+test_that("worked-out percentages and points come from figures that belong together", {
+  tab <- data.frame(document = c("a.pdf", "b.pdf"), status = "ok",
+                    effect = c("SMD 0.41 (95% CI 0.22 to 0.60)", "HR 0.78 (95% CI 0.65-0.94)"),
+                    followup = c("12 weeks", "24 weeks"),
+                    remission = c("38.5% vs 29.1%", NA),
+                    rem_treat = c(NA, "41.0%"), rem_ctrl = c(NA, "33.2%"),
+                    stringsAsFactors = FALSE)
+  cl <- fig_client(paste(
+    "Remission rose by 11.3 percentage points [study 1] [study 2].",
+    "Followed for 12 weeks, the SMD was 0.41 (95% CI 0.22 to 0.60) and 37% dropped out [study 1].",
+    "Remission rose by 9.4 points [study 1].",
+    "Remission rose by 7.8 points [study 2]."))
+  s <- quiet(gr_synthesise(tab, question = "Q?", outline = c(Findings = "x"), client = cl,
+                           cite_style = "marker"))
+  fig <- s$figures
+  # 12 weeks less study 2's CI bound of 0.65 is not a difference in points,
+  # and 0.22 of 0.60 is not a share of anything.
+  expect_false(fig$backed[fig$number == "11.3"])
+  expect_false(fig$backed[fig$number == "37"])
+  # Two figures of one finding, or the percentages of two arms in fields of
+  # their own, are.
+  expect_identical(fig$basis[fig$number %in% c("9.4", "7.8")],
+                   rep("difference of two cited figures", 2L))
+})
+
+test_that("a count of the studies that share a value is a number of studies", {
+  tab <- data.frame(document = sprintf("d%02d.pdf", 1:12), status = "ok",
+                    design = c(rep("randomised trial", 10), rep("Cohort", 2)),
+                    stringsAsFactors = FALSE)
+  cl <- fig_client(paste("Of the 12 included studies, 10 were randomised trials and the rest",
+                         "were cohorts. Of them, 11 were blinded."))
+  r <- warn_classes(gr_synthesise(tab, question = "Q?", client = cl, cite_style = "marker",
+                                  outline = c("Included studies" = "How many, of what design")))
+  fig <- r$value$figures
+  # In any review of ten or more, "10 of the 12" was the writer's invention.
+  expect_identical(fig$basis[fig$number %in% c("12", "10")], rep("number of studies", 2L))
+  # A count no field gives is not.
+  expect_false(fig$backed[fig$number == "11"])
+})
+
+test_that("a numeric field shown in E notation backs its plain copy and is totalled", {
+  tab <- data.frame(document = c("a.pdf", "b.pdf"), status = "ok", n = c(100000, 250000),
+                    p_value = c(0.00004, 0.02), cost = c(1.5e6, 2e5))
+  cl <- fig_client(paste("The registry followed 100,000 people (p = 0.00004) [study 1].",
+                         "The second followed 250,000 at a cost of $200,000 [study 2].",
+                         "Together they followed 350,000 people [study 1] [study 2]."))
+  r <- warn_classes(gr_synthesise(tab, question = "Q?", outline = c(Findings = "x"), client = cl,
+                                  cite_style = "marker"))
+  fig <- r$value$figures
+  expect_true(all(fig$backed))
+  expect_identical(fig$basis[fig$number == "350,000"], "total of the cited rows")
+  expect_false("gr_synth_unbacked_figures" %in% r$classes)
+  # What the writer was shown is unchanged: the row as as.character() gives it.
+  sent <- paste(vapply(cl$calls()[[1]]$messages, function(m) m$content, character(1)),
+                collapse = "\n")
+  expect_match(sent, "n: 1e+05", fixed = TRUE)
+})
+
+test_that("'c.' before a figure is circa, and does not end the sentence", {
+  expect_identical(readgpt:::measured_sentences("The trial enrolled c. 1,200 adults [study 1]."),
+                   "The trial enrolled c. 1,200 adults [study 1].")
+  expect_identical(readgpt:::split_sentences("Take vitamin c. Then 12 more. It had c. 40 sites."),
+                   c("Take vitamin c.", "Then 12 more.", "It had c. 40 sites."))
+  expect_identical(readgpt:::sentence_spans("It had c. 40 sites. Then more."),
+                   c("It had c. 40 sites. ", "Then more."))
+  r <- warn_classes(fig_synth("The largest trial enrolled c. 1,200 adults [study 3]."))
+  fig <- r$value$figures
+  expect_identical(fig$basis, "approximate")
+  expect_identical(fig$sentence, "The largest trial enrolled c. 1,200 adults [study 3].")
+  expect_false("gr_synth_unbacked_figures" %in% r$classes)
+})
+
+test_that("digits grouped by a space are one figure when that finds it, and two if not", {
+  r <- warn_classes(fig_synth(paste("The trial randomised 1 204 adults [study 3].",
+                                    "It ran in 3 450-bed hospitals [study 3].")))
+  fig <- r$value$figures
+  expect_identical(fig$number, c("1 204", "450"))
+  expect_identical(fig$basis[1], "cited row")
+  expect_false(fig$backed[2])
+  g <- readgpt:::figure_guard
+  expect_true(g("The cohort followed 12,450 adults [study 2].",
+                "The cohort followed 12 450 adults [study 2].")$ok)
+  expect_false(g("The cohort followed 12,450 adults [study 2].",
+                 "The cohort followed 12 451 adults [study 2].")$ok)
+  # A register pass that only regroups a figure is kept.
+  r <- warn_classes(fig_synth("The trial randomised 1,204 adults [study 3].",
+                              coherence = "register",
+                              revise = function(d) sub("1,204", "1 204", d, fixed = TRUE)))
+  expect_true(r$value$coherence$kept)
+  expect_false("gr_revision_new_figure" %in% r$classes)
 })
 
 test_that("a total is of a field that is a number in every row, not of text that holds one", {
@@ -348,6 +518,15 @@ test_that("a pass that changes a figure is discarded, and the draft stands", {
   expect_false("gr_synth_unbacked_figures" %in% r$classes)
 })
 
+test_that("a pass that changes the figure after a bare id is discarded", {
+  text <- "In study 3, 1,204 adults took part [study 3]. The cohort followed 900 people [study 2]."
+  r <- warn_classes(fig_synth(text, coherence = "register",
+                              revise = function(d) sub("1,204", "1,402", d, fixed = TRUE)))
+  expect_true("gr_revision_new_figure" %in% r$classes)
+  expect_false(r$value$coherence$kept)
+  expect_identical(r$value$figures$number, c("1,204", "900"))
+})
+
 test_that("a pass may not write back a figure an earlier pass cut", {
   text <- "A trial found d = 0.61 [study 1], with 900 followed [study 2]. It replicated [study 1]."
   cut <- function(d) sub(", with 900 followed [study 2]", " [study 2]", d, fixed = TRUE)
@@ -422,6 +601,34 @@ test_that("the audit report lists the figures found nowhere, and what the rest w
   quiet(gr_audit_report(p, synthesis = clean, open = FALSE))
   html <- paste(readLines(p, warn = FALSE), collapse = "\n")
   expect_match(html, "Every figure was found in what its sentence was written from.", fixed = TRUE)
+})
+
+test_that("a kept pass that gave back the draft unchanged reports the draft as published", {
+  # No revision text is left to check, so only the draft is. print() and the
+  # audit inferred "final" from the kept pass, found no final rows, and said
+  # nothing: 0 figures checked, and no summary line.
+  text <- "The first trial found d = 0.71 [study 1]. The cohort followed 900 people [study 2]."
+  for (pass in c("register", "structure")) {
+    r <- warn_classes(fig_synth(text, coherence = pass, revise = function(d) d))
+    s <- r$value
+    expect_true(s$coherence$kept, info = pass)
+    expect_identical(unique(s$figures$stage), "draft", info = pass)
+    expect_true("gr_synth_unbacked_figures" %in% r$classes, info = pass)
+    out <- capture.output(print(s))
+    expect_true(any(grepl("1 figure(s) in the text are not in the rows their sentence cites",
+                          out, fixed = TRUE)), info = pass)
+    p <- withr::local_tempfile(fileext = ".html")
+    quiet(gr_audit_report(p, synthesis = s, open = FALSE))
+    html <- paste(readLines(p, warn = FALSE), collapse = "\n")
+    expect_match(html, "2 figure(s) were checked", fixed = TRUE, info = pass)
+    expect_match(html, "<td>cited row</td>", fixed = TRUE, info = pass)
+  }
+  # A kept pass that changed the text is still the published text.
+  s <- quiet(fig_synth(text, coherence = "register",
+                       revise = function(d) sub("The cohort", "A cohort", d, fixed = TRUE)))
+  expect_identical(attr(s$figures, "published"), "final")
+  out <- capture.output(print(s))
+  expect_true(any(grepl("1 figure(s) in the revised text", out, fixed = TRUE)))
 })
 
 test_that("a synthesis made before the check prints and reports as before", {

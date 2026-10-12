@@ -230,8 +230,8 @@ be sound.}
 long form: \code{section}, \code{study}, \code{document}, \code{document_id}.}
 \item{\code{figures}}{Every figure in a sentence of the write-up, checked
 against the rows it cites: \code{stage} (\code{"draft"} for the sections as
-written, \code{"final"} for the revised text when a revision pass was
-kept), \code{section} (the heading it stands under), \code{sentence}, \code{number}
+written, \code{"final"} for the revised text when a kept revision pass
+changed it), \code{section} (the heading it stands under), \code{sentence}, \code{number}
 (as written), \code{studies} (the studies the sentence cites, comma-joined,
 or NA), \code{backed}, and \code{basis}, what it was found in (NA when it was
 not). See "Figures" below.}
@@ -292,28 +292,35 @@ question, the section's heading and brief, \code{style}, and the gaps a closing
 section was given; and with \code{claims}, the claims given to the section that
 rest on a cited study. A sentence that cites nothing is checked against
 every row its section was shown. This runs on the draft, and again on the
-revised text when a revision pass was kept; it sends nothing, so it is
-always on, and it changes no request.
+revised text when a kept revision pass changed it; it sends nothing, so it
+is always on, and it changes no request.
 
 A figure counts as found in any form a faithful copy may give it: \code{.61} for
-0.61, \code{45.20} for 45.2, \code{1204} for 1,204, a minus sign or none, either side
-of a dash in a range, \verb{45.2 million} for 45,200,000, \verb{45\%} for 0.45, \code{12}
-for "twelve", and rounded to the places it is written to (0.61 or 0.6 for
-0.613, never 0.62). A row's percentage read as a proportion, or its scaled
-figure at full value, must match exactly: rounded as well, a pooled
+0.61, \code{45.20} for 45.2, \code{1204} for 1,204, \verb{12 450} for 12,450 (grouped by
+a space, where that is the row's figure), a minus sign or none, either side
+of a dash in a range, \verb{45.2 million} for 45,200,000, \verb{4 x 10^-4} for
+0.0004, \verb{100,000} for a numeric field shown as \code{1e+05}, \verb{45\%} for 0.45,
+\code{12} for "twelve", and rounded to the places it is written to (0.61 or 0.6
+for 0.613, never 0.62). A row's percentage read as a proportion, or its
+scaled figure at full value, must match exactly: rounded as well, a pooled
 estimate no study reported matched a row's unrelated percentage. A figure
 is also allowed when it is the total of a numeric field over the rows the
 sentence cites; worked out from two other figures of the same sentence
-("120 of 1,020 (11.8\%)"); a difference in points between two figures of the
-cited rows; a year a cited row carries in any column; the number of studies
-the sentence cites, its section was shown or the review was written from;
-or, after "about", "more than", "fewer than" and their like, within a tenth
-(about) or a quarter (a bound) of a value it could have come from. Not read
-as figures: a citation's ids, a whole number below ten that is not a
-percentage or scaled (a review writes "2 of the trials" as it likes), a
-number joined to a name ("COVID-19", "IL-6"), an ordinal, a decade, an
-interval's level (\verb{95\% CI}) and a significance threshold (\code{p < .001}).
-Numbers written in words are not checked.
+("120 of 1,020 (11.8\%)"), or from a ratio in it read as a change from 1
+("HR 0.78, a 22\% lower hazard"); a difference in points between two figures
+of one field of a cited row, or two percentages of one cited row; a year a
+cited row carries in any column; the number of studies the sentence cites,
+its section was shown or the review was written from, or how many of those
+rows share a field's value ("10 were randomised trials"); or, after
+"about", "more than", "fewer than" and their like, within a tenth (about)
+or a quarter (a bound) of a value it could have come from. Not read as
+figures: a citation's ids, written bare as well ("studies 12 to 15"), a
+whole number below ten that is not a percentage or scaled (a review writes
+"2 of the trials" as it likes), a number joined to a name ("COVID-19",
+"IL-6"), an ordinal, a decade ("1990s", "in their 60s"), an interval's
+level (\verb{95\% CI}), a significance threshold (\code{p < .001}, "p value below
+0.05") and a significance level ("at the 5\% level"). Numbers written in
+words are not checked.
 
 A figure found nowhere is reported in \verb{$figures} and counted in
 \verb{$sections$n_unbacked}, and the run warns (\code{gr_synth_unbacked_figures})

@@ -63,6 +63,13 @@
                 "Fig.", "fig.", "Dr.", "Prof.", "Mr.", "Mrs.", "Ms.", "St.",
                 "Inc.", "Ltd.")
 
+#' "c." for circa, before a figure only: "enrolled c. 1,200 adults" was cut
+#' after "c.", and the figures check read 1,200 with no qualifier, in a
+#' fragment. Not in .gr_abbrev, which would also keep a sentence that ends in
+#' "vitamin c." from ending.
+#' @noRd
+.gr_circa <- "\\bc\\.(?=[[:space:]]*[0-9])"
+
 #' Split prose into sentences, minus the markdown headings.
 #'
 #' Headings go first because they are not claims and an editing pass is meant to
@@ -81,6 +88,7 @@ split_sentences <- function(txt) {
     txt <- gsub(paste0("\\b", gsub(".", "\\.", a, fixed = TRUE)),
                 gsub(".", "\u0001", a, fixed = TRUE), txt, perl = TRUE)
   }
+  txt <- gsub(.gr_circa, "c\u0001", txt, perl = TRUE)
   txt <- gsub("([\u3002\uff01\uff1f])(?![[:space:]])", "\\1 ", txt, perl = TRUE)
   parts <- unlist(strsplit(txt, "(?<=[.!?\u3002\uff01\uff1f])\\s+", perl = TRUE),
                   use.names = FALSE)
@@ -223,6 +231,7 @@ sentence_spans <- function(txt) {
     masked <- gsub(paste0("\\b", gsub(".", "\\.", a, fixed = TRUE)),
                    gsub(".", "\u0001", a, fixed = TRUE), masked, perl = TRUE)
   }
+  masked <- gsub(.gr_circa, "c\u0001", masked, perl = TRUE)
   br <- gregexpr("\\[[^][\n]*\\]", masked, perl = TRUE)
   regmatches(masked, br) <- lapply(regmatches(masked, br),
                                    function(v) gsub("[.!?]", "\u0001", v))

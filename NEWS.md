@@ -1,4 +1,4 @@
-# readgpt 0.5.1
+# readgpt 0.6.0
 
 ## New
 
@@ -147,218 +147,8 @@
   report's table of revision passes, so a pass that halved the review can be
   seen.
 
-* **A review that reads like a review: citations by name, a reference list, and
-  a coherence pass.** `gr_synthesise()` produced prose citing `[study 3]`, with
-  no reference list and no connective tissue between sections. It is now capable
-  of the thing people need to publish.
-
-  `cite_style` renders the markers as `(Smith & Okafor, 2019)`, merging
-  adjacent markers into one citation, disambiguating a shared author-year as
-  2019a and 2019b, and handling the author-list shapes that turn up, including
-  the lowercase particles (`van der Berg`, `de la Cruz`) that a
-  requires-a-capital rule drops silently. `references = TRUE` appends a list
-  built from the studies the finished text actually cites, alphabetical under
-  author-year and numbered by study otherwise, because the list has to be
-  labelled by whatever the prose uses to point into it.
-
-  The writing model is never shown who wrote a study. Adding bibliographic
-  fields to a schema put "authors: Smith, J., Okafor, A." in front of a model
-  asked to cite `[study 1]`, and a model that can see a name will write "Smith
-  and Okafor (2019) found..." instead of the marker: a citation checked by
-  nothing and rendered by nothing, which is the model asserting an attribution
-  and the one thing this design exists to prevent. The document filename went
-  the same way and for the same reason: academic PDFs are routinely called
-  `Smith2019_CognitiveLoad.pdf`, which leaks an author and a year through the
-  one field nobody thinks of as bibliographic. Both are withheld from the
-  writing prompt and applied afterwards, so a model cannot misattribute a study
-  whose authors it was never told. If a bibliographic value is also a finding,
-  extract it a second time under a name of its own.
-
-  The model still writes `[study 3]`, always, and rendering happens afterwards
-  from the table. A marker can be checked exactly against the rows that exist;
-  verifying "Smith & Okafor (2019)" would mean matching a name the model wrote
-  against a name in the table, and near-misses (Smith for Smyth, 2019 for
-  2018) are both the errors that matter and the ones fuzzy matching forgives.
-  A rendered citation is therefore a fact about the extraction, and
-  `$text_marked` keeps the marker form so the check can be re-run on what was
-  published. A study that cannot be named makes the whole run fall back to
-  markers rather than mixing names and numbers or inventing "n.d.".
-
-  `coherence = TRUE` runs the revision passes over the assembled draft, so the
-  independently-written sections read as one argument (see "Three revision
-  passes" below for what they are). Their output is checked rather than trusted,
-  because this is the one step that could quietly undo the guarantee the rest of
-  the pipeline exists to give: a revision that added a citation, dropped one, or
-  ran into the model's output limit is discarded with a warning and `$draft` is
-  what you get. The passes are budgeted for the whole document, which is what
-  they rewrite, rather than for a section.
-
-  `style` carries a register (`"formal academic; hedge claims; past tense for
-  findings"`) into both the section and coherence prompts, appended rather
-  than substituted, so the rules about citing every claim and inventing nothing
-  hold whatever voice is asked for.
-
-* **`gr_inventory()`: what is in a folder, before you read any of it.** Every
-  other pre-run check here is per document and happens once the run is already
-  going: `preflight()` estimates a document's cost as `gr_read()` is called, and
-  `extract_pdf()` decides a page needs OCR while extracting that page. Both are
-  the right check in the wrong place for a corpus. Point `gr_extract()` at four
-  hundred PDFs and you learn that a hundred and eighty are scans, and that
-  tesseract is not installed, after paying for the two hundred and twenty that
-  were not. This is the same discipline one level up, and deliberately not an
-  LLM step: whether a page carries a text layer is a character count, whether a
-  file has an extractor is a lookup, and asking a model either would be slower,
-  cost money and be less accurate than the answer already on disk.
-
-  One row per file **including** the ones that will not be read, because "180 of
-  your files were skipped" is the finding and a table of survivors cannot report
-  it. A file whose extractor's package is absent is `needs_package`, not
-  `ready`, and is left out of the token total and the cost floor, because sizing
-  a run that cannot happen is worse than not sizing it. A file reachable by two
-  paths (a `latest -> v3` symlink beside the versions it points at) is
-  surveyed once. No file can stop the survey either: a corrupt PDF, a binary
-  file wearing a `.txt` extension, a broken symlink or anything unforeseen
-  becomes a row saying so, which is the contract [`gr_read_many()`] has always
-  given a corpus run.
-
-  It chooses nothing for you: no automatic routing of files to recipes, because
-  a router that reads one document with `retrieve` and another with
-  `stuff` returns a plausible answer built on part of a file with nothing saying
-  so, and it makes `gr_compare()` meaningless: the corpus no longer had *a*
-  configuration.
-
-* **Three ways a directory could quietly read as less than you gave it.** Found
-  while writing the above, all in `corpus_sources()` and all silent.
-
-  Files whose extension no extractor claims were **dropped without a word**, so
-  a folder of `.doc` files (not `.docx`) read as an empty corpus and a mixed
-  folder read as however much of it happened to be supported. It now warns,
-  counts them by extension, and carries the list on the result.
-
-  A document **lost the folder it came from**: `basename()` turned
-  `2019/report.txt` and `2020/report.txt` into one name, and `make.unique()`
-  then separated them as `report.txt` and `report.txt#1`, discarding the
-  meaningful half and replacing it with an index that depends on sort order.
-  Somebody who had filed by year could not tell their own rows apart. Labels are
-  now relative to the directory, so the folder survives into `$summary` and into
-  the extraction table.
-
-  And the empty-directory error **never mentioned `recursive`**, which is the
-  commonest cause by far: the default does not descend, so a folder of
-  subfolders looks empty. It now counts the readable files sitting below and
-  says so.
-
 * **`.csv` and `.tsv` are readable.** An extractor claims them, so a folder of
   exported tables is read rather than skipped.
-
-* **`preview`: the reader that decides how to read before reading.** Every
-  other reader treats all chunks alike: `stuff` sends them all, `map_reduce`
-  answers from each in turn, `retrieve` ranks them by similarity. None of them
-  plans. `preview` builds an outline from section labels, sizes and short
-  excerpts, asks once which sections must be read in full, which are worth
-  scanning, and which cannot bear on the question, then reads accordingly and
-  answers. Its traversal signature is `planned|1+s+1|none` (`planned` is a
-  selection mode no other reader has), and the plan comes back in
-  `ans$notes$plan`, so "sections 3 and 5 were not read" is a finding you can
-  see rather than a silent economy.
-
-  Three things keep the planner honest, because it is itself an LLM call about
-  a long document and so prone to exactly the degradation this package exists
-  to manage. Its outline is built from metadata and excerpts, never the full
-  text, and is capped by the new `preview_tokens` setting; per-section excerpts
-  shrink until the whole outline fits, so no section is hidden from it by
-  truncation. Its output is a fixed schema. And a section the plan does not
-  mention defaults to **read**, never to skip, because silence must not be able
-  to lose a document's contents. When no usable plan comes back at all, the reader
-  reads everything, warns `gr_preview_degraded`, and marks the answer partial.
-
-  A plan that marks every section skip reads nothing. A document with no
-  headings is planned by blocks rather than as one section, and a skimmed
-  section whose excerpt had to be cut reports `tokens_truncated` and marks the
-  answer partial.
-
-  It is called `preview` and not `survey` because a recipe already owns
-  `survey`, and `as_recipe()` resolves recipes before readers, so a reader of
-  that name would have been silently unreachable by string. A name owned by
-  both now warns (`gr_ambiguous_name`) instead of quietly resolving to one of
-  its two meanings.
-
-* **A trace records the configuration that produced it.** Trace meta carried
-  the recipe's *name* and nothing about how it was set up, so two runs of
-  `"thorough"` with `top_k = 3` and `top_k = 8` produced traces (and a
-  `gr_compare()` summary) that could not be told apart. For a package whose
-  point is comparing configurations, the configuration has to be in the record.
-  The preflight and segment steps now carry whatever differs from the defaults,
-  `gr_compare()$summary` gains a `settings` column naming it, and every trace
-  stamps the readgpt version that wrote it. A run that changed nothing reports
-  nothing: the record says what the run did, not thirty defaults.
-
-* **`gr_records()` and `gr_search()`: the review starts at the search, not at a
-  folder.** Reads RIS and BibTeX exports from any number of databases,
-  deduplicates by DOI, matches the surviving records to documents on disk, and
-  reports the counts PRISMA item 16 asks for: identified, duplicates removed,
-  screened, sought, retrieved, not retrieved. `gr_flow()` and the audit report
-  now begin at identification rather than at "sources given", which was already
-  past the step that decides whether a review can be repeated. `gr_search()`
-  carries the databases, queries, dates, limits and registration (items 6, 7
-  and 24), so what was searched travels with the run instead of living in a lab
-  notebook.
-
-  The records also supply the author and year that `cite_style` renders. From an
-  export they are data, joined onto the extraction table by file path, rather
-  than values a model read off a title page, which is the loosest guarantee in
-  the pipeline, for the one part of a citation that must be exactly right. The
-  writing model is still never shown them.
-
-  No model is called. Which paper a record is, and whether two records are one
-  paper, are questions a DOI answers exactly. Everything is base R: the parsing
-  is not the hard part, the dialect drift between databases is, and a dependency
-  would only move that somewhere this package cannot see it. `DP` alone is
-  "database provider" in the RIS specification and "date of publication" in what
-  PubMed exports; read as the former, every PubMed record loses its year.
-
-  Two judgements can attribute one paper's findings to another, and both refuse
-  rather than guess. Two records that both carry DOIs are never merged on a
-  title match. And a document is matched by the path the export gave, the DOI in
-  the filename, the title, or first-author-and-year, but a file that two records
-  could claim by the same route goes to neither, so two Smith 2019 papers and one
-  `smith2019.pdf` claim nothing at all.
-
-* **`gr_reference()` and `gr_calibrate()`: how often the screener is wrong,
-  measured rather than assumed.** Draw a sample of a screening run for a person
-  to judge blind, read the completed CSV back, and get the rates that sample
-  supports, each with a Wilson interval and each refused when the sample is too
-  small. It is what turns "we used an LLM" into a claim with a number attached,
-  and it is the number a methods section needs.
-
-  Agreement between two model passes is not a substitute. Two passes share
-  weights, priors and blind spots, so their errors are correlated: they agree
-  most confidently where they are both wrong, and the figure would read as
-  reliability while meaning self-consistency.
-
-  **Which rows the sample came from decides which questions it can answer**, and
-  computing the rest anyway is worse than computing nothing. A sample of
-  exclusions contains no kept records, so sensitivity comes out 0% and
-  specificity 100%, artifacts of the frame that look exactly like findings.
-  That frame reports the false omission rate instead, projected across the whole
-  discarded pile: "about 17 eligible studies lost, 6 to 47". The frame is written
-  as a column in the CSV, because an attribute does not survive `write.csv()`,
-  Excel and a fortnight.
-
-  `"unclear"` counts as kept, not as a miss. A deferral goes to a person, and
-  penalising it would punish the behaviour that makes the screener safe. Two
-  sensitivities are reported where the frame allows, as deployed and strict, and
-  the gap is the human reading left. Accuracy is not reported at all: at a
-  realistic inclusion rate a screener that excluded everything would score ~95%,
-  so Cohen's kappa is given instead. Intervals are Wilson rather than normal,
-  because screening proportions sit at the ends of the scale where the textbook
-  interval returns [1, 1] from five observations.
-
-  A reference that mixes frames (every kept record `rbind()`-ed onto a sample
-  of the exclusions, which is what `gr_reference()`'s own advice produces) is
-  refused with the fix named, rather than averaged over strata sampled at
-  different rates. One whose frame cannot be identified warns and says what it
-  assumes, and `of =` lets a hand-built reference declare its frame.
 
 * **`headers`: reaching an endpoint that does not authenticate with a bearer
   token.** `base_url` was enough only for a gateway that speaks the OpenAI shape
@@ -1078,7 +868,9 @@
   - `rerank` is partial when relevant chunks did not fit, `retrieve` over no
     chunks returns `NOT_IN_DOCUMENT` without asking the model, and `preview`
     fits its whole prompt, skimmed evidence included, and flags citations of
-    sections its plan skipped.
+    sections its plan skipped. `preview` also plans a document with no headings
+    by blocks rather than as one section, and a skimmed section whose excerpt
+    had to be cut reports `tokens_truncated` and marks the answer partial.
   - `is_not_found()` recognises the sentinel followed by an explanation or
     decorated with another script's punctuation, and `skim` and `preview` do
     the same for NONE.
@@ -1433,6 +1225,262 @@
   compatibility shims were checked only for returning a string, so pointing all
   four at one reader left the suite green.
 
+## Behaviour
+
+* With `coherence` on, a `cut` pass that did not shorten the review and a
+  revision pass that wrote a figure its draft did not have are now discarded.
+  Neither check sends anything, but a refused pass means the next pass is sent
+  the text before it, so a strict replay of a run recorded before this change,
+  in which such a pass was kept, misses at that next pass.
+
+* `gr_compare()`'s settings column shows a named setting with its names
+  (`effort=map:low+high`) rather than its values alone.
+
+* Stored results written by earlier versions are read again once: the store key
+  now covers the client's `extra_body`, embedding model and embedder. Response
+  cache entries made through an ellmer chat are not reused either, since the
+  chat's settings are now part of its identity.
+
+* `gr_read_spec()`'s `model` defaults to `NULL`, meaning the client's model. Code
+  that relied on the default model being used with a client set to another
+  model will now use the client's.
+
+* Screening and extraction tables can hold the new statuses `"failed"` (for a
+  screening request that failed) and `"incomplete"` (for a partly read
+  extraction). Neither is used by `gr_synthesise()` or `gr_claims()`.
+
+* Answers that were cut off at the output cap, or that quote text a model wrote,
+  are now partial where they were not before.
+
+* URL ingestion refuses addresses on this machine or a private network, and
+  downloads over 512 MB; set `options(readgpt.allow_local_urls = TRUE)` for an
+  intranet server. A corpus read from presigned addresses labels its documents
+  without their credentials, so store entries for such sources are read again
+  once.
+
+* A screening exclusion that names a criterion outside the protocol is now
+  "unclear", and screening tables gain a `criterion_valid` column.
+
+* In `gr_synthesise()`, columns named date, source, url, published or
+  publication are no longer taken as bibliographic by name, so a table that
+  relied on them for author-year citations falls back to markers unless `bib`
+  names them. A draft not in English is no longer revised.
+
+* The `ligatures` cleaner keeps en and em dashes, and the `headers_footers` and
+  `captions` cleaners remove less, so the text of documents cleaned with them
+  changes and the document cache is refilled once.
+
+* Extracted numbers and booleans that could be read more than one way are now
+  left empty and counted in `n_unverified` rather than stored.
+
+* A chat model registered with only one of its two prices is refused.
+
+# readgpt 0.5.1
+
+## New
+
+* **A review that reads like a review: citations by name, a reference list, and
+  a coherence pass.** `gr_synthesise()` produced prose citing `[study 3]`, with
+  no reference list and no connective tissue between sections. It is now capable
+  of the thing people need to publish.
+
+  `cite_style` renders the markers as `(Smith & Okafor, 2019)`, merging
+  adjacent markers into one citation, disambiguating a shared author-year as
+  2019a and 2019b, and handling the author-list shapes that turn up, including
+  the lowercase particles (`van der Berg`, `de la Cruz`) that a
+  requires-a-capital rule drops silently. `references = TRUE` appends a list
+  built from the studies the finished text actually cites, alphabetical under
+  author-year and numbered by study otherwise, because the list has to be
+  labelled by whatever the prose uses to point into it.
+
+  The writing model is never shown who wrote a study. Adding bibliographic
+  fields to a schema put "authors: Smith, J., Okafor, A." in front of a model
+  asked to cite `[study 1]`, and a model that can see a name will write "Smith
+  and Okafor (2019) found..." instead of the marker: a citation checked by
+  nothing and rendered by nothing, which is the model asserting an attribution
+  and the one thing this design exists to prevent. The document filename went
+  the same way and for the same reason: academic PDFs are routinely called
+  `Smith2019_CognitiveLoad.pdf`, which leaks an author and a year through the
+  one field nobody thinks of as bibliographic. Both are withheld from the
+  writing prompt and applied afterwards, so a model cannot misattribute a study
+  whose authors it was never told. If a bibliographic value is also a finding,
+  extract it a second time under a name of its own.
+
+  The model still writes `[study 3]`, always, and rendering happens afterwards
+  from the table. A marker can be checked exactly against the rows that exist;
+  verifying "Smith & Okafor (2019)" would mean matching a name the model wrote
+  against a name in the table, and near-misses (Smith for Smyth, 2019 for
+  2018) are both the errors that matter and the ones fuzzy matching forgives.
+  A rendered citation is therefore a fact about the extraction, and
+  `$text_marked` keeps the marker form so the check can be re-run on what was
+  published. A study that cannot be named makes the whole run fall back to
+  markers rather than mixing names and numbers or inventing "n.d.".
+
+  `coherence = TRUE` runs one further call over the assembled draft, so the
+  independently-written sections read as one argument. Its output is checked
+  rather than trusted, because this is the one step that could quietly undo the
+  guarantee the rest of the pipeline exists to give: a revision that added a
+  citation, dropped one, or ran into the model's output limit is discarded with a
+  warning and `$draft` is what you get. It is budgeted for the whole document,
+  which is what it rewrites, rather than for a section.
+
+  `style` carries a register (`"formal academic; hedge claims; past tense for
+  findings"`) into both the section and coherence prompts, appended rather
+  than substituted, so the rules about citing every claim and inventing nothing
+  hold whatever voice is asked for.
+
+* **`gr_inventory()`: what is in a folder, before you read any of it.** Every
+  other pre-run check here is per document and happens once the run is already
+  going: `preflight()` estimates a document's cost as `gr_read()` is called, and
+  `extract_pdf()` decides a page needs OCR while extracting that page. Both are
+  the right check in the wrong place for a corpus. Point `gr_extract()` at four
+  hundred PDFs and you learn that a hundred and eighty are scans, and that
+  tesseract is not installed, after paying for the two hundred and twenty that
+  were not. This is the same discipline one level up, and deliberately not an
+  LLM step: whether a page carries a text layer is a character count, whether a
+  file has an extractor is a lookup, and asking a model either would be slower,
+  cost money and be less accurate than the answer already on disk.
+
+  One row per file **including** the ones that will not be read, because "180 of
+  your files were skipped" is the finding and a table of survivors cannot report
+  it. A file whose extractor's package is absent is `needs_package`, not
+  `ready`, and is left out of the token total and the cost floor, because sizing
+  a run that cannot happen is worse than not sizing it. A file reachable by two
+  paths (a `latest -> v3` symlink beside the versions it points at) is
+  surveyed once. No file can stop the survey either: a corrupt PDF, a binary
+  file wearing a `.txt` extension, a broken symlink or anything unforeseen
+  becomes a row saying so, which is the contract [`gr_read_many()`] has always
+  given a corpus run.
+
+  It chooses nothing for you: no automatic routing of files to recipes, because
+  a router that reads one document with `retrieve` and another with
+  `stuff` returns a plausible answer built on part of a file with nothing saying
+  so, and it makes `gr_compare()` meaningless: the corpus no longer had *a*
+  configuration.
+
+* **Three ways a directory could quietly read as less than you gave it.** Found
+  while writing the above, all in `corpus_sources()` and all silent.
+
+  Files whose extension no extractor claims were **dropped without a word**, so
+  a folder of `.doc` files (not `.docx`) read as an empty corpus and a mixed
+  folder read as however much of it happened to be supported. It now warns,
+  counts them by extension, and carries the list on the result.
+
+  A document **lost the folder it came from**: `basename()` turned
+  `2019/report.txt` and `2020/report.txt` into one name, and `make.unique()`
+  then separated them as `report.txt` and `report.txt#1`, discarding the
+  meaningful half and replacing it with an index that depends on sort order.
+  Somebody who had filed by year could not tell their own rows apart. Labels are
+  now relative to the directory, so the folder survives into `$summary` and into
+  the extraction table.
+
+  And the empty-directory error **never mentioned `recursive`**, which is the
+  commonest cause by far: the default does not descend, so a folder of
+  subfolders looks empty. It now counts the readable files sitting below and
+  says so.
+
+* **`preview`: the reader that decides how to read before reading.** Every
+  other reader treats all chunks alike: `stuff` sends them all, `map_reduce`
+  answers from each in turn, `retrieve` ranks them by similarity. None of them
+  plans. `preview` builds an outline from section labels, sizes and short
+  excerpts, asks once which sections must be read in full, which are worth
+  scanning, and which cannot bear on the question, then reads accordingly and
+  answers. Its traversal signature is `planned|1+s+1|none` (`planned` is a
+  selection mode no other reader has), and the plan comes back in
+  `ans$notes$plan`, so "sections 3 and 5 were not read" is a finding you can
+  see rather than a silent economy.
+
+  Three things keep the planner honest, because it is itself an LLM call about
+  a long document and so prone to exactly the degradation this package exists
+  to manage. Its outline is built from metadata and excerpts, never the full
+  text, and is capped by the new `preview_tokens` setting; per-section excerpts
+  shrink until the whole outline fits, so no section is hidden from it by
+  truncation. Its output is a fixed schema. And a section the plan does not
+  mention defaults to **read**, never to skip, because silence must not be able
+  to lose a document's contents. When no usable plan comes back at all, the reader
+  reads everything, warns `gr_preview_degraded`, and marks the answer partial.
+
+  A plan that marks every section skip reads nothing, rather than the whole
+  document, which is what an empty plan used to read.
+
+  It is called `preview` and not `survey` because a recipe already owns
+  `survey`, and `as_recipe()` resolves recipes before readers, so a reader of
+  that name would have been silently unreachable by string. A name owned by
+  both now warns (`gr_ambiguous_name`) instead of quietly resolving to one of
+  its two meanings.
+
+* **A trace records the configuration that produced it.** Trace meta carried
+  the recipe's *name* and nothing about how it was set up, so two runs of
+  `"thorough"` with `top_k = 3` and `top_k = 8` produced traces (and a
+  `gr_compare()` summary) that could not be told apart. For a package whose
+  point is comparing configurations, the configuration has to be in the record.
+  The preflight and segment steps now carry whatever differs from the defaults,
+  `gr_compare()$summary` gains a `settings` column naming it, and every trace
+  stamps the readgpt version that wrote it. A run that changed nothing reports
+  nothing: the record says what the run did, not thirty defaults.
+
+* **`gr_records()` and `gr_search()`: the review starts at the search, not at a
+  folder.** Reads RIS and BibTeX exports from any number of databases,
+  deduplicates by DOI, matches the surviving records to documents on disk, and
+  reports the counts PRISMA item 16 asks for: identified, duplicates removed,
+  screened, sought, retrieved, not retrieved. `gr_flow()` and the audit report
+  now begin at identification rather than at "sources given", which was already
+  past the step that decides whether a review can be repeated. `gr_search()`
+  carries the databases, queries, dates, limits and registration (items 6, 7
+  and 24), so what was searched travels with the run instead of living in a lab
+  notebook.
+
+  The records also supply the author and year that `cite_style` renders. From an
+  export they are data, joined onto the extraction table by file path, rather
+  than values a model read off a title page, which is the loosest guarantee in
+  the pipeline, for the one part of a citation that must be exactly right. The
+  writing model is still never shown them.
+
+  No model is called. Which paper a record is, and whether two records are one
+  paper, are questions a DOI answers exactly. Everything is base R: the parsing
+  is not the hard part, the dialect drift between databases is, and a dependency
+  would only move that somewhere this package cannot see it. `DP` alone is
+  "database provider" in the RIS specification and "date of publication" in what
+  PubMed exports; read as the former, every PubMed record loses its year.
+
+  Two judgements can attribute one paper's findings to another, and both refuse
+  rather than guess. Two records that both carry DOIs are never merged on a
+  title match. And a document is matched by the path the export gave, the DOI in
+  the filename, the title, or first-author-and-year, but an author and year
+  shared by two records matches nothing, so two Smith 2019 papers and one
+  `smith2019.pdf` claim nothing at all.
+
+* **`gr_reference()` and `gr_calibrate()`: how often the screener is wrong,
+  measured rather than assumed.** Draw a sample of a screening run for a person
+  to judge blind, read the completed CSV back, and get the rates that sample
+  supports, each with a Wilson interval and each refused when the sample is too
+  small. It is what turns "we used an LLM" into a claim with a number attached,
+  and it is the number a methods section needs.
+
+  Agreement between two model passes is not a substitute. Two passes share
+  weights, priors and blind spots, so their errors are correlated: they agree
+  most confidently where they are both wrong, and the figure would read as
+  reliability while meaning self-consistency.
+
+  **Which rows the sample came from decides which questions it can answer**, and
+  computing the rest anyway is worse than computing nothing. A sample of
+  exclusions contains no kept records, so sensitivity comes out 0% and
+  specificity 100%, artifacts of the frame that look exactly like findings.
+  That frame reports the false omission rate instead, projected across the whole
+  discarded pile: "about 17 eligible studies lost, 6 to 47". The frame is written
+  as a column in the CSV, because an attribute does not survive `write.csv()`,
+  Excel and a fortnight.
+
+  `"unclear"` counts as kept, not as a miss. A deferral goes to a person, and
+  penalising it would punish the behaviour that makes the screener safe. Two
+  sensitivities are reported where the frame allows, as deployed and strict, and
+  the gap is the human reading left. Accuracy is not reported at all: at a
+  realistic inclusion rate a screener that excluded everything would score ~95%,
+  so Cohen's kappa is given instead. Intervals are Wilson rather than normal,
+  because screening proportions sit at the ends of the scale where the textbook
+  interval returns [1, 1] from five observations.
+
+## Fixed
 
 * **A provider that omits its usage block no longer makes the call free.**
   `parse_response()` collapsed a missing, null or non-numeric `usage` (several
@@ -1479,45 +1527,6 @@
   the cheap per-chunk pass to a cheaper model, which is a headline cost feature)
   and `rerank_min_score`. All three are now checked, and reader coverage rose
   from 75.1% to 82.5%.
-
-## Behaviour
-
-* With `coherence` on, a `cut` pass that did not shorten the review and a
-  revision pass that wrote a figure its draft did not have are now discarded.
-  Neither check sends anything, but a refused pass means the next pass is sent
-  the text before it, so a strict replay of a run recorded before this change,
-  in which such a pass was kept, misses at that next pass.
-* `gr_compare()`'s settings column shows a named setting with its names
-  (`effort=map:low+high`) rather than its values alone.
-* Stored results written by earlier versions are read again once: the store key
-  now covers the client's `extra_body`, embedding model and embedder. Response
-  cache entries made through an ellmer chat are not reused either, since the
-  chat's settings are now part of its identity.
-* `gr_read_spec()`'s `model` defaults to `NULL`, meaning the client's model. Code
-  that relied on the default model being used with a client set to another
-  model will now use the client's.
-* Screening and extraction tables can hold the new statuses `"failed"` (for a
-  screening request that failed) and `"incomplete"` (for a partly read
-  extraction). Neither is used by `gr_synthesise()` or `gr_claims()`.
-* Answers that were cut off at the output cap, or that quote text a model wrote,
-  are now partial where they were not before.
-* URL ingestion refuses addresses on this machine or a private network, and
-  downloads over 512 MB; set `options(readgpt.allow_local_urls = TRUE)` for an
-  intranet server. A corpus read from presigned addresses labels its documents
-  without their credentials, so store entries for such sources are read again
-  once.
-* A screening exclusion that names a criterion outside the protocol is now
-  "unclear", and screening tables gain a `criterion_valid` column.
-* In `gr_synthesise()`, columns named date, source, url, published or
-  publication are no longer taken as bibliographic by name, so a table that
-  relied on them for author-year citations falls back to markers unless `bib`
-  names them. A draft not in English is no longer revised.
-* The `ligatures` cleaner keeps en and em dashes, and the `headers_footers` and
-  `captions` cleaners remove less, so the text of documents cleaned with them
-  changes and the document cache is refilled once.
-* Extracted numbers and booleans that could be read more than one way are now
-  left empty and counted in `n_unverified` rather than stored.
-* A chat model registered with only one of its two prices is refused.
 
 # readgpt 0.5.0
 

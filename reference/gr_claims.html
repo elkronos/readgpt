@@ -69,7 +69,8 @@ from an argument instead of from rows.</p>
 <span>  max_claim_tokens <span class="op">=</span> <span class="fl">1600L</span>,</span>
 <span>  include_unclear <span class="op">=</span> <span class="cn">FALSE</span>,</span>
 <span>  trace <span class="op">=</span> <span class="cn">NULL</span>,</span>
-<span>  bib <span class="op">=</span> <span class="cn">NULL</span></span>
+<span>  bib <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  effort <span class="op">=</span> <span class="cn">NULL</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -118,6 +119,16 @@ same as <code><a href="gr_synthesise.html">gr_synthesise()</a></code>.</p></dd>
 cannot attribute a finding to a name, and cannot be moderated by one.
 Omitted, only the conventional names are withheld. Pass the same <code>bib</code> to
 <code><a href="gr_synthesise.html">gr_synthesise()</a></code> and <code><a href="gr_gaps.html">gr_gaps()</a></code>.</p></dd>
+
+
+<dt id="arg-effort">effort<a class="anchor" aria-label="anchor" href="#arg-effort"></a></dt>
+<dd><p>Reasoning effort, or <code>NULL</code> (the default) to send none: one
+string, or a character vector named by stage, as <code>effort</code> in
+<code><a href="gr_read_spec.html">gr_read_spec()</a></code>. The calls here are labelled <code>claims.draw</code> and
+<code>claims.reconcile</code>, so <code>c(claims = "high")</code> covers both. Drawing claims is
+judgement, the stage most worth a higher effort. The reasoning counts
+against the same reply limit, so a high effort can leave a batch's reply
+cut off, which is reported as such (<code>gr_claims_truncated</code>).</p></dd>
 
 </dl></div>
     <div class="section level2">

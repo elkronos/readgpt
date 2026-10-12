@@ -146,6 +146,13 @@ order they were made, and none for local steps such as segmentation:
   The messages sent, each as `"[role] text"`, and the text that came
   back.
 
+- `effort`:
+
+  The reasoning effort the request was sent with, `NA` for one sent
+  none. Present only when some request in the trace carried one (see
+  `effort` in
+  [`gr_read_spec()`](https://elkronos.github.io/readgpt/reference/gr_read_spec.md)).
+
 ## See also
 
 [`gr_trace_summary()`](https://elkronos.github.io/readgpt/reference/gr_trace_summary.md),
@@ -164,7 +171,7 @@ ch <- gr_segment(readgpt_example(), list(method = "sentence", max_tokens = 150))
 invisible(gr_read(ch, "What was revenue?", cl, "map_reduce", trace = tr))
 #> Reading with 'map_reduce' (all|N+logN|tree) over 5 chunk(s).
 print(tr)
-#> <gr_trace run_20260928020048.562_a999da>  7 steps, 6 model calls, 1118 in / 36 out tokens, 0 error(s)
+#> <gr_trace run_20261012043804.548_ebf46d>  7 steps, 6 model calls, 1118 in / 36 out tokens, 0 error(s)
 #>   steps: map.answer x5, preflight x1, reduce x1 
 #>   cost: $0.0000 across mock-model
 

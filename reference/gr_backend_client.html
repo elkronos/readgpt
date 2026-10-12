@@ -81,7 +81,9 @@ exactly as it does for the built-in HTTP client.</p>
 <dd><p>Function of <code>(messages, params)</code>. <code>messages</code> is a list of
 <code>list(role=, content=)</code> with roles <code>"system"</code>, <code>"developer"</code>, <code>"user"</code> or
 <code>"assistant"</code>. <code>params</code> carries <code>model</code>, <code>max_output</code>, <code>temperature</code>,
-<code>schema</code>, <code>schema_name</code> and <code>prompt_tokens</code>. Return a single string, or a
+<code>schema</code>, <code>schema_name</code> and <code>prompt_tokens</code>, and <code>effort</code> when the call has
+a reasoning effort to send (see <code>effort</code> in <code><a href="gr_read_spec.html">gr_read_spec()</a></code>); passing it
+on is the handler's business. Return a single string, or a
 <a href="gr_result.html">gr_result</a> for full control over token usage and failure reporting.</p></dd>
 
 

@@ -22,7 +22,8 @@ new_answer(
   evidence = NULL,
   partial = FALSE,
   notes = list(),
-  chunks_sent = NULL
+  chunks_sent = NULL,
+  premise = NULL
 )
 ```
 
@@ -75,6 +76,18 @@ new_answer(
   a faithful one: a per-chunk reader drops the chunks that answered "not
   in this excerpt", and citing one of those is not an invention.
   Defaults to `chunks_used`.
+
+- premise:
+
+  Whether, and how, the question's premise was checked; see `premise` in
+  [`gr_read_spec()`](https://elkronos.github.io/readgpt/reference/gr_read_spec.md).
+  `NULL` (the default) when your reader did not check it, which leaves
+  the field out of the answer. `NA` or `FALSE` when it checked and the
+  model reported nothing contradicting it. Otherwise the sentence in
+  which the model said what the document states instead, which should
+  then be `text` as well, so that `$answer` says it and
+  [`is_not_found()`](https://elkronos.github.io/readgpt/reference/is_not_found.md)
+  is `FALSE`. Any other value, `TRUE` among them, is an error.
 
 ## Value
 

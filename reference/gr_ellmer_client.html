@@ -117,6 +117,15 @@ sampling parameters when the chat is constructed, so a <code>temperature</code> 
 <code><a href="gr_read_spec.html">gr_read_spec()</a></code> cannot be honoured per-call; it is ignored and warned about
 once (<code>gr_ellmer_temperature</code>). Build a second chat if you need a second
 temperature.</p>
+<p>Reasoning effort is the same. An <code>effort</code> in a <code><a href="gr_read_spec.html">gr_read_spec()</a></code>, or given to
+<code><a href="gr_claims.html">gr_claims()</a></code>, <code><a href="gr_outline.html">gr_outline()</a></code> or <code><a href="gr_synthesise.html">gr_synthesise()</a></code>, is not sent through an
+ellmer chat; it is warned about once (<code>gr_effort_unsupported</code>) and the
+chat's own setting applies. Each trace step keeps the effort its call asked
+for as <code>params$unsent_effort</code>, not <code>params$effort</code>, so the <code>effort</code> column
+of <code>as.data.frame(trace)</code> and <code><a href="gr_audit_report.html">gr_audit_report()</a></code> do not count it as sent.
+(Like every client, the adapter is handed an effort only for a model the
+registry lists as a reasoning model, so for any other there is nothing to
+warn about.)</p>
 <p>The output cap does carry over, with ellmer 0.5.0 or later: each call runs on
 a chat rebuilt from yours (same provider, settings, system prompt and tools)
 with <code>max_tokens</code> set to that call's cap, as the built-in client sends it.

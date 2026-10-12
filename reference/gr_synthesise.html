@@ -73,7 +73,8 @@ rows it rests on.</p>
 <span>  references <span class="op">=</span> <span class="cn">TRUE</span>,</span>
 <span>  claims <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  gaps <span class="op">=</span> <span class="cn">NULL</span>,</span>
-<span>  trace <span class="op">=</span> <span class="cn">NULL</span></span>
+<span>  trace <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  effort <span class="op">=</span> <span class="cn">NULL</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -173,9 +174,20 @@ Each pass is forbidden from doing the others' job, and each is discarded
 studies are cited, wrote a citation the check cannot read, cited a study
 more often than the draft did, or took the citation marker off a claim
 sentence that stays (each a <code>gr_coherence_rejected</code> warning); if it
-arrived truncated (<code>gr_coherence_truncated</code>); or if it strengthened a
-claim (<code>gr_revision_escalated</code>). Off by default: each is a call, and each
-is a chance for a model to touch finished prose.</p>
+arrived truncated (<code>gr_coherence_truncated</code>); if it strengthened a
+claim (<code>gr_revision_escalated</code>); or if it introduced a figure the draft
+did not have (<code>gr_revision_new_figure</code>): one the draft gives in no form,
+so a figure changed or rounded counts, and 0.61 written as .61 does not.
+Off by default: each is a call, and each is a chance for a model to
+touch finished prose.</p>
+<p>The <code>"cut"</code> pass is also discarded when the cut pass did not shorten the
+review (<code>gr_revision_uncut</code>): its revision must have strictly fewer words
+of prose than the text it was given, headings and citation markers left
+out of the count. Fewer by any amount will do, since how much a draft can
+lose depends on how much it repeats itself. Only the cut is held to a
+length: a polish that keeps every sentence can remove half the words of
+padded prose, so no bound on the other two passes would tell their job
+from cutting. Their counts are in <code>$coherence</code> all the same.</p>
 <p>The check that refuses a revision which strengthens a claim reads English
 hedges and boosters, so a draft it judges not to be in English is not
 revised at all: a warning (<code>gr_revision_unguarded</code>) says so, no pass is
@@ -231,6 +243,17 @@ warning (<code>gr_gaps_truncated</code>), and the closing section is then partia
 still the write-up's own, so <code>gr_options(max_calls =)</code> bounds the write-up
 rather than being spent by the screening that came before it.</p></dd>
 
+
+<dt id="arg-effort">effort<a class="anchor" aria-label="anchor" href="#arg-effort"></a></dt>
+<dd><p>Reasoning effort, or <code>NULL</code> (the default) to send none: one
+string, or a character vector named by stage, as <code>effort</code> in
+<code><a href="gr_read_spec.html">gr_read_spec()</a></code>. The calls here are labelled <code>synthesise.section</code>,
+<code>synthesise.batch</code>, <code>synthesise.merge</code> and, with <code>coherence</code>,
+<code>synthesise.revise.structure</code>, <code>.cut</code> and <code>.register</code>; <code>c(synthesise = "medium", "synthesise.section" = "high")</code> writes the sections at high and
+does the rest at medium. The reasoning counts against each call's reply
+limit (<code>max_section_tokens</code> for a section), and a section cut off at it is
+reported as one.</p></dd>
+
 </dl></div>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
@@ -255,8 +278,12 @@ asked for.</p></dd>
 <dt><code>coherence</code></dt>
 <dd><p>One row per revision pass, or <code>NULL</code> if none ran:
 <code>pass</code> (which of <code>"structure"</code>, <code>"cut"</code>, <code>"register"</code>), <code>ran</code>, <code>kept</code>,
-<code>lost</code> and <code>added</code> (citations, if the revision changed them), and
-<code>reason</code> for anything discarded.</p></dd>
+<code>lost</code> and <code>added</code> (citations, if the revision changed them),
+<code>reason</code> for anything discarded, and <code>words_before</code> and <code>words_after</code>
+(integer: words of prose, headings and citation markers left out, in
+the text the pass was given and in its revision; <code>NA</code> for a pass
+that was not sent, or was refused by a check made before the length
+check, which comes last).</p></dd>
 
 <dt><code>unrendered</code></dt>
 <dd><p>Studies a section cited honestly that <code>text</code> still
@@ -292,11 +319,24 @@ one had to be cut to fit the merge, when (without <code>claims</code>) none of
 the studies of a batch it was drafted from is cited in it, when it
 could not be sent at all (its brief and gaps leave no room in the
 window), when the gaps given to it were cut, or, with <code>claims</code>, when
-it did not write up a claim it was given.</p></dd>
+it did not write up a claim it was given. Last, <code>n_unbacked</code>: the
+figures in the section that are not in the rows their sentence cites
+(see "Figures" below). It does not make a section partial, which
+says that a citation cannot be trusted, and a figure's citation may
+be sound.</p></dd>
 
 <dt><code>citations</code></dt>
 <dd><p>Every citation, resolved to the row it points at, in
 long form: <code>section</code>, <code>study</code>, <code>document</code>, <code>document_id</code>.</p></dd>
+
+<dt><code>figures</code></dt>
+<dd><p>Every figure in a sentence of the write-up, checked
+against the rows it cites: <code>stage</code> (<code>"draft"</code> for the sections as
+written, <code>"final"</code> for the revised text when a kept revision pass
+changed it), <code>section</code> (the heading it stands under), <code>sentence</code>, <code>number</code>
+(as written), <code>studies</code> (the studies the sentence cites, comma-joined,
+or NA), <code>backed</code>, and <code>basis</code>, what it was found in (NA when it was
+not). See "Figures" below.</p></dd>
 
 <dt><code>studies</code></dt>
 <dd><p>The rows that were written from, with the <code>study</code> number
@@ -312,6 +352,13 @@ the review was written without them.</p></dd>
 <dd><p>With <code>claims</code>, which section each claim was
 given to: a data frame of <code>section</code> and <code>claim_id</code>, the outline's
 assignment. <code>NULL</code> without <code>claims</code>.</p></dd>
+
+<dt><code>outline_alternative</code></dt>
+<dd><p>Present only when the outline is one of
+several <code><a href="gr_outline.html">gr_outline()</a></code> compared (<code>alternatives</code> above 1): which one
+it was, as <code>alternative</code>, <code>of</code> (how many were asked for), <code>distinct</code>
+(how many came back distinct) and <code>distance</code> from the first proposal.
+The trace's meta records <code>outline_alternative</code> and <code>outline_of</code> too.</p></dd>
 
 <dt><code>trace</code></dt>
 <dd><p>As <code><a href="gr_extract.html">gr_extract()</a></code>.</p></dd>
@@ -345,6 +392,55 @@ reported (<code>gr_synth_batch_dropped</code>) and marks it partial. Raise
 <code>max_section_tokens</code>, or divide the table between narrower sections.</p>
     </div>
     <div class="section level2">
+    <h2 id="figures">Figures<a class="anchor" aria-label="anchor" href="#figures"></a></h2>
+
+
+<p>The citation check says which rows a sentence rests on, not what it says
+they found, and the numbers are what a reader copies out of a review. So
+every number in every sentence is looked for in what the writer was shown
+for that sentence: the rows it cites, as the writing prompt showed them; the
+question, the section's heading and brief, <code>style</code>, and the gaps a closing
+section was given; and with <code>claims</code>, the claims given to the section that
+rest on a cited study. A sentence that cites nothing is checked against
+every row its section was shown. This runs on the draft, and again on the
+revised text when a kept revision pass changed it; it sends nothing, so it
+is always on, and it changes no request.</p>
+<p>A figure counts as found in any form a faithful copy may give it: <code>.61</code> for
+0.61, <code>45.20</code> for 45.2, <code>1204</code> for 1,204, <code>12 450</code> for 12,450 (grouped by
+a space, where that is the row's figure), a minus sign or none, either side
+of a dash in a range, <code>45.2 million</code> for 45,200,000, <code>4 x 10^-4</code> for
+0.0004, <code>100,000</code> for a numeric field shown as <code>1e+05</code>, <code>45%</code> for 0.45,
+<code>12</code> for "twelve", and rounded to the places it is written to (0.61 or 0.6
+for 0.613, never 0.62). A row's percentage read as a proportion, or its
+scaled figure at full value, must match exactly: rounded as well, a pooled
+estimate no study reported matched a row's unrelated percentage. A figure
+is also allowed when it is the total of a numeric field over the rows the
+sentence cites; worked out from two other figures of the same sentence
+("120 of 1,020 (11.8%)"), or from a ratio in it read as a change from 1
+("HR 0.78, a 22% lower hazard"); a difference in points between two figures
+of one field of a cited row, or two percentages of one cited row; a year a
+cited row carries in any column; the number of studies the sentence cites,
+its section was shown or the review was written from, or how many of those
+rows share a field's value ("10 were randomised trials"); or, after
+"about", "more than", "fewer than" and their like, within a tenth (about)
+or a quarter (a bound) of a value it could have come from. Not read as
+figures: a citation's ids, written bare as well ("studies 12 to 15"), a
+whole number below ten that is not a percentage or scaled (a review writes
+"2 of the trials" as it likes), a number joined to a name ("COVID-19",
+"IL-6"), an ordinal, a decade ("1990s", "in their 60s"), an interval's
+level (<code>95% CI</code>), a significance threshold (<code>p &lt; .001</code>, "p value below
+0.05") and a significance level ("at the 5% level"). Numbers written in
+words are not checked.</p>
+<p>A figure found nowhere is reported in <code>$figures</code> and counted in
+<code>$sections$n_unbacked</code>, and the run warns (<code>gr_synth_unbacked_figures</code>)
+about the text as published. It is arithmetic the sentence does not show,
+a pooled estimate no study reported, or a number the writer made up, and
+nothing here can tell which. Found means copied, not right: a figure the
+cited row carries can still be the wrong one for the sentence. The section
+is not marked partial, because <code>partial</code> is about whether its citations
+can be trusted, and those are checked apart.</p>
+    </div>
+    <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>
     <div class="dont-index"><p><code><a href="gr_extract.html">gr_extract()</a></code>, <code><a href="gr_protocol.html">gr_protocol()</a></code>, <code><a href="gr_screen.html">gr_screen()</a></code></p></div>
     </div>
@@ -365,8 +461,8 @@ reported (<code>gr_synth_batch_dropped</code>) and marks it partial. Raise
 <span class="r-in"><span><span class="va">f</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/tempfile.html" class="external-link">tempfile</a></span><span class="op">(</span>fileext <span class="op">=</span> <span class="st">".txt"</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/writeLines.html" class="external-link">writeLines</a></span><span class="op">(</span><span class="st">"We ran a randomised trial. We enrolled 120 people."</span>, <span class="va">f</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="va">x</span> <span class="op">&lt;-</span> <span class="fu"><a href="gr_extract.html">gr_extract</a></span><span class="op">(</span><span class="va">f</span>, <span class="va">fields</span>, client <span class="op">=</span> <span class="va">cl</span><span class="op">)</span></span></span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> [1/1] file1cea1826f6c0.txt</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'file1cea1826f6c0.txt' with the 'txt' extractor.</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> [1/1] file1d6c1e868862.txt</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'file1d6c1e868862.txt' with the 'txt' extractor.</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Ingested 1 block(s), ~18 tokens (0 chars removed by cleaning).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Segmenting with 'structural' (cap 900 tokens, overlap 90).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Reading with 'extract' (all|N+conflicts|none) over 1 chunk(s).</span>
@@ -375,9 +471,13 @@ reported (<code>gr_synth_batch_dropped</code>) and marks it partial. Raise
 <span class="r-in"><span>                   outline <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"Included studies"</span> <span class="op">=</span> <span class="st">"How many, of what design"</span><span class="op">)</span>,</span></span>
 <span class="r-in"><span>                   client <span class="op">=</span> <span class="va">cl</span><span class="op">)</span></span></span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> [1/1] Included studies</span>
-<span class="r-in"><span><span class="va">s</span><span class="op">$</span><span class="va">sections</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"section"</span>, <span class="st">"n_cited"</span>, <span class="st">"n_unknown"</span><span class="op">)</span><span class="op">]</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>            section n_cited n_unknown</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1 Included studies       1         0</span>
+<span class="r-in"><span><span class="va">s</span><span class="op">$</span><span class="va">sections</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"section"</span>, <span class="st">"n_cited"</span>, <span class="st">"n_unknown"</span>, <span class="st">"n_unbacked"</span><span class="op">)</span><span class="op">]</span></span></span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>            section n_cited n_unknown n_unbacked</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1 Included studies       1         0          0</span>
+<span class="r-in"><span><span class="co"># The 120 in the section, found in the row it cites.</span></span></span>
+<span class="r-in"><span><span class="va">s</span><span class="op">$</span><span class="va">figures</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"number"</span>, <span class="st">"studies"</span>, <span class="st">"backed"</span>, <span class="st">"basis"</span><span class="op">)</span><span class="op">]</span></span></span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>   number studies backed     basis</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1    120       1   TRUE cited row</span>
 </code></pre></div>
     </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>

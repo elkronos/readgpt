@@ -111,7 +111,9 @@ measure variance).</p></dd>
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
     <p>A list with <code>answers</code> (named list of <a href="gr_answer.html">gr_answer</a>), <code>summary</code> (a data
 frame with columns <code>recipe</code>, <code>segmenter</code>, <code>chunks</code>, <code>reader</code>, <code>signature</code>,
-<code>partial</code>, <code>chunks_used</code>, <code>answer_chars</code>, <code>not_found</code>, <code>error</code>), <code>trace</code>
+<code>settings</code>, <code>partial</code>, <code>chunks_used</code>, <code>answer_chars</code>, <code>not_found</code>, <code>error</code>,
+and <code>premise</code> when a recipe checks the question's premise; see <code>premise</code>
+in <code><a href="gr_read_spec.html">gr_read_spec()</a></code>), <code>trace</code>
 (shared across all recipes, so it records every recipe's calls) and
 <code>document</code> (source and ingestion stats).</p>
     </div>
@@ -158,7 +160,7 @@ cut short is not shared with a later recipe.</p>
 <span class="r-in"><span><span class="co"># One trace covers all three, so this is the cost of the whole comparison.</span></span></span>
 <span class="r-in"><span><span class="fu"><a href="gr_trace_summary.html">gr_trace_summary</a></span><span class="op">(</span><span class="va">cmp</span><span class="op">$</span><span class="va">trace</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>                          run_id calls cached steps tokens_in tokens_out errors</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1 run_20260928020038.691_ecfd0d     5      0    16      2122         65      0</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1 run_20261012043754.124_855865     5      0    16      2122         65      0</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   elapsed_s embed_calls embed_tokens</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 1      0.12           0            0</span>
 </code></pre></div>

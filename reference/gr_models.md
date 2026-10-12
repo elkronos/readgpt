@@ -52,5 +52,5 @@ subset(gr_models(), kind == "chat")[, c("id", "context_window", "as_of")]
 #> 15  gpt-5.6-luna        1050000 2026-08
 #> 16   gpt-5.6-sol        1050000 2026-08
 #> 17 gpt-5.6-terra        1050000 2026-08
-#> 18    mock-model         128000 2026-09
+#> 18    mock-model         128000 2026-10
 ```

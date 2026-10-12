@@ -78,9 +78,14 @@ Your function receives:
 
   A
   [`gr_read_spec()`](https://elkronos.github.io/readgpt/reference/gr_read_spec.md).
-  Honour at least `model`, `max_answer_tokens` and `temperature`.
+  Honour at least `model`, `max_answer_tokens`, `temperature` and
+  `effort`.
   [`gr_read()`](https://elkronos.github.io/readgpt/reference/gr_read.md)
   has already filled `model` from the client when the spec named none.
+  Pass `effort = spec$effort` to every
+  [`gr_call()`](https://elkronos.github.io/readgpt/reference/gr_call.md),
+  which resolves a setting by stage against the call's `label`, so give
+  each call a label of its own; a call without it is sent no effort.
 
 - `trace`:
 
@@ -126,7 +131,8 @@ gr_register_reader("longest", signature = "one|1|none", cost_calls = "1",
     i <- which.max(d$tokens)
     res <- gr_call(client, list(
       list(role = "user", content = paste0(d$text[i], "\n\nQuestion: ", question))),
-      model = spec$model, trace = trace, label = "longest.answer")
+      model = spec$model, effort = spec$effort, trace = trace,
+      label = "longest.answer")
     new_answer(res$text, "longest", question, d$chunk_id[i], trace)
   })
 

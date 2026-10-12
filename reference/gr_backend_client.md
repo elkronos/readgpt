@@ -31,8 +31,10 @@ gr_backend_client(
   Function of `(messages, params)`. `messages` is a list of
   `list(role=, content=)` with roles `"system"`, `"developer"`, `"user"`
   or `"assistant"`. `params` carries `model`, `max_output`,
-  `temperature`, `schema`, `schema_name` and `prompt_tokens`. Return a
-  single string, or a
+  `temperature`, `schema`, `schema_name` and `prompt_tokens`, and
+  `effort` when the call has a reasoning effort to send (see `effort` in
+  [`gr_read_spec()`](https://elkronos.github.io/readgpt/reference/gr_read_spec.md));
+  passing it on is the handler's business. Return a single string, or a
   [gr_result](https://elkronos.github.io/readgpt/reference/gr_result.md)
   for full control over token usage and failure reporting.
 

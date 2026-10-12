@@ -15,6 +15,19 @@ and, with three extra fields, by
   [`is_not_found()`](https://elkronos.github.io/readgpt/reference/is_not_found.md)-style
   matching rather than substring search.
 
+- `premise`:
+
+  Present only when the read spec checked the question's premise
+  (`premise = TRUE` in
+  [`gr_read_spec()`](https://elkronos.github.io/readgpt/reference/gr_read_spec.md)).
+  `NA` when the model reported nothing in the document contradicting the
+  question; otherwise the sentence in which it said what the document
+  states instead, which is then `answer` as well, so
+  [`is_not_found()`](https://elkronos.github.io/readgpt/reference/is_not_found.md)
+  is `FALSE`. It is the model's verdict, not a check readgpt made.
+  Absent (`NULL`) for a spec that did not ask, and for `screen` and
+  `extract`, which answer no question.
+
 - `partial`:
 
   Logical(1). `TRUE` when anything degraded: a call failed, chunks were
@@ -118,11 +131,13 @@ and, with three extra fields, by
 
 [`print()`](https://rdrr.io/r/base/print.html) shows the answer, this
 run's calls, tokens and cost, where the evidence came from, and, when
-the answer is partial, why;
+the answer is partial, why. When the model reported that the document
+contradicts the question's premise, it says so above the answer, as the
+model's report.
 [`as_json()`](https://elkronos.github.io/readgpt/reference/as_json.md)
-serialises the answer together with every prompt and response this run
-made (the steps of its `trace` that `trace_steps` names; for an answer
-from
+serialises the answer (and `premise`, when it was checked) together with
+every prompt and response this run made (the steps of its `trace` that
+`trace_steps` names; for an answer from
 [`gr_compare()`](https://elkronos.github.io/readgpt/reference/gr_compare.md),
 its recipe's read alone; see `trace` above).
 

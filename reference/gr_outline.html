@@ -74,7 +74,9 @@ claims instead, and hands it back for you to accept or replace.</p>
 <span>  max_sections <span class="op">=</span> <span class="fl">6L</span>,</span>
 <span>  closing <span class="op">=</span> <span class="st">"What is missing"</span>,</span>
 <span>  trace <span class="op">=</span> <span class="cn">NULL</span>,</span>
-<span>  max_outline_tokens <span class="op">=</span> <span class="cn">NULL</span></span>
+<span>  max_outline_tokens <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  effort <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  alternatives <span class="op">=</span> <span class="fl">1L</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -120,6 +122,21 @@ which spends part of the same limit before it writes. Clamped to what the
 model can emit. A reply cut off at it puts every claim in one section,
 with a warning.</p></dd>
 
+
+<dt id="arg-effort">effort<a class="anchor" aria-label="anchor" href="#arg-effort"></a></dt>
+<dd><p>Reasoning effort, or <code>NULL</code> (the default) to send none: one
+string, or a character vector named by stage, as <code>effort</code> in
+<code><a href="gr_read_spec.html">gr_read_spec()</a></code>. The call here is labelled <code>outline.derive</code>, and each
+further alternative <code>outline.derive.alt2</code>, <code>outline.derive.alt3</code> and so
+on, which a name of <code>outline.derive</code> covers. A higher effort spends more
+of <code>max_outline_tokens</code> before the reply starts.</p></dd>
+
+
+<dt id="arg-alternatives">alternatives<a class="anchor" aria-label="anchor" href="#arg-alternatives"></a></dt>
+<dd><p>How many outlines to ask for, from 1 to 10. Each one
+past the first is one more call, made one after another. See "More than
+one outline".</p></dd>
+
 </dl></div>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
@@ -131,6 +148,10 @@ claims' numbers and texts. A claim number means something only within one
 <code><a href="gr_claims.html">gr_claims()</a></code> result, so <code><a href="gr_synthesise.html">gr_synthesise()</a></code> refuses the outline
 (<code>gr_claims_mismatch</code>) when the <code>claims</code> it is given are not the ones the
 outline was derived from: a re-run, or claims edited or reordered since.</p>
+<p>With <code>alternatives</code> above 1 it also carries <code>attr(, "comparison")</code>,
+<code>attr(, "alternatives")</code> (the other kept outlines, each shaped like this
+one) and <code>attr(, "alternative")</code>, which says which outline of the
+comparison it is.</p>
     </div>
     <div class="section level2">
     <h2 id="what-is-verified">What is verified<a class="anchor" aria-label="anchor" href="#what-is-verified"></a></h2>
@@ -144,8 +165,44 @@ closing one, which is allowed to be empty because it is where <code><a href="gr_
 writes and gaps are not claims.</p>
     </div>
     <div class="section level2">
+    <h2 id="more-than-one-outline">More than one outline<a class="anchor" aria-label="anchor" href="#more-than-one-outline"></a></h2>
+
+
+<p>The grouping is the review's argument, and one proposal gives nothing to
+weigh it against. With <code>alternatives</code> above 1, each further outline is a
+request of its own, shown the groupings proposed before it and asked to
+group the claims by a different organising principle. Asking the same
+question again would not do: the default model takes no temperature, and
+the response cache answers an identical request with the reply it stored.
+The first request is the one <code>alternatives = 1</code> sends, so the first outline
+is the same whatever <code>alternatives</code> says, and a run recorded without
+alternatives still replays. The others are labelled <code>outline.derive.alt2</code>
+onwards in the trace, which also records which were kept
+(<code>outline.compare</code>).</p>
+<p>Each alternative is verified exactly as the first is. How far apart two
+outlines are is then counted, not asked: the fraction of pairs of claims
+that one puts in the same section and the other does not, 0 for the same
+grouping under other headings and 1 for groupings that agree about no pair.
+An alternative at 0 from an earlier one is dropped. So is one whose call
+failed or was cut off, or none of whose sections held a claim once
+verified, rather than replaced by a single section the way a failed first
+outline is. None is requested when the first outline is such a single
+section, or once the run reaches its call or cost limit. A warning
+(<code>gr_outline_alternatives_short</code>) says when fewer outlines came back
+distinct than were asked for, and why.</p>
+<p>Nothing ranks them, and no model is asked which is best. The first proposal
+is returned as it would be alone, carrying <code>attr(, "comparison")</code>, one row
+per outline asked for: <code>alternative</code>, <code>sections</code>, <code>claims_per_section</code> and
+<code>contested_per_section</code> (claims with a contradicting study, per section, in
+heading order), <code>distance</code> from the first, <code>nearest</code> (the distance to the
+closest earlier outline kept), <code>kept</code>, a <code>note</code> saying why one was not kept,
+and the <code>headings</code>. The kept alternatives are in <code>attr(, "alternatives")</code>.
+Choose one with <code><a href="gr_outline_pick.html">gr_outline_pick()</a></code>, which keeps its headings and its claim
+assignment together.</p>
+    </div>
+    <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>
-    <div class="dont-index"><p><code><a href="gr_claims.html">gr_claims()</a></code>, <code><a href="gr_synthesise.html">gr_synthesise()</a></code>, <code><a href="gr_gaps.html">gr_gaps()</a></code></p></div>
+    <div class="dont-index"><p><code><a href="gr_claims.html">gr_claims()</a></code>, <code><a href="gr_synthesise.html">gr_synthesise()</a></code>, <code><a href="gr_gaps.html">gr_gaps()</a></code>, <code><a href="gr_outline_pick.html">gr_outline_pick()</a></code></p></div>
     </div>
 
     <div class="section level2">

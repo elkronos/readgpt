@@ -422,7 +422,7 @@ invisible(file.create(file.path(inbox, "empty.txt")))
 
 inv <- gr_inventory(inbox)
 inv
-#> <gr_inventory> /tmp/RtmpJ5kPkx/inbox
+#> <gr_inventory> /tmp/Rtmpip8deI/inbox
 #>   4 file(s), 1.9 KB; 2 readable
 #>   2 ready, 1 no_extractor, 1 empty
 #>   tokens: 549   cost floor: $0.01 (gpt-5.6-terra, one call per document)

@@ -71,7 +71,8 @@ built-ins do, so <code><a href="gr_compare.html">gr_compare()</a></code> can put
 <span>  evidence <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  partial <span class="op">=</span> <span class="cn">FALSE</span>,</span>
 <span>  notes <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span><span class="op">)</span>,</span>
-<span>  chunks_sent <span class="op">=</span> <span class="cn">NULL</span></span>
+<span>  chunks_sent <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  premise <span class="op">=</span> <span class="cn">NULL</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -124,6 +125,17 @@ when that is more than <code>chunks_used</code>. Used only to tell a fabricated
 citation from a faithful one: a per-chunk reader drops the chunks that
 answered "not in this excerpt", and citing one of those is not an invention.
 Defaults to <code>chunks_used</code>.</p></dd>
+
+
+<dt id="arg-premise">premise<a class="anchor" aria-label="anchor" href="#arg-premise"></a></dt>
+<dd><p>Whether, and how, the question's premise was checked; see
+<code>premise</code> in <code><a href="gr_read_spec.html">gr_read_spec()</a></code>. <code>NULL</code> (the default) when your reader did
+not check it, which leaves the field out of the answer. <code>NA</code> or <code>FALSE</code>
+when it checked and the model reported nothing contradicting it.
+Otherwise the sentence in which the model said what the document states
+instead, which should then be <code>text</code> as well, so that <code>$answer</code> says it
+and <code><a href="is_not_found.html">is_not_found()</a></code> is <code>FALSE</code>. Any other value, <code>TRUE</code> among them, is
+an error.</p></dd>
 
 </dl></div>
     <div class="section level2">

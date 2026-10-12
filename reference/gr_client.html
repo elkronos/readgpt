@@ -106,7 +106,10 @@ second user's key silently billed the first user's requests.</p>
 
 
 <dt id="arg-extra-body">extra_body<a class="anchor" aria-label="anchor" href="#arg-extra-body"></a></dt>
-<dd><p>Named list merged into every request body.</p></dd>
+<dd><p>Named list merged into every request body. A reasoning
+effort set here (<code>list(reasoning = list(effort = "low"))</code>) is the client's
+default; the <code>effort</code> setting of <code><a href="gr_read_spec.html">gr_read_spec()</a></code> replaces it for the
+calls it covers.</p></dd>
 
 
 <dt id="arg-headers">headers<a class="anchor" aria-label="anchor" href="#arg-headers"></a></dt>

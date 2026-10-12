@@ -59,6 +59,16 @@
 contain the answer. Test it with <code><a href="is_not_found.html">is_not_found()</a></code>-style matching rather
 than substring search.</p></dd>
 
+<dt><code>premise</code></dt>
+<dd><p>Present only when the read spec checked the question's
+premise (<code>premise = TRUE</code> in <code><a href="gr_read_spec.html">gr_read_spec()</a></code>). <code>NA</code> when the model
+reported nothing in the document contradicting the question; otherwise
+the sentence in which it said what the document states instead, which
+is then <code>answer</code> as well, so <code><a href="is_not_found.html">is_not_found()</a></code> is <code>FALSE</code>. It is the
+model's verdict, not a check readgpt made. Absent (<code>NULL</code>) for a spec
+that did not ask, and for <code>screen</code> and <code>extract</code>, which answer no
+question.</p></dd>
+
 <dt><code>partial</code></dt>
 <dd><p>Logical(1). <code>TRUE</code> when anything degraded: a call failed,
 chunks were dropped, a cap was hit, a strategy fell back, text was cut to
@@ -145,8 +155,11 @@ chunk statistics the reader saw.</p></dd>
 
 
 <p><code><a href="https://rdrr.io/r/base/print.html" class="external-link">print()</a></code> shows the answer, this run's calls, tokens and cost, where the
-evidence came from, and, when the answer is partial, why; <code><a href="as_json.html">as_json()</a></code>
-serialises the answer together with every prompt and response this run made
+evidence came from, and, when the answer is partial, why. When the model
+reported that the document contradicts the question's premise, it says so
+above the answer, as the model's report. <code><a href="as_json.html">as_json()</a></code>
+serialises the answer (and <code>premise</code>, when it was checked) together with
+every prompt and response this run made
 (the steps of its <code>trace</code> that <code>trace_steps</code> names; for an answer from
 <code><a href="gr_compare.html">gr_compare()</a></code>, its recipe's read alone; see <code>trace</code> above).</p>
     </div>

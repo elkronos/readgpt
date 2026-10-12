@@ -515,6 +515,7 @@ is the cause:
 | every chunk is the whole document | `nrow(doc$blocks)` | the file has no blank lines between paragraphs, so there is nothing to split on. Use `method = "sentence"` or `"fixed"` |
 | the run costs far more than expected | `gr_readers()$cost_calls` | the reader is `O(N)` in chunks and your `max_tokens` is small. [`gr_chunk_stats()`](https://elkronos.github.io/readgpt/reference/gr_chunk_stats.md) first; it is free |
 | answers change between identical runs | `gr_read_spec()$temperature` | set `temperature = 0`, and note that reasoning models ignore it (see `gr_model_info(m)$supports_temperature`) |
+| `NOT_IN_DOCUMENT` for a question that assumes something the document contradicts (“why did revenue fall?” when it rose) | `gr_read_spec(premise = TRUE)`, then `ans$premise` | the readers can only answer or say the excerpts are silent. With the check on they can say the premise is false and give what the document states instead; that is the model’s reading, not a check readgpt makes |
 
 Two habits make all of this cheaper: run
 [`gr_chunk_stats()`](https://elkronos.github.io/readgpt/reference/gr_chunk_stats.md)
@@ -591,6 +592,27 @@ refused up front when its worst case, every reply at its token cap,
 would pass the limit. A ceiling is checked when you set it: `NA`, text
 or a negative number is refused, because a limit that cannot be compared
 is not a limit. `NULL` or `Inf` removes it.
+
+The default models reason before they answer, and that reasoning is
+billed as output. `effort` sets how much of it each stage does, keyed by
+the call’s trace label, and is sent only to reasoning models:
+
+``` r
+
+# Little reasoning for each chunk's request, more for the merge that answers.
+ans <- answer_document(readgpt_example(), "What was revenue?", "thorough",
+                       client = cl, effort = c(map = "low", reduce = "high"))
+
+# In a review: the writing at high effort. gr_screen() and gr_extract() take
+# `effort` the same way, so the per-chunk extraction can run low.
+review <- gr_synthesise(x, protocol, client = cl, effort = c(synthesise = "high"))
+```
+
+It is off by default, so nothing is sent and every cache and recording
+made before still answers.
+[`?gr_read_spec`](https://elkronos.github.io/readgpt/reference/gr_read_spec.md)
+lists every label and a suggested profile: low for the many per-chunk
+calls, high for the few that judge.
 
 [`gr_budget()`](https://elkronos.github.io/readgpt/reference/gr_budget.md)
 is the single arithmetic chokepoint for context math and is cannot
@@ -1214,6 +1236,16 @@ framing between the claims is where such a sentence gets written.
 `review$coherence` is one row per pass: what ran, what was kept, and why
 anything was thrown away.
 
+Two more checks need no model call. A `cut` pass that did not shorten
+the review is discarded, since a cut that cut nothing was a polish under
+the wrong name, and `review$coherence` records the words each pass was
+given and gave back. And every figure in the review is looked for in the
+rows its sentence cites: “d = 0.61 \[study 3\]” over a row reporting
+0.41 is listed in `review$figures` and counted in
+`review$sections$n_unbacked`, on the draft and again on the revised
+text. A revision pass that writes a figure its draft did not have is
+discarded.
+
 ### Writing from claims instead of from rows
 
 Everything above writes each section from the whole table of studies,
@@ -1267,6 +1299,13 @@ review <- gr_synthesise(x, outline = o, question = protocol$question,
                         client = cl, claims = cm, gaps = g,
                         cite_style = "author-year", coherence = TRUE)
 ```
+
+`gr_outline(cm, client = cl, alternatives = 3)` asks for further
+groupings, each told the earlier ones and asked for a different
+organising principle. `attr(o, "comparison")` lays them side by side,
+with how far each grouping lies from the first counted rather than
+judged, and `gr_outline_pick(o, 2)` hands back the one you choose. The
+review records which outline it was written from.
 
 Each section now argues its own claims and is shown only the studies
 those claims rest on, ordered so a twelve-person pilot stops getting the
@@ -1843,6 +1882,8 @@ hand-screened sample.
   : The claims a table of studies supports
 - [`gr_outline()`](https://elkronos.github.io/readgpt/reference/gr_outline.md)
   : Derive a review's sections from its claims
+- [`gr_outline_pick()`](https://elkronos.github.io/readgpt/reference/gr_outline_pick.md)
+  : Choose one of the outlines gr_outline() compared
 - [`gr_gaps()`](https://elkronos.github.io/readgpt/reference/gr_gaps.md)
   : What a body of work does not cover
 - [`gr_synthesise()`](https://elkronos.github.io/readgpt/reference/gr_synthesise.md)

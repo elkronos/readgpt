@@ -51,8 +51,17 @@ re-runnable recording of exactly what went wrong.
 ## Matching
 
 A response is matched on the exact prompt messages plus the model id the
-call asked for. That can differ from the model the trace records as
-answering: a
+call asked for, and the reasoning effort it was sent with when it had
+one (see `effort` in
+[`gr_read_spec()`](https://elkronos.github.io/readgpt/reference/gr_read_spec.md)),
+so a replay under another effort misses rather than passing for the
+recording. A replay under the same effort matches even where this
+session's registry does not list a model as a reasoning model and the
+recording session's did (a gateway model registered with
+[`gr_register_model()`](https://elkronos.github.io/readgpt/reference/gr_register_model.md)
+there and not here), and a call through an ellmer chat, which sends no
+effort, is matched on the one it asked for. The model id can differ from
+the model the trace records as answering: a
 [`gr_ellmer_client()`](https://elkronos.github.io/readgpt/reference/gr_ellmer_client.md)
 answers with its chat's model whatever the recipe asked for, and its
 runs replay all the same.

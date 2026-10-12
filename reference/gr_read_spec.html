@@ -75,6 +75,8 @@
 <span>  parallel <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  delay_between_calls <span class="op">=</span> <span class="fl">0</span>,</span>
 <span>  on_overflow <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"warn"</span>, <span class="st">"error"</span><span class="op">)</span>,</span>
+<span>  effort <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  premise <span class="op">=</span> <span class="cn">FALSE</span>,</span>
 <span>  <span class="va">...</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
@@ -239,6 +241,39 @@ other readers do not sleep.</p></dd>
 <dd><p>For <code>stuff</code>: <code>"warn"</code> (truncate and say so) or <code>"error"</code>.</p></dd>
 
 
+<dt id="arg-effort">effort<a class="anchor" aria-label="anchor" href="#arg-effort"></a></dt>
+<dd><p>How much a reasoning model reasons before it answers, or
+<code>NULL</code> (the default) to send nothing, so every request goes out at the
+provider's default exactly as before. One string, such as <code>"low"</code>, applies
+to every call. A character vector named by stage sets it per stage:
+<code>c(extract = "low", "synthesise.section" = "high")</code>. A name covers each
+call whose trace label is that name or starts with it and a dot; the
+longest name that covers a label wins; an unnamed element, or one named
+<code>"default"</code>, covers the labels no name does, and a label nothing covers is
+sent no effort. It reaches the segmenters that call a model too, when the
+spec is part of a recipe. See the section on reasoning effort.</p></dd>
+
+
+<dt id="arg-premise">premise<a class="anchor" aria-label="anchor" href="#arg-premise"></a></dt>
+<dd><p>Check the question's assumptions against the document. A
+question can take for granted something the document contradicts ("Why
+did revenue fall?" of a report in which it rose). Without this check a
+reader answers it on its own terms or reports <code>NOT_IN_DOCUMENT</code>, and
+either way what the document does say is lost. With <code>premise = TRUE</code> the
+prompts that answer the question tell the model that, when the excerpts
+state the contrary of an assumption in it, it is to say so in one
+sentence giving what they state instead, rather than answer. That
+sentence becomes <code>$answer</code> and <code>$premise</code> (see <a href="gr_answer.html">gr_answer</a>), and
+<code><a href="is_not_found.html">is_not_found()</a></code> is <code>FALSE</code> for it. Excerpts that are merely silent are
+still <code>NOT_IN_DOCUMENT</code>. See "Checking the premise" below for how each
+reader combines what its requests report. The verdict is the model's
+reading of the excerpts, not a check readgpt makes, so weigh it as you
+would any answer. Off by default because it changes what is sent: the
+prompts are longer, so a cache, a recorded replay or a <code><a href="gr_read_many.html">gr_read_many()</a></code>
+store made without it does not answer a run with it, and the reverse.
+<code>screen</code> and <code>extract</code>, which answer no question, ignore it.</p></dd>
+
+
 <dt id="arg--">...<a class="anchor" aria-label="anchor" href="#arg--"></a></dt>
 <dd><p>Extra fields for custom readers.</p></dd>
 
@@ -246,6 +281,36 @@ other readers do not sleep.</p></dd>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
     <p>A list of class <code>gr_read_spec</code>.</p>
+    </div>
+    <div class="section level2">
+    <h2 id="checking-the-premise">Checking the premise<a class="anchor" aria-label="anchor" href="#checking-the-premise"></a></h2>
+
+
+<p>With <code>premise = TRUE</code>, every request that answers the question carries the
+rule: the single answering request of <code>stuff</code>, <code>retrieve</code>, <code>rerank</code>,
+<code>skim</code>, <code>hierarchical</code> and <code>preview</code>; each chunk's request and the merge of
+<code>map_reduce</code>; the draft and every revision of <code>refine</code>; each step and the
+final answer of <code>iterative</code>; and the adjudication of <code>ensemble</code>. Requests
+that only pick, score, summarise or copy out passages do not.</p>
+<p><code>map_reduce</code> treats a chunk that contradicts the premise differently from
+one that only lacks the answer. The second is dropped, as it always was.
+The first is passed to the merge as a finding that says the premise is
+contradicted and what the excerpt states instead, and the merge, told the
+same rule, weighs it against the chunks that did answer and may itself
+report the premise false. <code>notes$premise_chunks</code> lists the chunks that
+reported it, whatever the merge decided. <code>ensemble</code> does the same with its
+members (<code>notes$premise_members</code>). <code>refine</code> carries the verdict in its
+draft, so a later excerpt can add to the correction or overturn it.
+<code>iterative</code>'s step reports it in a <code>false_premise</code> field of its reply,
+which is in the schema only when the premise is checked, and stops there.
+A merge or adjudication that failed returns the findings joined, which is
+no verdict: <code>$premise</code> is <code>NA</code>, and the notes still name the chunks or
+members that reported it.</p>
+<p>The answer records the check: <code>$premise</code> is <code>NA</code> when nothing contradicted
+the question, and the correction when something did. <code><a href="gr_compare.html">gr_compare()</a></code> and
+<code><a href="gr_read_many.html">gr_read_many()</a></code> add a <code>premise</code> column to their summaries, <code><a href="https://rdrr.io/r/base/print.html" class="external-link">print()</a></code> and
+<code><a href="gr_audit_report.html">gr_audit_report()</a></code> say when the model reported the premise false, and the
+trace has a <code>read.premise</code> step with the outcome.</p>
     </div>
     <div class="section level2">
     <h2 id="out-of-range-values">Out-of-range values<a class="anchor" aria-label="anchor" href="#out-of-range-values"></a></h2>
@@ -257,6 +322,61 @@ about, never applied silently: <code>top_k</code> [1, 1e4], <code>fan_in</code> 
 <code>rerank_min_score</code> [0, 10], <code>preview_tokens</code> [100, 1e5],
 <code>delay_between_calls</code> [0, 600],
 token caps [16, 1e6].</p>
+    </div>
+    <div class="section level2">
+    <h2 id="reasoning-effort">Reasoning effort<a class="anchor" aria-label="anchor" href="#reasoning-effort"></a></h2>
+
+
+<p>The default models reason before they write a reply, and that reasoning is
+billed as output and counted against the same output cap as the reply.
+Nothing sets how much unless <code>effort</code> does, so a corpus's hundreds of
+per-chunk calls reason as long as the one call that drafts its claims.</p>
+<p>The effort is sent as <code>reasoning = {"effort": ...}</code> on the Responses API and
+as <code>reasoning_effort</code> on Chat Completions, and a <code><a href="gr_mock_client.html">gr_mock_client()</a></code> or
+<code><a href="gr_backend_client.html">gr_backend_client()</a></code> handler finds it in <code>params$effort</code>. It is sent only to
+a model whose <code><a href="gr_model_info.html">gr_model_info()</a></code> says <code>reasoning = TRUE</code>, and left out without
+a warning for any other, which would refuse the field, as <code>temperature</code> is
+left out for a model that refuses that; register a gateway's reasoning model
+with <code><a href="gr_register_model.html">gr_register_model()</a></code> to reach it. For the calls it covers it replaces
+an effort the client's <code>extra_body</code> sets. A <code><a href="gr_ellmer_client.html">gr_ellmer_client()</a></code> cannot take
+it per call, says so once (<code>gr_effort_unsupported</code>) and does not record it
+as sent. A value is passed
+through as given; one that is not <code>"none"</code>, <code>"minimal"</code>, <code>"low"</code>,
+<code>"medium"</code>, <code>"high"</code> or <code>"xhigh"</code> is warned about (<code>gr_effort_unknown</code>) and
+sent anyway, since providers add levels.</p>
+<p>Each request's effort is in its trace step (<code>params$effort</code>, and an <code>effort</code>
+column of <code>as.data.frame(trace)</code>), and <code><a href="gr_audit_report.html">gr_audit_report()</a></code> shows it beside
+what each stage cost. It is part of the <code><a href="gr_cache.html">gr_cache()</a></code> key, and, when set, of
+a recipe's store key in <code><a href="gr_read_many.html">gr_read_many()</a></code>, of what <code><a href="gr_compare.html">gr_compare()</a></code> counts as
+a different recipe, and of the key a <code><a href="gr_replay_client.html">gr_replay_client()</a></code> matches on, so
+runs at different efforts never share answers. Unset, none of those keys
+change.</p>
+<p>The labels are the <code>stage</code> column of <code>as.data.frame(trace)</code>:
+<code>segment.context</code>, <code>segment.proposition</code>; <code>stuff.answer</code>; <code>map.answer</code>,
+<code>reduce</code>; <code>refine.draft</code>, <code>refine.revise</code>; <code>skim.extract</code>,
+<code>skim.consolidate</code>, <code>skim.answer</code>; <code>retrieve.answer</code>; <code>rerank.score</code>,
+<code>rerank.answer</code>; <code>hier.summarise.L1</code> (and <code>L2</code>, ...), <code>hier.answer</code>;
+<code>iterative.step</code>, <code>iterative.final</code>; <code>ensemble.adjudicate</code>; <code>preview.plan</code>,
+<code>preview.skim</code>, <code>preview.answer</code>; <code>screen.decide</code>; <code>extract.chunk</code>,
+<code>extract.resolve</code>; and, for <code><a href="gr_claims.html">gr_claims()</a></code>, <code><a href="gr_outline.html">gr_outline()</a></code> and
+<code><a href="gr_synthesise.html">gr_synthesise()</a></code>, <code>claims.draw</code>, <code>claims.reconcile</code>, <code>outline.derive</code>,
+<code>synthesise.section</code>, <code>synthesise.batch</code>, <code>synthesise.merge</code> and
+<code>synthesise.revise.structure</code> (<code>.cut</code>, <code>.register</code>). A merge that takes
+more than one level labels the levels below its final merge <code>.level1</code>,
+<code>.level2</code> and so on, which its own name covers.</p>
+<p>A starting point, not a default: low for the many mechanical calls and high
+for the few that judge.</p>
+<p></p><div class="sourceCode"><pre><code><span id="cb1-1"><a href="#cb1-1" tabindex="-1"></a>effort <span class="ot">=</span> <span class="fu">c</span>(<span class="st">"extract.chunk"</span> <span class="ot">=</span> <span class="st">"low"</span>, <span class="st">"skim.extract"</span> <span class="ot">=</span> <span class="st">"low"</span>,</span>
+<span id="cb1-2"><a href="#cb1-2" tabindex="-1"></a>           <span class="st">"rerank.score"</span> <span class="ot">=</span> <span class="st">"low"</span>, <span class="at">segment =</span> <span class="st">"low"</span>, <span class="st">"map.answer"</span> <span class="ot">=</span> <span class="st">"low"</span>,</span>
+<span id="cb1-3"><a href="#cb1-3" tabindex="-1"></a>           <span class="st">"claims.draw"</span> <span class="ot">=</span> <span class="st">"high"</span>, <span class="st">"outline.derive"</span> <span class="ot">=</span> <span class="st">"high"</span>,</span>
+<span id="cb1-4"><a href="#cb1-4" tabindex="-1"></a>           <span class="st">"synthesise.section"</span> <span class="ot">=</span> <span class="st">"high"</span>, <span class="st">"ensemble.adjudicate"</span> <span class="ot">=</span> <span class="st">"high"</span>)</span></code></pre><p></p></div>
+<p>Reasoning shares the reply's cap, so a call at <code>"high"</code> can spend all of it
+and come back cut off (<code>finish_reason = "length"</code>, warned about where it
+matters). Give such stages room: <code>max_answer_tokens</code> here,
+<code>max_section_tokens</code> in <code><a href="gr_synthesise.html">gr_synthesise()</a></code>, <code>max_outline_tokens</code> in
+<code><a href="gr_outline.html">gr_outline()</a></code>.
+Requests to a reasoning model are sent with an output cap of at least 2048
+tokens whatever the effort, and the cost limits are checked at that cap.</p>
     </div>
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>
@@ -280,6 +400,36 @@ token caps [16, 1e6].</p>
 <span class="r-in"><span><span class="co"># Out-of-range settings are corrected loudly, not quietly.</span></span></span>
 <span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/warning.html" class="external-link">suppressWarnings</a></span><span class="op">(</span><span class="fu">gr_read_spec</span><span class="op">(</span><span class="st">"hierarchical"</span>, fan_in <span class="op">=</span> <span class="fl">999</span><span class="op">)</span><span class="op">$</span><span class="va">fan_in</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> [1] 32</span>
+<span class="r-in"><span></span></span>
+<span class="r-in"><span><span class="co"># Reasoning effort by stage: little for the per-chunk calls, more for the</span></span></span>
+<span class="r-in"><span><span class="co"># merge. The trace says which request carried which.</span></span></span>
+<span class="r-in"><span><span class="va">ch</span> <span class="op">&lt;-</span> <span class="fu"><a href="gr_segment.html">gr_segment</a></span><span class="op">(</span><span class="fu"><a href="readgpt_example.html">readgpt_example</a></span><span class="op">(</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>method <span class="op">=</span> <span class="st">"paragraph"</span>, max_tokens <span class="op">=</span> <span class="fl">150</span><span class="op">)</span><span class="op">)</span></span></span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Using cached ingestion for this document + settings.</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Segmenting with 'paragraph' (cap 150 tokens, overlap 0).</span>
+<span class="r-in"><span><span class="va">cl</span> <span class="op">&lt;-</span> <span class="fu"><a href="gr_mock_client.html">gr_mock_client</a></span><span class="op">(</span><span class="kw">function</span><span class="op">(</span><span class="va">m</span>, <span class="va">p</span><span class="op">)</span> <span class="st">"Revenue was 45.2 million dollars."</span><span class="op">)</span></span></span>
+<span class="r-in"><span><span class="va">sp</span> <span class="op">&lt;-</span> <span class="fu">gr_read_spec</span><span class="op">(</span><span class="st">"map_reduce"</span>, model <span class="op">=</span> <span class="st">"gpt-5.6-luna"</span>,</span></span>
+<span class="r-in"><span>                   effort <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span>map <span class="op">=</span> <span class="st">"low"</span>, reduce <span class="op">=</span> <span class="st">"high"</span><span class="op">)</span><span class="op">)</span></span></span>
+<span class="r-in"><span><span class="va">tr</span> <span class="op">&lt;-</span> <span class="fu"><a href="gr_trace.html">gr_trace</a></span><span class="op">(</span><span class="op">)</span></span></span>
+<span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/invisible.html" class="external-link">invisible</a></span><span class="op">(</span><span class="fu"><a href="gr_read.html">gr_read</a></span><span class="op">(</span><span class="va">ch</span>, <span class="st">"What was revenue?"</span>, <span class="va">cl</span>, <span class="va">sp</span>, trace <span class="op">=</span> <span class="va">tr</span><span class="op">)</span><span class="op">)</span></span></span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Reading with 'map_reduce' (all|N+logN|tree) over 5 chunk(s).</span>
+<span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/unique.html" class="external-link">unique</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/as.data.frame.html" class="external-link">as.data.frame</a></span><span class="op">(</span><span class="va">tr</span><span class="op">)</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"stage"</span>, <span class="st">"effort"</span><span class="op">)</span><span class="op">]</span><span class="op">)</span></span></span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>        stage effort</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1 map.answer    low</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 6     reduce   high</span>
+<span class="r-in"><span><span class="co"># A loaded question, checked against the document. The mock plays a model</span></span></span>
+<span class="r-in"><span><span class="co"># that finds the excerpts contradict it.</span></span></span>
+<span class="r-in"><span><span class="va">cl</span> <span class="op">&lt;-</span> <span class="fu"><a href="gr_mock_client.html">gr_mock_client</a></span><span class="op">(</span><span class="kw">function</span><span class="op">(</span><span class="va">m</span>, <span class="va">p</span><span class="op">)</span></span></span>
+<span class="r-in"><span>  <span class="st">"FALSE_PREMISE: Revenue rose 12% in 2023, to 45.2 million."</span><span class="op">)</span></span></span>
+<span class="r-in"><span><span class="va">ch</span> <span class="op">&lt;-</span> <span class="fu"><a href="gr_segment.html">gr_segment</a></span><span class="op">(</span><span class="fu"><a href="readgpt_example.html">readgpt_example</a></span><span class="op">(</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>method <span class="op">=</span> <span class="st">"sentence"</span>, max_tokens <span class="op">=</span> <span class="fl">400</span><span class="op">)</span><span class="op">)</span></span></span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Using cached ingestion for this document + settings.</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Segmenting with 'sentence' (cap 400 tokens, overlap 0).</span>
+<span class="r-in"><span><span class="va">ans</span> <span class="op">&lt;-</span> <span class="fu"><a href="gr_read.html">gr_read</a></span><span class="op">(</span><span class="va">ch</span>, <span class="st">"Why did revenue fall in 2023?"</span>, <span class="va">cl</span>,</span></span>
+<span class="r-in"><span>               <span class="fu">gr_read_spec</span><span class="op">(</span><span class="st">"stuff"</span>, premise <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span><span class="op">)</span></span></span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Reading with 'stuff' (all|1|none) over 2 chunk(s).</span>
+<span class="r-in"><span><span class="va">ans</span><span class="op">$</span><span class="va">premise</span></span></span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> [1] "Revenue rose 12% in 2023, to 45.2 million."</span>
+<span class="r-in"><span><span class="fu"><a href="is_not_found.html">is_not_found</a></span><span class="op">(</span><span class="va">ans</span><span class="op">$</span><span class="va">answer</span><span class="op">)</span></span></span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> [1] FALSE</span>
 </code></pre></div>
     </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>

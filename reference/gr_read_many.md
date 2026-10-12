@@ -167,6 +167,13 @@ joined with `" | "`, or `NA` when it raised nothing. The warnings still
 print as they happen; this column is what lets you tie them to a
 document afterwards.
 
+With `premise = TRUE` in the recipe's read spec (see
+[`gr_read_spec()`](https://elkronos.github.io/readgpt/reference/gr_read_spec.md))
+there is one more column, after `warnings`: `premise`, the sentence in
+which the model said what the document states instead of the question's
+premise, or `NA` when it reported nothing contradicting it. Such a row's
+`answer` is that sentence and its `not_found` is `FALSE`.
+
 `document` is a filename and `document_id` is the hash of the cleaned
 text (and of the pages that never became text, when there are any). Cite
 with the second: a filename changes when the file is renamed, collides
@@ -267,25 +274,25 @@ b <- tempfile(fileext = ".txt"); writeLines("Revenue was 51.8 million.", b)
 
 out <- gr_read_many(c(a, b), "What was revenue?", "fast", client = cl)
 #> 2 document(s), and gr_options(max_calls) is 400 PER DOCUMENT, so this run may make up to 800 call(s). Pass max_total_calls = to cap the run.
-#> [1/2] file1cea23bc4052.txt
-#> Extracting 'file1cea23bc4052.txt' with the 'txt' extractor.
+#> [1/2] file1d6c4a34a00d.txt
+#> Extracting 'file1d6c4a34a00d.txt' with the 'txt' extractor.
 #> Ingested 1 block(s), ~11 tokens (0 chars removed by cleaning).
 #> Segmenting with 'paragraph' (cap 4000 tokens, overlap 0).
 #> Reading with 'stuff' (all|1|none) over 1 chunk(s).
-#> [2/2] file1cea6fac47e8.txt
-#> Extracting 'file1cea6fac47e8.txt' with the 'txt' extractor.
+#> [2/2] file1d6c742afeb.txt
+#> Extracting 'file1d6c742afeb.txt' with the 'txt' extractor.
 #> Ingested 1 block(s), ~11 tokens (0 chars removed by cleaning).
 #> Segmenting with 'paragraph' (cap 4000 tokens, overlap 0).
 #> Reading with 'stuff' (all|1|none) over 1 chunk(s).
 out$summary[, c("document", "answer", "not_found", "status")]
 #>               document                            answer not_found status
-#> 1 file1cea23bc4052.txt Revenue was 45.2 million dollars.     FALSE     ok
-#> 2 file1cea6fac47e8.txt Revenue was 45.2 million dollars.     FALSE     ok
+#> 1 file1d6c4a34a00d.txt Revenue was 45.2 million dollars.     FALSE     ok
+#> 2  file1d6c742afeb.txt Revenue was 45.2 million dollars.     FALSE     ok
 
 # A missing file is one bad row, not a failed run.
 bad <- gr_read_many(c(a, "no-such-file.txt"), "What was revenue?", "fast", client = cl)
 #> 2 document(s), and gr_options(max_calls) is 400 PER DOCUMENT, so this run may make up to 800 call(s). Pass max_total_calls = to cap the run.
-#> [1/2] file1cea23bc4052.txt
+#> [1/2] file1d6c4a34a00d.txt
 #> Using cached ingestion for this document + settings.
 #> Segmenting with 'paragraph' (cap 4000 tokens, overlap 0).
 #> Reading with 'stuff' (all|1|none) over 1 chunk(s).
@@ -293,7 +300,7 @@ bad <- gr_read_many(c(a, "no-such-file.txt"), "What was revenue?", "fast", clien
 #> Warning: Document 'no-such-file.txt' failed: File not found: 'no-such-file.txt'. If you meant to pass document text rather than a path, it must not end in something that looks like a file extension.
 bad$summary[, c("document", "status", "error")]
 #>               document status
-#> 1 file1cea23bc4052.txt     ok
+#> 1 file1d6c4a34a00d.txt     ok
 #> 2     no-such-file.txt failed
 #>                                                                                                                                                       error
 #> 1                                                                                                                                                      <NA>

@@ -18,7 +18,8 @@ gr_claims(
   max_claim_tokens = 1600L,
   include_unclear = FALSE,
   trace = NULL,
-  bib = NULL
+  bib = NULL,
+  effort = NULL
 )
 ```
 
@@ -75,6 +76,17 @@ gr_claims(
   [`gr_synthesise()`](https://elkronos.github.io/readgpt/reference/gr_synthesise.md)
   and
   [`gr_gaps()`](https://elkronos.github.io/readgpt/reference/gr_gaps.md).
+
+- effort:
+
+  Reasoning effort, or `NULL` (the default) to send none: one string, or
+  a character vector named by stage, as `effort` in
+  [`gr_read_spec()`](https://elkronos.github.io/readgpt/reference/gr_read_spec.md).
+  The calls here are labelled `claims.draw` and `claims.reconcile`, so
+  `c(claims = "high")` covers both. Drawing claims is judgement, the
+  stage most worth a higher effort. The reasoning counts against the
+  same reply limit, so a high effort can leave a batch's reply cut off,
+  which is reported as such (`gr_claims_truncated`).
 
 ## Value
 

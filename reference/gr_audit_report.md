@@ -201,10 +201,20 @@ which section each claim was given to. When a revision pass
 (`coherence`) was kept, "What was written" shows the published text and
 the studies each of its headings cites, then the sections as first
 drafted, with their checks, under "Draft before revision", and the
-passes that ran. The cost table includes the calls
+passes that ran, with the words of prose each was given and gave back.
+When the outline was one of several
+[`gr_outline()`](https://elkronos.github.io/readgpt/reference/gr_outline.md)
+compared and chosen with
+[`gr_outline_pick()`](https://elkronos.github.io/readgpt/reference/gr_outline_pick.md),
+"What was written" says which one, and how far its grouping of the
+claims lies from the first proposal's. The cost table includes the calls
 [`gr_claims()`](https://elkronos.github.io/readgpt/reference/gr_claims.md)
 made and, when it was left to record on the claims' trace,
 [`gr_outline()`](https://elkronos.github.io/readgpt/reference/gr_outline.md).
+When any request was sent with a reasoning effort (`effort` in
+[`gr_read_spec()`](https://elkronos.github.io/readgpt/reference/gr_read_spec.md)),
+the cost table says which efforts each stage's requests carried, and the
+table of requests has an `effort` column.
 
 ## See also
 
@@ -225,14 +235,14 @@ cl <- gr_mock_client(function(messages, params) {
 })
 f <- tempfile(fileext = ".txt"); writeLines("We ran a randomised trial.", f)
 x <- gr_extract(f, fields, client = cl)
-#> [1/1] file1cea7ab7d12b.txt
-#> Extracting 'file1cea7ab7d12b.txt' with the 'txt' extractor.
+#> [1/1] file1d6c761af54c.txt
+#> Extracting 'file1d6c761af54c.txt' with the 'txt' extractor.
 #> Ingested 1 block(s), ~10 tokens (0 chars removed by cleaning).
 #> Segmenting with 'structural' (cap 900 tokens, overlap 90).
 #> Reading with 'extract' (all|N+conflicts|none) over 1 chunk(s).
 
 out <- gr_audit_report(tempfile(fileext = ".html"), extraction = x, open = FALSE)
-#> Audit report written to /tmp/Rtmp2dpV7t/file1cea57de4375.html
+#> Audit report written to /tmp/RtmpfTWp6b/file1d6c5d9fddc4.html
 file.exists(out)
 #> [1] TRUE
 
@@ -243,5 +253,5 @@ ans <- answer_document(readgpt_example(), "What was revenue?", "fast", client = 
 #> Segmenting with 'paragraph' (cap 4000 tokens, overlap 0).
 #> Reading with 'stuff' (all|1|none) over 1 chunk(s).
 page <- gr_audit_report(tempfile(fileext = ".html"), answer = ans, open = FALSE)
-#> Audit report written to /tmp/Rtmp2dpV7t/file1cea62158ff7.html
+#> Audit report written to /tmp/RtmpfTWp6b/file1d6c6b117f41.html
 ```

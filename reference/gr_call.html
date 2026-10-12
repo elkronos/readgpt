@@ -60,7 +60,8 @@
 <span>  schema_name <span class="op">=</span> <span class="st">"result"</span>,</span>
 <span>  trace <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  label <span class="op">=</span> <span class="st">"call"</span>,</span>
-<span>  <span class="va">...</span></span>
+<span>  <span class="va">...</span>,</span>
+<span>  effort <span class="op">=</span> <span class="cn">NULL</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -118,6 +119,15 @@ models that reject it.</p></dd>
 <dt id="arg--">...<a class="anchor" aria-label="anchor" href="#arg--"></a></dt>
 <dd><p>Extra top-level body fields.</p></dd>
 
+
+<dt id="arg-effort">effort<a class="anchor" aria-label="anchor" href="#arg-effort"></a></dt>
+<dd><p>Reasoning effort for this call, or <code>NULL</code> (the default) to
+send none. One string, or a character vector named by label prefix,
+resolved against <code>label</code> as <code><a href="gr_read_spec.html">gr_read_spec()</a></code> describes. Sent only when
+<code>model</code> is a reasoning model (see <code><a href="gr_model_info.html">gr_model_info()</a></code>), as <code>reasoning = {effort}</code> on the Responses API and <code>reasoning_effort</code> on Chat Completions;
+a <code><a href="gr_mock_client.html">gr_mock_client()</a></code> or <code><a href="gr_backend_client.html">gr_backend_client()</a></code> handler finds it in
+<code>params$effort</code>. Must be named in full, since it follows <code>...</code>.</p></dd>
+
 </dl></div>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
@@ -151,6 +161,15 @@ reply is not written to a <code><a href="gr_cache.html">gr_cache()</a></code>.</
 <span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span>ok <span class="op">=</span> <span class="va">bad</span><span class="op">$</span><span class="va">ok</span>, text <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/sprintf.html" class="external-link">sprintf</a></span><span class="op">(</span><span class="st">"&lt;%s&gt;"</span>, <span class="va">bad</span><span class="op">$</span><span class="va">text</span><span class="op">)</span>, error <span class="op">=</span> <span class="va">bad</span><span class="op">$</span><span class="va">error</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>             ok           text          error </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>        "FALSE"           "&lt;&gt;" "network down" </span>
+<span class="r-in"><span></span></span>
+<span class="r-in"><span><span class="co"># A reasoning effort reaches a reasoning model, and the handler sees it.</span></span></span>
+<span class="r-in"><span><span class="va">seen</span> <span class="op">&lt;-</span> <span class="fu"><a href="gr_mock_client.html">gr_mock_client</a></span><span class="op">(</span><span class="kw">function</span><span class="op">(</span><span class="va">m</span>, <span class="va">p</span><span class="op">)</span> <span class="op">{</span></span></span>
+<span class="r-in"><span>  <span class="fu"><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste</a></span><span class="op">(</span><span class="st">"effort:"</span>, <span class="kw">if</span> <span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/NULL.html" class="external-link">is.null</a></span><span class="op">(</span><span class="va">p</span><span class="op">$</span><span class="va">effort</span><span class="op">)</span><span class="op">)</span> <span class="st">"none"</span> <span class="kw">else</span> <span class="va">p</span><span class="op">$</span><span class="va">effort</span><span class="op">)</span></span></span>
+<span class="r-in"><span><span class="op">}</span><span class="op">)</span></span></span>
+<span class="r-in"><span><span class="fu">gr_call</span><span class="op">(</span><span class="va">seen</span>, <span class="st">"hi"</span>, model <span class="op">=</span> <span class="st">"gpt-5.6-luna"</span>, effort <span class="op">=</span> <span class="st">"low"</span><span class="op">)</span><span class="op">$</span><span class="va">text</span></span></span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> [1] "effort: low"</span>
+<span class="r-in"><span><span class="fu">gr_call</span><span class="op">(</span><span class="va">seen</span>, <span class="st">"hi"</span>, model <span class="op">=</span> <span class="st">"gpt-4o"</span>, effort <span class="op">=</span> <span class="st">"low"</span><span class="op">)</span><span class="op">$</span><span class="va">text</span>   <span class="co"># not a reasoning model</span></span></span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> [1] "effort: none"</span>
 </code></pre></div>
     </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>

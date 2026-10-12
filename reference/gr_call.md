@@ -15,7 +15,8 @@ gr_call(
   schema_name = "result",
   trace = NULL,
   label = "call",
-  ...
+  ...,
+  effort = NULL
 )
 ```
 
@@ -74,6 +75,22 @@ gr_call(
 
   Extra top-level body fields.
 
+- effort:
+
+  Reasoning effort for this call, or `NULL` (the default) to send none.
+  One string, or a character vector named by label prefix, resolved
+  against `label` as
+  [`gr_read_spec()`](https://elkronos.github.io/readgpt/reference/gr_read_spec.md)
+  describes. Sent only when `model` is a reasoning model (see
+  [`gr_model_info()`](https://elkronos.github.io/readgpt/reference/gr_model_info.md)),
+  as `reasoning = {effort}` on the Responses API and `reasoning_effort`
+  on Chat Completions; a
+  [`gr_mock_client()`](https://elkronos.github.io/readgpt/reference/gr_mock_client.md)
+  or
+  [`gr_backend_client()`](https://elkronos.github.io/readgpt/reference/gr_backend_client.md)
+  handler finds it in `params$effort`. Must be named in full, since it
+  follows `...`.
+
 ## Value
 
 A
@@ -117,4 +134,13 @@ bad <- gr_call(gr_mock_client(function(m, p) stop("network down")), "hi")
 c(ok = bad$ok, text = sprintf("<%s>", bad$text), error = bad$error)
 #>             ok           text          error 
 #>        "FALSE"           "<>" "network down" 
+
+# A reasoning effort reaches a reasoning model, and the handler sees it.
+seen <- gr_mock_client(function(m, p) {
+  paste("effort:", if (is.null(p$effort)) "none" else p$effort)
+})
+gr_call(seen, "hi", model = "gpt-5.6-luna", effort = "low")$text
+#> [1] "effort: low"
+gr_call(seen, "hi", model = "gpt-4o", effort = "low")$text   # not a reasoning model
+#> [1] "effort: none"
 ```

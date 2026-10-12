@@ -200,6 +200,11 @@ made <em>this run</em>) and <code>store</code>.</p>
 <p><code>warnings</code> holds what readgpt warned about while reading that document,
 joined with <code>" | "</code>, or <code>NA</code> when it raised nothing. The warnings still print
 as they happen; this column is what lets you tie them to a document afterwards.</p>
+<p>With <code>premise = TRUE</code> in the recipe's read spec (see <code><a href="gr_read_spec.html">gr_read_spec()</a></code>) there
+is one more column, after <code>warnings</code>: <code>premise</code>, the sentence in which the
+model said what the document states instead of the question's premise, or
+<code>NA</code> when it reported nothing contradicting it. Such a row's <code>answer</code> is that
+sentence and its <code>not_found</code> is <code>FALSE</code>.</p>
 <p><code>document</code> is a filename and <code>document_id</code> is the hash of the cleaned text
 (and of the pages that never became text, when there are any). Cite with the
 second: a filename changes when the file is renamed, collides between
@@ -293,25 +298,25 @@ order-dependent, and a parallel loop would have to serialise on each of them. Wi
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="va">out</span> <span class="op">&lt;-</span> <span class="fu">gr_read_many</span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="va">a</span>, <span class="va">b</span><span class="op">)</span>, <span class="st">"What was revenue?"</span>, <span class="st">"fast"</span>, client <span class="op">=</span> <span class="va">cl</span><span class="op">)</span></span></span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> 2 document(s), and gr_options(max_calls) is 400 PER DOCUMENT, so this run may make up to 800 call(s). Pass max_total_calls = to cap the run.</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> [1/2] file1cea23bc4052.txt</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'file1cea23bc4052.txt' with the 'txt' extractor.</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> [1/2] file1d6c4a34a00d.txt</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'file1d6c4a34a00d.txt' with the 'txt' extractor.</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Ingested 1 block(s), ~11 tokens (0 chars removed by cleaning).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Segmenting with 'paragraph' (cap 4000 tokens, overlap 0).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Reading with 'stuff' (all|1|none) over 1 chunk(s).</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> [2/2] file1cea6fac47e8.txt</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'file1cea6fac47e8.txt' with the 'txt' extractor.</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> [2/2] file1d6c742afeb.txt</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Extracting 'file1d6c742afeb.txt' with the 'txt' extractor.</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Ingested 1 block(s), ~11 tokens (0 chars removed by cleaning).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Segmenting with 'paragraph' (cap 4000 tokens, overlap 0).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Reading with 'stuff' (all|1|none) over 1 chunk(s).</span>
 <span class="r-in"><span><span class="va">out</span><span class="op">$</span><span class="va">summary</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"document"</span>, <span class="st">"answer"</span>, <span class="st">"not_found"</span>, <span class="st">"status"</span><span class="op">)</span><span class="op">]</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>               document                            answer not_found status</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1 file1cea23bc4052.txt Revenue was 45.2 million dollars.     FALSE     ok</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 2 file1cea6fac47e8.txt Revenue was 45.2 million dollars.     FALSE     ok</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1 file1d6c4a34a00d.txt Revenue was 45.2 million dollars.     FALSE     ok</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 2  file1d6c742afeb.txt Revenue was 45.2 million dollars.     FALSE     ok</span>
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="co"># A missing file is one bad row, not a failed run.</span></span></span>
 <span class="r-in"><span><span class="va">bad</span> <span class="op">&lt;-</span> <span class="fu">gr_read_many</span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="va">a</span>, <span class="st">"no-such-file.txt"</span><span class="op">)</span>, <span class="st">"What was revenue?"</span>, <span class="st">"fast"</span>, client <span class="op">=</span> <span class="va">cl</span><span class="op">)</span></span></span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> 2 document(s), and gr_options(max_calls) is 400 PER DOCUMENT, so this run may make up to 800 call(s). Pass max_total_calls = to cap the run.</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> [1/2] file1cea23bc4052.txt</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> [1/2] file1d6c4a34a00d.txt</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Using cached ingestion for this document + settings.</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Segmenting with 'paragraph' (cap 4000 tokens, overlap 0).</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Reading with 'stuff' (all|1|none) over 1 chunk(s).</span>
@@ -319,7 +324,7 @@ order-dependent, and a parallel loop would have to serialise on each of them. Wi
 <span class="r-wrn co"><span class="r-pr">#&gt;</span> <span class="warning">Warning: </span>Document 'no-such-file.txt' failed: File not found: 'no-such-file.txt'. If you meant to pass document text rather than a path, it must not end in something that looks like a file extension.</span>
 <span class="r-in"><span><span class="va">bad</span><span class="op">$</span><span class="va">summary</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"document"</span>, <span class="st">"status"</span>, <span class="st">"error"</span><span class="op">)</span><span class="op">]</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>               document status</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1 file1cea23bc4052.txt     ok</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1 file1d6c4a34a00d.txt     ok</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 2     no-such-file.txt failed</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>                                                                                                                                                       error</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 1                                                                                                                                                      &lt;NA&gt;</span>

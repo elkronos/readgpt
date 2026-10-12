@@ -55,7 +55,11 @@ gr_client(
 
 - extra_body:
 
-  Named list merged into every request body.
+  Named list merged into every request body. A reasoning effort set here
+  (`list(reasoning = list(effort = "low"))`) is the client's default;
+  the `effort` setting of
+  [`gr_read_spec()`](https://elkronos.github.io/readgpt/reference/gr_read_spec.md)
+  replaces it for the calls it covers.
 
 - headers:
 

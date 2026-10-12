@@ -21,7 +21,9 @@ gr_outline(
   max_sections = 6L,
   closing = "What is missing",
   trace = NULL,
-  max_outline_tokens = NULL
+  max_outline_tokens = NULL,
+  effort = NULL,
+  alternatives = 1L
 )
 ```
 
@@ -72,6 +74,21 @@ gr_outline(
   model can emit. A reply cut off at it puts every claim in one section,
   with a warning.
 
+- effort:
+
+  Reasoning effort, or `NULL` (the default) to send none: one string, or
+  a character vector named by stage, as `effort` in
+  [`gr_read_spec()`](https://elkronos.github.io/readgpt/reference/gr_read_spec.md).
+  The call here is labelled `outline.derive`, and each further
+  alternative `outline.derive.alt2`, `outline.derive.alt3` and so on,
+  which a name of `outline.derive` covers. A higher effort spends more
+  of `max_outline_tokens` before the reply starts.
+
+- alternatives:
+
+  How many outlines to ask for, from 1 to 10. Each one past the first is
+  one more call, made one after another. See "More than one outline".
+
 ## Value
 
 A named character vector shaped exactly like the `outline` argument of
@@ -87,6 +104,11 @@ refuses the outline (`gr_claims_mismatch`) when the `claims` it is given
 are not the ones the outline was derived from: a re-run, or claims
 edited or reordered since.
 
+With `alternatives` above 1 it also carries `attr(, "comparison")`,
+`attr(, "alternatives")` (the other kept outlines, each shaped like this
+one) and `attr(, "alternative")`, which says which outline of the
+comparison it is.
+
 ## What is verified
 
 Every claim is assigned to exactly one section. A claim number that does
@@ -98,11 +120,49 @@ is where
 [`gr_gaps()`](https://elkronos.github.io/readgpt/reference/gr_gaps.md)
 writes and gaps are not claims.
 
+## More than one outline
+
+The grouping is the review's argument, and one proposal gives nothing to
+weigh it against. With `alternatives` above 1, each further outline is a
+request of its own, shown the groupings proposed before it and asked to
+group the claims by a different organising principle. Asking the same
+question again would not do: the default model takes no temperature, and
+the response cache answers an identical request with the reply it
+stored. The first request is the one `alternatives = 1` sends, so the
+first outline is the same whatever `alternatives` says, and a run
+recorded without alternatives still replays. The others are labelled
+`outline.derive.alt2` onwards in the trace, which also records which
+were kept (`outline.compare`).
+
+Each alternative is verified exactly as the first is. How far apart two
+outlines are is then counted, not asked: the fraction of pairs of claims
+that one puts in the same section and the other does not, 0 for the same
+grouping under other headings and 1 for groupings that agree about no
+pair. An alternative at 0 from an earlier one is dropped. So is one
+whose call failed or was cut off, or none of whose sections held a claim
+once verified, rather than replaced by a single section the way a failed
+first outline is. None is requested when the first outline is such a
+single section, or once the run reaches its call or cost limit. A
+warning (`gr_outline_alternatives_short`) says when fewer outlines came
+back distinct than were asked for, and why.
+
+Nothing ranks them, and no model is asked which is best. The first
+proposal is returned as it would be alone, carrying
+`attr(, "comparison")`, one row per outline asked for: `alternative`,
+`sections`, `claims_per_section` and `contested_per_section` (claims
+with a contradicting study, per section, in heading order), `distance`
+from the first, `nearest` (the distance to the closest earlier outline
+kept), `kept`, a `note` saying why one was not kept, and the `headings`.
+The kept alternatives are in `attr(, "alternatives")`. Choose one with
+[`gr_outline_pick()`](https://elkronos.github.io/readgpt/reference/gr_outline_pick.md),
+which keeps its headings and its claim assignment together.
+
 ## See also
 
 [`gr_claims()`](https://elkronos.github.io/readgpt/reference/gr_claims.md),
 [`gr_synthesise()`](https://elkronos.github.io/readgpt/reference/gr_synthesise.md),
-[`gr_gaps()`](https://elkronos.github.io/readgpt/reference/gr_gaps.md)
+[`gr_gaps()`](https://elkronos.github.io/readgpt/reference/gr_gaps.md),
+[`gr_outline_pick()`](https://elkronos.github.io/readgpt/reference/gr_outline_pick.md)
 
 ## Examples
 

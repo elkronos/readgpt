@@ -145,6 +145,8 @@ hand-screened sample.
   : The claims a table of studies supports
 - [`gr_outline()`](https://elkronos.github.io/readgpt/reference/gr_outline.md)
   : Derive a review's sections from its claims
+- [`gr_outline_pick()`](https://elkronos.github.io/readgpt/reference/gr_outline_pick.md)
+  : Choose one of the outlines gr_outline() compared
 - [`gr_gaps()`](https://elkronos.github.io/readgpt/reference/gr_gaps.md)
   : What a body of work does not cover
 - [`gr_synthesise()`](https://elkronos.github.io/readgpt/reference/gr_synthesise.md)

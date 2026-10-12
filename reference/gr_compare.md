@@ -58,9 +58,12 @@ gr_compare(
 A list with `answers` (named list of
 [gr_answer](https://elkronos.github.io/readgpt/reference/gr_answer.md)),
 `summary` (a data frame with columns `recipe`, `segmenter`, `chunks`,
-`reader`, `signature`, `partial`, `chunks_used`, `answer_chars`,
-`not_found`, `error`), `trace` (shared across all recipes, so it records
-every recipe's calls) and `document` (source and ingestion stats).
+`reader`, `signature`, `settings`, `partial`, `chunks_used`,
+`answer_chars`, `not_found`, `error`, and `premise` when a recipe checks
+the question's premise; see `premise` in
+[`gr_read_spec()`](https://elkronos.github.io/readgpt/reference/gr_read_spec.md)),
+`trace` (shared across all recipes, so it records every recipe's calls)
+and `document` (source and ingestion stats).
 
 ## Details
 
@@ -111,7 +114,7 @@ cmp$summary[, c("recipe", "segmenter", "chunks", "reader", "signature", "chunks_
 # One trace covers all three, so this is the cost of the whole comparison.
 gr_trace_summary(cmp$trace)
 #>                          run_id calls cached steps tokens_in tokens_out errors
-#> 1 run_20260928020038.691_ecfd0d     5      0    16      2122         65      0
+#> 1 run_20261012043754.124_855865     5      0    16      2122         65      0
 #>   elapsed_s embed_calls embed_tokens
 #> 1      0.12           0            0
 ```

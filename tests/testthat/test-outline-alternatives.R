@@ -291,6 +291,10 @@ test_that("an alternative is verified exactly as the first outline is", {
 test_that("an alternative's messages say which outline they are about", {
   messy <- oa_sections(Solo = c(1, 3))
   f <- oa_setup(oa_client(replies = list(oa_first, messy)))
+  # These are messages, which follow gr_options(verbose): set here, so the test
+  # does not pass or fail on what an earlier test left it as.
+  old_v <- gr_options(verbose = TRUE)
+  on.exit(gr_options(old_v), add = TRUE)
   msgs <- character(0)
   withCallingHandlers(
     suppressWarnings(gr_outline(f$claims, client = f$client, alternatives = 2)),

@@ -815,7 +815,11 @@ format_settings <- function(x) {
   if (!length(x)) return("")
   paste(vapply(names(x), function(nm) {
     v <- x[[nm]]
-    val <- if (is.character(v)) paste(v, collapse = "+")
+    # A named vector keeps its names: an effort map printed as "low+high"
+    # would not say which stage ran at which.
+    val <- if (is.character(v) && !is.null(names(v)) && any(nzchar(names(v))))
+             paste(ifelse(nzchar(names(v)), paste0(names(v), ":", v), v), collapse = "+")
+           else if (is.character(v)) paste(v, collapse = "+")
            else if (is.logical(v) || is.numeric(v)) paste(format(v, trim = TRUE), collapse = "+")
            else class(v)[1]
     paste0(nm, "=", val)

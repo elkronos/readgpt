@@ -141,6 +141,13 @@
 #'   cannot attribute a finding to a name, and cannot be moderated by one.
 #'   Omitted, only the conventional names are withheld. Pass the same `bib` to
 #'   [gr_synthesise()] and [gr_gaps()].
+#' @param effort Reasoning effort, or `NULL` (the default) to send none: one
+#'   string, or a character vector named by stage, as `effort` in
+#'   [gr_read_spec()]. The calls here are labelled `claims.draw` and
+#'   `claims.reconcile`, so `c(claims = "high")` covers both. Drawing claims is
+#'   judgement, the stage most worth a higher effort. The reasoning counts
+#'   against the same reply limit, so a high effort can leave a batch's reply
+#'   cut off, which is reported as such (`gr_claims_truncated`).
 #' @return An object of class `gr_claims`:
 #'   \describe{
 #'     \item{`claims`}{One row per claim: `claim_id`, `claim`, `kind`,
@@ -178,7 +185,7 @@
 #' cm$support
 gr_claims <- function(extraction, question = NULL, protocol = NULL, client = NULL,
                       model = NULL, temperature = NULL, max_claim_tokens = 1600L,
-                      include_unclear = FALSE, trace = NULL, bib = NULL) {
+                      include_unclear = FALSE, trace = NULL, bib = NULL, effort = NULL) {
   tab <- if (inherits(extraction, "gr_extraction")) extraction$table else extraction
   if (!is.data.frame(tab) || !nrow(tab)) {
     gr_abort("`extraction` must be a gr_extraction, or a data frame shaped like its $table.",
@@ -211,7 +218,7 @@ gr_claims <- function(extraction, question = NULL, protocol = NULL, client = NUL
   max_claim_tokens <- clamp_warn(na_default(max_claim_tokens, 1600L, "max_claim_tokens"),
                                  16, 1e6, "max_claim_tokens")
   spec <- gr_read_spec("stuff", model = model, temperature = temperature,
-                       max_answer_tokens = max_claim_tokens)
+                       max_answer_tokens = max_claim_tokens, effort = effort)
   # One model for the batch sizing and the requests. Left NULL, gr_budget()
   # sized batches for gr_options("model") while gr_call() asked the client's.
   spec <- resolve_read_model(spec, client)
@@ -389,7 +396,7 @@ claims_batch <- function(block, question, client, spec, trace, shown = NULL) {
                                          "\n</studies>"))
   ), schema = .gr_claims_schema, schema_name = "claims", model = spec$model,
      max_output = spec$max_answer_tokens, temperature = spec$temperature,
-     trace = trace, label = "claims.draw")
+     trace = trace, label = "claims.draw", effort = spec$effort)
   if (!isTRUE(res$ok)) {
     return(list(rows = NULL, status = if (reply_cut_off(res$result)) "cut_off" else "failed"))
   }
@@ -696,7 +703,7 @@ claims_reconcile <- function(claims, question, client, spec, trace) {
     list(role = "user", content = paste0("<claims>\n", listed, "\n</claims>")))
   res <- gr_call_json(client, msgs, schema = .gr_reconcile_schema, schema_name = "claim_groups",
                       model = spec$model, max_output = cap, temperature = spec$temperature,
-                      trace = trace, label = "claims.reconcile")
+                      trace = trace, label = "claims.reconcile", effort = spec$effort)
   if (!isTRUE(res$ok)) {
     # Said, as the capped case above is. Batches sized by their reply make this
     # pass the normal route for a large corpus, and its reply names every claim.
@@ -1004,6 +1011,41 @@ claim_order <- function(claims, support, weights) {
 #' closing one, which is allowed to be empty because it is where [gr_gaps()]
 #' writes and gaps are not claims.
 #'
+#' @section More than one outline:
+#' The grouping is the review's argument, and one proposal gives nothing to
+#' weigh it against. With `alternatives` above 1, each further outline is a
+#' request of its own, shown the groupings proposed before it and asked to
+#' group the claims by a different organising principle. Asking the same
+#' question again would not do: the default model takes no temperature, and
+#' the response cache answers an identical request with the reply it stored.
+#' The first request is the one `alternatives = 1` sends, so the first outline
+#' is the same whatever `alternatives` says, and a run recorded without
+#' alternatives still replays. The others are labelled `outline.derive.alt2`
+#' onwards in the trace, which also records which were kept
+#' (`outline.compare`).
+#'
+#' Each alternative is verified exactly as the first is. How far apart two
+#' outlines are is then counted, not asked: the fraction of pairs of claims
+#' that one puts in the same section and the other does not, 0 for the same
+#' grouping under other headings and 1 for groupings that agree about no pair.
+#' An alternative at 0 from an earlier one is dropped. So is one whose call
+#' failed or was cut off, or none of whose sections held a claim once
+#' verified, rather than replaced by a single section the way a failed first
+#' outline is. None is requested when the first outline is such a single
+#' section, or once the run reaches its call or cost limit. A warning
+#' (`gr_outline_alternatives_short`) says when fewer outlines came back
+#' distinct than were asked for, and why.
+#'
+#' Nothing ranks them, and no model is asked which is best. The first proposal
+#' is returned as it would be alone, carrying `attr(, "comparison")`, one row
+#' per outline asked for: `alternative`, `sections`, `claims_per_section` and
+#' `contested_per_section` (claims with a contradicting study, per section, in
+#' heading order), `distance` from the first, `nearest` (the distance to the
+#' closest earlier outline kept), `kept`, a `note` saying why one was not kept,
+#' and the `headings`. The kept alternatives are in `attr(, "alternatives")`.
+#' Choose one with [gr_outline_pick()], which keeps its headings and its claim
+#' assignment together.
+#'
 #' @param claims A [gr_claims()] result.
 #' @param question The review question. Taken from `claims` if omitted.
 #' @param client A [gr_client()]. One is built from `model` if omitted.
@@ -1019,6 +1061,15 @@ claim_order <- function(claims, support, weights) {
 #'   which spends part of the same limit before it writes. Clamped to what the
 #'   model can emit. A reply cut off at it puts every claim in one section,
 #'   with a warning.
+#' @param effort Reasoning effort, or `NULL` (the default) to send none: one
+#'   string, or a character vector named by stage, as `effort` in
+#'   [gr_read_spec()]. The call here is labelled `outline.derive`, and each
+#'   further alternative `outline.derive.alt2`, `outline.derive.alt3` and so
+#'   on, which a name of `outline.derive` covers. A higher effort spends more
+#'   of `max_outline_tokens` before the reply starts.
+#' @param alternatives How many outlines to ask for, from 1 to 10. Each one
+#'   past the first is one more call, made one after another. See "More than
+#'   one outline".
 #' @return A named character vector shaped exactly like the `outline` argument of
 #'   [gr_synthesise()] (headings as names, briefs as values), carrying
 #'   `attr(, "claims")` (a `section`/`claim_id` frame), `attr(, "rationale")`,
@@ -1027,7 +1078,12 @@ claim_order <- function(claims, support, weights) {
 #'   [gr_claims()] result, so [gr_synthesise()] refuses the outline
 #'   (`gr_claims_mismatch`) when the `claims` it is given are not the ones the
 #'   outline was derived from: a re-run, or claims edited or reordered since.
-#' @seealso [gr_claims()], [gr_synthesise()], [gr_gaps()]
+#'
+#'   With `alternatives` above 1 it also carries `attr(, "comparison")`,
+#'   `attr(, "alternatives")` (the other kept outlines, each shaped like this
+#'   one) and `attr(, "alternative")`, which says which outline of the
+#'   comparison it is.
+#' @seealso [gr_claims()], [gr_synthesise()], [gr_gaps()], [gr_outline_pick()]
 #' @export
 #' @examples
 #' tab <- data.frame(document = c("a.pdf", "b.pdf"), status = "ok",
@@ -1049,7 +1105,7 @@ claim_order <- function(claims, support, weights) {
 gr_outline <- function(claims, question = NULL, client = NULL, model = NULL,
                        temperature = NULL, max_sections = 6L,
                        closing = "What is missing", trace = NULL,
-                       max_outline_tokens = NULL) {
+                       max_outline_tokens = NULL, effort = NULL, alternatives = 1L) {
   if (!inherits(claims, "gr_claims")) {
     gr_abort("`claims` must come from gr_claims().", class = "gr_bad_claims")
   }
@@ -1064,9 +1120,14 @@ gr_outline <- function(claims, question = NULL, client = NULL, model = NULL,
   question <- mark_utf8(as_chr1(question %||% claims$question))
   if (is.character(closing)) closing <- mark_utf8(closing)
   if (!is_nonblank(question)) gr_abort("`question` must be a non-empty string.")
+  # Settled before any call, so a bad value warns before the first outline is
+  # paid for rather than after it.
+  alternatives <- clamp_warn(na_default(alternatives, 1L, "alternatives"), 1,
+                             .gr_outline_max_alternatives, "alternatives")
   client <- client %||% gr_client(model = model %||% gr_options("model"))
   # The model first, because the default reply limit depends on it.
-  spec <- resolve_read_model(gr_read_spec("stuff", model = model, temperature = temperature),
+  spec <- resolve_read_model(gr_read_spec("stuff", model = model, temperature = temperature,
+                                          effort = effort),
                              client)
   cw <- claims$claims
   # A fixed 1200 tokens, with no way to raise it, cut off the outline from about
@@ -1099,11 +1160,13 @@ gr_outline <- function(claims, question = NULL, client = NULL, model = NULL,
   res <- if (!capped) {
     gr_call_json(client, msgs, schema = .gr_outline_schema, schema_name = "outline",
                  model = spec$model, max_output = spec$max_answer_tokens,
-                 temperature = spec$temperature, trace = trace, label = "outline.derive")
+                 temperature = spec$temperature, trace = trace, label = "outline.derive",
+                 effort = spec$effort)
   } else list(ok = FALSE, value = NULL)
 
   secs <- if (isTRUE(res$ok)) outline_rows(json_field(res$value, "sections", scalar = FALSE)) else NULL
-  if (is.null(secs) || !nrow(secs)) {
+  derived <- !is.null(secs) && nrow(secs) > 0L
+  if (!derived) {
     # A reply cut off at the limit never closes its JSON, so it arrives here
     # like any failed call. Said apart, because "try again" cannot help: the
     # same claims ask for the same reply, and it stops in the same place.
@@ -1124,7 +1187,10 @@ gr_outline <- function(claims, question = NULL, client = NULL, model = NULL,
                        rationale = NA_character_, stringsAsFactors = FALSE)
     secs$.claims <- list(cw$claim_id)
   }
-  finish_outline(secs, cw, closing, max_sections)
+  out <- finish_outline(secs, cw, closing, max_sections)
+  if (alternatives < 2L) return(out)
+  outline_alternatives(out, alternatives, if (derived) secs, msgs, cw, closing, max_sections,
+                       client, spec, trace)
 }
 
 #' The default reply limit for an outline of `n` claims, on the model `info`

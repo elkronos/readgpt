@@ -2,6 +2,151 @@
 
 ## New
 
+* **Reasoning effort, set stage by stage.** The default models reason before
+  they answer, and that reasoning is billed as output and counted inside the
+  reply's cap. Nothing in a read, a corpus run or a write-up said how much of it
+  to do, so every call went out at the provider's default: the hundreds of
+  per-chunk extraction calls of a corpus reasoned as long as the one call that
+  drew its claims. The only lever was a client's `extra_body`, which set one
+  effort for every request and was invisible to recipes, store keys, comparisons
+  and traces.
+
+  `effort` sets it. One string applies to every call. A character vector named
+  by call label sets it per stage, such as `c(extract = "low",
+  "synthesise.section" = "high")`: a name covers a label equal to it or starting
+  with it and a dot, the longest matching name wins, and an unnamed or
+  `"default"` element covers the rest. It is a `gr_read_spec()` setting, so it
+  reaches `gr_read()`, `answer_document()`, `gr_read_many()`, `gr_screen()`,
+  `gr_extract()` and the segmenters that call a model. `gr_claims()`,
+  `gr_outline()` and `gr_synthesise()` take it as a new argument at the end, and
+  `gr_call()` takes it after `...`. The help for `gr_read_spec()` lists every
+  label and suggests a profile: low for the many mechanical stages, high for the
+  few that judge.
+
+  It is sent as `reasoning = {effort}` on the Responses API and as
+  `reasoning_effort` on Chat Completions (replacing an effort a client's own
+  `reasoning` object carries), and only to a model the registry lists as a
+  reasoning model, since others refuse the field. A mock or backend handler sees
+  it as `params$effort`. An ellmer chat cannot take it per call, so it is not
+  sent there, and a warning says so once (`gr_effort_unsupported`); its trace
+  steps keep the effort asked for as `params$unsent_effort`, so the trace and
+  `gr_audit_report()` do not count it as sent. Unset, nothing changes: no body
+  field, no handler parameter, no key part, so every cache, recording and corpus
+  store made before still answers. Set, it is part of the response-cache key,
+  the corpus store key, what `gr_compare()` counts as a different recipe
+  (recipes whose segmenter is sent the same effort still share their chunks),
+  and the key a replay matches on; a replay under another effort misses and says
+  it was recorded at a different one, and one under the same effort matches even
+  in a session that has not registered the recording's model as a reasoning
+  model. Each request's effort is on its trace step and in an `effort` column of
+  `as.data.frame(trace)`, and `gr_audit_report()` shows it beside what each
+  stage cost.
+
+* **A question the document contradicts gets a correction, not an answer.**
+  Asked "Why did revenue fall in 2023?" of a report in which revenue rose, a
+  reader either answered on the question's terms, offering a cause for a fall
+  that did not happen, or replied `NOT_IN_DOCUMENT` because the report gives no
+  reason for a fall. Either way the one thing the document does say about the
+  question was lost, and the second reported silence where the document
+  contradicted the question.
+
+  `gr_read_spec(premise = TRUE)` adds a third outcome. The prompts that answer
+  the question tell the model that when the excerpts state the contrary of an
+  assumption in it, it is to say so in one sentence giving what they state
+  instead. That sentence is `$answer` and `$premise`, and `is_not_found()` is
+  `FALSE` for it. Excerpts that are merely silent are still `NOT_IN_DOCUMENT`.
+  `map_reduce` drops a chunk that lacked the answer, as before, but passes a
+  chunk that contradicts the question to its merge as a finding, and the merge
+  may report the premise false itself; `notes$premise_chunks` keeps which chunks
+  said so whatever it decides. Every answering reader handles the outcome,
+  `iterative` through its schema. `gr_compare()` and `gr_read_many()` gain a
+  `premise` column, and `print()` and the audit report say the model reported
+  it, because the verdict is the model's reading of the excerpts and nothing
+  checks it against the document. It is off by default because it changes what
+  is sent: a run without it sends exactly what it sent before, so caches,
+  recorded replays and corpus stores still answer it. Screening and extraction
+  ignore it.
+
+* **The figures in a review are checked against the rows they cite.**
+  `gr_synthesise()` checked that every `[study N]` pointed at a row the section
+  was given, and nothing checked what the sentence said that row found. "d =
+  0.61 [study 3]" over a row reporting 0.41, or "1,240 participants" over a row
+  of 1,204, was a clean, fully cited sentence. A revision pass could also change
+  0.41 to 0.61 after the fact with every guard passing it, because the markers,
+  the hedges and the claims were all where they had been.
+
+  Every number in every sentence is now looked for in what the writer was shown
+  for that sentence: the rows it cites as the prompt showed them, the question
+  and the brief, and with claims the claims resting on those rows. This runs on
+  the draft and again on a kept revision that changed it. A figure found nowhere
+  is listed in `$figures`, counted in `$sections$n_unbacked`, shown by `print()`
+  and the audit report, and warned about (`gr_synth_unbacked_figures`). It does
+  not mark a section partial, which is about citations. The check sends nothing,
+  so it is always on.
+
+  It is forgiving about form and strict about precision. `.61`, `1204`, `12
+  450`, `45.2 million` and `45%` are found as 0.61, 1,204, 12,450, 45,200,000
+  and 0.45, and a field the writer was shown as `1e+05` backs "100,000", but a
+  figure is compared at the places it was written to, so "30%" is not a row's
+  0.32 rounded. Totals of a numeric field over the cited rows, arithmetic shown
+  in the sentence ("120 of 1,020 (11.8%)", or "HR 0.78, a 22% lower hazard"),
+  differences in points between two figures of one finding, years, counts of
+  studies ("10 of the 12 were randomised trials") and qualified figures ("about
+  1,200", "c. 1,200") are allowed. Ids written bare in prose ("studies 12 to
+  15"), significance thresholds ("p value below 0.05", "at the 5% level") and
+  age decades ("in their 60s") are not read as figures. A revision pass that
+  writes a figure its draft did not have, in any form, is now discarded
+  (`gr_revision_new_figure`), because the passes may not add anything.
+
+* **`gr_outline(alternatives =)`: more than one way to organise the review,
+  compared by counting and chosen by you.** `gr_outline()` made one call and
+  handed back one grouping of the claims into sections. The grouping is the
+  review's argument, and a single proposal gave nothing to weigh it against.
+  Asking again could not help: the default model takes no temperature, and the
+  response cache answers an identical request with the reply it stored, so the
+  second outline was the first.
+
+  With `alternatives = 3`, each further outline is a request of its own, shown
+  the groupings kept so far and asked to group the claims by a different
+  organising principle. The first request is unchanged, so a run without
+  alternatives sends the same request, caches the same way and still replays.
+  Each alternative is verified as the first is. How far apart two outlines are
+  is counted, not asked: the share of pairs of claims grouped together in one
+  and apart in the other. One that groups the claims exactly as an earlier one
+  did is dropped, as is one whose call failed or was cut off or none of whose
+  sections held a claim once verified, and a warning
+  (`gr_outline_alternatives_short`) says why. The first proposal comes back as
+  before, with `attr(, "comparison")` laying the outlines side by side:
+  sections, claims and contested claims per section, and distance from the
+  first. No model picks the winner. `gr_outline_pick()` hands back the one you
+  choose with its own claim assignment, and `gr_synthesise()`, its print method,
+  its trace and `gr_audit_report()` say which outline the review was written
+  from, unless you have since moved claims between its sections, which makes it
+  an outline of your own (renaming its headings does not).
+
+* **A `cut` pass that cut nothing is no longer kept as a cut.** Every check
+  `gr_synthesise(coherence = )` made on a revision asked whether it was safe:
+  the same studies cited, as often, on the same sentences, claiming no more than
+  the draft did. None asked whether the pass had done its job, so a `cut` handed
+  back as long as it went out (polished instead, returned as it was, or longer)
+  passed them all and was reported as a kept cut. The `cut` pass must now return
+  strictly fewer words of prose than the text it was given, or it is discarded
+  with a `gr_revision_uncut` warning and a reason such as "the cut pass did not
+  shorten the review: 812 words before, 815 after". Headings, list markers and
+  citation markers are not counted, so deleting a heading, turning a numbered
+  list into bullets or writing three markers as a range is not a cut. The count
+  is in words rather than tokens because a token count follows whichever
+  tokenizer the session has set and moves with markup a reader never sees. There
+  is no minimum: a tight draft may have nothing to lose but a filler phrase.
+
+  The `structure` and `register` passes are not held to a length. A
+  sentence-by-sentence polish of padded prose removed half its words while
+  keeping every claim and hedge, more than a reply that dropped a whole section
+  removed, so no bound could tell their job from cutting. Instead `$coherence`
+  gains integer `words_before` and `words_after` columns, shown in the audit
+  report's table of revision passes, so a pass that halved the review can be
+  seen.
+
 * **A review that reads like a review: citations by name, a reference list, and
   a coherence pass.** `gr_synthesise()` produced prose citing `[study 3]`, with
   no reference list and no connective tissue between sections. It is now capable
@@ -1337,6 +1482,13 @@
 
 ## Behaviour
 
+* With `coherence` on, a `cut` pass that did not shorten the review and a
+  revision pass that wrote a figure its draft did not have are now discarded.
+  Neither check sends anything, but a refused pass means the next pass is sent
+  the text before it, so a strict replay of a run recorded before this change,
+  in which such a pass was kept, misses at that next pass.
+* `gr_compare()`'s settings column shows a named setting with its names
+  (`effort=map:low+high`) rather than its values alone.
 * Stored results written by earlier versions are read again once: the store key
   now covers the client's `extra_body`, embedding model and embedder. Response
   cache entries made through an ellmer chat are not reused either, since the

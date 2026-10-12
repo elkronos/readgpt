@@ -13,7 +13,9 @@ gr_outline(
   max_sections = 6L,
   closing = "What is missing",
   trace = NULL,
-  max_outline_tokens = NULL
+  max_outline_tokens = NULL,
+  effort = NULL,
+  alternatives = 1L
 )
 }
 \arguments{
@@ -39,6 +41,17 @@ never below 1200, plus 4000 on a model registered as a reasoning model,
 which spends part of the same limit before it writes. Clamped to what the
 model can emit. A reply cut off at it puts every claim in one section,
 with a warning.}
+
+\item{effort}{Reasoning effort, or \code{NULL} (the default) to send none: one
+string, or a character vector named by stage, as \code{effort} in
+\code{\link[=gr_read_spec]{gr_read_spec()}}. The call here is labelled \code{outline.derive}, and each
+further alternative \code{outline.derive.alt2}, \code{outline.derive.alt3} and so
+on, which a name of \code{outline.derive} covers. A higher effort spends more
+of \code{max_outline_tokens} before the reply starts.}
+
+\item{alternatives}{How many outlines to ask for, from 1 to 10. Each one
+past the first is one more call, made one after another. See "More than
+one outline".}
 }
 \value{
 A named character vector shaped exactly like the \code{outline} argument of
@@ -49,6 +62,11 @@ claims' numbers and texts. A claim number means something only within one
 \code{\link[=gr_claims]{gr_claims()}} result, so \code{\link[=gr_synthesise]{gr_synthesise()}} refuses the outline
 (\code{gr_claims_mismatch}) when the \code{claims} it is given are not the ones the
 outline was derived from: a re-run, or claims edited or reordered since.
+
+With \code{alternatives} above 1 it also carries \code{attr(, "comparison")},
+\code{attr(, "alternatives")} (the other kept outlines, each shaped like this
+one) and \code{attr(, "alternative")}, which says which outline of the
+comparison it is.
 }
 \description{
 \code{\link[=gr_synthesise]{gr_synthesise()}} takes an \code{outline} fixed before the reading, which makes the
@@ -66,6 +84,43 @@ reply never placed is put in the closing section rather than lost, with a
 message saying so. A section left with no claims is removed, except the
 closing one, which is allowed to be empty because it is where \code{\link[=gr_gaps]{gr_gaps()}}
 writes and gaps are not claims.
+}
+
+\section{More than one outline}{
+
+The grouping is the review's argument, and one proposal gives nothing to
+weigh it against. With \code{alternatives} above 1, each further outline is a
+request of its own, shown the groupings proposed before it and asked to
+group the claims by a different organising principle. Asking the same
+question again would not do: the default model takes no temperature, and
+the response cache answers an identical request with the reply it stored.
+The first request is the one \code{alternatives = 1} sends, so the first outline
+is the same whatever \code{alternatives} says, and a run recorded without
+alternatives still replays. The others are labelled \code{outline.derive.alt2}
+onwards in the trace, which also records which were kept
+(\code{outline.compare}).
+
+Each alternative is verified exactly as the first is. How far apart two
+outlines are is then counted, not asked: the fraction of pairs of claims
+that one puts in the same section and the other does not, 0 for the same
+grouping under other headings and 1 for groupings that agree about no pair.
+An alternative at 0 from an earlier one is dropped. So is one whose call
+failed or was cut off, or none of whose sections held a claim once
+verified, rather than replaced by a single section the way a failed first
+outline is. None is requested when the first outline is such a single
+section, or once the run reaches its call or cost limit. A warning
+(\code{gr_outline_alternatives_short}) says when fewer outlines came back
+distinct than were asked for, and why.
+
+Nothing ranks them, and no model is asked which is best. The first proposal
+is returned as it would be alone, carrying \code{attr(, "comparison")}, one row
+per outline asked for: \code{alternative}, \code{sections}, \code{claims_per_section} and
+\code{contested_per_section} (claims with a contradicting study, per section, in
+heading order), \code{distance} from the first, \code{nearest} (the distance to the
+closest earlier outline kept), \code{kept}, a \code{note} saying why one was not kept,
+and the \code{headings}. The kept alternatives are in \code{attr(, "alternatives")}.
+Choose one with \code{\link[=gr_outline_pick]{gr_outline_pick()}}, which keeps its headings and its claim
+assignment together.
 }
 
 \examples{
@@ -87,5 +142,5 @@ o
 attr(o, "claims")
 }
 \seealso{
-\code{\link[=gr_claims]{gr_claims()}}, \code{\link[=gr_synthesise]{gr_synthesise()}}, \code{\link[=gr_gaps]{gr_gaps()}}
+\code{\link[=gr_claims]{gr_claims()}}, \code{\link[=gr_synthesise]{gr_synthesise()}}, \code{\link[=gr_gaps]{gr_gaps()}}, \code{\link[=gr_outline_pick]{gr_outline_pick()}}
 }

@@ -122,6 +122,12 @@ code against.
 joined with \code{" | "}, or \code{NA} when it raised nothing. The warnings still print
 as they happen; this column is what lets you tie them to a document afterwards.
 
+With \code{premise = TRUE} in the recipe's read spec (see \code{\link[=gr_read_spec]{gr_read_spec()}}) there
+is one more column, after \code{warnings}: \code{premise}, the sentence in which the
+model said what the document states instead of the question's premise, or
+\code{NA} when it reported nothing contradicting it. Such a row's \code{answer} is that
+sentence and its \code{not_found} is \code{FALSE}.
+
 \code{document} is a filename and \code{document_id} is the hash of the cleaned text
 (and of the pages that never became text, when there are any). Cite with the
 second: a filename changes when the file is renamed, collides between

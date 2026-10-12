@@ -291,6 +291,12 @@ format_trace_cost <- function(trace) {
 #' joined with `" | "`, or `NA` when it raised nothing. The warnings still print
 #' as they happen; this column is what lets you tie them to a document afterwards.
 #'
+#' With `premise = TRUE` in the recipe's read spec (see [gr_read_spec()]) there
+#' is one more column, after `warnings`: `premise`, the sentence in which the
+#' model said what the document states instead of the question's premise, or
+#' `NA` when it reported nothing contradicting it. Such a row's `answer` is that
+#' sentence and its `not_found` is `FALSE`.
+#'
 #' `document` is a filename and `document_id` is the hash of the cleaned text
 #' (and of the pages that never became text, when there are any). Cite with the
 #' second: a filename changes when the file is renamed, collides between
@@ -426,6 +432,9 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
              class = "gr_no_sources")
   }
   rec <- apply_overrides(as_recipe(recipe), list(...))
+  # Whether every row gets a `premise` column (corpus_row()): decided by the
+  # recipe, so failed and skipped rows have it too and the rows bind.
+  check_premise <- isTRUE(rec$read$premise)
   client <- client %||% gr_client(model = rec$read$model)
   # Checked at the first document that has to be READ, not here: a run whose
   # every document is already in `store` sends no request and needs no key.
@@ -523,6 +532,9 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
       if (is.null(restored$row[["warnings", exact = TRUE]])) {
         restored$row$warnings <- NA_character_
       }
+      if (check_premise && is.null(restored$row[["premise", exact = TRUE]])) {
+        restored$row$premise <- answer_premise(restored$answer)
+      }
       # A restored document is never ingested, so its text is not available to
       # hash here. The hash travels in the store entry instead -- otherwise a
       # resumed run would restore the first copy and then pay to read the second,
@@ -574,7 +586,8 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
     }
     if (stopped) {
       rows[[i]] <- corpus_row(lab, status = "skipped",
-                              error = "corpus ceiling reached before this document")
+                              error = "corpus ceiling reached before this document",
+                              premise = check_premise)
       next
     }
 
@@ -628,7 +641,7 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
         structure(list(of = prior, hash = h, warnings = doc$warnings),
                   class = "gr_corpus_duplicate")
       } else {
-        ch <- gr_segment(doc, rec$segment, client = client, trace = sub)
+        ch <- gr_segment(doc, segment_effort(rec$segment, rec$read), client = client, trace = sub)
         a <- finish_answer(gr_read(ch, question, client, rec$read, trace = sub),
                            doc, ch, rec$name)
         attr(a, "doc_hash") <- h
@@ -669,7 +682,7 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
       raised <- raised[names(raised) != "gr_document_failed"]
       rows[[i]] <- corpus_row(lab, status = "failed", error = conditionMessage(out),
                               trace = sub, seconds = secs, cost = cost,
-                              warnings = c(doc_w, raised))
+                              warnings = c(doc_w, raised), premise = check_premise)
     } else if (inherits(out, "gr_corpus_duplicate")) {
       first <- labels[[out$of]]
       gr_msg(sprintf("[%d/%d] %s has the same text as '%s' and is not read again",
@@ -701,7 +714,7 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
       why <- sprintf("stopped at the %s before the document was read in full; raise %s",
                      stopped_by$limit, stopped_by$option)
       gr_warn(sprintf("Document '%s' failed: %s.", lab, why), class = "gr_document_failed")
-      rows[[i]] <- corpus_unfinished_row(lab, out, why, sub, secs, cost)
+      rows[[i]] <- corpus_unfinished_row(lab, out, why, sub, secs, cost, premise = check_premise)
       if (keep_answers) answers[[lab]] <- out
     } else if (!is.null(why <- failed_note(out, sub))) {
       # The same treatment, for the same reason. A request that failed is a
@@ -711,12 +724,12 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
       # and saved, it came back "restored" on every later run with no call
       # made, long after the provider had recovered.
       gr_warn(sprintf("Document '%s' failed: %s.", lab, why), class = "gr_document_failed")
-      rows[[i]] <- corpus_unfinished_row(lab, out, why, sub, secs, cost)
+      rows[[i]] <- corpus_unfinished_row(lab, out, why, sub, secs, cost, premise = check_premise)
       if (keep_answers) answers[[lab]] <- out
     } else {
       rows[[i]] <- corpus_row(lab, status = "ok", answer = out, trace = sub,
                               seconds = secs, cost = cost,
-                              document_id = attr(out, "doc_hash"))
+                              document_id = attr(out, "doc_hash"), premise = check_premise)
       if (keep_answers) answers[[lab]] <- out
       assign(attr(out, "doc_hash"), i, envir = seen)
       if (!is.null(key)) corpus_save(store, key, rows[[i]], out, attr(out, "doc_hash"))
@@ -798,6 +811,13 @@ print.gr_corpus <- function(x, ...) {
     cat(sprintf("  %d answered, %d found nothing, %d partial\n",
                 sum(done), sum(s$not_found[done], na.rm = TRUE),
                 sum(s$partial[done], na.rm = TRUE)))
+    # Counted among the answered, and said apart: the answer to a loaded
+    # question is a correction, and a run over a folder should say how many.
+    contra <- if (is.null(s[["premise"]])) 0L else sum(!is.na(s$premise[done]))
+    if (contra) {
+      cat(sprintf(paste0("  %d where the model reports the document contradicts the question's ",
+                         "premise (see the `premise` column)\n"), contra))
+    }
   }
   cat(sprintf("  this run: %s, %s\n", format_call_counts(x$trace),
               format_trace_cost(x$trace)))
@@ -1020,10 +1040,10 @@ corpus_sources <- function(sources, recursive = FALSE, quiet = FALSE) {
 #' @noRd
 corpus_row <- function(document, status, answer = NULL, trace = NULL, error = NA_character_,
                        seconds = NA_real_, cost = NA_real_, document_id = NA_character_,
-                       warnings = NULL) {
+                       warnings = NULL, premise = FALSE) {
   seg <- if (is.null(answer)) list() else (answer$segmentation %||% list())
   s <- if (is.null(trace)) NULL else gr_trace_summary(trace)
-  data.frame(
+  row <- data.frame(
     document    = as_chr1(document),
     # The stable half of a citation. `document` is a filename: it changes when
     # the file is renamed, it collides between folders (make.unique() then
@@ -1057,6 +1077,12 @@ corpus_row <- function(document, status, answer = NULL, trace = NULL, error = NA
     warnings    = corpus_warnings(warnings %||% answer[["warnings", exact = TRUE]]),
     stringsAsFactors = FALSE
   )
+  # After `warnings`, and only for a recipe that checks the question's premise
+  # (`premise`, whether it does): every row of a run has the same recipe, so
+  # the rows bind, and a run that did not check keeps the columns it had. What
+  # the model said the document states instead, or NA.
+  if (isTRUE(premise)) row$premise <- answer_premise(answer)
+  row
 }
 
 #' The row for a document that was read but not in full: a limit stopped it, or
@@ -1069,13 +1095,15 @@ corpus_row <- function(document, status, answer = NULL, trace = NULL, error = NA
 #' join these rows by it. The reader and chunk counts say how far it got. Left
 #' out of `seen` and the store by the caller, not here.
 #' @noRd
-corpus_unfinished_row <- function(document, ans, why, trace, seconds, cost) {
+corpus_unfinished_row <- function(document, ans, why, trace, seconds, cost, premise = FALSE) {
   row <- corpus_row(document, status = "failed", answer = ans, trace = trace, error = why,
                     seconds = seconds, cost = cost,
                     document_id = attr(ans, "doc_hash") %||% NA_character_,
-                    warnings = ans$warnings)
+                    warnings = ans$warnings, premise = premise)
   row$answer <- NA_character_
   row$not_found <- NA
+  # Not a result either way, so no verdict: the partial answer keeps it.
+  if (isTRUE(premise)) row$premise <- NA_character_
   row
 }
 

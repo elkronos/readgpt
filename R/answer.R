@@ -119,7 +119,7 @@ answer_document <- function(source, question, recipe = "auto", client = NULL,
     for (w in cand[[pick]]$warnings) warning(w)
     rec <- cand[[pick]]$recipe
   }
-  chunks <- gr_segment(doc, rec$segment, client = client, trace = trace)
+  chunks <- gr_segment(doc, segment_effort(rec$segment, rec$read), client = client, trace = trace)
   ans <- finish_answer(gr_read(chunks, question, client, rec$read, trace = trace),
                        doc, chunks, rec$name)
   if (auto) ans$notes$auto_recipe <- rec$name
@@ -259,7 +259,9 @@ finish_answer <- function(ans, doc, chunks, recipe) {
 #' @param ... Overrides applied to every recipe.
 #' @return A list with `answers` (named list of [gr_answer]), `summary` (a data
 #'   frame with columns `recipe`, `segmenter`, `chunks`, `reader`, `signature`,
-#'   `partial`, `chunks_used`, `answer_chars`, `not_found`, `error`), `trace`
+#'   `settings`, `partial`, `chunks_used`, `answer_chars`, `not_found`, `error`,
+#'   and `premise` when a recipe checks the question's premise; see `premise`
+#'   in [gr_read_spec()]), `trace`
 #'   (shared across all recipes, so it records every recipe's calls) and
 #'   `document` (source and ingestion stats).
 #' @seealso [answer_document()], [gr_recipes()], [gr_recipe()], [gr_answer]
@@ -375,10 +377,15 @@ gr_compare <- function(source, question, recipes = c("fast", "needle", "thorough
       # And on what the document could not give: chunks carry the unread pages
       # and the warnings of the ingestion that produced them, so two ingestions
       # with the same text but different losses must not share chunks.
-      skey <- gr_hash(list(d$text, unclass(r$segment), d$stats$unread_pages, d$warnings))
+      # With the reasoning effort a segmenter that calls a model sends: two
+      # recipes differing in it must not share chunks one of them cut at the
+      # other's effort. Unchanged without one, and for a segmenter that sends
+      # none (segment_effort()).
+      seg <- segment_effort(r$segment, r$read)
+      skey <- gr_hash(list(d$text, unclass(seg), d$stats$unread_pages, d$warnings))
       hit <- seg_cache[[skey]]
       if (is.null(hit)) {
-        ch <- gr_segment(d, r$segment, client = client, trace = sub)
+        ch <- gr_segment(d, seg, client = client, trace = sub)
         seg_steps <- length(sub$steps)
         # A chunking a limit cut short is this recipe's, not the one another
         # recipe with the same segment spec would get on its own.
@@ -445,6 +452,13 @@ gr_compare <- function(source, question, recipes = c("fast", "needle", "thorough
                error = answer_error(a),
                stringsAsFactors = FALSE)
   }))
+  # What the model said the document states instead of the question's premise,
+  # or NA, when any recipe checked it. Last, and only then, so a comparison that
+  # did not check has the columns, in the places, it always had.
+  if (any(vapply(recs, function(r) isTRUE(r$read$premise), logical(1)))) {
+    summary$premise <- unname(vapply(names(answers), function(nm) answer_premise(answers[[nm]]),
+                                     character(1)))
+  }
   list(answers = answers, summary = summary, trace = trace,
        document = list(source = doc$source, stats = doc$stats))
 }

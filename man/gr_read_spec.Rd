@@ -29,6 +29,8 @@ gr_read_spec(
   parallel = NULL,
   delay_between_calls = 0,
   on_overflow = c("warn", "error"),
+  effort = NULL,
+  premise = FALSE,
   ...
 )
 }
@@ -149,6 +151,35 @@ other readers do not sleep.}
 
 \item{on_overflow}{For \code{stuff}: \code{"warn"} (truncate and say so) or \code{"error"}.}
 
+\item{effort}{How much a reasoning model reasons before it answers, or
+\code{NULL} (the default) to send nothing, so every request goes out at the
+provider's default exactly as before. One string, such as \code{"low"}, applies
+to every call. A character vector named by stage sets it per stage:
+\code{c(extract = "low", "synthesise.section" = "high")}. A name covers each
+call whose trace label is that name or starts with it and a dot; the
+longest name that covers a label wins; an unnamed element, or one named
+\code{"default"}, covers the labels no name does, and a label nothing covers is
+sent no effort. It reaches the segmenters that call a model too, when the
+spec is part of a recipe. See the section on reasoning effort.}
+
+\item{premise}{Check the question's assumptions against the document. A
+question can take for granted something the document contradicts ("Why
+did revenue fall?" of a report in which it rose). Without this check a
+reader answers it on its own terms or reports \code{NOT_IN_DOCUMENT}, and
+either way what the document does say is lost. With \code{premise = TRUE} the
+prompts that answer the question tell the model that, when the excerpts
+state the contrary of an assumption in it, it is to say so in one
+sentence giving what they state instead, rather than answer. That
+sentence becomes \verb{$answer} and \verb{$premise} (see \link{gr_answer}), and
+\code{\link[=is_not_found]{is_not_found()}} is \code{FALSE} for it. Excerpts that are merely silent are
+still \code{NOT_IN_DOCUMENT}. See "Checking the premise" below for how each
+reader combines what its requests report. The verdict is the model's
+reading of the excerpts, not a check readgpt makes, so weigh it as you
+would any answer. Off by default because it changes what is sent: the
+prompts are longer, so a cache, a recorded replay or a \code{\link[=gr_read_many]{gr_read_many()}}
+store made without it does not answer a run with it, and the reverse.
+\code{screen} and \code{extract}, which answer no question, ignore it.}
+
 \item{...}{Extra fields for custom readers.}
 }
 \value{
@@ -157,6 +188,37 @@ A list of class \code{gr_read_spec}.
 \description{
 Describe a reading configuration
 }
+\section{Checking the premise}{
+
+With \code{premise = TRUE}, every request that answers the question carries the
+rule: the single answering request of \code{stuff}, \code{retrieve}, \code{rerank},
+\code{skim}, \code{hierarchical} and \code{preview}; each chunk's request and the merge of
+\code{map_reduce}; the draft and every revision of \code{refine}; each step and the
+final answer of \code{iterative}; and the adjudication of \code{ensemble}. Requests
+that only pick, score, summarise or copy out passages do not.
+
+\code{map_reduce} treats a chunk that contradicts the premise differently from
+one that only lacks the answer. The second is dropped, as it always was.
+The first is passed to the merge as a finding that says the premise is
+contradicted and what the excerpt states instead, and the merge, told the
+same rule, weighs it against the chunks that did answer and may itself
+report the premise false. \code{notes$premise_chunks} lists the chunks that
+reported it, whatever the merge decided. \code{ensemble} does the same with its
+members (\code{notes$premise_members}). \code{refine} carries the verdict in its
+draft, so a later excerpt can add to the correction or overturn it.
+\code{iterative}'s step reports it in a \code{false_premise} field of its reply,
+which is in the schema only when the premise is checked, and stops there.
+A merge or adjudication that failed returns the findings joined, which is
+no verdict: \verb{$premise} is \code{NA}, and the notes still name the chunks or
+members that reported it.
+
+The answer records the check: \verb{$premise} is \code{NA} when nothing contradicted
+the question, and the correction when something did. \code{\link[=gr_compare]{gr_compare()}} and
+\code{\link[=gr_read_many]{gr_read_many()}} add a \code{premise} column to their summaries, \code{print()} and
+\code{\link[=gr_audit_report]{gr_audit_report()}} say when the model reported the premise false, and the
+trace has a \code{read.premise} step with the outcome.
+}
+
 \section{Out-of-range values}{
 
 Numeric arguments are clamped into a usable range and the change is warned
@@ -167,11 +229,91 @@ about, never applied silently: \code{top_k} [1, 1e4], \code{fan_in} [2, 32],
 token caps [16, 1e6].
 }
 
+\section{Reasoning effort}{
+
+The default models reason before they write a reply, and that reasoning is
+billed as output and counted against the same output cap as the reply.
+Nothing sets how much unless \code{effort} does, so a corpus's hundreds of
+per-chunk calls reason as long as the one call that drafts its claims.
+
+The effort is sent as \code{reasoning = {"effort": ...}} on the Responses API and
+as \code{reasoning_effort} on Chat Completions, and a \code{\link[=gr_mock_client]{gr_mock_client()}} or
+\code{\link[=gr_backend_client]{gr_backend_client()}} handler finds it in \code{params$effort}. It is sent only to
+a model whose \code{\link[=gr_model_info]{gr_model_info()}} says \code{reasoning = TRUE}, and left out without
+a warning for any other, which would refuse the field, as \code{temperature} is
+left out for a model that refuses that; register a gateway's reasoning model
+with \code{\link[=gr_register_model]{gr_register_model()}} to reach it. For the calls it covers it replaces
+an effort the client's \code{extra_body} sets. A \code{\link[=gr_ellmer_client]{gr_ellmer_client()}} cannot take
+it per call, says so once (\code{gr_effort_unsupported}) and does not record it
+as sent. A value is passed
+through as given; one that is not \code{"none"}, \code{"minimal"}, \code{"low"},
+\code{"medium"}, \code{"high"} or \code{"xhigh"} is warned about (\code{gr_effort_unknown}) and
+sent anyway, since providers add levels.
+
+Each request's effort is in its trace step (\code{params$effort}, and an \code{effort}
+column of \code{as.data.frame(trace)}), and \code{\link[=gr_audit_report]{gr_audit_report()}} shows it beside
+what each stage cost. It is part of the \code{\link[=gr_cache]{gr_cache()}} key, and, when set, of
+a recipe's store key in \code{\link[=gr_read_many]{gr_read_many()}}, of what \code{\link[=gr_compare]{gr_compare()}} counts as
+a different recipe, and of the key a \code{\link[=gr_replay_client]{gr_replay_client()}} matches on, so
+runs at different efforts never share answers. Unset, none of those keys
+change.
+
+The labels are the \code{stage} column of \code{as.data.frame(trace)}:
+\code{segment.context}, \code{segment.proposition}; \code{stuff.answer}; \code{map.answer},
+\code{reduce}; \code{refine.draft}, \code{refine.revise}; \code{skim.extract},
+\code{skim.consolidate}, \code{skim.answer}; \code{retrieve.answer}; \code{rerank.score},
+\code{rerank.answer}; \code{hier.summarise.L1} (and \code{L2}, ...), \code{hier.answer};
+\code{iterative.step}, \code{iterative.final}; \code{ensemble.adjudicate}; \code{preview.plan},
+\code{preview.skim}, \code{preview.answer}; \code{screen.decide}; \code{extract.chunk},
+\code{extract.resolve}; and, for \code{\link[=gr_claims]{gr_claims()}}, \code{\link[=gr_outline]{gr_outline()}} and
+\code{\link[=gr_synthesise]{gr_synthesise()}}, \code{claims.draw}, \code{claims.reconcile}, \code{outline.derive},
+\code{synthesise.section}, \code{synthesise.batch}, \code{synthesise.merge} and
+\code{synthesise.revise.structure} (\code{.cut}, \code{.register}). A merge that takes
+more than one level labels the levels below its final merge \code{.level1},
+\code{.level2} and so on, which its own name covers.
+
+A starting point, not a default: low for the many mechanical calls and high
+for the few that judge.
+
+\if{html}{\out{<div class="sourceCode">}}\preformatted{effort = c("extract.chunk" = "low", "skim.extract" = "low",
+           "rerank.score" = "low", segment = "low", "map.answer" = "low",
+           "claims.draw" = "high", "outline.derive" = "high",
+           "synthesise.section" = "high", "ensemble.adjudicate" = "high")
+}\if{html}{\out{</div>}}
+
+Reasoning shares the reply's cap, so a call at \code{"high"} can spend all of it
+and come back cut off (\code{finish_reason = "length"}, warned about where it
+matters). Give such stages room: \code{max_answer_tokens} here,
+\code{max_section_tokens} in \code{\link[=gr_synthesise]{gr_synthesise()}}, \code{max_outline_tokens} in
+\code{\link[=gr_outline]{gr_outline()}}.
+Requests to a reasoning model are sent with an output cap of at least 2048
+tokens whatever the effort, and the cost limits are checked at that cap.
+}
+
 \examples{
 gr_read_spec("retrieve", top_k = 8)$top_k
 
 # Out-of-range settings are corrected loudly, not quietly.
 suppressWarnings(gr_read_spec("hierarchical", fan_in = 999)$fan_in)
+
+# Reasoning effort by stage: little for the per-chunk calls, more for the
+# merge. The trace says which request carried which.
+ch <- gr_segment(readgpt_example(), list(method = "paragraph", max_tokens = 150))
+cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
+sp <- gr_read_spec("map_reduce", model = "gpt-5.6-luna",
+                   effort = c(map = "low", reduce = "high"))
+tr <- gr_trace()
+invisible(gr_read(ch, "What was revenue?", cl, sp, trace = tr))
+unique(as.data.frame(tr)[, c("stage", "effort")])
+# A loaded question, checked against the document. The mock plays a model
+# that finds the excerpts contradict it.
+cl <- gr_mock_client(function(m, p)
+  "FALSE_PREMISE: Revenue rose 12\% in 2023, to 45.2 million.")
+ch <- gr_segment(readgpt_example(), list(method = "sentence", max_tokens = 400))
+ans <- gr_read(ch, "Why did revenue fall in 2023?", cl,
+               gr_read_spec("stuff", premise = TRUE))
+ans$premise
+is_not_found(ans$answer)
 }
 \seealso{
 \code{\link[=gr_readers]{gr_readers()}} for the available readers and their call costs,

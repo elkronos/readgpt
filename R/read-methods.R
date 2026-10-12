@@ -24,7 +24,7 @@
 #' @noRd
 read_stuff <- function(chunks, question, client, spec, trace) {
   d <- chunks$chunks
-  overhead <- prompt_overhead(question, answer_system(spec$cite), spec$restate)
+  overhead <- prompt_overhead(question, answer_system(spec$cite, spec$premise), spec$restate)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   fit <- fit_chunks(d, bud$input)
 
@@ -53,20 +53,25 @@ read_stuff <- function(chunks, question, client, spec, trace) {
                                    reason = paste(cap_name(trace), "reached before the request"))))
   }
   res <- gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite,
-                                    restate = spec$restate),
+                                    restate = spec$restate, premise = spec$premise),
                  model = spec$model, max_output = spec$max_answer_tokens,
-                 temperature = spec$temperature, trace = trace, label = "stuff.answer")
+                 temperature = spec$temperature, trace = trace, label = "stuff.answer",
+                 effort = spec$effort)
   ok <- usable_text(res)
   # An answer cut off at the output cap is still text, and still partial.
   cut <- as.integer(ok && reply_cut_off(res))
+  # A premise verdict becomes its correction (read-premise.R); without the
+  # check, the reply as it came.
+  out <- premise_reply(if (ok) res$text else .NOT_FOUND, spec$premise)
   # The chunks are what an answer rests on. With no answer they are not
   # evidence of anything.
-  new_answer(if (ok) res$text else .NOT_FOUND, "stuff", question, sub$chunk_id, trace,
+  new_answer(out$text, "stuff", question, sub$chunk_id, trace,
              evidence = if (ok) evidence_table(sub$chunk_id, reader_source_text(sub), sub$page,
                                                sub$section, kind = "verbatim"),
              partial = !ok || length(fit$dropped) > 0 || cut > 0L,
              notes = list(dropped_chunks = length(fit$dropped), truncated_calls = cut,
-                          error = res$error))
+                          error = res$error),
+             premise = out$premise)
 }
 
 # ---------------------------------------------------------------------------
@@ -83,14 +88,17 @@ read_map_reduce <- function(chunks, question, client, spec, trace) {
   # The largest chunk with its reply at the cap: what gr_lapply() holds a
   # parallel batch to, since the workers cannot see what the run spends.
   worst <- batch_item_usd(client, spec$model, max_tokens_of(d$tokens) +
-                            prompt_overhead(question, answer_system(spec$cite), spec$restate),
+                            prompt_overhead(question, answer_system(spec$cite, spec$premise),
+                                            spec$restate),
                           spec$max_chunk_tokens)
   res <- gr_lapply(seq_len(nrow(d)), function(i, trace) {
     if (!trace_can_call(trace)) return(list(ok = FALSE, text = "", capped = TRUE))
     r <- gr_call(client, answer_messages(question, render_chunks(d[i, , drop = FALSE]),
-                                         cite = spec$cite, restate = spec$restate),
+                                         cite = spec$cite, restate = spec$restate,
+                                         premise = spec$premise),
                  model = spec$model, max_output = spec$max_chunk_tokens,
-                 temperature = spec$temperature, trace = trace, label = "map.answer")
+                 temperature = spec$temperature, trace = trace, label = "map.answer",
+                 effort = spec$effort)
     if (spec$delay_between_calls > 0) Sys.sleep(spec$delay_between_calls)
     list(ok = usable_text(r), text = r$text, capped = FALSE, cut = reply_cut_off(r))
   }, parallel = spec$parallel, label = "chunk", trace = trace, client = client, item_usd = worst)
@@ -101,6 +109,25 @@ read_map_reduce <- function(chunks, question, client, spec, trace) {
   # into the literal string "NULL" and spliced it into the merge prompt as if it
   # were a finding.
   useful <- ok & !vapply(texts, is_not_found, logical(1))
+  # With the premise checked, a chunk's reply is one of three things, and the
+  # two that are not answers are not alike. A chunk that only lacked the answer
+  # is silent and is dropped, as it always was; on a long document most are.
+  # A chunk whose excerpt CONTRADICTS the question is a finding, the one the
+  # question most needs, and goes to the merge as one, opening with the
+  # sentinel so the merge prompt knows it for what it is. The merge then weighs
+  # it against the chunks that answered, and may itself reply that the premise
+  # is false. Which chunks flagged it is kept in the notes whatever the merge
+  # decides, so a correction the merge overruled is not lost without a trace.
+  pieces <- texts
+  flagged <- rep(FALSE, length(texts))
+  if (isTRUE(spec$premise)) {
+    pr <- lapply(texts, premise_reply, check = TRUE)
+    flagged <- useful & vapply(pr, function(p) !is.na(p$premise), logical(1))
+    # "FALSE_PREMISE: NOT_IN_DOCUMENT" is a chunk that found nothing.
+    useful <- useful & !vapply(pr, function(p) is_not_found(p$text), logical(1))
+    flagged <- flagged & useful
+    pieces[flagged] <- vapply(pr[flagged], function(p) premise_finding(p$premise), character(1))
+  }
   # A finding cut off at the output cap goes into the merge all the same, and
   # the answer rests on part of it.
   cut <- sum(useful & vapply(res, function(r) isTRUE(r$cut), logical(1)))
@@ -126,14 +153,21 @@ read_map_reduce <- function(chunks, question, client, spec, trace) {
                       partial = n_failed > 0 || any(capped),
                       notes = list(chunks = nrow(d), failed_calls = n_failed, reason = why)))
   }
-  merged <- tree_merge(client, question, texts[useful], spec, trace, label = "reduce")
+  # merge_system_prompt(FALSE) is the prompt tree_merge() defaults to.
+  merged <- tree_merge(client, question, pieces[useful], spec, trace, label = "reduce",
+                       system_prompt = merge_system_prompt(spec$premise))
   cut <- cut + merged$truncated_calls
   # A merge request that failed below the last level passes its group up
   # unmerged and leaves `merged$ok` alone, and a finding cut to fit a merge
   # lost its end; both are part of what the answer rests on.
   merge_failed <- as.integer(as_num1(merged$failed, 0))
   merge_cut <- as.integer(as_num1(merged$truncated, 0))
-  new_answer(merged$text, "map_reduce", question, d$chunk_id[useful], trace,
+  # The merge's reply, or the one finding that needed no merge, is the verdict.
+  # A merge that gave up returns the findings joined, which is no verdict even
+  # when the first of them flagged the premise: gr_read() records NA, the
+  # findings keep their sentinels in the text, and `premise_chunks` names them.
+  out <- premise_reply(merged$text, isTRUE(spec$premise) && isTRUE(merged$ok))
+  new_answer(out$text, "map_reduce", question, d$chunk_id[useful], trace,
              chunks_sent = d$chunk_id,
              # These are the model's ANSWER for each chunk, not quotations
              # from it, which is why verification reports NA for them.
@@ -142,11 +176,13 @@ read_map_reduce <- function(chunks, question, client, spec, trace) {
                                        kind = "answer"),
              partial = n_failed > 0 || any(capped) || !merged$ok || cut > 0L ||
                merge_failed > 0L || merge_cut > 0L,
-             notes = list(chunks = nrow(d), answered = sum(useful),
-                          failed_calls = n_failed + merge_failed,
-                          merge_failures = merge_failed,
-                          truncated_calls = cut, truncations = merge_cut,
-                          merge_levels = merged$levels, merge_ok = merged$ok))
+             notes = c(list(chunks = nrow(d), answered = sum(useful),
+                            failed_calls = n_failed + merge_failed,
+                            merge_failures = merge_failed,
+                            truncated_calls = cut, truncations = merge_cut,
+                            merge_levels = merged$levels, merge_ok = merged$ok),
+                       if (isTRUE(spec$premise)) list(premise_chunks = d$chunk_id[flagged])),
+             premise = out$premise)
 }
 
 # ---------------------------------------------------------------------------
@@ -165,8 +201,10 @@ read_refine <- function(chunks, question, client, spec, trace) {
   # Two different system prompts go out of this reader -- answer_messages() for
   # the first chunk, refine_system for every revision after it -- so budget
   # against the longer of the two rather than whichever is named here.
-  overhead <- max(prompt_overhead(question, .gr_prompts$refine_system, spec$restate),
-                  prompt_overhead(question, answer_system(spec$cite), spec$restate))
+  # Both with the premise rule when the spec checks it, since both carry it.
+  refine_system <- refine_system_prompt(spec$premise)
+  overhead <- max(prompt_overhead(question, refine_system, spec$restate),
+                  prompt_overhead(question, answer_system(spec$cite, spec$premise), spec$restate))
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   p <- progress_start(nrow(d), "chunk", trace)
   with_progress(p, for (i in seq_len(nrow(d))) {
@@ -182,10 +220,13 @@ read_refine <- function(chunks, question, client, spec, trace) {
       draft <- gr_truncate_tokens(draft, half); truncated <- truncated + 1L
     }
     msgs <- if (is.null(draft)) {
-      answer_messages(question, excerpt, cite = spec$cite, restate = spec$restate)
+      answer_messages(question, excerpt, cite = spec$cite, restate = spec$restate,
+                      premise = spec$premise)
     } else {
+      # A draft that is a premise verdict is carried forward as it came, with
+      # its sentinel, so the next revision can see it is one (read-premise.R).
       list(
-        list(role = "system", content = .gr_prompts$refine_system),
+        list(role = "system", content = refine_system),
         list(role = "user", content = paste0("Question: ", question)),
         list(role = "user", content = paste0("<draft>\n", draft, "\n</draft>")),
         list(role = "user", content = paste0("<new_excerpt>\n", excerpt, "\n</new_excerpt>")),
@@ -196,7 +237,8 @@ read_refine <- function(chunks, question, client, spec, trace) {
     }
     res <- gr_call(client, msgs, model = spec$model, max_output = spec$max_answer_tokens,
                    temperature = spec$temperature, trace = trace,
-                   label = if (is.null(draft)) "refine.draft" else "refine.revise")
+                   label = if (is.null(draft)) "refine.draft" else "refine.revise",
+                   effort = spec$effort)
     if (!usable_text(res)) { failures <- failures + 1L; next }
     # A draft cut off at the output cap is carried forward as the draft, so
     # whatever it lost is lost from every revision after it.
@@ -208,13 +250,17 @@ read_refine <- function(chunks, question, client, spec, trace) {
     }
     if (spec$delay_between_calls > 0) Sys.sleep(spec$delay_between_calls)
   })
-  new_answer(draft %||% .NOT_FOUND, "refine", question, used, trace,
+  # The last draft is the verdict: a premise flag that a later excerpt
+  # overturned is gone from it, as any other revised claim is.
+  out <- premise_reply(draft %||% .NOT_FOUND, spec$premise)
+  new_answer(out$text, "refine", question, used, trace,
              # A cut excerpt or draft is text no request saw. `preview` applies
              # the same rule to a truncated skim.
              partial = failures > 0 || length(used) < nrow(d) || truncated > 0L || cut > 0L,
              notes = list(chunks = nrow(d), visited = length(used),
                           revisions = revisions, failed_calls = failures,
-                          truncated_calls = cut, truncations = truncated))
+                          truncated_calls = cut, truncations = truncated),
+             premise = out$premise)
 }
 
 # ---------------------------------------------------------------------------
@@ -239,7 +285,7 @@ read_skim <- function(chunks, question, client, spec, trace) {
       list(role = "user", content = paste0("<excerpt>\n", render_chunks(d[i, , drop = FALSE]),
                                            "\n</excerpt>"))
     ), model = skim_model, max_output = spec$max_chunk_tokens,
-       temperature = spec$temperature, trace = trace, label = "skim.extract")
+       temperature = spec$temperature, trace = trace, label = "skim.extract", effort = spec$effort)
     if (spec$delay_between_calls > 0) Sys.sleep(spec$delay_between_calls)
     list(ok = usable_text(r), text = r$text, cut = reply_cut_off(r))
   }, parallel = spec$parallel, label = "skim chunk", trace = trace,
@@ -267,7 +313,9 @@ read_skim <- function(chunks, question, client, spec, trace) {
   # it: a quotation of a model-written header or proposition is not one.
   ev <- evidence_table(d$chunk_id[keep], txt[keep], d$page[keep], d$section[keep],
                        source_text = reader_source_text(d)[keep], kind = "extracted")
-  overhead <- prompt_overhead(question, answer_system(spec$cite), spec$restate)
+  # The extraction step copies passages and judges nothing, so the premise
+  # rule goes only to the request that answers.
+  overhead <- prompt_overhead(question, answer_system(spec$cite, spec$premise), spec$restate)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   pieces <- sprintf("[chunk %d]\n%s", ev$chunk_id, ev$text)
   body <- paste(pieces, collapse = "\n\n")
@@ -303,14 +351,16 @@ read_skim <- function(chunks, question, client, spec, trace) {
   }
   res2 <- if (trace_can_call(trace)) {
     gr_call(client, answer_messages(question, body, cite = cite, label = "Evidence",
-                                    restate = spec$restate),
+                                    restate = spec$restate, premise = spec$premise),
             model = spec$model, max_output = spec$max_answer_tokens,
-            temperature = spec$temperature, trace = trace, label = "skim.answer")
+            temperature = spec$temperature, trace = trace, label = "skim.answer",
+            effort = spec$effort)
   } else gr_result(FALSE, error = paste(cap_name(trace), "reached before the synthesis step"))
   if (usable_text(res2) && reply_cut_off(res2)) cut <- cut + 1L
+  out <- premise_reply(if (usable_text(res2)) res2$text else .NOT_FOUND, spec$premise)
   # No answer, no evidence; see stuff. The passages found are counted in the
   # notes all the same.
-  new_answer(if (usable_text(res2)) res2$text else .NOT_FOUND, "skim", question, ev$chunk_id, trace,
+  new_answer(out$text, "skim", question, ev$chunk_id, trace, premise = out$premise,
              chunks_sent = sent, evidence = if (usable_text(res2)) ev,
              partial = any(!ok) || !res2$ok || cut > 0L || !merge_ok || merge_failed > 0L ||
                merge_cut > 0L,
@@ -366,7 +416,7 @@ read_retrieve <- function(chunks, question, client, spec, trace) {
   # is a row of NAs that fits any budget.
   if (!length(keep)) keep <- utils::head(order(scores, decreasing = TRUE), 1L)
 
-  overhead <- prompt_overhead(question, answer_system(spec$cite), spec$restate)
+  overhead <- prompt_overhead(question, answer_system(spec$cite, spec$premise), spec$restate)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   fit <- fit_chunks(d, bud$input, order = keep)
   # Fit first, then arrange: what gets in is a relevance question, where it sits
@@ -386,12 +436,14 @@ read_retrieve <- function(chunks, question, client, spec, trace) {
   # another member has spent the budget.
   res <- if (trace_can_call(trace)) {
     gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite,
-                                    restate = spec$restate),
+                                    restate = spec$restate, premise = spec$premise),
             model = spec$model, max_output = spec$max_answer_tokens,
-            temperature = spec$temperature, trace = trace, label = "retrieve.answer")
+            temperature = spec$temperature, trace = trace, label = "retrieve.answer",
+            effort = spec$effort)
   } else gr_result(FALSE, error = paste(cap_name(trace), "reached before the answer step"))
   cut <- as.integer(res$ok && reply_cut_off(res))
-  new_answer(if (res$ok) res$text else .NOT_FOUND, "retrieve", question, sub$chunk_id, trace,
+  out <- premise_reply(if (res$ok) res$text else .NOT_FOUND, spec$premise)
+  new_answer(out$text, "retrieve", question, sub$chunk_id, trace, premise = out$premise,
              evidence = if (res$ok) evidence_table(sub$chunk_id, reader_source_text(sub), sub$page,
                                                    sub$section, scores[fit$idx],
                                                    kind = "verbatim"),
@@ -511,7 +563,7 @@ read_rerank <- function(chunks, question, client, spec, trace) {
       list(role = "user", content = paste0("<excerpt>\n", d$text[i], "\n</excerpt>"))
     ), schema = schema, schema_name = "relevance",
        model = score_model, max_output = 200L,
-       temperature = spec$temperature, trace = trace, label = "rerank.score")
+       temperature = spec$temperature, trace = trace, label = "rerank.score", effort = spec$effort)
     # NA, not 0. A failed call judged nothing, and scoring it 0 put it through
     # the threshold at rerank_min_score = 0 as a model-judged score for a chunk
     # no model had read -- and kept it out of the "was anything judged?" test
@@ -588,7 +640,9 @@ read_rerank <- function(chunks, question, client, spec, trace) {
   }
   keep_ord <- utils::head(keep_ord, as.integer(clamp(spec$top_k, 1, length(keep_ord))))
 
-  overhead <- prompt_overhead(question, answer_system(spec$cite), spec$restate)
+  # The relevance scores judge usefulness, not truth, so the premise rule goes
+  # only to the request that answers.
+  overhead <- prompt_overhead(question, answer_system(spec$cite, spec$premise), spec$restate)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   fit <- fit_chunks(d, bud$input, order = as.integer(keep_ord))
   fit$idx <- arrange_context(fit$idx, spec$context_order)
@@ -612,13 +666,15 @@ read_rerank <- function(chunks, question, client, spec, trace) {
                                           scores = round(utils::head(keep_sc, 10), 2)))
   res <- if (trace_can_call(trace)) {
     gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite,
-                                    restate = spec$restate),
+                                    restate = spec$restate, premise = spec$premise),
             model = spec$model, max_output = spec$max_answer_tokens,
-            temperature = spec$temperature, trace = trace, label = "rerank.answer")
+            temperature = spec$temperature, trace = trace, label = "rerank.answer",
+            effort = spec$effort)
   } else gr_result(FALSE, error = paste(cap_name(trace), "reached before the answer step"))
   cut <- as.integer(res$ok && reply_cut_off(res))
+  out <- premise_reply(if (res$ok) res$text else .NOT_FOUND, spec$premise)
   # No answer, no evidence; see stuff.
-  new_answer(if (res$ok) res$text else .NOT_FOUND, "rerank", question, sub$chunk_id, trace,
+  new_answer(out$text, "rerank", question, sub$chunk_id, trace, premise = out$premise,
              evidence = if (res$ok) evidence_table(sub$chunk_id, reader_source_text(sub), sub$page,
                                                    sub$section, sc[match(fit$idx, ii)],
                                                    kind = "verbatim"),
@@ -658,7 +714,7 @@ read_hierarchical <- function(chunks, question, client, spec, trace) {
         list(role = "user", content = paste0("<text>\n", texts[i], "\n</text>"))
       ), model = summary_model, max_output = spec$max_summary_tokens,
          temperature = spec$temperature, trace = trace,
-         label = sprintf("hier.summarise.L%d", level))
+         label = sprintf("hier.summarise.L%d", level), effort = spec$effort)
       list(text = if (usable_text(r)) r$text else "", capped = FALSE,
            cut = usable_text(r) && reply_cut_off(r))
     }, parallel = spec$parallel, label = sprintf("summary L%d", level), trace = trace,
@@ -675,8 +731,9 @@ read_hierarchical <- function(chunks, question, client, spec, trace) {
   }
 
   # FALSE, not spec$cite: the merge call below asks for summaries without
-  # citation markers, so that is the system prompt it sends.
-  overhead <- prompt_overhead(question, answer_system(FALSE), spec$restate)
+  # citation markers, so that is the system prompt it sends. The premise rule
+  # does go with it: a summary keeps the figures a contradiction rests on.
+  overhead <- prompt_overhead(question, answer_system(FALSE, spec$premise), spec$restate)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
 
   level <- 1L
@@ -730,12 +787,16 @@ read_hierarchical <- function(chunks, question, client, spec, trace) {
     # that are not in front of it, which is how a citing reader starts citing
     # chunks it never saw.
     gr_call(client, answer_messages(question, body, cite = FALSE, label = "Summaries",
-                                    restate = spec$restate),
+                                    restate = spec$restate, premise = spec$premise),
             model = spec$model, max_output = spec$max_answer_tokens,
-            temperature = spec$temperature, trace = trace, label = "hier.answer")
+            temperature = spec$temperature, trace = trace, label = "hier.answer",
+            effort = spec$effort)
   } else gr_result(FALSE, error = paste(cap_name(trace), "reached before the answer step"))
   if (usable_text(res) && reply_cut_off(res)) cut <- cut + 1L
-  new_answer(if (usable_text(res)) res$text else body, "hierarchical", question, d$chunk_id, trace,
+  # Summaries handed back in place of an answer are no reply to classify.
+  out <- if (usable_text(res)) premise_reply(res$text, spec$premise)
+         else list(text = body, premise = NULL)
+  new_answer(out$text, "hierarchical", question, d$chunk_id, trace, premise = out$premise,
              partial = !usable_text(res) || summary_failures > 0 || truncated || cut > 0L,
              notes = list(chunks = nrow(d), levels = level, final_summaries = length(current),
                           failed_summaries = summary_failures, truncated_calls = cut,
@@ -798,6 +859,13 @@ read_iterative <- function(chunks, question, client, spec, trace) {
                    can_answer = list(type = "boolean"),
                    answer = list(type = "string"),
                    next_query = list(type = "string")))
+  # The verdict as a field of its own, and only when it is asked for: the
+  # schema is part of every request and of the cache key, so a spec that does
+  # not check the premise sends the schema it always sent.
+  if (isTRUE(spec$premise)) {
+    schema$required <- c(schema$required, list("false_premise"))
+    schema$properties$false_premise <- list(type = "boolean")
+  }
 
   # Built once and used for BOTH the budget and the call. Budgeting against
   # `answer_system` alone while sending this understated the overhead by 88
@@ -806,11 +874,12 @@ read_iterative <- function(chunks, question, client, spec, trace) {
   # model is satisfied, so a request for citations that reached only the
   # fallback answer call was dropped on the usual path.
   step_system <- paste0(
-    answer_system(spec$cite),
+    answer_system(spec$cite, spec$premise),
     " You are reading iteratively. If the excerpts so far are sufficient, set can_answer ",
     "true and give the answer. If not, set can_answer false and put in next_query the ",
     "specific missing information to search for -- a phrase you would expect to appear in ",
-    "the document, not a restatement of the question.")
+    "the document, not a restatement of the question.",
+    if (isTRUE(spec$premise)) .gr_premise_prompts$iterative)
 
   while (rounds < spec$max_rounds) {
     rounds <- rounds + 1L
@@ -868,7 +937,7 @@ read_iterative <- function(chunks, question, client, spec, trace) {
                                            restate_tail(body, question, spec$restate)))
     ), schema = schema, schema_name = "iterative_step", model = spec$model,
        max_output = spec$max_answer_tokens, temperature = spec$temperature,
-       trace = trace, label = "iterative.step")
+       trace = trace, label = "iterative.step", effort = spec$effort)
 
     if (!out$ok) {
       # A reply cut off at the cap is not parsable JSON, and saying so is more
@@ -886,14 +955,28 @@ read_iterative <- function(chunks, question, client, spec, trace) {
       }
       break
     }
-    if (isTRUE(json_field(out$value, "can_answer"))) {
-      answer <- as_chr1(json_text(out$value, "answer"), "")
+    answer <- as_chr1(json_text(out$value, "answer"), "")
+    # A step that reports the premise false has read enough to say so, whatever
+    # it set can_answer to: the verdict is the outcome, and another round would
+    # go looking for support for an assumption the excerpts contradict. The
+    # verdict is read from the `false_premise` field or the sentinel in
+    # `answer` (premise_field_reply()); a flag whose answer is the not-found
+    # sentinel is no verdict, and the step is read as can_answer says.
+    verdict <- if (isTRUE(spec$premise))
+      premise_field_reply(answer, isTRUE(json_field(out$value, "false_premise")))
+      else list(text = answer, premise = NULL)
+    contradicted <- is_nonblank(verdict$premise)
+    if (isTRUE(json_field(out$value, "can_answer")) || contradicted) {
       # Satisfied, with no answer, is a step that failed. Returned, a blank came
       # back as a blank answer and a null as a confident NOT_IN_DOCUMENT, both
       # with evidence and partial = FALSE. The answer call below reads what was
-      # gathered instead, and that answer is partial.
-      if (!nzchar(trimws(answer))) { done_reason <- "step gave no answer"; break }
-      trace_note(trace, "iterative.stop", list(rounds = rounds, reason = "model satisfied"))
+      # gathered instead, and that answer is partial. A premise verdict without
+      # its sentence is still a verdict.
+      if (!contradicted && !nzchar(trimws(answer))) { done_reason <- "step gave no answer"; break }
+      # Why the loop stopped, in the trace and the notes: a premise verdict is
+      # not the model satisfied with an answer.
+      why <- if (contradicted) "premise contradicted" else "model satisfied"
+      trace_note(trace, "iterative.stop", list(rounds = rounds, reason = why))
       # `step$rows`, not `seen`: a chunk that did not fit the prompt was never
       # shown to the model, and reporting it as used -- with a row in the
       # evidence table -- claims provenance the answer does not have.
@@ -901,15 +984,15 @@ read_iterative <- function(chunks, question, client, spec, trace) {
       # The step's JSON parsed, but the provider says the reply stopped at the
       # cap, so the answer inside it may be missing its end.
       cut <- as.integer(reply_cut_off(out$result))
-      return(new_answer(answer, "iterative", question,
-                        d$chunk_id[keep], trace,
+      return(new_answer(verdict$text, "iterative", question,
+                        d$chunk_id[keep], trace, premise = verdict$premise,
                         evidence = evidence_table(d$chunk_id[keep], reader_source_text(d)[keep],
                                                   d$page[keep], d$section[keep],
                                                   kind = "verbatim"),
                         partial = degraded_embed || length(dropped) > 0L || cut > 0L,
                         notes = list(rounds = rounds, chunks_seen = length(seen),
                                      chunks_dropped = length(dropped), truncated_calls = cut,
-                                     queries = queries, stop_reason = "model satisfied",
+                                     queries = queries, stop_reason = why,
                                      embedding_fallback = degraded_embed)))
     }
     nq <- as_chr1(json_text(out$value, "next_query"))
@@ -929,21 +1012,24 @@ read_iterative <- function(chunks, question, client, spec, trace) {
   # chunks routinely exceed the window, and the call was simply rejected by the
   # provider after the whole loop had been paid for.
   fbud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens,
-                    overhead = prompt_overhead(question, answer_system(spec$cite), spec$restate))
+                    overhead = prompt_overhead(question, answer_system(spec$cite, spec$premise),
+                                               spec$restate))
   final <- iterative_fit(d, seen, seen_score, fbud$input, spec$context_order)
   sub <- d[final$rows, , drop = FALSE]
   res <- if (!nrow(sub)) {
     gr_result(FALSE, error = "no gathered chunk fits the context window")
   } else if (trace_can_call(trace)) {
     gr_call(client, answer_messages(question, final$body, cite = spec$cite,
-                                    restate = spec$restate),
+                                    restate = spec$restate, premise = spec$premise),
             model = spec$model, max_output = spec$max_answer_tokens,
-            temperature = spec$temperature, trace = trace, label = "iterative.final")
+            temperature = spec$temperature, trace = trace, label = "iterative.final",
+            effort = spec$effort)
   } else gr_result(FALSE, error = paste(cap_name(trace), "reached before the answer step"))
   # Partial already, since the loop did not finish; the count says why as well.
   cut <- as.integer(res$ok && reply_cut_off(res))
+  out <- premise_reply(if (res$ok) res$text else .NOT_FOUND, spec$premise)
   # No answer, no evidence; see stuff.
-  new_answer(if (res$ok) res$text else .NOT_FOUND, "iterative", question, sub$chunk_id, trace,
+  new_answer(out$text, "iterative", question, sub$chunk_id, trace, premise = out$premise,
              evidence = if (res$ok) evidence_table(sub$chunk_id, reader_source_text(sub), sub$page,
                                                    sub$section, kind = "verbatim"),
              partial = TRUE,
@@ -1028,28 +1114,38 @@ read_ensemble <- function(chunks, question, client, spec, trace) {
   # and so in what is adjudicated here.
   member_cut <- function(r) as_num1(as.list(r$notes %||% list())[["truncated_calls"]], 0)
   cut <- as.integer(sum(vapply(results[usable], member_cut, numeric(1))))
+  # Members whose reply was a premise verdict: their answer is the correction,
+  # and only the field says it is one.
+  flagged <- isTRUE(spec$premise) & vapply(results, premise_flagged, logical(1)) & usable
+  premise_notes <- if (isTRUE(spec$premise)) list(premise_members = members[flagged])
   if (sum(usable) == 1L) {
     only <- results[[which(usable)]]
     return(new_answer(only$answer, "ensemble", question, only$chunks_used, trace,
                       evidence = only$evidence, partial = TRUE,
-                      notes = list(members = members, adjudication = "single member answered",
-                                   answered_by = members[usable], truncated_calls = cut,
-                                   failed_calls = failed)))
+                      notes = c(list(members = members, adjudication = "single member answered",
+                                     answered_by = members[usable], truncated_calls = cut,
+                                     failed_calls = failed), premise_notes),
+                      premise = only[["premise", exact = TRUE]]))
   }
-  body <- paste(sprintf("<finding source=\"%s\">\n%s\n</finding>", members[usable],
-                        vapply(results[usable], function(r) r$answer, character(1))),
+  # A member that reported the premise false goes to the adjudication as a
+  # finding that says so, with the sentinel the merge rule looks for; without
+  # it, the correction would read as one more answer to the question asked.
+  findings <- vapply(results[usable], function(r) {
+    if (premise_flagged(r) && isTRUE(spec$premise)) premise_finding(r$premise) else r$answer
+  }, character(1))
+  body <- paste(sprintf("<finding source=\"%s\">\n%s\n</finding>", members[usable], findings),
                 collapse = "\n\n")
   res <- if (trace_can_call(trace)) {
     gr_call(client, list(
       list(role = "system", content = paste0(
-        .gr_prompts$merge_system,
+        merge_system_prompt(spec$premise),
         " These findings come from different reading strategies over the same document. Where they ",
         "agree, state it once. Where they conflict, say which strategy found what and which claim ",
         "has the more specific support.")),
       list(role = "user", content = body),
       list(role = "user", content = paste0("Question: ", question))
     ), model = spec$model, max_output = spec$max_answer_tokens, temperature = spec$temperature,
-       trace = trace, label = "ensemble.adjudicate")
+       trace = trace, label = "ensemble.adjudicate", effort = spec$effort)
   } else gr_result(FALSE, error = paste(cap_name(trace), "reached before adjudication"))
 
   ev <- rbind_evidence(lapply(results[usable], function(r) r$evidence))
@@ -1080,7 +1176,15 @@ read_ensemble <- function(chunks, question, client, spec, trace) {
   # document.
   member_partial <- members[usable][vapply(results[usable], function(r) isTRUE(r$partial),
                                            logical(1))]
-  new_answer(if (res$ok) res$text else paste(ans, collapse = "\n\n---\n\n"),
+  # The adjudication's reply is the verdict. Answers joined because it failed
+  # are none, as for a map_reduce merge that gave up; `premise_members` names
+  # the members that flagged it either way. Joined from the findings, which
+  # keep the sentinel on a member's correction, as a map_reduce merge that
+  # gave up keeps it: from the answers, the correction read as one more answer
+  # to the question asked. Without the check the two are the same text.
+  out <- if (res$ok) premise_reply(res$text, spec$premise)
+         else list(text = paste(trimws(findings), collapse = "\n\n---\n\n"), premise = NULL)
+  new_answer(out$text,
              "ensemble", question,
              unique(unlist(lapply(results[usable], function(r) r$chunks_used))), trace,
              evidence = ev,
@@ -1091,10 +1195,12 @@ read_ensemble <- function(chunks, question, client, spec, trace) {
                             collapsed_members = collapsed,
                             failed_calls = failed, partial_members = member_partial,
                             member_notes = lapply(results, function(r) r$notes)),
+                       premise_notes,
                        if (length(member_partial))
                          list(reason = sprintf("member(s) %s returned a partial answer",
                                                paste(sprintf("'%s'", member_partial),
-                                                     collapse = ", ")))))
+                                                     collapse = ", ")))),
+             premise = out$premise)
 }
 
 
@@ -1226,7 +1332,7 @@ read_preview <- function(chunks, question, client, spec, trace) {
         "Return one entry for each of the %d sections, using the ids shown.", n_units))
     ), schema = schema, schema_name = "reading_plan", model = spec$model,
        max_output = spec$max_answer_tokens, temperature = spec$temperature,
-       trace = trace, label = "preview.plan")
+       trace = trace, label = "preview.plan", effort = spec$effort)
   } else list(ok = FALSE, value = NULL)
 
   # The default is READ, not skip. An unplanned section is one the planner did
@@ -1266,8 +1372,9 @@ read_preview <- function(chunks, question, client, spec, trace) {
   # Budget the sections marked `read`, in document order. What does not fit is
   # DEMOTED to skim rather than dropped: the section still gets looked at, for
   # one call, instead of vanishing because the plan was more ambitious than the
-  # context window.
-  overhead <- prompt_overhead(question, answer_system(spec$cite), spec$restate)
+  # context window. The planner and the skims judge where the answer is, not
+  # whether the question holds, so the premise rule goes only to the answer.
+  overhead <- prompt_overhead(question, answer_system(spec$cite, spec$premise), spec$restate)
   bud <- gr_budget(spec$model, reserve_output = spec$max_answer_tokens, overhead = overhead)
   # as.integer(), because `unlist()` on an empty list returns NULL, not
   # integer(0) -- and `fit_chunks()` reads `order %||% seq_len(nrow(df))`, so a
@@ -1324,7 +1431,8 @@ read_preview <- function(chunks, question, client, spec, trace) {
         list(role = "user", content = paste0("Question: ", question)),
         list(role = "user", content = paste0("<excerpt>\n", body, "\n</excerpt>"))
       ), model = skim_model, max_output = spec$max_chunk_tokens,
-         temperature = spec$temperature, trace = trace, label = "preview.skim")
+         temperature = spec$temperature, trace = trace, label = "preview.skim",
+         effort = spec$effort)
       list(ok = usable_text(r), text = r$text, rows = rows, lost = lost, cut = reply_cut_off(r))
     }, parallel = spec$parallel, label = "preview section", trace = trace,
        client = client, item_usd = worst)
@@ -1424,15 +1532,18 @@ read_preview <- function(chunks, question, client, spec, trace) {
   }
 
   res2 <- if (trace_can_call(trace)) {
-    gr_call(client, answer_messages(question, body, cite = spec$cite, restate = spec$restate),
+    gr_call(client, answer_messages(question, body, cite = spec$cite, restate = spec$restate,
+                                    premise = spec$premise),
             model = spec$model, max_output = spec$max_answer_tokens,
-            temperature = spec$temperature, trace = trace, label = "preview.answer")
+            temperature = spec$temperature, trace = trace, label = "preview.answer",
+            effort = spec$effort)
   } else gr_result(FALSE, error = paste(cap_name(trace), "reached before the answer step"))
   if (usable_text(res2) && reply_cut_off(res2)) cut <- cut + 1L
 
   used <- unique(c(d$chunk_id[keep_rows], if (!is.null(ev_skim)) ev_skim$chunk_id))
+  out <- premise_reply(if (usable_text(res2)) res2$text else .NOT_FOUND, spec$premise)
   # No answer, no evidence; see stuff.
-  new_answer(if (usable_text(res2)) res2$text else .NOT_FOUND, "preview", question, used, trace,
+  new_answer(out$text, "preview", question, used, trace, premise = out$premise,
              chunks_sent = sent, evidence = if (usable_text(res2)) ev,
              # A run that deliberately did not read part of the document is
              # partial in the sense the word carries everywhere else here: the

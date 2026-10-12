@@ -63,6 +63,13 @@
                 "Fig.", "fig.", "Dr.", "Prof.", "Mr.", "Mrs.", "Ms.", "St.",
                 "Inc.", "Ltd.")
 
+#' "c." for circa, before a figure only: "enrolled c. 1,200 adults" was cut
+#' after "c.", and the figures check read 1,200 with no qualifier, in a
+#' fragment. Not in .gr_abbrev, which would also keep a sentence that ends in
+#' "vitamin c." from ending.
+#' @noRd
+.gr_circa <- "\\bc\\.(?=[[:space:]]*[0-9])"
+
 #' Split prose into sentences, minus the markdown headings.
 #'
 #' Headings go first because they are not claims and an editing pass is meant to
@@ -81,6 +88,7 @@ split_sentences <- function(txt) {
     txt <- gsub(paste0("\\b", gsub(".", "\\.", a, fixed = TRUE)),
                 gsub(".", "\u0001", a, fixed = TRUE), txt, perl = TRUE)
   }
+  txt <- gsub(.gr_circa, "c\u0001", txt, perl = TRUE)
   txt <- gsub("([\u3002\uff01\uff1f])(?![[:space:]])", "\\1 ", txt, perl = TRUE)
   parts <- unlist(strsplit(txt, "(?<=[.!?\u3002\uff01\uff1f])\\s+", perl = TRUE),
                   use.names = FALSE)
@@ -223,6 +231,7 @@ sentence_spans <- function(txt) {
     masked <- gsub(paste0("\\b", gsub(".", "\\.", a, fixed = TRUE)),
                    gsub(".", "\u0001", a, fixed = TRUE), masked, perl = TRUE)
   }
+  masked <- gsub(.gr_circa, "c\u0001", masked, perl = TRUE)
   br <- gregexpr("\\[[^][\n]*\\]", masked, perl = TRUE)
   regmatches(masked, br) <- lapply(regmatches(masked, br),
                                    function(v) gsub("[.!?]", "\u0001", v))
@@ -497,7 +506,10 @@ synth_revise <- function(drafted, question, client, spec, trace, style = NULL,
       # an audit report and read back out of a CSV, and a list column survives
       # none of that.
       lost = as_chr1(step$lost, NA_character_), added = as_chr1(step$added, NA_character_),
-      reason = as_chr1(step$reason, NA_character_), stringsAsFactors = FALSE)
+      reason = as_chr1(step$reason, NA_character_),
+      # NA for a pass refused before its length was measured, or never sent.
+      words_before = as_int1(step$words_before, NA_integer_),
+      words_after = as_int1(step$words_after, NA_integer_), stringsAsFactors = FALSE)
     if (isTRUE(step$kept)) {
       text <- step$text
       steps <- c(steps, text)
@@ -506,7 +518,7 @@ synth_revise <- function(drafted, question, client, spec, trace, style = NULL,
   rep_df <- if (length(report)) do.call(rbind, report) else
     data.frame(pass = character(0), ran = logical(0), kept = logical(0),
                lost = character(0), added = character(0), reason = character(0),
-               stringsAsFactors = FALSE)
+               words_before = integer(0), words_after = integer(0), stringsAsFactors = FALSE)
   rownames(rep_df) <- NULL
   list(text = if (identical(text, as_chr1(drafted))) NULL else text, report = rep_df,
        steps = steps)
@@ -572,7 +584,8 @@ revise_once <- function(drafted, question, client, spec, trace, style, pass) {
     list(role = "user", content = paste0("Review question: ", question)),
     list(role = "user", content = paste0("<draft>\n", drafted, "\n</draft>"))
   ), model = spec$model, max_output = need, temperature = spec$temperature,
-     trace = trace, label = paste0("synthesise.revise.", pass))
+     trace = trace, label = paste0("synthesise.revise.", pass),
+     effort = spec$effort)
 
   # Before usable_text(): a reply cut off at the limit is truncated whether or
   # not the client counts it as a success, and saying "the call failed" about it
@@ -631,5 +644,27 @@ revise_once <- function(drafted, question, client, spec, trace, style, pass) {
             class = "gr_revision_escalated")
     return(list(ran = TRUE, kept = FALSE, reason = st$reason))
   }
-  list(ran = TRUE, kept = TRUE, text = res$text, reason = NA_character_)
+  # And same words, other numbers. Every check above passed a pass that turned
+  # the draft's "d = 0.41 [study 3]" into "d = 0.61 [study 3]": the markers,
+  # the hedges and the claims were all where they had been. No pass may add
+  # anything, so a figure the draft does not have is never an edit.
+  fg <- figure_guard(drafted, res$text)
+  if (!isTRUE(fg$ok)) {
+    gr_warn(sprintf("The '%s' pass was discarded: %s.", pass, fg$reason),
+            class = "gr_revision_new_figure")
+    return(list(ran = TRUE, kept = FALSE, reason = fg$reason))
+  }
+  # Safe is not the same as done. A 'cut' handed back as long as it went out
+  # passed every check above and was kept as a cut. Last, so a revision that
+  # is unsafe as well is reported for that.
+  len <- revision_length(drafted, res$text, pass, trace)
+  words <- len[c("words_before", "words_after")]
+  if (!is.na(len$reason)) {
+    gr_warn(sprintf(paste0("The '%s' pass was discarded because it did not shorten the review: ",
+                           "%d words of prose before, %d after."),
+                    pass, len$words_before, len$words_after),
+            class = "gr_revision_uncut")
+    return(c(list(ran = TRUE, kept = FALSE, reason = len$reason), words))
+  }
+  c(list(ran = TRUE, kept = TRUE, text = res$text, reason = NA_character_), words)
 }

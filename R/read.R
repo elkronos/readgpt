@@ -31,8 +31,11 @@
 #'   \item{`question`}{The question, already validated as non-blank.}
 #'   \item{`client`}{Pass it to [gr_call()]; never construct your own.}
 #'   \item{`spec`}{A [gr_read_spec()]. Honour at least `model`,
-#'     `max_answer_tokens` and `temperature`. [gr_read()] has already filled
-#'     `model` from the client when the spec named none.}
+#'     `max_answer_tokens`, `temperature` and `effort`. [gr_read()] has already
+#'     filled `model` from the client when the spec named none. Pass
+#'     `effort = spec$effort` to every [gr_call()], which resolves a setting
+#'     by stage against the call's `label`, so give each call a label of its
+#'     own; a call without it is sent no effort.}
 #'   \item{`trace`}{Pass it to every [gr_call()] so your calls are counted and
 #'     priced, and check `readgpt:::trace_can_call(trace)` before each one so
 #'     the run's call and spending limits are respected.}
@@ -53,7 +56,8 @@
 #'     i <- which.max(d$tokens)
 #'     res <- gr_call(client, list(
 #'       list(role = "user", content = paste0(d$text[i], "\n\nQuestion: ", question))),
-#'       model = spec$model, trace = trace, label = "longest.answer")
+#'       model = spec$model, effort = spec$effort, trace = trace,
+#'       label = "longest.answer")
 #'     new_answer(res$text, "longest", question, d$chunk_id[i], trace)
 #'   })
 #'
@@ -227,8 +231,64 @@ gr_reader_signature <- function(reader) {
 #'   rate-limit shaping. Honoured by `map_reduce`, `refine` and `skim`; the
 #'   other readers do not sleep.
 #' @param on_overflow For `stuff`: `"warn"` (truncate and say so) or `"error"`.
+#' @param effort How much a reasoning model reasons before it answers, or
+#'   `NULL` (the default) to send nothing, so every request goes out at the
+#'   provider's default exactly as before. One string, such as `"low"`, applies
+#'   to every call. A character vector named by stage sets it per stage:
+#'   `c(extract = "low", "synthesise.section" = "high")`. A name covers each
+#'   call whose trace label is that name or starts with it and a dot; the
+#'   longest name that covers a label wins; an unnamed element, or one named
+#'   `"default"`, covers the labels no name does, and a label nothing covers is
+#'   sent no effort. It reaches the segmenters that call a model too, when the
+#'   spec is part of a recipe. See the section on reasoning effort.
+#' @param premise Check the question's assumptions against the document. A
+#'   question can take for granted something the document contradicts ("Why
+#'   did revenue fall?" of a report in which it rose). Without this check a
+#'   reader answers it on its own terms or reports `NOT_IN_DOCUMENT`, and
+#'   either way what the document does say is lost. With `premise = TRUE` the
+#'   prompts that answer the question tell the model that, when the excerpts
+#'   state the contrary of an assumption in it, it is to say so in one
+#'   sentence giving what they state instead, rather than answer. That
+#'   sentence becomes `$answer` and `$premise` (see [gr_answer]), and
+#'   [is_not_found()] is `FALSE` for it. Excerpts that are merely silent are
+#'   still `NOT_IN_DOCUMENT`. See "Checking the premise" below for how each
+#'   reader combines what its requests report. The verdict is the model's
+#'   reading of the excerpts, not a check readgpt makes, so weigh it as you
+#'   would any answer. Off by default because it changes what is sent: the
+#'   prompts are longer, so a cache, a recorded replay or a [gr_read_many()]
+#'   store made without it does not answer a run with it, and the reverse.
+#'   `screen` and `extract`, which answer no question, ignore it.
 #' @param ... Extra fields for custom readers.
 #' @return A list of class `gr_read_spec`.
+#'
+#' @section Checking the premise:
+#' With `premise = TRUE`, every request that answers the question carries the
+#' rule: the single answering request of `stuff`, `retrieve`, `rerank`,
+#' `skim`, `hierarchical` and `preview`; each chunk's request and the merge of
+#' `map_reduce`; the draft and every revision of `refine`; each step and the
+#' final answer of `iterative`; and the adjudication of `ensemble`. Requests
+#' that only pick, score, summarise or copy out passages do not.
+#'
+#' `map_reduce` treats a chunk that contradicts the premise differently from
+#' one that only lacks the answer. The second is dropped, as it always was.
+#' The first is passed to the merge as a finding that says the premise is
+#' contradicted and what the excerpt states instead, and the merge, told the
+#' same rule, weighs it against the chunks that did answer and may itself
+#' report the premise false. `notes$premise_chunks` lists the chunks that
+#' reported it, whatever the merge decided. `ensemble` does the same with its
+#' members (`notes$premise_members`). `refine` carries the verdict in its
+#' draft, so a later excerpt can add to the correction or overturn it.
+#' `iterative`'s step reports it in a `false_premise` field of its reply,
+#' which is in the schema only when the premise is checked, and stops there.
+#' A merge or adjudication that failed returns the findings joined, which is
+#' no verdict: `$premise` is `NA`, and the notes still name the chunks or
+#' members that reported it.
+#'
+#' The answer records the check: `$premise` is `NA` when nothing contradicted
+#' the question, and the correction when something did. [gr_compare()] and
+#' [gr_read_many()] add a `premise` column to their summaries, `print()` and
+#' [gr_audit_report()] say when the model reported the premise false, and the
+#' trace has a `read.premise` step with the outcome.
 #'
 #' @section Out-of-range values:
 #' Numeric arguments are clamped into a usable range and the change is warned
@@ -237,6 +297,66 @@ gr_reader_signature <- function(reader) {
 #' `rerank_min_score` \[0, 10\], `preview_tokens` \[100, 1e5\],
 #' `delay_between_calls` \[0, 600\],
 #' token caps \[16, 1e6\].
+#'
+#' @section Reasoning effort:
+#' The default models reason before they write a reply, and that reasoning is
+#' billed as output and counted against the same output cap as the reply.
+#' Nothing sets how much unless `effort` does, so a corpus's hundreds of
+#' per-chunk calls reason as long as the one call that drafts its claims.
+#'
+#' The effort is sent as `reasoning = {"effort": ...}` on the Responses API and
+#' as `reasoning_effort` on Chat Completions, and a [gr_mock_client()] or
+#' [gr_backend_client()] handler finds it in `params$effort`. It is sent only to
+#' a model whose [gr_model_info()] says `reasoning = TRUE`, and left out without
+#' a warning for any other, which would refuse the field, as `temperature` is
+#' left out for a model that refuses that; register a gateway's reasoning model
+#' with [gr_register_model()] to reach it. For the calls it covers it replaces
+#' an effort the client's `extra_body` sets. A [gr_ellmer_client()] cannot take
+#' it per call, says so once (`gr_effort_unsupported`) and does not record it
+#' as sent. A value is passed
+#' through as given; one that is not `"none"`, `"minimal"`, `"low"`,
+#' `"medium"`, `"high"` or `"xhigh"` is warned about (`gr_effort_unknown`) and
+#' sent anyway, since providers add levels.
+#'
+#' Each request's effort is in its trace step (`params$effort`, and an `effort`
+#' column of `as.data.frame(trace)`), and [gr_audit_report()] shows it beside
+#' what each stage cost. It is part of the [gr_cache()] key, and, when set, of
+#' a recipe's store key in [gr_read_many()], of what [gr_compare()] counts as
+#' a different recipe, and of the key a [gr_replay_client()] matches on, so
+#' runs at different efforts never share answers. Unset, none of those keys
+#' change.
+#'
+#' The labels are the `stage` column of `as.data.frame(trace)`:
+#' `segment.context`, `segment.proposition`; `stuff.answer`; `map.answer`,
+#' `reduce`; `refine.draft`, `refine.revise`; `skim.extract`,
+#' `skim.consolidate`, `skim.answer`; `retrieve.answer`; `rerank.score`,
+#' `rerank.answer`; `hier.summarise.L1` (and `L2`, ...), `hier.answer`;
+#' `iterative.step`, `iterative.final`; `ensemble.adjudicate`; `preview.plan`,
+#' `preview.skim`, `preview.answer`; `screen.decide`; `extract.chunk`,
+#' `extract.resolve`; and, for [gr_claims()], [gr_outline()] and
+#' [gr_synthesise()], `claims.draw`, `claims.reconcile`, `outline.derive`,
+#' `synthesise.section`, `synthesise.batch`, `synthesise.merge` and
+#' `synthesise.revise.structure` (`.cut`, `.register`). A merge that takes
+#' more than one level labels the levels below its final merge `.level1`,
+#' `.level2` and so on, which its own name covers.
+#'
+#' A starting point, not a default: low for the many mechanical calls and high
+#' for the few that judge.
+#'
+#' ```
+#' effort = c("extract.chunk" = "low", "skim.extract" = "low",
+#'            "rerank.score" = "low", segment = "low", "map.answer" = "low",
+#'            "claims.draw" = "high", "outline.derive" = "high",
+#'            "synthesise.section" = "high", "ensemble.adjudicate" = "high")
+#' ```
+#'
+#' Reasoning shares the reply's cap, so a call at `"high"` can spend all of it
+#' and come back cut off (`finish_reason = "length"`, warned about where it
+#' matters). Give such stages room: `max_answer_tokens` here,
+#' `max_section_tokens` in [gr_synthesise()], `max_outline_tokens` in
+#' [gr_outline()].
+#' Requests to a reasoning model are sent with an output cap of at least 2048
+#' tokens whatever the effort, and the cost limits are checked at that cap.
 #'
 #' @seealso [gr_readers()] for the available readers and their call costs,
 #'   [gr_read()], [gr_recipe()]
@@ -247,6 +367,25 @@ gr_reader_signature <- function(reader) {
 #'
 #' # Out-of-range settings are corrected loudly, not quietly.
 #' suppressWarnings(gr_read_spec("hierarchical", fan_in = 999)$fan_in)
+#'
+#' # Reasoning effort by stage: little for the per-chunk calls, more for the
+#' # merge. The trace says which request carried which.
+#' ch <- gr_segment(readgpt_example(), list(method = "paragraph", max_tokens = 150))
+#' cl <- gr_mock_client(function(m, p) "Revenue was 45.2 million dollars.")
+#' sp <- gr_read_spec("map_reduce", model = "gpt-5.6-luna",
+#'                    effort = c(map = "low", reduce = "high"))
+#' tr <- gr_trace()
+#' invisible(gr_read(ch, "What was revenue?", cl, sp, trace = tr))
+#' unique(as.data.frame(tr)[, c("stage", "effort")])
+#' # A loaded question, checked against the document. The mock plays a model
+#' # that finds the excerpts contradict it.
+#' cl <- gr_mock_client(function(m, p)
+#'   "FALSE_PREMISE: Revenue rose 12% in 2023, to 45.2 million.")
+#' ch <- gr_segment(readgpt_example(), list(method = "sentence", max_tokens = 400))
+#' ans <- gr_read(ch, "Why did revenue fall in 2023?", cl,
+#'                gr_read_spec("stuff", premise = TRUE))
+#' ans$premise
+#' is_not_found(ans$answer)
 gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL,
                          max_answer_tokens = 1500L, max_chunk_tokens = 700L,
                          max_summary_tokens = 500L, top_k = 6L, min_score = -Inf,
@@ -257,11 +396,18 @@ gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL
                          members = NULL, cite = FALSE,
                          skim_model = NULL, summary_model = NULL,
                          parallel = NULL, delay_between_calls = 0,
-                         on_overflow = c("warn", "error"), ...) {
+                         on_overflow = c("warn", "error"), effort = NULL, premise = FALSE,
+                         ...) {
   on_overflow <- match.arg(on_overflow)
   context_order <- match.arg(context_order)
   restate <- match.arg(restate)
+  # Refused rather than read with isTRUE(): premise = "yes" or NA would turn a
+  # check the caller asked for into none, and nothing in the answer would say.
+  if (!is.logical(premise) || length(premise) != 1L || is.na(premise)) {
+    gr_abort("`premise` must be TRUE or FALSE.", class = "gr_bad_setting")
+  }
   warn_near_miss(list(...), names(formals(gr_read_spec)), "read")
+  effort <- check_effort(effort)
   spec <- structure(c(list(
     reader = reader,
     # NULL is kept, not filled from gr_options("model"): filled here, every
@@ -301,8 +447,26 @@ gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL
     delay_between_calls = clamp_warn(na_default(delay_between_calls, 0, "delay_between_calls"),
                                      0, 600, "delay_between_calls", integer = FALSE),
     on_overflow = on_overflow
-  ), list(...)), class = "gr_read_spec")
+  ),
+  # Only when set. A spec is hashed whole into a corpus store's key and into
+  # gr_compare()'s check that two recipes differ, and an `effort = NULL` entry
+  # would be a new element in every spec, so every store made before the
+  # setting existed would have missed and every document been paid for again.
+  if (!is.null(effort)) list(effort = effort),
+  # In the spec only when it is TRUE. The whole spec is hashed into the keys a
+  # corpus store files answers under (corpus_key()) and gr_compare() tells
+  # recipes apart by, so a field present in every spec, FALSE or not, would
+  # have moved every store entry ever written to a key no run asks for.
+  if (isTRUE(premise)) list(premise = TRUE),
+  list(...)), class = "gr_read_spec")
   registry_get("readers", spec$reader, "readers")   # fail fast on a typo
+  # Asked of a reader that answers no question, the check would silently do
+  # nothing; say so once, where the spec is made.
+  if (isTRUE(premise) && as_chr1(reader, "") %in% c("screen", "extract")) {
+    gr_warn(sprintf(paste0("premise = TRUE has no effect on '%s', which answers no question. ",
+                           "It applies to the readers that do; see gr_readers()."), reader),
+            class = "gr_read_premise_ignored")
+  }
   spec
 }
 
@@ -377,6 +541,10 @@ gr_read <- function(chunks, question, client, spec = NULL, trace = NULL) {
   if (!inherits(out, "gr_answer")) {
     gr_abort(sprintf("Reader '%s' did not return a gr_answer object.", spec$reader))
   }
+  # That the premise was checked, and what came of it, on the answer and in the
+  # trace (read-premise.R). Before `trace_steps` is set, so the step is this
+  # run's. Nothing at all when the spec did not ask.
+  out <- premise_record(out, spec, trace)
   # Only for an answer on this trace: a custom reader that kept a trace of its
   # own has steps numbered in that one.
   if (inherits(trace, "gr_trace") && identical(out[["trace", exact = TRUE]], trace)) {
@@ -496,14 +664,16 @@ preflight <- function(chunks, spec, trace, client = NULL, question = "",
     base <- list(calls = calls_for(r), input = 0)
     got <- switch(r,
       map_reduce = {
+        # The prompts the reader sends, the premise rule included when the
+        # spec checks it: a longer system prompt leaves each merge less room.
         m <- merge_tree_worst(n, out_cap(spec$model, spec$max_chunk_tokens),
                               out_cap(spec$model, spec$max_answer_tokens),
-                              room(.gr_prompts$merge_system))
+                              room(merge_system_prompt(spec$premise)))
         if (!is.null(m)) list(calls = n + m$calls, input = m$input)
       },
       skim = {
         piece <- out_cap(spec$skim_model %||% spec$model, spec$max_chunk_tokens)
-        fit <- room(answer_system(spec$cite), spec$restate)
+        fit <- room(answer_system(spec$cite, spec$premise), spec$restate)
         body <- n * piece
         m <- if (is.na(fit)) NULL
              else if (body <= fit) list(calls = 0, input = 0)
@@ -513,7 +683,7 @@ preflight <- function(chunks, spec, trace, client = NULL, question = "",
       },
       hierarchical = summary_levels_worst(
         n, out_cap(spec$summary_model %||% spec$model, spec$max_summary_tokens),
-        room(answer_system(FALSE), spec$restate), spec$fan_in, spec$max_levels),
+        room(answer_system(FALSE, spec$premise), spec$restate), spec$fan_in, spec$max_levels),
       NULL)
     got %||% base
   }
@@ -569,8 +739,13 @@ preflight <- function(chunks, spec, trace, client = NULL, question = "",
   model_worst <- worst_calls - embed_calls
   # What the worst case sends: every chunk, the fixed prompt of every request,
   # and what the merge and summary levels are handed, which is replies at
-  # their caps.
-  est_in <- tok + model_worst * 200L + level_in
+  # their caps. The premise rule (read-premise.R) lengthens every prompt that
+  # answers the question by up to its longest form, which the 200 tokens were
+  # never sized for: with it, a `stuff` or `refine` read spent more than the
+  # bound recorded for it.
+  per_request <- 200L + if (isTRUE(spec$premise))
+    max(gr_count_tokens(unlist(.gr_premise_prompts))) else 0L
+  est_in <- tok + model_worst * per_request + level_in
   # Size the completion estimate by the LARGER of the two caps: only the
   # per-chunk readers use max_chunk_tokens, and the rest size their answers with
   # max_answer_tokens, so using the per-chunk cap under-estimated output by

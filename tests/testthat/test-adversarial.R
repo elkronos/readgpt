@@ -522,16 +522,20 @@ test_that("the budget uses the system prompt the call actually sends", {
   expect_identical(msgs[[1]]$content, readgpt:::answer_system(TRUE))
   msgs <- readgpt:::answer_messages("Q?", "body", cite = FALSE)
   expect_identical(msgs[[1]]$content, readgpt:::answer_system(FALSE))
-  # Every reader that goes on to call answer_messages(cite = spec$cite) budgets
-  # against the same function, not against the short prompt by name.
+  # The premise rule is part of the same string, so it is budgeted too.
+  msgs <- readgpt:::answer_messages("Q?", "body", cite = TRUE, premise = TRUE)
+  expect_identical(msgs[[1]]$content, readgpt:::answer_system(TRUE, TRUE))
+  # Every reader that goes on to call answer_messages(cite = spec$cite,
+  # premise = spec$premise) budgets against the same function with the same
+  # arguments, not against the short prompt by name.
   for (fn in c("read_stuff", "read_skim", "read_retrieve", "read_rerank", "read_preview")) {
     src <- squash(deparse(get(fn, envir = asNamespace("readgpt"))))
-    expect_match(src, "prompt_overhead(question, answer_system(spec$cite)", fixed = TRUE,
-                 info = fn)
+    expect_match(src, "prompt_overhead(question, answer_system(spec$cite, spec$premise)",
+                 fixed = TRUE, info = fn)
   }
   # hierarchical sends cite = FALSE explicitly, so it budgets for that.
   src <- squash(deparse(readgpt:::read_hierarchical))
-  expect_match(src, "prompt_overhead(question, answer_system(FALSE)", fixed = TRUE)
+  expect_match(src, "prompt_overhead(question, answer_system(FALSE, spec$premise)", fixed = TRUE)
 })
 
 test_that("the iterative step budgets for the system prompt it sends", {

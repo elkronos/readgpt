@@ -107,6 +107,14 @@
 #'     `"NOT_IN_DOCUMENT"` means the model reported the document does not
 #'     contain the answer. Test it with `is_not_found()`-style matching rather
 #'     than substring search.}
+#'   \item{`premise`}{Present only when the read spec checked the question's
+#'     premise (`premise = TRUE` in [gr_read_spec()]). `NA` when the model
+#'     reported nothing in the document contradicting the question; otherwise
+#'     the sentence in which it said what the document states instead, which
+#'     is then `answer` as well, so `is_not_found()` is `FALSE`. It is the
+#'     model's verdict, not a check readgpt made. Absent (`NULL`) for a spec
+#'     that did not ask, and for `screen` and `extract`, which answer no
+#'     question.}
 #'   \item{`partial`}{Logical(1). `TRUE` when anything degraded: a call failed,
 #'     chunks were dropped, a cap was hit, a strategy fell back, text was cut to
 #'     fit, or pages of the document never became text (a scan read without
@@ -170,8 +178,11 @@
 #'
 #' @section Methods:
 #' `print()` shows the answer, this run's calls, tokens and cost, where the
-#' evidence came from, and, when the answer is partial, why; [as_json()]
-#' serialises the answer together with every prompt and response this run made
+#' evidence came from, and, when the answer is partial, why. When the model
+#' reported that the document contradicts the question's premise, it says so
+#' above the answer, as the model's report. [as_json()]
+#' serialises the answer (and `premise`, when it was checked) together with
+#' every prompt and response this run made
 #' (the steps of its `trace` that `trace_steps` names; for an answer from
 #' [gr_compare()], its recipe's read alone; see `trace` above).
 #' @seealso [answer_document()] and [gr_read()] which return one, [gr_compare()]

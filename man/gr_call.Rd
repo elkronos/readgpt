@@ -14,7 +14,8 @@ gr_call(
   schema_name = "result",
   trace = NULL,
   label = "call",
-  ...
+  ...,
+  effort = NULL
 )
 }
 \arguments{
@@ -48,6 +49,13 @@ models that reject it.}
 \item{label}{Short label for the trace entry.}
 
 \item{...}{Extra top-level body fields.}
+
+\item{effort}{Reasoning effort for this call, or \code{NULL} (the default) to
+send none. One string, or a character vector named by label prefix,
+resolved against \code{label} as \code{\link[=gr_read_spec]{gr_read_spec()}} describes. Sent only when
+\code{model} is a reasoning model (see \code{\link[=gr_model_info]{gr_model_info()}}), as \code{reasoning = {effort}} on the Responses API and \code{reasoning_effort} on Chat Completions;
+a \code{\link[=gr_mock_client]{gr_mock_client()}} or \code{\link[=gr_backend_client]{gr_backend_client()}} handler finds it in
+\code{params$effort}. Must be named in full, since it follows \code{...}.}
 }
 \value{
 A \link{gr_result}. \strong{Never} \code{NULL}; \verb{$text} is always a single string,
@@ -72,6 +80,13 @@ c(ok = res$ok, text = res$text)
 # A failed call still returns a usable object.
 bad <- gr_call(gr_mock_client(function(m, p) stop("network down")), "hi")
 c(ok = bad$ok, text = sprintf("<\%s>", bad$text), error = bad$error)
+
+# A reasoning effort reaches a reasoning model, and the handler sees it.
+seen <- gr_mock_client(function(m, p) {
+  paste("effort:", if (is.null(p$effort)) "none" else p$effort)
+})
+gr_call(seen, "hi", model = "gpt-5.6-luna", effort = "low")$text
+gr_call(seen, "hi", model = "gpt-4o", effort = "low")$text   # not a reasoning model
 }
 \seealso{
 \code{\link[=gr_client]{gr_client()}}, \code{\link[=gr_mock_client]{gr_mock_client()}}, \link{gr_result}, \code{\link[=gr_budget]{gr_budget()}},

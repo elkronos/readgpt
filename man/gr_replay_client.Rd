@@ -39,7 +39,15 @@ recording of exactly what went wrong.
 \section{Matching}{
 
 A response is matched on the exact prompt messages plus the model id the
-call asked for. That can differ from the model the trace records as
+call asked for, and the reasoning effort it was sent with when it had one
+(see \code{effort} in \code{\link[=gr_read_spec]{gr_read_spec()}}), so a replay under another effort misses
+rather than passing for the recording. A replay under the same effort
+matches even where this session's registry does not list a model as a
+reasoning model and the recording session's did (a gateway model
+registered with \code{\link[=gr_register_model]{gr_register_model()}} there and not here), and a call
+through an ellmer chat, which sends no effort, is matched on the one it
+asked for. The model id can differ from the
+model the trace records as
 answering: a \code{\link[=gr_ellmer_client]{gr_ellmer_client()}} answers with its chat's model whatever the
 recipe asked for, and its runs replay all the same.
 

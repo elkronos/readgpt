@@ -34,7 +34,9 @@ measure variance).}
 \value{
 A list with \code{answers} (named list of \link{gr_answer}), \code{summary} (a data
 frame with columns \code{recipe}, \code{segmenter}, \code{chunks}, \code{reader}, \code{signature},
-\code{partial}, \code{chunks_used}, \code{answer_chars}, \code{not_found}, \code{error}), \code{trace}
+\code{settings}, \code{partial}, \code{chunks_used}, \code{answer_chars}, \code{not_found}, \code{error},
+and \code{premise} when a recipe checks the question's premise; see \code{premise}
+in \code{\link[=gr_read_spec]{gr_read_spec()}}), \code{trace}
 (shared across all recipes, so it records every recipe's calls) and
 \code{document} (source and ingestion stats).
 }

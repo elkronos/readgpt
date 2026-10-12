@@ -280,9 +280,16 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims 
 #' which section each claim was given to. When a revision pass
 #' (`coherence`) was kept, "What was written" shows the published text and the
 #' studies each of its headings cites, then the sections as first drafted,
-#' with their checks, under "Draft before revision", and the passes that ran.
+#' with their checks, under "Draft before revision", and the passes that ran,
+#' with the words of prose each was given and gave back. When the outline was
+#' one of several [gr_outline()] compared and chosen with [gr_outline_pick()],
+#' "What was written" says which one, and how far its grouping of the claims
+#' lies from the first proposal's.
 #' The cost table includes the calls [gr_claims()] made and, when it was left
-#' to record on the claims' trace, [gr_outline()].
+#' to record on the claims' trace, [gr_outline()]. When any request was sent
+#' with a reasoning effort (`effort` in [gr_read_spec()]), the cost table says
+#' which efforts each stage's requests carried, and the table of requests has
+#' an `effort` column.
 #' @seealso [gr_flow()], [gr_screen()], [gr_extract()], [gr_synthesise()],
 #'   [gr_verify_evidence()], [answer_document()], [gr_read_many()]
 #' @export
@@ -867,10 +874,17 @@ audit_synthesis <- function(synthesis) {
                    "was written from failed or was not sent, or the batches could not be merged, ",
                    "so studies may be missing from it. The warnings the run raised say which.</p>")
     }
+    # Apart from `fl`: a figure no row states does not make a section partial,
+    # and in `fl` it would have stood in for the reason a partial section has.
+    unbacked <- if (isTRUE(col("n_unbacked", i) > 0L))
+      sprintf(paste0("<p class='flag'>%d figure(s) in this section are not in the rows their ",
+                     "sentence cites; they are listed under \"Figures checked against the ",
+                     "rows\".</p>"), as.integer(s$n_unbacked[i]))
     c(sprintf("<%s>%s</%s>", lvl, esc(s$section[i]), lvl),
       sprintf("<p class='sub'>Must cover: %s</p>", esc(s$brief[i])),
       if (!blank) sprintf("<blockquote>%s</blockquote>", esc(s$text[i])),
       fl,
+      unbacked,
       if (!blank && isTRUE(col("n_cited", i) == 0L))
         "<p class='flag'>This section cites nothing.</p>",
       if (!is.null(ci) && nrow(ci))
@@ -883,8 +897,25 @@ audit_synthesis <- function(synthesis) {
   # `%||%` for a synthesis made before the field existed.
   unrendered <- synthesis$unrendered %||% integer(0)
   drafts <- unlist(lapply(seq_len(nrow(s)), per), use.names = FALSE)
+  # The sections below are one of several groupings gr_outline() proposed, and
+  # which one is a choice the reader should be able to see was made. `[[`
+  # exact, and data-frame-checked, for a synthesis made before the field.
+  alt <- synthesis[["outline_alternative", exact = TRUE]]
+  alt_note <- if (is.data.frame(alt) && nrow(alt)) {
+    j <- as.integer(alt$alternative[1])
+    sprintf(paste0("<p class='sub'>The sections follow outline %d of the %d gr_outline() was ",
+                   "asked for, of which %d came back distinct.%s The outlines were compared by ",
+                   "counting, and which one to write from was the author's choice.</p>"),
+            j, as.integer(alt$of[1]), as.integer(alt$distinct[1]),
+            if (isTRUE(j > 1L))
+              sprintf(paste0(" It groups the claims differently from the first proposal for %s ",
+                             "of the pairs of claims."),
+                      sprintf("%.0f%%", 100 * as.numeric(alt$distance[1])))
+            else "")
+  }
   c(if (revised) "<h2>What was written, and what it rests on</h2>"
     else "<h2>What was written, and what each section rests on</h2>",
+    alt_note,
     # Every section can be complete against claims that are not: claims drawn
     # from a third of the corpus give a review of a third of the corpus.
     if (length(lost))
@@ -907,8 +938,12 @@ audit_synthesis <- function(synthesis) {
     drafts,
     if (is.data.frame(rep_df) && nrow(rep_df)) c(
       "<h3>Revision passes</h3>",
-      html_table(rep_df[, intersect(c("pass", "ran", "kept", "reason"), names(rep_df)),
-                        drop = FALSE])),
+      # The word counts too: a kept pass that halved the review is no fault
+      # any check refuses, and the reader is the one left to see it.
+      html_table(rep_df[, intersect(c("pass", "ran", "kept", "words_before", "words_after",
+                                      "reason"), names(rep_df)), drop = FALSE],
+                 numeric_cols = c("words_before", "words_after"))),
+    audit_figures(synthesis, revised),
     if (isTRUE(synthesis$skipped > 0L))
       sprintf(paste0("<p class='sub'>%d row(s) were left out of the write-up: a duplicate, a ",
                      "document that could not be read in full, or one with nothing ",
@@ -950,6 +985,46 @@ synthesis_published <- function(synthesis) {
                       flag = list(document = function(v) is.na(v)))))
 }
 
+#' The figures check of a synthesis (see synth_figures()): what the published
+#' text's figures were found in, and every figure, draft or revision, found in
+#' nothing its sentence was written from.
+#'
+#' The citation tables above show which rows a sentence rests on and say
+#' nothing of what it says they found, so a review quoting 0.61 from a row of
+#' 0.41 read as fully sourced here. `revised` is whether a revision was kept,
+#' and so whether the published text is the "final" stage or the draft.
+#' @noRd
+audit_figures <- function(synthesis, revised = FALSE) {
+  fig <- synthesis$figures
+  # A synthesis made before the check has no `$figures`; nothing ran to report.
+  if (!is.data.frame(fig)) return(NULL)
+  # The text the check read as published, as it recorded it: a kept pass that
+  # gave the draft back unchanged left no revision to check, and inferring it
+  # from `revised` reported 0 figures checked.
+  stage <- attr(fig, "published", exact = TRUE) %||% (if (isTRUE(revised)) "final" else "draft")
+  pub <- fig[fig$stage == stage, , drop = FALSE]
+  bad <- fig[!isTRUE_vec(fig$backed), , drop = FALSE]
+  found <- if (nrow(pub) && any(isTRUE_vec(pub$backed)))
+    as.data.frame(table(`found in` = pub$basis[isTRUE_vec(pub$backed)]),
+                  responseName = "figures", stringsAsFactors = FALSE)
+  c("<h3>Figures checked against the rows</h3>",
+    sprintf(paste0("<p class='sub'>Every number in a sentence of the %s was looked for in the ",
+                   "rows that sentence cites, as the writer was shown them (a sentence citing ",
+                   "nothing: every row its section was shown), and in the question, the ",
+                   "section's brief and, with claims, the claims behind those rows. %d figure(s) ",
+                   "were checked. Found means copied, not right: a figure the row carries can ",
+                   "still be the wrong one for the sentence.</p>"),
+            if (stage == "final") "published text" else "text", nrow(pub)),
+    if (!is.null(found)) html_table(found, numeric_cols = "figures"),
+    if (nrow(bad)) c(
+      paste0("<p class='flag'>These figures are in nothing the sentence was written from. ",
+             "Each is arithmetic the sentence does not show, or the writer's invention. The ",
+             "sections are not marked partial for them: that is about citations.</p>"),
+      html_table(bad[, intersect(c("stage", "section", "number", "studies", "sentence"),
+                                 names(bad)), drop = FALSE]))
+    else if (nrow(fig)) "<p class='ok'>Every figure was found in what its sentence was written from.</p>")
+}
+
 #' @noRd
 audit_cost <- function(screening = NULL, extraction = NULL, synthesis = NULL, reading = NULL,
                        claims = NULL) {
@@ -973,6 +1048,11 @@ audit_cost <- function(screening = NULL, extraction = NULL, synthesis = NULL, re
                stringsAsFactors = FALSE)
   })
   tab <- do.call(rbind, rows)
+  # What reasoning effort each stage's requests carried, beside what the stage
+  # cost, since that is the cost it changes. Only when some request carried
+  # one, so a report on a run without the setting is the report it was.
+  effort <- vapply(traces, function(x) trace_effort_text(x$trace), character(1))
+  if (any(!is.na(effort))) tab$effort <- ifelse(is.na(effort), "none", unname(effort))
   c("<h2>What the run cost</h2>",
     if ("claims" %in% names(traces))
       paste0("<p class='sub'>The claims row is the calls gr_claims() made and, where it ",
@@ -1328,6 +1408,12 @@ answer_summary <- function(x, listed = TRUE) {
            "sent, so this says nothing about whether the document holds one.</strong></p>")
   } else if (is_not_found(x$answer)) {
     sprintf("<p><strong>%s</strong></p>", esc(not_found_wording(x)))
+  } else if (premise_flagged(x)) {
+    # The model's reading, said to be one: the answer is a correction of the
+    # question, and nothing here checked it against the document.
+    paste0("<p><strong>The model reports that the document contradicts an assumption in ",
+           "the question.</strong> What it says the document states instead:</p>",
+           sprintf("<blockquote class='passage'>%s</blockquote>", esc(x$answer)))
   } else sprintf("<blockquote class='passage'>%s</blockquote>", esc(x$answer))
   # Not from `partial` alone. Several readers leave it FALSE after a request
   # failed, and the green "every request succeeded" line then sat above the
@@ -1360,8 +1446,25 @@ answer_summary <- function(x, listed = TRUE) {
   auto <- as.list(x$notes %||% list())[["auto_recipe", exact = TRUE]]
   if (!is.na(recipe) && !is.null(auto)) recipe <- sprintf("%s (chosen by \"auto\")", recipe)
   used <- unique(x$chunks_used %||% integer(0))
+  # A row only for an answer whose reader was asked to check the premise, so a
+  # page about one that was not asked says what it always said.
+  checked <- !is.null(x[["premise", exact = TRUE]])
+  # The chunks or members whose own reply said the question is contradicted,
+  # which the notes keep when a merge or adjudication failed or overruled
+  # them. Left out, the row said the model reported nothing contradicting the
+  # question, of an answer whose text might open with the model saying so.
+  pn <- as.list(x$notes %||% list())
+  reported <- function(field, what, fmt) {
+    ids <- as.character(unlist(pn[[field, exact = TRUE]]))
+    if (length(ids)) sprintf("%s %s", what, paste(c(sprintf(fmt, utils::head(ids, 20L)),
+                                                    if (length(ids) > 20L) "..."),
+                                                  collapse = ", "))
+  }
+  who <- c(reported("premise_chunks", "chunk(s)", "%s"),
+           reported("premise_members", "member(s)", "'%s'"))
   facts <- fact_table(
-    c("Document", "Recipe", "Reader", "Chunks", "Chunks used", "Requests", "Cost"),
+    c("Document", "Recipe", "Reader", "Chunks", "Chunks used", "Requests", "Cost",
+      if (checked) "Premise"),
     c(report_doc_name(x$document$source), recipe, as_chr1(x$reader, NA_character_),
       as_chr1(x$segmentation$n, NA_character_),
       as.character(length(used)),
@@ -1370,7 +1473,14 @@ answer_summary <- function(x, listed = TRUE) {
                 if (isTRUE(tr$cached > 0L)) sprintf(" (%d from a cache)", as.integer(tr$cached))
                 else "")
       else NA_character_,
-      if (inherits(tr, "gr_trace")) format_trace_cost(tr) else NA_character_))
+      if (inherits(tr, "gr_trace")) format_trace_cost(tr) else NA_character_,
+      if (checked) {
+        if (premise_flagged(x)) "checked; the model reports the document contradicts it"
+        else if (length(who)) sprintf(paste0("checked; no overall verdict that it is ",
+                                             "contradicted, but %s reported that the document ",
+                                             "contradicts it"), paste(who, collapse = " and "))
+        else "checked; the model reported nothing contradicting it"
+      }))
   w <- x[["warnings", exact = TRUE]] %||% character(0)
   c(said, status, facts,
     if (length(w)) c(sprintf("<p class='flag'>%d warning(s) while reading:</p>", length(w)),
@@ -1631,8 +1741,9 @@ request_table <- function(trace) {
                        if (all(timed)) "" else sprintf(" for the %d that were timed", sum(timed)))
   df$usd <- ifelse(is.na(df$usd), NA_character_, formatC(df$usd, format = "f", digits = 6))
   df$seconds <- round(df$seconds, 2)
-  keep <- c("step", "stage", "model", "ok", "cached", "tokens_in", "tokens_out", "usd",
-            "seconds", "error")
+  # `effort` is there only when a request carried one (as.data.frame.gr_trace).
+  keep <- intersect(c("step", "stage", "model", "effort", "ok", "cached", "tokens_in",
+                      "tokens_out", "usd", "seconds", "error"), names(df))
   c(sprintf(paste0("<p class='sub'>%d request(s), %s. The prompts and replies ",
                    "are in <code>as.data.frame(answer$trace)</code>.</p>"),
             nrow(df), took),
@@ -1657,6 +1768,10 @@ audit_corpus <- function(x) {
     nf <- if (is.null(s$not_found)) rep(FALSE, nrow(s)) else isTRUE_vec(s$not_found)
     a <- as.character(tab$answer)
     a <- ifelse(!is.na(a) & nchar(a) > 200L, paste0(substr(a, 1, 200), " [...]"), a)
+    # A correction of the question reads as an answer to it unless the cell
+    # says what it is.
+    contra <- if (is.null(s[["premise"]])) rep(FALSE, nrow(s)) else !is.na(s$premise)
+    a <- ifelse(contra & !is.na(a), paste0("premise contradicted, per the model: ", a), a)
     tab$answer <- ifelse(nf, "not found", a)
   }
   if (!is.null(tab$cost_usd)) {

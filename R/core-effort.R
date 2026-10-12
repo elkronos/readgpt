@@ -133,15 +133,26 @@ effort_to_send <- function(effort, label, info) {
 #' stage is the more specific of the two, so it wins for the calls it covers;
 #' the rest of that `reasoning` object (a `summary` setting, say) is kept. A
 #' field written by hand into one gr_call() is more specific still.
+#'
+#' On Chat Completions the field is `reasoning_effort`, but a client for a
+#' gateway that reads the Responses shape there too can carry a `reasoning`
+#' object with an effort in it. Left alone, that effort went out beside the
+#' stage's, two conflicting settings in one request, and which one counted was
+#' the gateway's choice. So an effort already in such an object is replaced
+#' as well; one is never added to a request that had none.
 #' @noRd
 effort_body <- function(body, effort, api) {
   if (is.null(effort)) return(body)
+  r <- body[["reasoning", exact = TRUE]]
   if (identical(api, "responses")) {
-    r <- body[["reasoning", exact = TRUE]]
     body$reasoning <- if (is.list(r)) utils::modifyList(r, list(effort = effort))
                       else list(effort = effort)
   } else {
     body$reasoning_effort <- effort
+    if (is.list(r) && !is.null(r[["effort", exact = TRUE]])) {
+      r$effort <- effort
+      body[["reasoning"]] <- r
+    }
   }
   body
 }
@@ -155,12 +166,42 @@ effort_body <- function(body, effort, api) {
 #' read, with the segment spec, so the pipelines hand it across here. Returned
 #' unchanged when there is no effort, so a segment spec, and anything keyed on
 #' one, is what it always was.
+#'
+#' A built-in segmenter is handed only the effort its own request resolves to,
+#' and one that sends no request is handed nothing. gr_compare() shares chunks
+#' between recipes by a key that includes this spec, and with the whole map on
+#' it two recipes that differed only in a reading stage's effort segmented the
+#' document once each: every context call paid for twice, at the same effort
+#' or at none, and a semantic cut embedded twice. A segmenter of the user's
+#' keeps the whole map, since the labels its calls carry are its own.
 #' @noRd
 segment_effort <- function(segment, read) {
   effort <- read[["effort", exact = TRUE]]
   if (is.null(effort) || is.null(segment)) return(segment)
+  label <- segment_effort_label(segment)
+  if (!is.na(label)) {
+    effort <- if (nzchar(label)) effort_for(effort, label)
+    if (is.null(effort)) return(segment)
+  }
   segment$effort <- effort
   segment
+}
+
+#' The label a built-in segmenter's requests carry: "" for one that sends
+#' none, and NA for any other segmenter, including another function registered
+#' under a built-in's name. By function, not by name, for that reason.
+#' @noRd
+segment_effort_label <- function(segment) {
+  fn <- gr_state$segmenters[[as_chr1(segment$method, "")]]$fn
+  if (is.null(fn)) return(NA_character_)
+  is_fn <- function(f) identical(fn, f)
+  if (is_fn(seg_proposition)) return("segment.proposition")
+  if (is_fn(seg_contextual)) {
+    return(if (identical(as_chr1(segment$context_source, ""), "llm")) "segment.context" else "")
+  }
+  silent <- list(seg_fixed, seg_paragraph, seg_sentence, seg_recursive, seg_structural, seg_page,
+                 seg_semantic)
+  if (any(vapply(silent, is_fn, logical(1)))) "" else NA_character_
 }
 
 #' What reasoning effort the requests of a trace carried, as one line:

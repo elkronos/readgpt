@@ -99,6 +99,15 @@ test_that("an effort goes in the field each API reads, over the client's default
   expect_identical(b$reasoning$summary, "auto")
   expect_identical(body("chat", extra_body = list(reasoning_effort = "high"))$reasoning_effort,
                    "low")
+  # A chat client for a gateway that reads a `reasoning` object: its effort is
+  # replaced too, not sent beside the stage's, and the rest of it stays. One
+  # without an effort is not given one.
+  b <- body("chat", extra_body = list(reasoning = list(effort = "high", max_tokens = 100L)))
+  expect_identical(field(b, "reasoning"), list(effort = "low", max_tokens = 100L))
+  expect_identical(field(b, "reasoning_effort"), "low")
+  b <- body("chat", extra_body = list(reasoning = list(max_tokens = 100L)))
+  expect_identical(field(b, "reasoning"), list(max_tokens = 100L))
+  expect_identical(field(b, "reasoning_effort"), "low")
   # A field one call writes itself is more specific still.
   expect_identical(body("responses", extra = list(reasoning = list(effort = "minimal")))$reasoning,
                    list(effort = "minimal"))
@@ -152,14 +161,31 @@ test_that("a read sends each stage the effort its label resolves to", {
   ch <- quiet(gr_segment(readgpt_example(), list(method = "paragraph", max_tokens = 150)))
   cl <- effort_client()
   quiet(gr_read(ch, "What was revenue?", cl,
-                gr_read_spec("map_reduce", model = reasoner, fan_in = 2,
+                gr_read_spec("map_reduce", model = reasoner,
                              effort = c(map = "low", reduce = "high"))))
   e <- efforts_by_label(cl)
   expect_true(all(e[names(e) == "map.answer"] == "low"))
-  merges <- e[grepl("^reduce", names(e))]
-  expect_true(length(merges) > 0L)
-  # The merge tree's own levels ("reduce.level2") are covered by its name.
-  expect_true(all(merges == "high"))
+  expect_identical(unname(e[names(e) == "reduce"]), "high")
+
+  # The merge tree's own levels ("reduce.level1") are covered by its name. A
+  # merge takes more than one level only when the findings outgrow one
+  # request, so a small window and long findings force one; the reads above
+  # merge once, and `fan_in` does not shape this tree.
+  local_registries()
+  gr_register_model("tiny-thinker", context_window = 6000L, max_output = 2000L,
+                    input_usd = 0, output_usd = 0, reasoning = TRUE,
+                    supports_temperature = FALSE)
+  long <- paste(rep("Revenue was 45.2 million dollars in the year under review.", 60),
+                collapse = " ")
+  cl <- gr_mock_client(function(m, p) long)
+  ch2 <- quiet(gr_segment(readgpt_example(), list(method = "paragraph", max_tokens = 60)))
+  quiet(gr_read(ch2, "What was revenue?", cl,
+                gr_read_spec("map_reduce", model = "tiny-thinker", max_answer_tokens = 1500L,
+                             effort = c(map = "low", reduce = "high"))))
+  e <- efforts_by_label(cl)
+  expect_true("reduce.level1" %in% names(e))
+  expect_true(all(e[grepl("^reduce", names(e))] == "high"))
+  expect_true(all(e[names(e) == "map.answer"] == "low"))
 
   # rerank's scoring calls and its answer, apart.
   cl <- effort_client()
@@ -263,6 +289,84 @@ test_that("the segmenters that call a model are sent the run's effort", {
   expect_identical(unname(e[names(e) == "stuff.answer"]), "high")
 })
 
+test_that("gr_compare() shares chunks between recipes whose segmenter is sent the same effort", {
+  ctx <- gr_segment_spec("contextual", max_tokens = 200, context_source = "llm")
+  pair <- function(seg, ea, eb) {
+    list(a = gr_recipe("a", segment = seg, read = gr_read_spec("stuff", effort = ea)),
+         b = gr_recipe("b", segment = seg, read = gr_read_spec("stuff", effort = eb)))
+  }
+  context_calls <- function(ea, eb) {
+    cl <- gr_backend_client(function(m, p) "An excerpt about revenue.", model = reasoner)
+    quiet(gr_compare(readgpt_example(), "What was revenue?", pair(ctx, ea, eb), client = cl))
+    e <- efforts_by_label(cl)
+    e[names(e) == "segment.context"]
+  }
+  cl <- gr_backend_client(function(m, p) "An excerpt about revenue.", model = reasoner)
+  quiet(answer_document(readgpt_example(), "What was revenue?",
+                        gr_recipe("one", segment = ctx, read = "stuff"), client = cl))
+  n <- sum(names(efforts_by_label(cl)) == "segment.context")
+  expect_gt(n, 0L)
+
+  # Efforts that differ only for the reading stage: the context calls are the
+  # same requests, made once. They were made once per recipe.
+  e <- context_calls(c("stuff.answer" = "low"), c("stuff.answer" = "high"))
+  expect_length(e, n)
+  expect_true(all(is.na(e)))
+  e <- context_calls(c(segment = "low", stuff = "low"), c("segment.context" = "low", "high"))
+  expect_length(e, n)
+  expect_true(all(e == "low"))
+  # Efforts the segmenter is sent differently still cut apart.
+  e <- context_calls("low", "high")
+  expect_length(e, 2L * n)
+  expect_identical(as.vector(table(e)[c("high", "low")]), c(n, n))
+
+  # A segmenter that sends no request takes no effort: the semantic one embeds
+  # the document once for both.
+  embedded <- 0L
+  cl <- gr_backend_client(function(m, p) "Revenue was 45.2 million dollars.", model = reasoner,
+                          embed = function(texts, params) {
+                            embedded <<- embedded + length(texts)
+                            cbind(nchar(texts), seq_along(texts), 1)
+                          })
+  sem <- gr_segment_spec("semantic", max_tokens = 200)
+  quiet(answer_document(readgpt_example(), "What was revenue?",
+                        gr_recipe("one", segment = sem, read = "stuff"), client = cl))
+  once <- embedded
+  expect_gt(once, 0L)
+  embedded <- 0L
+  quiet(gr_compare(readgpt_example(), "What was revenue?", pair(sem, "low", "high"), client = cl))
+  expect_identical(embedded, once)
+})
+
+test_that("a segment spec carries only the effort its segmenter's requests resolve to", {
+  read <- gr_read_spec("stuff", effort = c(segment = "minimal", stuff = "high"))
+  for (m in c("fixed", "paragraph", "sentence", "recursive", "structural", "page", "semantic")) {
+    seg <- gr_segment_spec(m)
+    expect_identical(readgpt:::segment_effort(seg, read), seg)
+  }
+  seg <- gr_segment_spec("contextual")                     # the metadata blurb: no request
+  expect_identical(readgpt:::segment_effort(seg, read), seg)
+  seg <- gr_segment_spec("contextual", context_source = "llm")
+  expect_identical(readgpt:::segment_effort(seg, read)$effort, "minimal")
+  seg <- gr_segment_spec("proposition")
+  expect_identical(readgpt:::segment_effort(seg, read)$effort, "minimal")
+  # Nothing covers the segmenter's label: nothing is added.
+  expect_identical(readgpt:::segment_effort(seg, gr_read_spec("stuff", effort = c(stuff = "low"))),
+                   seg)
+  # Unset, the spec is what it always was.
+  expect_identical(readgpt:::segment_effort(seg, gr_read_spec("stuff")), seg)
+
+  # A segmenter of the user's, or another function under a built-in's name,
+  # is given the whole map, since the labels its calls carry are its own.
+  local_registries()
+  mine <- function(doc, spec, client, trace) new_chunks(doc$text, "mine", spec)
+  gr_register_segmenter("mine", mine)
+  expect_identical(readgpt:::segment_effort(gr_segment_spec("mine"), read)$effort, read$effort)
+  gr_register_segmenter("paragraph", mine)
+  expect_identical(readgpt:::segment_effort(gr_segment_spec("paragraph"), read)$effort,
+                   read$effort)
+})
+
 test_that("gr_screen() and gr_extract() take it through `...`", {
   f <- tempfile(fileext = ".txt")
   writeLines("We randomly assigned 1,204 participants to two groups.", f)
@@ -361,6 +465,99 @@ test_that("a replay matches on the effort it was recorded with", {
                "asked for no effort", class = "gr_replay_miss")
 })
 
+test_that("a replay does not need the recording session's reasoning-model registration", {
+  f <- tempfile(fileext = ".json")
+  handler <- function(m, p) paste("effort", p$effort %||% "none")
+  local({
+    local_registries()
+    gr_register_model("gw-thinker", context_window = 128000L, max_output = 16000L,
+                      input_usd = 0, output_usd = 0, reasoning = TRUE,
+                      supports_temperature = FALSE)
+    tr <- gr_trace()
+    gr_call(gr_backend_client(handler, model = "gw-thinker"), "What was revenue?",
+            effort = "low", trace = tr)
+    gr_trace_save(tr, f)
+  })
+  # This session would send the model no effort: it does not know it reasons.
+  expect_false(isTRUE(quiet(gr_model_info("gw-thinker"))$reasoning))
+  rp <- gr_replay_client(f)
+  expect_identical(quiet(gr_call(rp, "What was revenue?", effort = "low"))$text, "effort low")
+  expect_length(rp$missed(), 0L)
+  # Another effort, or none, still misses, and the message says which the call
+  # asked for. It said "no effort" for every one of them.
+  expect_error(quiet(gr_call(gr_replay_client(f), "What was revenue?", effort = "high")),
+               "asked for effort 'high'", class = "gr_replay_miss")
+  expect_error(quiet(gr_call(gr_replay_client(f), "What was revenue?")),
+               "asked for no effort", class = "gr_replay_miss")
+})
+
+test_that("a replay looks up the recording's other models at the effort each is sent", {
+  ch <- quiet(gr_segment(readgpt_example(), list(method = "paragraph", max_tokens = 150)))
+  sp <- gr_read_spec("stuff", effort = "low")
+  # A reasoning model and one that is sent no effort, each as the replay
+  # client's own model and as the other one.
+  for (first in c(reasoner, "gpt-4o")) {
+    other <- setdiff(c(reasoner, "gpt-4o"), first)
+    tr <- gr_trace()
+    a <- gr_backend_client(function(m, p) paste("From", first), model = first)
+    b <- gr_backend_client(function(m, p) paste("From", other), model = other)
+    quiet(gr_read(ch, "What was revenue?", a, sp, trace = tr))
+    quiet(gr_read(ch, "What else was reported?", a, sp, trace = tr))
+    quiet(gr_read(ch, "Who audited it?", b, sp, trace = tr))
+    rp <- gr_replay_client(tr)
+    expect_identical(rp$model, first)
+    expect_identical(quiet(gr_read(ch, "Who audited it?", rp, sp))$answer, paste("From", other))
+    expect_identical(quiet(gr_read(ch, "What was revenue?", rp, sp))$answer, paste("From", first))
+    expect_length(rp$missed(), 0L)
+    # At another effort, the reasoning model's read misses; the other model's
+    # requests carried no effort, so its read is the same requests.
+    rp <- gr_replay_client(tr)
+    high <- gr_read_spec("stuff", effort = "high")
+    if (identical(other, reasoner)) {
+      expect_error(quiet(gr_read(ch, "Who audited it?", rp, high)), class = "gr_replay_miss")
+    } else {
+      expect_identical(quiet(gr_read(ch, "Who audited it?", rp, high))$answer, paste("From", other))
+      expect_error(quiet(gr_read(ch, "What was revenue?", rp, high)), class = "gr_replay_miss")
+    }
+  }
+})
+
+test_that("a call through an ellmer chat is not recorded as sent at the effort it asked for", {
+  local_registries()
+  gr_register_model("stub-thinker", context_window = 128000L, max_output = 4096L,
+                    input_usd = 0, output_usd = 0, reasoning = TRUE,
+                    supports_temperature = FALSE)
+  # gr_ellmer_client() is a backend client of this class around an ellmer chat
+  # (see its last lines). Built by hand, so this runs without ellmer; the
+  # adapter itself is tested below when ellmer is installed.
+  seen <- character(0)
+  cl <- gr_backend_client(function(m, p) {
+    seen <<- c(seen, p$effort %||% "none")
+    "an answer"
+  }, model = "stub-thinker")
+  class(cl) <- c("gr_ellmer_client", class(cl))
+  tr <- gr_trace()
+  gr_call(cl, "hi", effort = "low", trace = tr)
+  gr_call(cl, "again", effort = "high", trace = tr)
+  # The adapter is still handed it, to say it is not sent.
+  expect_identical(seen, c("low", "high"))
+  # The trace and the audit do not count it as sent, and keep what was asked.
+  expect_false("effort" %in% names(as.data.frame(tr)))
+  expect_identical(readgpt:::trace_effort_text(tr), NA_character_)
+  expect_null(tr$steps[[1]]$params$effort)
+  expect_identical(tr$steps[[1]]$params$unsent_effort, "low")
+
+  # Its replay asks for what the call asked for, and is traced the same way.
+  f <- tempfile(fileext = ".json")
+  gr_trace_save(tr, f)
+  rp <- gr_replay_client(f)
+  tr2 <- gr_trace()
+  expect_identical(gr_call(rp, "hi", effort = "low", trace = tr2)$text, "an answer")
+  expect_false("effort" %in% names(as.data.frame(tr2)))
+  expect_identical(tr2$steps[[1]]$params$unsent_effort, "low")
+  expect_error(gr_call(gr_replay_client(f), "hi", effort = "high"), class = "gr_replay_miss")
+})
+
 test_that("the audit report shows what effort each stage ran at", {
   cl <- effort_client()
   ans <- quiet(answer_document(readgpt_example(), "What was revenue?", "fast", client = cl,
@@ -421,6 +618,40 @@ test_that("an ellmer chat is not sent an effort, and says so once", {
   cl <- gr_ellmer_client(make())
   quiet_cap <- function(expr) withCallingHandlers(expr, gr_ellmer_max_output = function(w)
     invokeRestart("muffleWarning"))
-  expect_warning(quiet_cap(gr_call(cl, "hi", effort = "low")), class = "gr_effort_unsupported")
-  expect_no_warning(quiet_cap(gr_call(cl, "again", effort = "low")))
+  tr <- gr_trace()
+  expect_warning(quiet_cap(gr_call(cl, "hi", effort = "low", trace = tr)),
+                 class = "gr_effort_unsupported")
+  expect_no_warning(quiet_cap(gr_call(cl, "again", effort = "low", trace = tr)))
+  # And the trace does not say it was sent.
+  expect_false("effort" %in% names(as.data.frame(tr)))
+})
+
+test_that("the help's custom reader and suggested profile do what the help says", {
+  man <- test_path("..", "..", "man")
+  skip_if_not(dir.exists(man), "the help sources are not beside the tests")
+  # The gr_register_reader() example, run as written: its reader passes the
+  # spec's effort on. It sent none.
+  local_registries()
+  ex <- tempfile(fileext = ".R")
+  tools::Rd2ex(file.path(man, "gr_register_reader.Rd"), ex)
+  utils::capture.output(quiet(source(ex, local = new.env())))
+  cl <- effort_client()
+  quiet(gr_read(quiet(gr_segment(readgpt_example(), list(method = "sentence", max_tokens = 120))),
+                "What was revenue?", cl, gr_read_spec("longest", model = reasoner, effort = "low")))
+  expect_identical(unname(efforts_by_label(cl)), "low")
+
+  # The gr_read_spec() profile lowers the mechanical calls and none of the
+  # requests that answer the question. `skim = "low"` lowered skim's answer.
+  rd <- paste(readLines(file.path(man, "gr_read_spec.Rd"), warn = FALSE), collapse = "\n")
+  code <- regmatches(rd, regexpr("effort = c\\(\"extract\\.chunk\"[^)]*\\)", rd))
+  expect_length(code, 1L)
+  profile <- eval(parse(text = sub("^effort = ", "", code)))
+  f <- function(label) readgpt:::effort_for(profile, label) %||% "default"
+  for (l in c("skim.extract", "extract.chunk", "rerank.score", "segment.context", "map.answer")) {
+    expect_identical(f(l), "low")
+  }
+  for (l in c("skim.consolidate", "skim.answer", "stuff.answer", "retrieve.answer",
+              "rerank.answer", "preview.answer", "hier.answer", "iterative.final", "reduce")) {
+    expect_identical(f(l), "default")
+  }
 })

@@ -31,8 +31,11 @@
 #'   \item{`question`}{The question, already validated as non-blank.}
 #'   \item{`client`}{Pass it to [gr_call()]; never construct your own.}
 #'   \item{`spec`}{A [gr_read_spec()]. Honour at least `model`,
-#'     `max_answer_tokens` and `temperature`. [gr_read()] has already filled
-#'     `model` from the client when the spec named none.}
+#'     `max_answer_tokens`, `temperature` and `effort`. [gr_read()] has already
+#'     filled `model` from the client when the spec named none. Pass
+#'     `effort = spec$effort` to every [gr_call()], which resolves a setting
+#'     by stage against the call's `label`, so give each call a label of its
+#'     own; a call without it is sent no effort.}
 #'   \item{`trace`}{Pass it to every [gr_call()] so your calls are counted and
 #'     priced, and check `readgpt:::trace_can_call(trace)` before each one so
 #'     the run's call and spending limits are respected.}
@@ -53,7 +56,8 @@
 #'     i <- which.max(d$tokens)
 #'     res <- gr_call(client, list(
 #'       list(role = "user", content = paste0(d$text[i], "\n\nQuestion: ", question))),
-#'       model = spec$model, trace = trace, label = "longest.answer")
+#'       model = spec$model, effort = spec$effort, trace = trace,
+#'       label = "longest.answer")
 #'     new_answer(res$text, "longest", question, d$chunk_id[i], trace)
 #'   })
 #'
@@ -308,7 +312,8 @@ gr_reader_signature <- function(reader) {
 #' left out for a model that refuses that; register a gateway's reasoning model
 #' with [gr_register_model()] to reach it. For the calls it covers it replaces
 #' an effort the client's `extra_body` sets. A [gr_ellmer_client()] cannot take
-#' it per call and says so once (`gr_effort_unsupported`). A value is passed
+#' it per call, says so once (`gr_effort_unsupported`) and does not record it
+#' as sent. A value is passed
 #' through as given; one that is not `"none"`, `"minimal"`, `"low"`,
 #' `"medium"`, `"high"` or `"xhigh"` is warned about (`gr_effort_unknown`) and
 #' sent anyway, since providers add levels.
@@ -332,14 +337,15 @@ gr_reader_signature <- function(reader) {
 #' [gr_synthesise()], `claims.draw`, `claims.reconcile`, `outline.derive`,
 #' `synthesise.section`, `synthesise.batch`, `synthesise.merge` and
 #' `synthesise.revise.structure` (`.cut`, `.register`). A merge that takes
-#' more than one level adds `.level2` and so on, which its own name covers.
+#' more than one level labels the levels below its final merge `.level1`,
+#' `.level2` and so on, which its own name covers.
 #'
 #' A starting point, not a default: low for the many mechanical calls and high
 #' for the few that judge.
 #'
 #' ```
-#' effort = c("extract.chunk" = "low", skim = "low", "rerank.score" = "low",
-#'            segment = "low", "map.answer" = "low",
+#' effort = c("extract.chunk" = "low", "skim.extract" = "low",
+#'            "rerank.score" = "low", segment = "low", "map.answer" = "low",
 #'            "claims.draw" = "high", "outline.derive" = "high",
 #'            "synthesise.section" = "high", "ensemble.adjudicate" = "high")
 #' ```

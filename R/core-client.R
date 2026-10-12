@@ -666,6 +666,9 @@ model_call <- function(client, messages, model = NULL, max_output = NULL,
   # records, and added only when there is one to send: params is what a
   # handler is given and what the trace keeps, and a NULL entry would change
   # both for every run that never asked for an effort.
+  # The setting itself goes on to a replay, which must not let this session's
+  # registry decide what the recording session sent (replay_lookup()).
+  effort_map <- effort
   effort <- effort_to_send(effort, label, info)
   if (!is.null(effort)) params$effort <- effort
 
@@ -675,7 +678,19 @@ model_call <- function(client, messages, model = NULL, max_output = NULL,
   # have had to be written twice and kept in step by hand.
   started <- Sys.time()
   res <- client_dispatch(client, messages, model, max_output, temperature,
-                         schema, schema_name, info, params, label, extra, accept)
+                         schema, schema_name, info, params, label, extra, accept,
+                         effort_map = effort_map)
+  # An ellmer chat is handed the effort only so that it can say it does not
+  # send it (gr_ellmer_client()). Recorded as `effort`, the trace, its
+  # `effort` column and the audit report said every request ran at an effort
+  # none of them carried. So the step keeps it as the effort the call asked
+  # for, under its own name, as does a replay of such a step. The handler's
+  # params, the cache key and the replay key are left as they were.
+  if (!is.null(params$effort) &&
+      (inherits(client, "gr_ellmer_client") || isTRUE(res[["unsent_effort", exact = TRUE]]))) {
+    params$unsent_effort <- params$effort
+    params$effort <- NULL
+  }
   trace_record(trace, label, messages, res, params,
                seconds = as.numeric(difftime(Sys.time(), started, units = "secs")))
   res
@@ -691,9 +706,9 @@ model_call <- function(client, messages, model = NULL, max_output = NULL,
 #' @noRd
 client_dispatch <- function(client, messages, model, max_output, temperature,
                             schema, schema_name, info, params, label, extra,
-                            accept = NULL) {
+                            accept = NULL, effort_map = NULL) {
   if (inherits(client, "gr_replay_client")) {
-    return(replay_lookup(client, messages, model, params))
+    return(replay_lookup(client, messages, model, params, label, effort_map))
   }
 
   # Resolved BEFORE the key, not after. `temperature` arrives NULL whenever the

@@ -189,9 +189,12 @@ print.gr_backend_client <- function(x, ...) {
 #' Reasoning effort is the same. An `effort` in a [gr_read_spec()], or given to
 #' [gr_claims()], [gr_outline()] or [gr_synthesise()], is not sent through an
 #' ellmer chat; it is warned about once (`gr_effort_unsupported`) and the
-#' chat's own setting applies. (Like every client, the adapter is handed an
-#' effort only for a model the registry lists as a reasoning model, so for any
-#' other there is nothing to warn about.)
+#' chat's own setting applies. Each trace step keeps the effort its call asked
+#' for as `params$unsent_effort`, not `params$effort`, so the `effort` column
+#' of `as.data.frame(trace)` and [gr_audit_report()] do not count it as sent.
+#' (Like every client, the adapter is handed an effort only for a model the
+#' registry lists as a reasoning model, so for any other there is nothing to
+#' warn about.)
 #'
 #' The output cap does carry over, with ellmer 0.5.0 or later: each call runs on
 #' a chat rebuilt from yours (same provider, settings, system prompt and tools)

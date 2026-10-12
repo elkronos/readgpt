@@ -377,9 +377,10 @@ gr_compare <- function(source, question, recipes = c("fast", "needle", "thorough
       # And on what the document could not give: chunks carry the unread pages
       # and the warnings of the ingestion that produced them, so two ingestions
       # with the same text but different losses must not share chunks.
-      # With the run's reasoning effort, which a segmenter that calls a model
-      # sends: two recipes differing only in effort must not share chunks
-      # one of them cut at the other's effort. Unchanged without one.
+      # With the reasoning effort a segmenter that calls a model sends: two
+      # recipes differing in it must not share chunks one of them cut at the
+      # other's effort. Unchanged without one, and for a segmenter that sends
+      # none (segment_effort()).
       seg <- segment_effort(r$segment, r$read)
       skey <- gr_hash(list(d$text, unclass(seg), d$stats$unread_pages, d$warnings))
       hit <- seg_cache[[skey]]

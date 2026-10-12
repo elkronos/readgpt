@@ -48,6 +48,23 @@
 .gr_figure_scale_re <- paste0("^(?:[[:space:]]*(thousand|million|billion|trillion)\\b|",
                               "(k|m|mn|b|bn|tn)\\b)")
 
+#' A power of ten after a figure, which scales it as a word does, either way:
+#' "2 x 10^-8", the same with a times sign and a superscript exponent, and
+#' "2e-08" are each 0.00000002. The exponent is the one group, in ASCII or
+#' superscript digits.
+#' @noRd
+.gr_figure_power_re <- paste0(
+  "^(?|[[:space:]]*[x\u00d7\u22c5\u00b7*][[:space:]]*10",
+  "(?|\\^[[:space:]]*\\(?[[:space:]]*([-+\u2212]?[0-9]{1,3})\\)?|",
+  "([\u207a\u207b]?[\u2070\u00b9\u00b2\u00b3\u2074-\u2079]{1,3}))",
+  "|[eE]([-+]?[0-9]{1,3}))(?![0-9])")
+
+#' A figure in E notation, as as.character() writes a double: "1e+05",
+#' "4e-05". Read whole in what backs a figure, so a numeric field of 100000,
+#' shown to the writer as "1e+05", backs "100,000".
+#' @noRd
+.gr_figure_sci_re <- "(?<![0-9.])[0-9]+(?:\\.[0-9]+)?[eE][-+]?[0-9]+(?![0-9])"
+
 #' What may follow a figure to make it a percentage, which is also read as a
 #' proportion: "45%" in a sentence is found in a row that says 0.45.
 #' @noRd
@@ -85,15 +102,22 @@
   "|(?<![0-9.])\\.[0-9]+")
 
 #' Numbers that are conventions rather than findings, taken out before a
-#' sentence is read: the level of an interval ("95% CI" restates no row) and a
-#' significance threshold ("p < .001", over a row reporting p = 0.0004). Each
-#' pattern keeps what it captured and drops the number.
+#' sentence is read: the level of an interval ("95% CI" restates no row), a
+#' significance threshold ("p < .001", over a row reporting p = 0.0004; "p >
+#' 0.10", "p value below 0.05") and a significance level ("at the 5% level").
+#' Not after "=" or "of": "p = 0.05" and "a p value of 0.05" report a value.
+#' Each pattern keeps what it captured and drops the number.
 #' @noRd
 .gr_figure_conventions <- c(
   paste0("(?i)\\b(?:80|90|95|99)(?:\\.0+)?[[:space:]]*(?:%|per[[:space:]]?cent)",
          "([[:space:]]*(?:CIs?|CrIs?|PIs?|UIs?|confidence|credible|prediction|uncertainty)\\b)"),
   paste0("(?i)(\\bp[[:space:]]*(?:-?[[:space:]]*values?)?[[:space:]]*",
-         "(?:<=?|>=?|=<|=>|\u2264|\u2265)[[:space:]]*)0?\\.(?:1|05|01|005|001|0001)(?![0-9])"))
+         "(?:(?:was|were|is|are)[[:space:]]+)?(?:<=?|>=?|=<|=>|\u2264|\u2265|",
+         "(?:less|lower|smaller|greater|higher)[[:space:]]+than|",
+         "below|under|above|over|exceeding)[[:space:]]*)0?\\.(?:1|05|01|005|001|0001)0*(?![0-9])"),
+  paste0("(?i)(\\bat[[:space:]]+the[[:space:]]+)(?:(?:1|5|10)(?:\\.0+)?[[:space:]]*",
+         "(?:%|per[[:space:]]?cent)|0?\\.(?:1|05|01|001)0*)",
+         "(?=[[:space:]]+(?:significance[[:space:]]+)?level\\b)"))
 
 #' Words before a figure that make it approximate or a bound, and so let it
 #' stand for a value near it: "about 1,200 participants" over a row of 1,204,
@@ -154,8 +178,15 @@ figure_shift <- function(x, k) {
 #' A text with every citation in it taken out, so the ids are not read as
 #' figures: the markers the check reads, brackets that open like one and do
 #' not parse ("[studies 1 to 7]"), claim markers a writer echoes from its
-#' prompt, and ids written bare in prose ("as study 12 found"). The bare form
-#' is the marker's own grammar without its bracket.
+#' prompt, and ids written bare in prose ("as study 12 found", "studies 11, 12
+#' and 14", "studies 12 to 15").
+#'
+#' The bare form is not the marker's list grammar. Without its bracket nothing
+#' ends the list, and in "In study 3, 860 patients" the 860 was read as a
+#' second id and never checked. So in prose a number after a comma is an id
+#' only when the word is repeated ("study 1, study 7"), or after the plural in
+#' a list that closes with "and" ("studies 11, 12 and 14"), once: "in study 3,
+#' 120 and 900 adults" and "studies 3 and 12, 120 and 900 adults" give 120.
 #' @noRd
 figure_unmark <- function(txt, word = "study") {
   g <- cite_grammar(word)
@@ -163,11 +194,19 @@ figure_unmark <- function(txt, word = "study") {
   txt <- gsub(sprintf("\\[%s%s[^\\]\\[]*\\]", g$word, g$space), " ", txt, perl = TRUE,
               ignore.case = TRUE)
   txt <- gsub("\\[claims?[^]\\[]*\\]", " ", txt, perl = TRUE, ignore.case = TRUE)
-  # `ids` is "\\[" and then the list of ids; without its first two characters
-  # it is the list alone.
-  txt <- gsub(paste0("\\b", substring(g$ids, 3L)), " ", txt, perl = TRUE, ignore.case = TRUE)
-  gsub(paste0("\\bclaims?", g$space, "+[0-9]+(?:", g$space, "*(?:[,;&]|and)", g$space,
-              "*[0-9]+)*"), " ", txt, perl = TRUE, ignore.case = TRUE)
+  sp <- g$space
+  bare <- function(w, plural, num) {
+    sep <- sprintf("%s*(?:[,;&]|and)(?:%s*(?:and|&))?%s*", sp, sp, sp)
+    closed <- sprintf("(?:%s*[,;]%s*%s)*%s*,?%s*(?:and|&)%s*%s", sp, sp, num, sp, sp, sp, num)
+    sprintf("\\b(?:%s%s+%s%s|%s%s+%s)(?:%s%s%s+%s)*", plural, sp, num, closed, w, sp, num,
+            sep, w, sp, num)
+  }
+  # A range in prose may be written out, and is tried first: the dash form
+  # takes "12" of "12 to 15" alone and is never asked again.
+  num <- sprintf("(?:[0-9]+%s+(?:to|through)%s+[0-9]+|%s)", sp, sp, g$number)
+  plural <- if (identical(word, "study")) "studies" else paste0(word, "s")
+  txt <- gsub(bare(g$word, plural, num), " ", txt, perl = TRUE, ignore.case = TRUE)
+  gsub(bare("claims?", "claims", "[0-9]+"), " ", txt, perl = TRUE, ignore.case = TRUE)
 }
 
 #' The figures a text states.
@@ -183,7 +222,8 @@ figure_unmark <- function(txt, word = "study") {
 #'
 #' Returns the figures as `written` (the digits as they stand), `value`
 #' (canonical), `digits` (decimal places as written: the precision it was
-#' given to), `pct`, `points`, `scale` (a power of ten, 0 for none) and
+#' given to), `pct`, `points`, `scale` (a power of ten, 0 for none, below 0
+#' for "4 x 10^-4") and
 #' `qualifier` (one of the names of .gr_figure_qualifiers, or NA).
 #' @noRd
 figure_find <- function(text, word = "study", strict = TRUE) {
@@ -209,6 +249,21 @@ figure_find <- function(text, word = "study", strict = TRUE) {
   sw[hit > 0L] <- lower_text(gsub("[^A-Za-z]", "", regmatches(after, hit)))
   scale <- ifelse(nzchar(sw), .gr_figure_scale[sw], 0L)
   scale[is.na(scale)] <- 0L
+  # A power of ten, which may make it smaller as well. Its base and exponent
+  # are no figures of their own: "4 x 10^-4" over a row of 0.0004 flagged the
+  # 10.
+  pw <- regexpr(.gr_figure_power_re, after, perl = TRUE)
+  power <- which(pw > 0L)
+  inside <- rep(FALSE, length(st))
+  if (length(power)) {
+    cs <- attr(pw, "capture.start")[power, 1L]
+    ex <- substring(after[power], cs, cs + attr(pw, "capture.length")[power, 1L] - 1L)
+    ex <- gsub("\u207a", "+", gsub("[\u207b\u2212]", "-", ex, perl = TRUE), fixed = TRUE)
+    ex <- chartr("\u2070\u00b9\u00b2\u00b3\u2074\u2075\u2076\u2077\u2078\u2079", "0123456789", ex)
+    scale[power] <- as.integer(ex)
+    span_end <- en[power] + attr(pw, "match.length")[power]
+    inside <- vapply(st, function(s) any(s > en[power] & s <= span_end), logical(1))
+  }
   b <- lower_text(sub("[[:space:]$\u00a3\u20ac\u00a5(]*$", "", before, perl = TRUE))
   qualifier <- rep(NA_character_, length(b))
   for (q in rev(names(.gr_figure_qualifiers))) {
@@ -218,9 +273,17 @@ figure_find <- function(text, word = "study", strict = TRUE) {
   if (strict) {
     glued <- grepl("\\p{L}[-\u2010\u2011\u2013]?$", before, perl = TRUE)
     ordinal <- grepl("^(?:st|nd|rd|th)\\b", after, perl = TRUE, ignore.case = TRUE)
-    decade <- grepl("^[0-9]{3}0$", written) & grepl("^'?s\\b", after, perl = TRUE)
+    # A decade of years ("1990s"), or of age after a word that says so ("in
+    # their 60s", "the mid-40s", "50s and 60s"): "rest intervals of 60s" are
+    # seconds, and a figure.
+    decade <- grepl("^'?s\\b", after, perl = TRUE) &
+      (grepl("^[0-9]{3}0$", written) |
+         (grepl("^[1-9]0$", written) &
+            grepl(paste0("(?:\\b(?:their|his|her|the|early|mid|late)|[1-9]0'?s[[:space:]]+",
+                         "(?:and|or|to))[[:space:]'\u2019-]*$"),
+                  before, perl = TRUE, ignore.case = TRUE)))
     small <- digits == 0L & nchar(value) == 1L & !pct & scale == 0L
-    keep <- !(glued | ordinal | decade | small)
+    keep <- !(glued | ordinal | decade | small | inside)
   }
   list(written = written[keep], value = value[keep], digits = as.integer(digits[keep]),
        pct = pct[keep], points = points[keep], scale = as.integer(scale[keep]),
@@ -266,7 +329,7 @@ figure_values <- function(text, word = "study") {
   txt <- as_chr1(text, "")
   if (!nzchar(txt)) return(list(raw = numeric(0), derived = numeric(0)))
   f <- figure_find(txt, word, strict = FALSE)
-  sc <- f$scale > 0L
+  sc <- f$scale != 0L
   derived <- c(unlist(Map(figure_shift, f$value[sc], f$scale[sc]), use.names = FALSE),
                figure_shift(f$value[f$pct], -2L))
   # Digits grouped by an ordinary space ("1 204", as SI style writes it), and
@@ -276,9 +339,30 @@ figure_values <- function(text, word = "study") {
                                   perl = TRUE))[[1]]
   dec <- regmatches(txt, gregexpr("(?<![0-9.,])[0-9]+,[0-9]{1,2}(?![0-9])", txt,
                                   perl = TRUE))[[1]]
-  raw <- c(f$value, figure_canon(grp), figure_canon(sub(",", ".", dec, fixed = TRUE)))
+  # E notation is what the row wrote, as render_studies() shows a numeric
+  # field, so rounding it is copying it: "0.00004" for "4.12e-05".
+  sci <- regmatches(txt, gregexpr(.gr_figure_sci_re, txt, perl = TRUE))[[1]]
+  raw <- c(f$value, figure_canon(grp), figure_canon(sub(",", ".", dec, fixed = TRUE)), sci)
   list(raw = unique(c(as.numeric(raw), figure_words(txt))),
        derived = unique(as.numeric(derived)))
+}
+
+#' A sentence with digits grouped by an ordinary space ("12 450") rejoined by a
+#' no-break space, which a figure reads as grouped, where `backed(value)` says
+#' the joined value is one it may be. Not otherwise: in a sentence the space is
+#' as often between two figures ("3 450-bed hospitals"), and figure_values()
+#' reads both ways only in what backs a figure, where that can only find more.
+#' @noRd
+figure_join <- function(text, backed) {
+  m <- gregexpr("(?<![0-9.,])[0-9]{1,3}(?: [0-9]{3})+(?![0-9,])", text, perl = TRUE)
+  g <- regmatches(text, m)[[1]]
+  if (!length(g)) return(text)
+  keep <- vapply(g, function(x) isTRUE(backed(as.numeric(gsub(" ", "", x, fixed = TRUE)))),
+                 logical(1), USE.NAMES = FALSE)
+  if (!any(keep)) return(text)
+  g[keep] <- gsub(" ", "\u00a0", g[keep], fixed = TRUE)
+  regmatches(text, m) <- list(g)
+  text
 }
 
 #' Several figure_values() as one.
@@ -300,7 +384,7 @@ figure_targets <- function(f, exact = FALSE) {
     d <- f$digits[i]
     t <- as.numeric(f$value[i])
     tol <- 0.5 * 10^-d
-    if (f$scale[i] > 0L) {
+    if (f$scale[i] != 0L) {
       t <- c(t, as.numeric(figure_shift(f$value[i], f$scale[i])))
       tol <- c(tol, 0.5 * 10^(f$scale[i] - d))
     }
@@ -345,21 +429,32 @@ figure_near <- function(tg, pool, qualifier) {
 
 #' Values worked out from two other figures of the same sentence, so the
 #' working is on the page: "54 of 120 (45%)", "from 29.1% to 38.5%, a rise of
-#' 9.4", "fell from 12 to 9, by 25%". A percentage may be one figure of the
-#' other or the change between them; anything else, their difference.
+#' 9.4", "fell from 12 to 9, by 25%". A percentage may be one count of another
+#' or the change between two figures; anything else, their difference. A
+#' percentage may also be a ratio read as a change from no effect: "HR 0.78, a
+#' 22% lower hazard", "OR 2.10, 110% higher odds", whose other side is the 1 a
+#' ratio is read from.
+#'
+#' One of the other only for whole numbers, as counts are: over any two
+#' figures, the bounds of an interval (0.22 of 0.60) backed a "37% dropped
+#' out" nobody worked out. A ratio only when written with a decimal part, so
+#' "3 arms" backs no 200%.
 #' `ops` is every number in the sentence, the figure's own among them.
 #' @noRd
 figure_worked <- function(ops, own, pct) {
   ops <- ops[!is.na(ops)]
   at <- match(own, ops)
   if (!is.na(at)) ops <- ops[-at]
-  if (length(ops) < 2L) return(numeric(0))
+  ratio <- if (pct) 100 * abs(ops[ops > 0 & ops < 10 & ops != round(ops)] - 1) else numeric(0)
+  if (length(ops) < 2L) return(ratio)
   a <- rep(ops, each = length(ops))
   b <- rep(ops, times = length(ops))
   pair <- rep(seq_along(ops), each = length(ops)) != rep(seq_along(ops), times = length(ops))
   a <- a[pair]
   b <- b[pair]
-  if (pct) c(100 * a[b > 0] / b[b > 0], 100 * abs(a[a > 0] - b[a > 0]) / a[a > 0]) else abs(a - b)
+  if (!pct) return(abs(a - b))
+  of <- b > 0 & a == round(a) & b == round(b)
+  c(100 * a[of] / b[of], 100 * abs(a[a > 0] - b[a > 0]) / a[a > 0], ratio)
 }
 
 #' The differences between every two values of `v`.
@@ -424,9 +519,11 @@ figure_empty_table <- function() {
 #' total of a numeric field over the cited rows; a year a cited row carries in any
 #' column (a withheld `year` included: it is the study's, and the rendered
 #' citation says the same); the number of studies cited, shown or written
-#' from; worked out from two other figures of the sentence; a difference in
-#' points between two figures of the cited rows; or, qualified ("about",
-#' "more than"), near a value in them.
+#' from, or how many of those rows share a field's value; worked out from two
+#' other figures of the sentence, or from a ratio in it read as a change from
+#' 1; a difference in points between two figures of one field of a cited row,
+#' or two percentages of one cited row; or, qualified ("about", "more than"),
+#' near a value in them.
 #'
 #' The draft is checked section by section against what each section was
 #' shown, mirroring synth_section(): with claims, the studies behind its
@@ -437,8 +534,8 @@ figure_empty_table <- function() {
 #'
 #' Returns `table` (one row per figure: `stage`, `section`, `sentence`,
 #' `number` as written, `studies` comma-joined or NA, `backed`, and `basis`,
-#' what it was found in), and `n_unbacked`, per row of `sections`, counting
-#' the draft.
+#' what it was found in, with the stage read as published in its attribute
+#' "published"), and `n_unbacked`, per row of `sections`, counting the draft.
 #' @noRd
 synth_figures <- function(sections, final, used, rendered, question, claims = NULL,
                           assign_map = NULL, gaps = NULL, closing = NA_character_,
@@ -459,6 +556,8 @@ synth_figures <- function(sections, final, used, rendered, question, claims = NU
   # sessions" to "12 weekly sessions" and backed a "20%" with it.
   one <- function(v) {
     v <- trimws(as_chr1(v, ""))
+    # A numeric field of 100000 is "1e+05" as a string, and is a bare number.
+    if (grepl(paste0("^", .gr_figure_sci_re, "$"), v, perl = TRUE)) return(as.numeric(v))
     if (!grepl("^[0-9][0-9,.]*$", v)) return(NA_real_)
     f <- figure_find(v, word, strict = FALSE)
     if (length(f$value) == 1L) as.numeric(f$value) else NA_real_
@@ -466,6 +565,32 @@ synth_figures <- function(sections, final, used, rendered, question, claims = NU
   field_vals <- matrix(vapply(fields, function(fl) {
     vapply(seq_len(nrow(used)), function(i) one(used[[fl]][i]), numeric(1))
   }, numeric(nrow(used))), nrow = nrow(used), ncol = length(fields))
+  cell <- function(fl, i) as_chr1(used[[fl]][i], "")
+  # Each field as a value rows may share, for a count of studies the rows
+  # give: "10 were randomised trials" over ten rows whose design says so. The
+  # number of studies alone left "10 of the 12" unbacked in any review of ten
+  # or more.
+  field_text <- lapply(fields, function(fl) {
+    lower_text(trimws(vapply(seq_len(nrow(used)), function(i) cell(fl, i), character(1))))
+  })
+  # A difference in points is of two figures of one field of a row ("38.5% vs
+  # 29.1%"), or of two percentages of one row, as arms in fields of their own
+  # give them. Across fields and rows any two values were differenced, and 12
+  # weeks less a CI bound of 0.65 backed "11.3 points". Worked out once a row,
+  # when a figure in points first needs it.
+  diffs_seen <- list()
+  row_diffs <- function(i) {
+    key <- as.character(i)
+    if (!is.null(diffs_seen[[key]])) return(diffs_seen[[key]])
+    pc <- unlist(lapply(fields, function(fl) {
+      f <- figure_find(cell(fl, i), word, strict = FALSE)
+      as.numeric(f$value[f$pct])
+    }), use.names = FALSE)
+    d <- c(unlist(lapply(fields, function(fl) figure_diffs(figure_values(cell(fl, i), word)$raw)),
+                  use.names = FALSE), figure_diffs(unique(pc)))
+    diffs_seen[[key]] <<- d
+    d
+  }
 
   claim_vals <- list()
   claim_rows <- list()
@@ -518,10 +643,26 @@ synth_figures <- function(sections, final, used, rendered, question, claims = NU
     }, logical(1))]
     cpool <- figure_pool(claim_vals[cl])
     sums <- if (length(cited) >= 2L) figure_sums(field_vals[rows, , drop = FALSE]) else numeric(0)
+    # "12 450" for a row's 12,450 is the row's figure, grouped as SI style
+    # groups it; read as written, it was 12 and 450, and the 450 was flagged.
+    # Joined only when that finds it, so "3 450-bed hospitals" stays 3 and 450.
+    joined <- figure_join(sentence, function(v) {
+      tg <- list(t = v, tol = 1e-9 * max(1, v))
+      figure_hit(tg, pool) || figure_hit(tg, sums) || figure_hit(tg, cpool) ||
+        figure_hit(tg, cx$fixed)
+    })
+    if (!identical(joined, sentence)) {
+      f <- figure_find(joined, word)
+      f$written <- gsub("\u00a0", " ", f$written, fixed = TRUE)
+    }
     years <- unique(unlist(row_years[rows], use.names = FALSE))
+    tally <- unlist(lapply(field_text, function(v) {
+      v <- v[rows]
+      as.integer(table(v[nzchar(v)]))
+    }), use.names = FALSE)
     counts <- as.character(unique(c(if (length(cited)) length(cited), length(cx$shown),
-                                    length(ids))))
-    ops <- as.numeric(figure_find(sentence, word, strict = FALSE)$value)
+                                    length(ids), tally)))
+    ops <- as.numeric(figure_find(joined, word, strict = FALSE)$value)
     tgs <- figure_targets(f)
     basis <- vapply(seq_along(tgs), function(k) {
       tg <- tgs[[k]]
@@ -538,12 +679,8 @@ synth_figures <- function(sections, final, used, rendered, question, claims = NU
       if (figure_hit(own, figure_worked(ops, tg$t[1], f$pct[k]))) {
         return("worked out in the sentence")
       }
-      if (f$points[k] && length(pool$raw) > 1L) {
-        # Across the rows when they are few, within each row otherwise: a
-        # sentence citing nothing in a review of two hundred studies would
-        # otherwise difference every value of all of them with every other.
-        d <- if (length(pool$raw) <= 300L) figure_diffs(pool$raw) else
-          unlist(lapply(row_vals[rows], function(r) figure_diffs(r$raw)), use.names = FALSE)
+      if (f$points[k]) {
+        d <- unlist(lapply(rows, row_diffs), use.names = FALSE)
         if (figure_hit(own, d)) return("difference of two cited figures")
       }
       near <- c(unlist(pool, use.names = FALSE), sums, unlist(cpool, use.names = FALSE),
@@ -578,6 +715,11 @@ synth_figures <- function(sections, final, used, rendered, question, claims = NU
   # Said about the text that is published: the revision if one was kept. The
   # draft's own count stays on `$sections`.
   stage <- if (is.null(final)) "draft" else "final"
+  # Kept on the table for print() and the audit report, which read it rather
+  # than guess it from `$coherence`: a kept pass that gave the draft back as it
+  # was leaves no revision to check, and they looked for "final" rows that were
+  # never made, and said nothing of the draft's.
+  attr(tab, "published") <- stage
   bad <- tab[tab$stage == stage & !tab$backed, , drop = FALSE]
   trace_note(trace, "synthesise.figures",
              list(checked = sum(tab$stage == stage), unbacked = nrow(bad), stage = stage))
@@ -608,9 +750,11 @@ synth_figures <- function(sections, final, used, rendered, question, claims = NU
 #' a citation's ids are not figures here either.
 #' @noRd
 figure_guard <- function(before, after, word = "study") {
+  had <- figure_values(before, word = word)
+  # "12 450" for the draft's 12,450 is a regrouping, not 12 and 450.
+  after <- figure_join(after, function(v) v %in% c(had$raw, had$derived))
   f <- figure_find(paste(split_sentences(after), collapse = "\n"), word)
   if (!length(f$value)) return(list(ok = TRUE, reason = NA_character_))
-  had <- figure_values(before, word = word)
   new <- !vapply(figure_targets(f, exact = TRUE), figure_hit, logical(1), pool = had)
   if (!any(new)) return(list(ok = TRUE, reason = NA_character_))
   added <- unique(f$written[new])

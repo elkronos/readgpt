@@ -221,8 +221,8 @@
 #'       long form: `section`, `study`, `document`, `document_id`.}
 #'     \item{`figures`}{Every figure in a sentence of the write-up, checked
 #'       against the rows it cites: `stage` (`"draft"` for the sections as
-#'       written, `"final"` for the revised text when a revision pass was
-#'       kept), `section` (the heading it stands under), `sentence`, `number`
+#'       written, `"final"` for the revised text when a kept revision pass
+#'       changed it), `section` (the heading it stands under), `sentence`, `number`
 #'       (as written), `studies` (the studies the sentence cites, comma-joined,
 #'       or NA), `backed`, and `basis`, what it was found in (NA when it was
 #'       not). See "Figures" below.}
@@ -273,28 +273,35 @@
 #' section was given; and with `claims`, the claims given to the section that
 #' rest on a cited study. A sentence that cites nothing is checked against
 #' every row its section was shown. This runs on the draft, and again on the
-#' revised text when a revision pass was kept; it sends nothing, so it is
-#' always on, and it changes no request.
+#' revised text when a kept revision pass changed it; it sends nothing, so it
+#' is always on, and it changes no request.
 #'
 #' A figure counts as found in any form a faithful copy may give it: `.61` for
-#' 0.61, `45.20` for 45.2, `1204` for 1,204, a minus sign or none, either side
-#' of a dash in a range, `45.2 million` for 45,200,000, `45%` for 0.45, `12`
-#' for "twelve", and rounded to the places it is written to (0.61 or 0.6 for
-#' 0.613, never 0.62). A row's percentage read as a proportion, or its scaled
-#' figure at full value, must match exactly: rounded as well, a pooled
+#' 0.61, `45.20` for 45.2, `1204` for 1,204, `12 450` for 12,450 (grouped by
+#' a space, where that is the row's figure), a minus sign or none, either side
+#' of a dash in a range, `45.2 million` for 45,200,000, `4 x 10^-4` for
+#' 0.0004, `100,000` for a numeric field shown as `1e+05`, `45%` for 0.45,
+#' `12` for "twelve", and rounded to the places it is written to (0.61 or 0.6
+#' for 0.613, never 0.62). A row's percentage read as a proportion, or its
+#' scaled figure at full value, must match exactly: rounded as well, a pooled
 #' estimate no study reported matched a row's unrelated percentage. A figure
 #' is also allowed when it is the total of a numeric field over the rows the
 #' sentence cites; worked out from two other figures of the same sentence
-#' ("120 of 1,020 (11.8%)"); a difference in points between two figures of the
-#' cited rows; a year a cited row carries in any column; the number of studies
-#' the sentence cites, its section was shown or the review was written from;
-#' or, after "about", "more than", "fewer than" and their like, within a tenth
-#' (about) or a quarter (a bound) of a value it could have come from. Not read
-#' as figures: a citation's ids, a whole number below ten that is not a
-#' percentage or scaled (a review writes "2 of the trials" as it likes), a
-#' number joined to a name ("COVID-19", "IL-6"), an ordinal, a decade, an
-#' interval's level (`95% CI`) and a significance threshold (`p < .001`).
-#' Numbers written in words are not checked.
+#' ("120 of 1,020 (11.8%)"), or from a ratio in it read as a change from 1
+#' ("HR 0.78, a 22% lower hazard"); a difference in points between two figures
+#' of one field of a cited row, or two percentages of one cited row; a year a
+#' cited row carries in any column; the number of studies the sentence cites,
+#' its section was shown or the review was written from, or how many of those
+#' rows share a field's value ("10 were randomised trials"); or, after
+#' "about", "more than", "fewer than" and their like, within a tenth (about)
+#' or a quarter (a bound) of a value it could have come from. Not read as
+#' figures: a citation's ids, written bare as well ("studies 12 to 15"), a
+#' whole number below ten that is not a percentage or scaled (a review writes
+#' "2 of the trials" as it likes), a number joined to a name ("COVID-19",
+#' "IL-6"), an ordinal, a decade ("1990s", "in their 60s"), an interval's
+#' level (`95% CI`), a significance threshold (`p < .001`, "p value below
+#' 0.05") and a significance level ("at the 5% level"). Numbers written in
+#' words are not checked.
 #'
 #' A figure found nowhere is reported in `$figures` and counted in
 #' `$sections$n_unbacked`, and the run warns (`gr_synth_unbacked_figures`)
@@ -762,12 +769,14 @@ print.gr_synthesis <- function(x, ...) {
     cat("  a section cut off at the reply limit stops mid-thought; those sections are partial\n")
   }
   # The counts above are the draft's. Said of the text as published, which is
-  # the revision when one was kept. A synthesis made before the check has no
+  # the revision when one was kept and changed it: the check records which it
+  # read (synth_figures()). A synthesis made before the check has no
   # `$figures`, and says nothing here.
   fig <- x$figures
   if (is.data.frame(fig) && nrow(fig)) {
-    final <- is.data.frame(x$coherence) && any(isTRUE_vec(x$coherence$kept))
-    stage <- if (final) "final" else "draft"
+    stage <- attr(fig, "published", exact = TRUE) %||%
+      (if (is.data.frame(x$coherence) && any(isTRUE_vec(x$coherence$kept))) "final" else "draft")
+    final <- identical(stage, "final")
     bad <- sum(fig$stage == stage & !fig$backed)
     if (bad) {
       cat(sprintf(paste0("  %d figure(s) in the %s are not in the rows their sentence cites, so no ",

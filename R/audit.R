@@ -998,7 +998,10 @@ audit_figures <- function(synthesis, revised = FALSE) {
   fig <- synthesis$figures
   # A synthesis made before the check has no `$figures`; nothing ran to report.
   if (!is.data.frame(fig)) return(NULL)
-  stage <- if (isTRUE(revised)) "final" else "draft"
+  # The text the check read as published, as it recorded it: a kept pass that
+  # gave the draft back unchanged left no revision to check, and inferring it
+  # from `revised` reported 0 figures checked.
+  stage <- attr(fig, "published", exact = TRUE) %||% (if (isTRUE(revised)) "final" else "draft")
   pub <- fig[fig$stage == stage, , drop = FALSE]
   bad <- fig[!isTRUE_vec(fig$backed), , drop = FALSE]
   found <- if (nrow(pub) && any(isTRUE_vec(pub$backed)))

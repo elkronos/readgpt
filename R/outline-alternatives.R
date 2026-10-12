@@ -115,6 +115,46 @@ outline_distance <- function(a, b) {
   apart / (n * (n - 1) / 2)
 }
 
+#' Whether any of a reply's sections will still hold a claim once
+#' finish_outline() has verified them.
+#'
+#' A reply whose sections all lose their claims to verification -- numbers
+#' that name no claim, or only gap claims, which go to the closing section
+#' whatever the reply said -- verifies to one section holding every claim: the
+#' closing one, or with no closing section, the "Findings" section
+#' finish_outline() puts in so the claims are not lost. That is the fallback
+#' for having no outline, not a proposal. Asked of the reply rather than of
+#' the verified outline because, with no closing section, that stand-in cannot
+#' be told afterwards from a reply that proposed one section. So the rules are
+#' finish_outline()'s: the first `max_sections` sections, numbers that name a
+#' claim, and no gap claims when there is a closing section.
+#' @noRd
+outline_places_any <- function(secs, cw, closing, max_sections) {
+  if (is.null(secs) || !nrow(secs)) return(FALSE)
+  if (nrow(secs) > max_sections) secs <- secs[seq_len(max_sections), , drop = FALSE]
+  ids <- cw$claim_id
+  if (is_nonblank(closing)) ids <- setdiff(ids, cw$claim_id[cw$kind == "gap"])
+  any(vapply(secs$.claims, function(v) length(intersect(v, ids)) > 0L, logical(1)))
+}
+
+#' How an outline groups its claims, whatever its sections are called, as a
+#' hash.
+#'
+#' Stamped on the marker each outline_alternatives() outline carries, so
+#' outline_choice() can tell one whose claims were moved since from one that
+#' was only renamed. Each claim's section is numbered by the first claim in
+#' it, so headings, and the order of the rows and sections, do not change it.
+#' @noRd
+outline_grouping <- function(map) {
+  if (!is.data.frame(map) || is.null(map$claim_id) || is.null(map$section)) {
+    return(NA_character_)
+  }
+  id <- as.integer(map$claim_id)
+  o <- order(id)
+  s <- as.character(map$section)[o]
+  gr_hash(list(claim_id = id[o], group = match(s, unique(s))))
+}
+
 #' One row of the comparison: the outline's shape, and how far it lies from
 #' the first proposal and from the nearest earlier one that was kept.
 #'
@@ -150,11 +190,12 @@ outline_comparison_row <- function(alternative, o = NULL, cw = NULL, distance = 
 #' Ask for the further outlines, verify each as the first was, and attach the
 #' distinct ones to the first.
 #'
-#' `first` is gr_outline()'s result, `derived` whether it came from the model
-#' (a call that failed leaves a one-section stand-in, which is nothing to
-#' differ from), and `msgs` the messages it was asked with.
+#' `first` is gr_outline()'s result, `reply` the sections its reply proposed,
+#' before verification, or NULL when none came back (a call that failed
+#' leaves a one-section stand-in, which is nothing to differ from), and `msgs`
+#' the messages it was asked with.
 #' @noRd
-outline_alternatives <- function(first, k, derived, msgs, cw, closing, max_sections,
+outline_alternatives <- function(first, k, reply, msgs, cw, closing, max_sections,
                                  client, spec, trace) {
   kept <- list(first)
   kept_no <- 1L
@@ -166,12 +207,17 @@ outline_alternatives <- function(first, k, derived, msgs, cw, closing, max_secti
   if (nrow(cw) < 2L) {
     # Counted rather than asked: every grouping of one claim is the same one.
     skip(2L, "not requested, as one claim can be grouped only one way")
-  } else if (!derived) {
-    # The first is then the one-section stand-in, which is no proposal to
-    # differ from. And what most often stops it -- the cap, or a reply limit
-    # the claims overrun -- would stop a longer request just the same.
-    skip(2L, if (!trace_can_call(trace)) capped() else
-      "not requested, as the first outline did not come back and there was nothing to differ from")
+  } else if (!outline_places_any(reply, cw, closing, max_sections)) {
+    # The first is then one section holding every claim, which is no proposal
+    # to differ from: the stand-in for a reply that did not come back, or what
+    # one whose sections kept no claim verifies to. Shown as "Proposal 1:"
+    # with no sections under it, the next request was asked to differ from
+    # nothing. And what most often stops the first -- the cap, or a reply
+    # limit the claims overrun -- would stop a longer request just the same.
+    skip(2L, if (!trace_can_call(trace)) capped() else if (is.null(reply))
+      "not requested, as the first outline did not come back and there was nothing to differ from"
+      else paste0("not requested, as none of the first outline's sections held a claim once ",
+                  "verified, and there was nothing to differ from"))
   } else {
     for (j in seq.int(2L, k)) {
       if (!trace_can_call(trace)) {
@@ -185,10 +231,13 @@ outline_alternatives <- function(first, k, derived, msgs, cw, closing, max_secti
                           temperature = spec$temperature, trace = trace,
                           label = sprintf("outline.derive.alt%d", j), effort = spec$effort)
       secs <- if (isTRUE(res$ok)) outline_rows(json_field(res$value, "sections", scalar = FALSE))
-      if (is.null(secs) || !nrow(secs)) {
+      if (!outline_places_any(secs, cw, closing, max_sections)) {
         # No stand-in, unlike the first: one section holding every claim is
-        # the fallback for having no outline, not an alternative to one.
-        rows[[length(rows) + 1L]] <- outline_comparison_row(j, note = if (isTRUE(res$ok))
+        # the fallback for having no outline, not an alternative to one. Nor
+        # is a reply whose sections kept no claim: it verifies to exactly
+        # that, and was kept as a distinct grouping.
+        rows[[length(rows) + 1L]] <- outline_comparison_row(j, note = if (NROW(secs))
+          "dropped, as none of its sections held a claim once verified" else if (isTRUE(res$ok))
           "dropped, as the reply held no usable sections" else
             sprintf("dropped, as the call %s",
                     call_failure(res$result, ask, spec$model, spec$max_answer_tokens,
@@ -235,18 +284,20 @@ outline_alternatives <- function(first, k, derived, msgs, cw, closing, max_secti
     dropped = paste(short$alternative, collapse = ", "),
     distance = paste(sprintf("%.3f", comparison$distance[comparison$kept]), collapse = ", ")))
 
-  marker <- function(j, distance) {
+  # `grouping` is the grouping the distance was measured on; see outline_choice().
+  marker <- function(j, distance, o) {
     data.frame(alternative = as.integer(j), of = as.integer(k), distinct = length(kept_no),
-               distance = round(as.numeric(distance), 3), stringsAsFactors = FALSE)
+               distance = round(as.numeric(distance), 3),
+               grouping = outline_grouping(attr(o, "claims")), stringsAsFactors = FALSE)
   }
   alts <- lapply(seq_along(kept)[-1L], function(i) {
     o <- kept[[i]]
     attr(o, "alternative") <- marker(kept_no[i],
-                                     comparison$distance[comparison$alternative == kept_no[i]])
+                                     comparison$distance[comparison$alternative == kept_no[i]], o)
     o
   })
   out <- first
-  attr(out, "alternative") <- marker(1L, 0)
+  attr(out, "alternative") <- marker(1L, 0, first)
   attr(out, "comparison") <- comparison
   attr(out, "alternatives") <- alts
   out
@@ -255,12 +306,24 @@ outline_alternatives <- function(first, k, derived, msgs, cw, closing, max_secti
 #' Which of gr_outline()'s outlines this is, as gr_synthesise() records it, or
 #' NULL for an outline that does not say (one alternative asked for, or one
 #' written by hand).
+#'
+#' Or one whose claims were moved since gr_outline() made it. `attr<-` keeps
+#' the marker through any edit, and an outline is handed back to be edited,
+#' so a review written from alternative 2 with its claims moved back into the
+#' first proposal's grouping was still said to follow alternative 2, grouping
+#' 40% of pairs of claims unlike the first. Regrouped, it is the author's own
+#' outline and is recorded as one; renamed, it is the same grouping and keeps
+#' the marker.
 #' @noRd
 outline_choice <- function(outline) {
   a <- attr(outline, "alternative")
   if (!is.data.frame(a) || nrow(a) != 1L) return(NULL)
   j <- as_int1(a$alternative)
   if (is.na(j)) return(NULL)
+  key <- a[["grouping", exact = TRUE]]
+  if (is.character(key) && !identical(key, outline_grouping(attr(outline, "claims")))) {
+    return(NULL)
+  }
   data.frame(alternative = j, of = as_int1(a$of), distinct = as_int1(a$distinct),
              distance = as_num1(a$distance), stringsAsFactors = FALSE)
 }
@@ -283,7 +346,9 @@ outline_choice <- function(outline) {
 #' The outline returned carries `attr(, "alternative")`, which says which one it
 #' is. [gr_synthesise()] records it in `$outline_alternative` and in its trace,
 #' and [gr_audit_report()] says which was used, so a review written from the
-#' second proposal says so.
+#' second proposal says so. Renaming its headings keeps that record. Moving
+#' claims between its sections does not: the grouping is then your own, and
+#' the review is recorded as one written from an outline of your own would be.
 #'
 #' @param outline A [gr_outline()] result made with `alternatives` above 1.
 #' @param alternative Which outline, by its number in

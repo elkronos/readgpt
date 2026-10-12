@@ -331,6 +331,58 @@ test_that("an alternative that fails or is cut off is dropped, not replaced by o
   expect_length(attr(o, "alternatives"), 0L)
 })
 
+test_that("an alternative none of whose sections held a claim is dropped, not kept as one section", {
+  # Numbers that name no claim, and a section holding only the gap claim,
+  # which goes to the closing section whatever the reply said. Each verified
+  # to "What is missing" holding all five claims, and was kept as distinct.
+  unknown <- oa_sections(Population = c(10, 11), Measures = c(12, 13))
+  gap_only <- oa_sections(Gaps = 5)
+  for (bad in list(unknown, gap_only)) {
+    f <- oa_setup(oa_client(replies = list(oa_first, bad)))
+    o <- NULL
+    expect_warning(o <- suppressMessages(gr_outline(f$claims, client = f$client,
+                                                    alternatives = 2)),
+                   "Alternative 2: dropped, as none of its sections held a claim once verified",
+                   class = "gr_outline_alternatives_short")
+    cmp <- attr(o, "comparison")
+    expect_identical(cmp$kept, c(TRUE, FALSE))
+    expect_true(is.na(cmp$sections[2]))
+    expect_length(attr(o, "alternatives"), 0L)
+    expect_error(gr_outline_pick(o, 2), "none of its sections held a claim",
+                 class = "gr_outline_no_alternative")
+  }
+  # With no closing section the same reply became a "Findings" section
+  # holding every claim, which only the reply can tell from a real one.
+  f <- oa_setup(oa_client(replies = list(oa_first, unknown)))
+  expect_warning(o <- suppressMessages(gr_outline(f$claims, client = f$client, closing = NULL,
+                                                  alternatives = 2)),
+                 class = "gr_outline_alternatives_short")
+  expect_identical(attr(o, "comparison")$kept, c(TRUE, FALSE))
+  # A reply that keeps one claim anywhere is a grouping, and is compared.
+  f <- oa_setup(oa_client(replies = list(oa_first, oa_sections(Population = c(10, 1)))))
+  o <- quiet(gr_outline(f$claims, client = f$client, alternatives = 2))
+  expect_identical(attr(o, "comparison")$kept, c(TRUE, TRUE))
+})
+
+test_that("nothing is asked for when none of the first outline's sections held a claim", {
+  unknown <- oa_sections(Population = c(10, 11), Measures = c(12, 13))
+  f <- oa_setup(oa_client(replies = list(unknown, oa_by_design)))
+  o <- NULL
+  expect_warning(o <- suppressMessages(gr_outline(f$claims, client = f$client, alternatives = 2)),
+                 class = "gr_outline_alternatives_short")
+  # Before, the second request was paid for, asked to differ from a
+  # "Proposal 1:" with no sections under it.
+  expect_identical(vapply(outline_calls(f$client), `[[`, "", "label"), "outline.derive")
+  cmp <- attr(o, "comparison")
+  expect_identical(cmp$kept, c(TRUE, FALSE))
+  expect_match(cmp$note[2], "none of the first outline's sections held a claim", fixed = TRUE)
+  # The first outline is what `alternatives = 1` makes of the same reply.
+  bare <- o
+  for (a in c("alternative", "comparison", "alternatives")) attr(bare, a) <- NULL
+  f$client$reset()
+  expect_identical(bare, quiet(gr_outline(f$claims, client = f$client)))
+})
+
 test_that("no alternative is asked for once the run reaches its call cap", {
   local_registries()
   f <- oa_setup()
@@ -454,6 +506,53 @@ test_that("a write-up from a chosen alternative records which, and the audit say
   html1 <- paste(readLines(path1, encoding = "UTF-8"), collapse = "\n")
   expect_match(html1, "The sections follow outline 1 of the 2", fixed = TRUE)
   expect_false(grepl("pairs of claims", html1, fixed = TRUE))
+})
+
+test_that("an outline whose claims were moved after gr_outline() is the author's own", {
+  f <- oa_setup()
+  o <- quiet(gr_outline(f$claims, client = f$client, alternatives = 2))
+  p <- gr_outline_pick(o, 2)
+  # Claims 2 and 3 swapped: Trials {1, 2}, Others {3, 4}, the first
+  # proposal's grouping under the second's headings.
+  m <- attr(p, "claims")
+  m$section[m$claim_id == 2] <- "Trials"
+  m$section[m$claim_id == 3] <- "Others"
+  attr(p, "claims") <- m
+  expect_identical(readgpt:::outline_distance(attr(o, "claims"), m), 0)
+  s <- quiet(gr_synthesise(oa_table(), outline = p, question = "Does it work?",
+                           client = f$client, claims = f$claims))
+  expect_identical(s$claim_sections$section[s$claim_sections$claim_id == 2], "Trials")
+  # Before, it was recorded as alternative 2, 40% of pairs of claims unlike
+  # the first, in print and in the audit.
+  expect_false("outline_alternative" %in% names(s))
+  expect_null(s$trace$meta$outline_alternative)
+  expect_false(any(grepl("outline: alternative", utils::capture.output(print(s)), fixed = TRUE)))
+  path <- tempfile(fileext = ".html")
+  quiet(gr_audit_report(path, synthesis = s, open = FALSE))
+  expect_false(grepl("The sections follow outline", paste(readLines(path), collapse = "\n"),
+                     fixed = TRUE))
+
+  # The first proposal regrouped, passed as gr_outline() returned it, is the
+  # same.
+  o1 <- o
+  m1 <- attr(o1, "claims")
+  m1$section[m1$claim_id == 2] <- "Methods"
+  attr(o1, "claims") <- m1
+  expect_null(readgpt:::outline_choice(o1))
+
+  # Renamed, it is the same grouping, and is still recorded as the one chosen.
+  r <- gr_outline_pick(o, 2)
+  names(r)[names(r) == "Trials"] <- "Randomised trials"
+  m <- attr(r, "claims")
+  m$section[m$section == "Trials"] <- "Randomised trials"
+  attr(r, "claims") <- m[nrow(m):1, ]
+  s <- quiet(gr_synthesise(oa_table(), outline = r, question = "Does it work?",
+                           client = f$client, claims = f$claims))
+  expect_identical(s$sections$section[1], "Randomised trials")
+  expect_identical(s$outline_alternative$alternative, 2L)
+  expect_identical(s$outline_alternative$distance, 0.4)
+  # And only the four documented columns reach the synthesis.
+  expect_named(s$outline_alternative, c("alternative", "of", "distinct", "distance"))
 })
 
 test_that("a write-up from an outline without alternatives is the object it always was", {

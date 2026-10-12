@@ -35,10 +35,11 @@
 #' sentence. And the reason is read by a person, who counts length in words.
 #'
 #' Headings and citation markers are left out, as guard_reads() leaves them
-#' out: deleting a heading, or writing three markers as one range, is not
-#' cutting the review. A word is a run of non-space characters holding a
-#' letter or a digit, so "12%" and "all-cause" are one word each and a dash
-#' standing between spaces is none. `\\p{L}\\p{N}` rather than `[[:alnum:]]`,
+#' out, and so are list markers: deleting a heading, writing three markers as
+#' one range, or turning a numbered list into bullets, is not cutting the
+#' review. A word is a run of non-space characters holding a letter or a
+#' digit, so "12%" and "all-cause" are one word each and a dash standing
+#' between spaces is none. `\\p{L}\\p{N}` rather than `[[:alnum:]]`,
 #' whose reach depends on the locale.
 #'
 #' A language written without spaces would count as very few words. No such
@@ -48,6 +49,10 @@
 prose_words <- function(text, word = "study") {
   txt <- gsub(cite_grammar(word)$marker, " ", as_chr1(text), perl = TRUE, ignore.case = TRUE)
   txt <- gsub("(^|\n)[ \t]*#{1,6}[^\n]*", "\\1", txt, perl = TRUE)
+  # "1." holds a digit and "-" does not, so a numbered list rewritten as
+  # bullets lost a word per item, and a cut that removed nothing was kept.
+  # Space after the marker is required, so a line opening on "1.5 mg" keeps it.
+  txt <- gsub("(^|\n)[ \t]*(?:[-*+]|[0-9]+[.)])[ \t]+", "\\1", txt, perl = TRUE)
   as.integer(sum(grepl("[\\p{L}\\p{N}]", words_of(txt), perl = TRUE)))
 }
 

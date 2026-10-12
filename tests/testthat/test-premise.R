@@ -75,10 +75,24 @@ test_that("the premise sentinel is read through the ways models decorate it", {
              "False premise: Revenue rose 12%.",
              "FALSE PREMISE. Revenue rose 12%.",
              "  FALSE_PREMISE:Revenue rose 12%.  ",
-             "「FALSE_PREMISE」：Revenue rose 12%.")
+             "「FALSE_PREMISE」：Revenue rose 12%.",
+             # French sets its closing guillemet after a space, and German
+             # closes with a mark Unicode counts as opening.
+             "« FALSE_PREMISE » : Revenue rose 12%.",
+             "„FALSE_PREMISE“: Revenue rose 12%.",
+             "»FALSE_PREMISE«: Revenue rose 12%.",
+             "‚FALSE_PREMISE‘: Revenue rose 12%.",
+             "„**FALSE_PREMISE**“: Revenue rose 12%.",
+             "« False premise » : Revenue rose 12%.")
   for (f in forms) expect_identical(pc(f), rose, info = f)
-  # The sentence keeps its own quote marks and citations.
+  # The sentence keeps its own quote marks and citations, whether or not the
+  # sentinel was quoted too.
   expect_identical(pc("FALSE_PREMISE: \"Revenue rose\" [chunk 1]"), "\"Revenue rose\" [chunk 1]")
+  for (x in c("FALSE_PREMISE “Revenue rose.”", "FALSE_PREMISE\n“Revenue rose.”",
+              "“FALSE_PREMISE” “Revenue rose.”")) {
+    expect_identical(pc(x), "“Revenue rose.”", info = x)
+  }
+  expect_identical(pc("« FALSE_PREMISE » : « Le chiffre » a augmenté."), "« Le chiffre » a augmenté.")
 })
 
 test_that("an answer that merely mentions or resembles the sentinel is not a verdict", {
@@ -158,6 +172,34 @@ test_that("the rule is in the string the budget is computed from", {
   cl <- premise_model()
   quiet(gr_read(premise_fixture(), Q, cl, gr_read_spec("stuff", premise = TRUE, cite = TRUE)))
   expect_identical(sys_of(cl$calls()[[1]]), readgpt:::answer_system(TRUE, premise = TRUE))
+})
+
+test_that("the recorded worst-case cost covers the rule in every answering prompt", {
+  local_registries()
+  # Priced at a unit a token, so the bound and the spend compare as tokens.
+  gr_register_model("priced-in", context_window = 128000, max_output = 4000,
+                    input_usd = 1e6, output_usd = 0)
+  gr_options(max_cost_usd = Inf, max_calls = 100000)
+  ch <- new_chunks(sprintf("Item %d: revenue line %d rose.", 1:40, 1:40), "fixture",
+                   gr_segment_spec(max_tokens = 400))
+  est <- function(reader, ...) {
+    tr <- gr_trace()
+    quiet(gr_read(ch, "Why did revenue fall?", gr_mock_client(function(m, p) "Revenue rose."),
+                  gr_read_spec(reader, model = "priced-in", ...), trace = tr))
+    pf <- Filter(function(s) identical(s$label, "preflight"), tr$steps)[[1]]$detail
+    c(bound = pf$est_cost_usd, spent = tr$spent_usd)
+  }
+  # stuff and refine, whose prompts are mostly the fixed part, overran the
+  # bound by the rule's length.
+  for (r in c("stuff", "refine")) {
+    for (cite in c(FALSE, TRUE)) {
+      x <- est(r, premise = TRUE, cite = cite)
+      expect_gte(x[["bound"]], x[["spent"]], label = paste(r, cite))
+    }
+  }
+  # Without the check, the bound is the one it was: every chunk and 200
+  # tokens for stuff's one request.
+  expect_equal(est("stuff")[["bound"]], sum(ch$chunks$tokens) + 200)
 })
 
 test_that("without `premise`, no request carries the rule and no answer the field", {
@@ -370,6 +412,43 @@ test_that("iterative asks for the verdict in its schema and stops on it", {
   expect_identical(d$notes$stop_reason, "model satisfied")
 })
 
+test_that("iterative: the flag with both sentinels as its answer is no verdict either", {
+  # The step prompt asks for the flag and the answer prompt for the sentinel,
+  # so a model that found nothing may send both, and both exits at once.
+  fr <- readgpt:::premise_field_reply
+  for (x in c("FALSE_PREMISE: NOT_IN_DOCUMENT", "**FALSE_PREMISE:** NOT_IN_DOCUMENT")) {
+    for (flag in c(TRUE, FALSE)) {
+      r <- fr(x, flag)
+      expect_identical(r$text, "NOT_IN_DOCUMENT", info = paste(x, flag))
+      expect_true(is.na(r$premise), info = paste(x, flag))
+    }
+  }
+  # What the field adds to a sentinel already read is nothing.
+  expect_identical(fr("FALSE_PREMISE: Revenue rose.", TRUE)$premise, "Revenue rose.")
+  expect_identical(fr("FALSE_PREMISE:", TRUE)$premise, readgpt:::.gr_premise_unstated)
+
+  ch <- premise_fixture()
+  cl <- premise_model(step = paste0(
+    '{"can_answer": false, "answer": "FALSE_PREMISE: NOT_IN_DOCUMENT", ',
+    '"next_query": "revenue decline", "false_premise": true}'))
+  e <- quiet(gr_read(ch, Q, cl, gr_read_spec("iterative", premise = TRUE, max_rounds = 2)))
+  expect_identical(sum(call_labels(cl) == "iterative.step"), 1L)
+  expect_identical(e$notes$stop_reason, "no unseen chunks")
+  expect_identical(utils::tail(call_labels(cl), 1L), "iterative.final")
+  # The verdict is the final answer's, not the step's two sentinels.
+  expect_identical(e$premise, "Revenue rose 12% in 2023, to 45.2 million.")
+
+  # A final answer that is silent too: not found, and no verdict at all.
+  quiet_cl <- premise_model(flag = "NOT_IN_DOCUMENT", step = paste0(
+    '{"can_answer": false, "answer": "FALSE_PREMISE: NOT_IN_DOCUMENT", ',
+    '"next_query": "x", "false_premise": true}'))
+  n <- quiet(gr_read(ch, "Why did the CEO resign?", quiet_cl,
+                     gr_read_spec("iterative", premise = TRUE, max_rounds = 2)))
+  expect_true(is_not_found(n$answer))
+  expect_true(is.na(n$premise))
+  expect_false(identical(n$notes$stop_reason, "premise contradicted"))
+})
+
 test_that("ensemble adjudicates its members' corrections as corrections", {
   local_registries()
   ch <- premise_fixture()
@@ -386,6 +465,41 @@ test_that("ensemble adjudicates its members' corrections as corrections", {
   expect_identical(a$premise, "Both strategies found that revenue rose 12%.")
   expect_setequal(a$notes$premise_members, c("stuff", "map_reduce"))
   expect_true(grepl("\"premise_members\": [", as_json(a), fixed = TRUE))
+})
+
+# A model given the rule that flags what it can see of the rise, and an
+# adjudication that fails.
+adjudication_down <- function() {
+  gr_mock_client(function(messages, params) {
+    sys <- messages[[1]]$content
+    if (grepl("different reading strategies", sys, fixed = TRUE)) stop("adjudication outage")
+    if (!grepl("Revenue rose", body_of(list(messages = messages)), fixed = TRUE)) {
+      return("NOT_IN_DOCUMENT")
+    }
+    if (grepl("FALSE_PREMISE", sys, fixed = TRUE)) "FALSE_PREMISE: Revenue rose 12%."
+    else "Revenue fell because demand weakened."
+  })
+}
+
+test_that("ensemble: an adjudication that failed joins the members' corrections as corrections", {
+  local_registries()
+  ch <- premise_fixture()
+  spec <- function(...) gr_read_spec("ensemble", members = c("stuff", "map_reduce"), ...)
+  a <- quiet(gr_read(ch, Q, adjudication_down(), spec(premise = TRUE)))
+  expect_identical(a$notes$adjudication, "concatenated")
+  expect_true(a$partial)
+  # No verdict, as for a map_reduce merge that gave up, but each correction
+  # says what it is rather than reading as an answer to the loaded question.
+  expect_true(is.na(a$premise))
+  expect_setequal(a$notes$premise_members, c("stuff", "map_reduce"))
+  expect_identical(a$answer, paste(rep("FALSE_PREMISE: Revenue rose 12%.", 2L),
+                                   collapse = "\n\n---\n\n"))
+
+  # Without the check, the members' answers joined as they always were.
+  b <- quiet(gr_read(ch, Q, adjudication_down(), spec()))
+  expect_identical(b$answer, paste(rep("Revenue fell because demand weakened.", 2L),
+                                   collapse = "\n\n---\n\n"))
+  expect_false("premise" %in% names(b))
 })
 
 test_that("screen and extract send and return what they always did", {
@@ -424,6 +538,61 @@ test_that("new_answer() leaves the field out unless a reader passes it", {
   expect_true(is.na(new_answer("x", "r", "q", 1L, tr, premise = "  ")$premise))
   expect_identical(new_answer("Revenue rose.", "r", "q", 1L, tr, premise = "Revenue rose.")$premise,
                    "Revenue rose.")
+  # FALSE is "checked, nothing flagged", as NA is. Coerced, it was the
+  # correction "FALSE", and the answer said the model contradicted the question.
+  f <- new_answer("Revenue was 45.2 million.", "r", "q", 1L, tr, premise = FALSE)
+  expect_true(is.na(f$premise))
+  expect_false(readgpt:::premise_flagged(f))
+  expect_false(any(grepl("contradicts", capture.output(print(f)), fixed = TRUE)))
+  # Anything else that is no sentence is refused, not read as one.
+  for (p in list(TRUE, 1, c(FALSE, FALSE))) {
+    expect_error(new_answer("x", "r", "q", 1L, tr, premise = p), class = "gr_bad_setting")
+  }
+})
+
+test_that("the audit report names the chunks or members that reported the premise false", {
+  local_registries()
+  # A merge that failed: no verdict, and the chunk that reported it is named
+  # rather than the row saying nothing contradicted the question.
+  doc <- paste("Revenue rose 12% in 2023, to 45.2 million.",
+               "Costs were flat at 30 million across the year.",
+               "The board expects growth to continue next year.", sep = "\n\n")
+  failing <- gr_mock_client(function(messages, params) {
+    if (grepl("You consolidate partial findings", messages[[1]]$content, fixed = TRUE)) {
+      stop("merge outage")
+    }
+    excerpt <- messages[[2]]$content
+    if (grepl("Revenue rose", excerpt, fixed = TRUE)) return("FALSE_PREMISE: Revenue rose.")
+    if (grepl("Costs", excerpt, fixed = TRUE)) return("Costs were flat.")
+    "NOT_IN_DOCUMENT"
+  })
+  ans <- quiet(answer_document(doc, Q, "thorough", client = failing, premise = TRUE,
+                               max_tokens = 20, method = "paragraph"))
+  expect_identical(ans$reader, "map_reduce")
+  expect_true(is.na(ans$premise))
+  expect_identical(as.integer(ans$notes$premise_chunks), 1L)
+  row <- function(a) {
+    page <- quiet(gr_audit_report(tempfile(fileext = ".html"), answer = a, open = FALSE))
+    html <- paste(readLines(page, warn = FALSE), collapse = "\n")
+    regmatches(html, regexpr("<th>Premise</th><td>[^<]*</td>", html))
+  }
+  r <- row(ans)
+  expect_true(grepl("chunk(s) 1 reported that the document contradicts it", r, fixed = TRUE))
+  expect_true(grepl("no overall verdict", r, fixed = TRUE))
+  expect_false(grepl("reported nothing contradicting it", r, fixed = TRUE))
+
+  # An ensemble whose adjudication failed names its members.
+  e <- quiet(gr_read(premise_fixture(), Q, adjudication_down(),
+                     gr_read_spec("ensemble", members = c("stuff", "map_reduce"), premise = TRUE)))
+  expect_true(grepl("member(s) &#39;stuff&#39;, &#39;map_reduce&#39; reported", row(e),
+                    fixed = TRUE))
+
+  # Checked, and nothing anywhere reported it: the row says so, as it did.
+  plain <- quiet(answer_document(doc, "What was revenue in 2023?", "thorough",
+                                 client = premise_model(flag = "Revenue was 45.2 million."),
+                                 premise = TRUE, max_tokens = 20, method = "paragraph"))
+  expect_true(grepl("checked; the model reported nothing contradicting it", row(plain),
+                    fixed = TRUE))
 })
 
 test_that("print and the audit report say the model reported the premise false", {

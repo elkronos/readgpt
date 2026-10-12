@@ -1178,9 +1178,12 @@ read_ensemble <- function(chunks, question, client, spec, trace) {
                                            logical(1))]
   # The adjudication's reply is the verdict. Answers joined because it failed
   # are none, as for a map_reduce merge that gave up; `premise_members` names
-  # the members that flagged it either way.
+  # the members that flagged it either way. Joined from the findings, which
+  # keep the sentinel on a member's correction, as a map_reduce merge that
+  # gave up keeps it: from the answers, the correction read as one more answer
+  # to the question asked. Without the check the two are the same text.
   out <- if (res$ok) premise_reply(res$text, spec$premise)
-         else list(text = paste(ans, collapse = "\n\n---\n\n"), premise = NULL)
+         else list(text = paste(trimws(findings), collapse = "\n\n---\n\n"), premise = NULL)
   new_answer(out$text,
              "ensemble", question,
              unique(unlist(lapply(results[usable], function(r) r$chunks_used))), trace,

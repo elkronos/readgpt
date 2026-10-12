@@ -1446,6 +1446,19 @@ answer_summary <- function(x, listed = TRUE) {
   # A row only for an answer whose reader was asked to check the premise, so a
   # page about one that was not asked says what it always said.
   checked <- !is.null(x[["premise", exact = TRUE]])
+  # The chunks or members whose own reply said the question is contradicted,
+  # which the notes keep when a merge or adjudication failed or overruled
+  # them. Left out, the row said the model reported nothing contradicting the
+  # question, of an answer whose text might open with the model saying so.
+  pn <- as.list(x$notes %||% list())
+  reported <- function(field, what, fmt) {
+    ids <- as.character(unlist(pn[[field, exact = TRUE]]))
+    if (length(ids)) sprintf("%s %s", what, paste(c(sprintf(fmt, utils::head(ids, 20L)),
+                                                    if (length(ids) > 20L) "..."),
+                                                  collapse = ", "))
+  }
+  who <- c(reported("premise_chunks", "chunk(s)", "%s"),
+           reported("premise_members", "member(s)", "'%s'"))
   facts <- fact_table(
     c("Document", "Recipe", "Reader", "Chunks", "Chunks used", "Requests", "Cost",
       if (checked) "Premise"),
@@ -1460,6 +1473,9 @@ answer_summary <- function(x, listed = TRUE) {
       if (inherits(tr, "gr_trace")) format_trace_cost(tr) else NA_character_,
       if (checked) {
         if (premise_flagged(x)) "checked; the model reports the document contradicts it"
+        else if (length(who)) sprintf(paste0("checked; no overall verdict that it is ",
+                                             "contradicted, but %s reported that the document ",
+                                             "contradicts it"), paste(who, collapse = " and "))
         else "checked; the model reported nothing contradicting it"
       }))
   w <- x[["warnings", exact = TRUE]] %||% character(0)

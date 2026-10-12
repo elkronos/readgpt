@@ -733,8 +733,13 @@ preflight <- function(chunks, spec, trace, client = NULL, question = "",
   model_worst <- worst_calls - embed_calls
   # What the worst case sends: every chunk, the fixed prompt of every request,
   # and what the merge and summary levels are handed, which is replies at
-  # their caps.
-  est_in <- tok + model_worst * 200L + level_in
+  # their caps. The premise rule (read-premise.R) lengthens every prompt that
+  # answers the question by up to its longest form, which the 200 tokens were
+  # never sized for: with it, a `stuff` or `refine` read spent more than the
+  # bound recorded for it.
+  per_request <- 200L + if (isTRUE(spec$premise))
+    max(gr_count_tokens(unlist(.gr_premise_prompts))) else 0L
+  est_in <- tok + model_worst * per_request + level_in
   # Size the completion estimate by the LARGER of the two caps: only the
   # per-chunk readers use max_chunk_tokens, and the rest size their answers with
   # max_answer_tokens, so using the per-chunk cap under-estimated output by

@@ -142,7 +142,18 @@ premise_correction <- function(x) {
   rest <- substring(x, nchar(m[1]) + 1L)
   word <- m[2]
   # The closing quote mark or bold of the sentinel itself: "FALSE_PREMISE"**.
-  rest <- sub("^[\"'`*_\\p{Pe}\\p{Pf}]*", "", rest, perl = TRUE)
+  # When a quote mark opened it, its partner may stand after a space, as French
+  # sets it (« FALSE_PREMISE »), and may be a mark Unicode classes as opening,
+  # as German uses („FALSE_PREMISE“, »FALSE_PREMISE«). Only then: after a
+  # sentinel no quote mark opened, a quote mark after a space, or an opening
+  # one, begins the sentence's own quotation (FALSE_PREMISE “Revenue rose.”),
+  # and stays.
+  lead <- substr(m[1], 1L, nchar(m[1]) - nchar(word))
+  quoted <- grepl("[\"'`\\p{Ps}\\p{Pi}\\p{Pf}][\\s\\p{Z}*_]*$", lead, perl = TRUE)
+  closer <- if (quoted) {
+    "^(?:[\\s\\p{Z}]*[\"'`\\p{Pi}\\p{Pe}\\p{Pf}])?[\"'`*_\\p{Pi}\\p{Pe}\\p{Pf}]*"
+  } else "^[\"'`*_\\p{Pe}\\p{Pf}]*"
+  rest <- sub(closer, "", rest, perl = TRUE)
   token <- grepl("_", word, fixed = TRUE) || identical(word, toupper(word))
   if (!token && !grepl("^[ \\t\\p{Zs}]*[:：]", rest, perl = TRUE)) return(NULL)
   # Then the break the prompt asked for (a colon) or the one the model used
@@ -191,7 +202,12 @@ premise_reply <- function(text, check) {
 #' @noRd
 premise_field_reply <- function(text, flagged) {
   pr <- premise_reply(text, TRUE)
-  if (!isTRUE(flagged) || !is.na(pr$premise)) return(pr)
+  # An answer that opens with the sentinel has been read by premise_reply()
+  # already, as a correction, a verdict without one, or both exits at once.
+  # Tested on its NA instead, "FALSE_PREMISE: NOT_IN_DOCUMENT" with the field
+  # set fell through to the branch below and became a verdict whose sentence
+  # was the two sentinels.
+  if (!isTRUE(flagged) || !is.null(premise_correction(text))) return(pr)
   t <- trimws(as_chr1(text))
   if (!has_visible(t)) return(list(text = .gr_premise_unstated, premise = .gr_premise_unstated))
   if (is_not_found(t)) return(list(text = .NOT_FOUND, premise = NA_character_))

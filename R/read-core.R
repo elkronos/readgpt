@@ -57,11 +57,12 @@
 #' @param notes Named list of whatever your reader wants to report.
 #' @param premise Whether, and how, the question's premise was checked; see
 #'   `premise` in [gr_read_spec()]. `NULL` (the default) when your reader did
-#'   not check it, which leaves the field out of the answer. `NA` when it
-#'   checked and the model reported nothing contradicting it. Otherwise the
-#'   sentence in which the model said what the document states instead, which
-#'   should then be `text` as well, so that `$answer` says it and
-#'   [is_not_found()] is `FALSE`.
+#'   not check it, which leaves the field out of the answer. `NA` or `FALSE`
+#'   when it checked and the model reported nothing contradicting it.
+#'   Otherwise the sentence in which the model said what the document states
+#'   instead, which should then be `text` as well, so that `$answer` says it
+#'   and [is_not_found()] is `FALSE`. Any other value, `TRUE` among them, is
+#'   an error.
 #' @return A [gr_answer].
 #' @seealso [gr_register_reader()], [gr_answer], [gr_read()], [new_chunks()]
 #' @family reading functions
@@ -135,8 +136,16 @@ new_answer <- function(text, reader, question, chunks_used, trace, evidence = NU
   # Only when the reader checked the premise (read-premise.R): an answer from a
   # run that did not ask has no such field, as it never had, so it prints,
   # serialises and compares exactly as it did. NA is "checked, nothing
-  # flagged", which a blank sentence is too.
+  # flagged", which a blank sentence and FALSE are too.
   if (!is.null(premise)) {
+    if (is.logical(premise) && length(premise) == 1L && !isTRUE(premise)) premise <- NA_character_
+    # Anything else that is not a sentence is refused, not coerced: TRUE, or
+    # FALSE in a vector, became the correction "TRUE" or "FALSE", and the
+    # answer said the model had contradicted the question when nothing had.
+    if (!is.character(premise)) {
+      gr_abort(paste0("`premise` must be NULL, NA, FALSE, or the sentence in which the model ",
+                      "said what the document states instead."), class = "gr_bad_setting")
+    }
     p <- as_chr1(premise, NA_character_)
     out$premise <- if (is_nonblank(p)) p else NA_character_
   }

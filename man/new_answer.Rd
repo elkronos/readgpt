@@ -49,11 +49,12 @@ Defaults to \code{chunks_used}.}
 
 \item{premise}{Whether, and how, the question's premise was checked; see
 \code{premise} in \code{\link[=gr_read_spec]{gr_read_spec()}}. \code{NULL} (the default) when your reader did
-not check it, which leaves the field out of the answer. \code{NA} when it
-checked and the model reported nothing contradicting it. Otherwise the
-sentence in which the model said what the document states instead, which
-should then be \code{text} as well, so that \verb{$answer} says it and
-\code{\link[=is_not_found]{is_not_found()}} is \code{FALSE}.}
+not check it, which leaves the field out of the answer. \code{NA} or \code{FALSE}
+when it checked and the model reported nothing contradicting it.
+Otherwise the sentence in which the model said what the document states
+instead, which should then be \code{text} as well, so that \verb{$answer} says it
+and \code{\link[=is_not_found]{is_not_found()}} is \code{FALSE}. Any other value, \code{TRUE} among them, is
+an error.}
 }
 \value{
 A \link{gr_answer}.

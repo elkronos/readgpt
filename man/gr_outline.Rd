@@ -105,10 +105,12 @@ outlines are is then counted, not asked: the fraction of pairs of claims
 that one puts in the same section and the other does not, 0 for the same
 grouping under other headings and 1 for groupings that agree about no pair.
 An alternative at 0 from an earlier one is dropped. So is one whose call
-failed or was cut off, rather than replaced by a single section the way a
-failed first outline is, and none is requested once the run reaches its call
-or cost limit. A warning (\code{gr_outline_alternatives_short}) says when fewer
-outlines came back distinct than were asked for, and why.
+failed or was cut off, or none of whose sections held a claim once
+verified, rather than replaced by a single section the way a failed first
+outline is. None is requested when the first outline is such a single
+section, or once the run reaches its call or cost limit. A warning
+(\code{gr_outline_alternatives_short}) says when fewer outlines came back
+distinct than were asked for, and why.
 
 Nothing ranks them, and no model is asked which is best. The first proposal
 is returned as it would be alone, carrying \code{attr(, "comparison")}, one row

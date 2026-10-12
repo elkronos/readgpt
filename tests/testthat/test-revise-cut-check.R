@@ -62,6 +62,13 @@ test_that("prose is counted in words a reader reads, without headings or markers
   expect_identical(f("Two trials suggest a benefit [study 1; study 2 p. 4]."), 5L)
   # A dash between spaces is no word; "12%" and "all-cause" are one each.
   expect_identical(f("All-cause deaths fell 12% -- a small change."), 7L)
+  # A list marker is markup whichever kind it is: "1." held a digit, so it
+  # counted as a word where "-" did not.
+  expect_identical(f("1. Trials help [study 1].\n2. Cohorts harm [study 2]."), 4L)
+  expect_identical(f("- Trials help [study 1].\n- Cohorts harm [study 2]."), 4L)
+  expect_identical(f("  1) Trials help [study 1].\n  * Cohorts harm [study 2]."), 4L)
+  # Only a marker followed by a space: a figure opening a line is a word.
+  expect_identical(f("1.5 mg was given.\n12% fell."), 6L)
   expect_identical(f(""), 0L)
   expect_identical(f(NULL), 0L)
   expect_identical(f(cc_draft), 19L)
@@ -96,6 +103,22 @@ test_that("a cut that came back longer, or only rearranged its markup, is discar
   r <- cc_revise(cc_draft, markup)
   expect_false(r$value$kept)
   expect_identical(r$classes, "gr_revision_uncut")
+  # A numbered list given bullets, no prose removed: before, 21 words became
+  # 18 and the cut was kept.
+  listed <- paste0("## Findings\n\nThe trials may suggest three things.\n\n",
+                   "1. A modest benefit may appear [study 1].\n",
+                   "2. Harms could be rare [study 2].\n",
+                   "3. Adherence might matter [study 3].")
+  bulleted <- gsub("(?m)^[0-9]+\\. ", "- ", listed, perl = TRUE)
+  r <- cc_revise(listed, bulleted)
+  expect_false(r$value$kept)
+  expect_identical(r$classes, "gr_revision_uncut")
+  expect_identical(c(r$value$words_before, r$value$words_after), c(18L, 18L))
+  # And the other way: bullets numbered, with a word cut, is a cut. Before, it
+  # was refused, at 18 words before and 20 after.
+  r <- cc_revise(bulleted, sub("A modest benefit", "A benefit", listed, fixed = TRUE))
+  expect_true(r$value$kept)
+  expect_identical(c(r$value$words_before, r$value$words_after), c(18L, 17L))
 })
 
 test_that("a cut that removes anything at all is kept, with no minimum share", {

@@ -34,7 +34,9 @@ proposal. Which grouping makes the review's argument is the author's call.
 The outline returned carries \code{attr(, "alternative")}, which says which one it
 is. \code{\link[=gr_synthesise]{gr_synthesise()}} records it in \verb{$outline_alternative} and in its trace,
 and \code{\link[=gr_audit_report]{gr_audit_report()}} says which was used, so a review written from the
-second proposal says so.
+second proposal says so. Renaming its headings keeps that record. Moving
+claims between its sections does not: the grouping is then your own, and
+the review is recorded as one written from an outline of your own would be.
 }
 \examples{
 tab <- data.frame(document = c("a.pdf", "b.pdf"), status = "ok",

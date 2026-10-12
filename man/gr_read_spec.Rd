@@ -244,7 +244,8 @@ a warning for any other, which would refuse the field, as \code{temperature} is
 left out for a model that refuses that; register a gateway's reasoning model
 with \code{\link[=gr_register_model]{gr_register_model()}} to reach it. For the calls it covers it replaces
 an effort the client's \code{extra_body} sets. A \code{\link[=gr_ellmer_client]{gr_ellmer_client()}} cannot take
-it per call and says so once (\code{gr_effort_unsupported}). A value is passed
+it per call, says so once (\code{gr_effort_unsupported}) and does not record it
+as sent. A value is passed
 through as given; one that is not \code{"none"}, \code{"minimal"}, \code{"low"},
 \code{"medium"}, \code{"high"} or \code{"xhigh"} is warned about (\code{gr_effort_unknown}) and
 sent anyway, since providers add levels.
@@ -268,13 +269,14 @@ The labels are the \code{stage} column of \code{as.data.frame(trace)}:
 \code{\link[=gr_synthesise]{gr_synthesise()}}, \code{claims.draw}, \code{claims.reconcile}, \code{outline.derive},
 \code{synthesise.section}, \code{synthesise.batch}, \code{synthesise.merge} and
 \code{synthesise.revise.structure} (\code{.cut}, \code{.register}). A merge that takes
-more than one level adds \code{.level2} and so on, which its own name covers.
+more than one level labels the levels below its final merge \code{.level1},
+\code{.level2} and so on, which its own name covers.
 
 A starting point, not a default: low for the many mechanical calls and high
 for the few that judge.
 
-\if{html}{\out{<div class="sourceCode">}}\preformatted{effort = c("extract.chunk" = "low", skim = "low", "rerank.score" = "low",
-           segment = "low", "map.answer" = "low",
+\if{html}{\out{<div class="sourceCode">}}\preformatted{effort = c("extract.chunk" = "low", "skim.extract" = "low",
+           "rerank.score" = "low", segment = "low", "map.answer" = "low",
            "claims.draw" = "high", "outline.derive" = "high",
            "synthesise.section" = "high", "ensemble.adjudicate" = "high")
 }\if{html}{\out{</div>}}

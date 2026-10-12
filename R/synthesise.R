@@ -95,9 +95,12 @@
 #'   studies are cited, wrote a citation the check cannot read, cited a study
 #'   more often than the draft did, or took the citation marker off a claim
 #'   sentence that stays (each a `gr_coherence_rejected` warning); if it
-#'   arrived truncated (`gr_coherence_truncated`); or if it strengthened a
-#'   claim (`gr_revision_escalated`). Off by default: each is a call, and each
-#'   is a chance for a model to touch finished prose.
+#'   arrived truncated (`gr_coherence_truncated`); if it strengthened a
+#'   claim (`gr_revision_escalated`); or if it introduced a figure the draft
+#'   did not have (`gr_revision_new_figure`): one the draft gives in no form,
+#'   so a figure changed or rounded counts, and 0.61 written as .61 does not.
+#'   Off by default: each is a call, and each is a chance for a model to
+#'   touch finished prose.
 #'
 #'   The check that refuses a revision which strengthens a claim reads English
 #'   hedges and boosters, so a draft it judges not to be in English is not
@@ -187,9 +190,20 @@
 #'       the studies of a batch it was drafted from is cited in it, when it
 #'       could not be sent at all (its brief and gaps leave no room in the
 #'       window), when the gaps given to it were cut, or, with `claims`, when
-#'       it did not write up a claim it was given.}
+#'       it did not write up a claim it was given. Last, `n_unbacked`: the
+#'       figures in the section that are not in the rows their sentence cites
+#'       (see "Figures" below). It does not make a section partial, which
+#'       says that a citation cannot be trusted, and a figure's citation may
+#'       be sound.}
 #'     \item{`citations`}{Every citation, resolved to the row it points at, in
 #'       long form: `section`, `study`, `document`, `document_id`.}
+#'     \item{`figures`}{Every figure in a sentence of the write-up, checked
+#'       against the rows it cites: `stage` (`"draft"` for the sections as
+#'       written, `"final"` for the revised text when a revision pass was
+#'       kept), `section` (the heading it stands under), `sentence`, `number`
+#'       (as written), `studies` (the studies the sentence cites, comma-joined,
+#'       or NA), `backed`, and `basis`, what it was found in (NA when it was
+#'       not). See "Figures" below.}
 #'     \item{`studies`}{The rows that were written from, with the `study` number
 #'       each was cited by.}
 #'     \item{`claims`}{The [gr_claims()] result written from, or `NULL`. When
@@ -223,6 +237,47 @@
 #' reported (`gr_synth_batch_dropped`) and marks it partial. Raise
 #' `max_section_tokens`, or divide the table between narrower sections.
 #'
+#' @section Figures:
+#' The citation check says which rows a sentence rests on, not what it says
+#' they found, and the numbers are what a reader copies out of a review. So
+#' every number in every sentence is looked for in what the writer was shown
+#' for that sentence: the rows it cites, as the writing prompt showed them; the
+#' question, the section's heading and brief, `style`, and the gaps a closing
+#' section was given; and with `claims`, the claims given to the section that
+#' rest on a cited study. A sentence that cites nothing is checked against
+#' every row its section was shown. This runs on the draft, and again on the
+#' revised text when a revision pass was kept; it sends nothing, so it is
+#' always on, and it changes no request.
+#'
+#' A figure counts as found in any form a faithful copy may give it: `.61` for
+#' 0.61, `45.20` for 45.2, `1204` for 1,204, a minus sign or none, either side
+#' of a dash in a range, `45.2 million` for 45,200,000, `45%` for 0.45, `12`
+#' for "twelve", and rounded to the places it is written to (0.61 or 0.6 for
+#' 0.613, never 0.62). A row's percentage read as a proportion, or its scaled
+#' figure at full value, must match exactly: rounded as well, a pooled
+#' estimate no study reported matched a row's unrelated percentage. A figure
+#' is also allowed when it is the total of a numeric field over the rows the
+#' sentence cites; worked out from two other figures of the same sentence
+#' ("120 of 1,020 (11.8%)"); a difference in points between two figures of the
+#' cited rows; a year a cited row carries in any column; the number of studies
+#' the sentence cites, its section was shown or the review was written from;
+#' or, after "about", "more than", "fewer than" and their like, within a tenth
+#' (about) or a quarter (a bound) of a value it could have come from. Not read
+#' as figures: a citation's ids, a whole number below ten that is not a
+#' percentage or scaled (a review writes "2 of the trials" as it likes), a
+#' number joined to a name ("COVID-19", "IL-6"), an ordinal, a decade, an
+#' interval's level (`95% CI`) and a significance threshold (`p < .001`).
+#' Numbers written in words are not checked.
+#'
+#' A figure found nowhere is reported in `$figures` and counted in
+#' `$sections$n_unbacked`, and the run warns (`gr_synth_unbacked_figures`)
+#' about the text as published. It is arithmetic the sentence does not show,
+#' a pooled estimate no study reported, or a number the writer made up, and
+#' nothing here can tell which. Found means copied, not right: a figure the
+#' cited row carries can still be the wrong one for the sentence. The section
+#' is not marked partial, because `partial` is about whether its citations
+#' can be trusted, and those are checked apart.
+#'
 #' @seealso [gr_extract()], [gr_protocol()], [gr_screen()]
 #' @export
 #' @examples
@@ -244,7 +299,9 @@
 #' s <- gr_synthesise(x, question = "Does it work?",
 #'                    outline = c("Included studies" = "How many, of what design"),
 #'                    client = cl)
-#' s$sections[, c("section", "n_cited", "n_unknown")]
+#' s$sections[, c("section", "n_cited", "n_unknown", "n_unbacked")]
+#' # The 120 in the section, found in the row it cites.
+#' s$figures[, c("number", "studies", "backed", "basis")]
 gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question = NULL,
                           client = NULL, model = NULL, max_section_tokens = 1200L,
                           temperature = NULL, include_unclear = FALSE,
@@ -521,6 +578,16 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
   } else NULL
   final_marked <- revised$text %||% marked
 
+  # Every figure looked for in the rows its sentence cites, in the draft and
+  # again in the revision that replaced it. Here, before rendering, for the
+  # reason rendering waits: `[study N]` is what says which rows a sentence
+  # rests on. It sends nothing, so it runs on every write-up; see
+  # synth_figures().
+  figs <- synth_figures(sections, revised$text, used, rendered, question, claims = claims,
+                        assign_map = assign_map, gaps = gaps, closing = closing, style = style,
+                        hide = unlist(cols, use.names = FALSE), trace = trace)
+  sections$n_unbacked <- figs$n_unbacked
+
   # A study a section cited without being shown it stays a visible marker, as a
   # row that does not exist does: rendering it would print the fabrication as a
   # fact about the extraction. Per section, because the same study may be cited
@@ -577,6 +644,7 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
     sections = sections,
     references = refs,
     citations = citations %||% synth_empty_citations(),
+    figures = figs$table,
     studies = used,
     skipped = sum(!keep),
     question = question,
@@ -623,11 +691,13 @@ print.gr_synthesis <- function(x, ...) {
   unsup <- s$n_unsupplied %||% integer(nrow(s))
   unparsed <- s$n_unparsed %||% integer(nrow(s))
   cut <- s$n_truncated %||% integer(nrow(s))
+  unbacked <- s$n_unbacked %||% integer(nrow(s))
   for (i in seq_len(nrow(s))) {
     flags <- c(if (s$n_unknown[i]) sprintf("%d TO A ROW THAT DOES NOT EXIST", s$n_unknown[i]),
                if (unsup[i]) sprintf("%d TO A STUDY IT WAS NOT GIVEN", unsup[i]),
                if (unparsed[i]) sprintf("%d THE CHECK CANNOT READ", unparsed[i]),
-               if (cut[i]) "CUT OFF AT THE REPLY LIMIT")
+               if (cut[i]) "CUT OFF AT THE REPLY LIMIT",
+               if (unbacked[i]) sprintf("%d FIGURE(S) NOT IN THE ROWS CITED", unbacked[i]))
     cat(sprintf("  %-22s %5d words, %d citation(s)%s\n",
                 substr(s$section[i], 1, 22),
                 lengths(strsplit(trimws(s$text[i]), "\\s+"))[1],
@@ -652,6 +722,21 @@ print.gr_synthesis <- function(x, ...) {
   }
   if (any(cut > 0L)) {
     cat("  a section cut off at the reply limit stops mid-thought; those sections are partial\n")
+  }
+  # The counts above are the draft's. Said of the text as published, which is
+  # the revision when one was kept. A synthesis made before the check has no
+  # `$figures`, and says nothing here.
+  fig <- x$figures
+  if (is.data.frame(fig) && nrow(fig)) {
+    final <- is.data.frame(x$coherence) && any(isTRUE_vec(x$coherence$kept))
+    stage <- if (final) "final" else "draft"
+    bad <- sum(fig$stage == stage & !fig$backed)
+    if (bad) {
+      cat(sprintf(paste0("  %d figure(s) in the %s are not in the rows their sentence cites, so no ",
+                         "study is behind them as written; check them before quoting (see ",
+                         "$figures). No section is partial for it: that is about citations\n"),
+                  bad, if (final) "revised text" else "text"))
+    }
   }
   unr <- x$unrendered %||% integer(0)
   if (length(unr)) {

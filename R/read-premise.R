@@ -155,12 +155,12 @@ premise_correction <- function(x) {
   } else "^[\"'`*_\\p{Pe}\\p{Pf}]*"
   rest <- sub(closer, "", rest, perl = TRUE)
   token <- grepl("_", word, fixed = TRUE) || identical(word, toupper(word))
-  if (!token && !grepl("^[ \\t\\p{Zs}]*[:：]", rest, perl = TRUE)) return(NULL)
+  if (!token && !grepl("^[ \\t\\p{Zs}]*[:\uff1a]", rest, perl = TRUE)) return(NULL)
   # Then the break the prompt asked for (a colon) or the one the model used
   # instead, and bold closed after it: "**FALSE_PREMISE:** Revenue rose".
   # Only bold after the break, not quote marks: "FALSE_PREMISE: \"Revenue
   # rose\"" keeps the sentence's own quotes.
-  rest <- sub(paste0("^[\\s\\p{Z}]*[.!?:;,\\p{Pd}、。！，．：；？]*",
+  rest <- sub(paste0("^[\\s\\p{Z}]*[.!?:;,\\p{Pd}\u3001\u3002\uff01\uff0c\uff0e\uff1a\uff1b\uff1f]*",
                      "[*_`]*[\\s\\p{Z}]*"), "", rest, perl = TRUE)
   rest <- trimws(rest)
   # A reply bolded whole leaves the closing marker at the end of the sentence,

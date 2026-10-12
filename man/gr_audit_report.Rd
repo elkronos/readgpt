@@ -159,7 +159,10 @@ which section each claim was given to. When a revision pass
 (\code{coherence}) was kept, "What was written" shows the published text and the
 studies each of its headings cites, then the sections as first drafted,
 with their checks, under "Draft before revision", and the passes that ran,
-with the words of prose each was given and gave back.
+with the words of prose each was given and gave back. When the outline was
+one of several \code{\link[=gr_outline]{gr_outline()}} compared and chosen with \code{\link[=gr_outline_pick]{gr_outline_pick()}},
+"What was written" says which one, and how far its grouping of the claims
+lies from the first proposal's.
 The cost table includes the calls \code{\link[=gr_claims]{gr_claims()}} made and, when it was left
 to record on the claims' trace, \code{\link[=gr_outline]{gr_outline()}}. When any request was sent
 with a reasoning effort (\code{effort} in \code{\link[=gr_read_spec]{gr_read_spec()}}), the cost table says

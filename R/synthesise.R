@@ -235,6 +235,11 @@
 #'     \item{`claim_sections`}{With `claims`, which section each claim was
 #'       given to: a data frame of `section` and `claim_id`, the outline's
 #'       assignment. `NULL` without `claims`.}
+#'     \item{`outline_alternative`}{Present only when the outline is one of
+#'       several [gr_outline()] compared (`alternatives` above 1): which one
+#'       it was, as `alternative`, `of` (how many were asked for), `distinct`
+#'       (how many came back distinct) and `distance` from the first proposal.
+#'       The trace's meta records `outline_alternative` and `outline_of` too.}
 #'     \item{`trace`}{As [gr_extract()].}
 #'   }
 #'
@@ -360,6 +365,10 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
   assign_map <- attr(outline, "claims")
   closing <- as_chr1(attr(outline, "closing"), NA_character_)
   fingerprint <- attr(outline, "claims_fingerprint")
+  # Which of gr_outline()'s alternatives this is, read here for the same
+  # reason: once the attribute is dropped, a review written from its second
+  # proposal looks like one written from its first.
+  chosen <- outline_choice(outline)
   # A section the claim assignment names is a section to write, whatever its
   # brief says. outline_vector() drops a heading with a blank brief, and
   # gr_outline() keeps one when the model left the brief empty, so the section
@@ -490,8 +499,11 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
   # a trace that screening had already spent meant `trace_can_call()` refused
   # every section and the review came back as a list of empty headings.
   parent <- as_parent_trace(trace)
-  trace <- gr_trace(meta = list(stage = "synthesise", question = question,
-                                sections = length(outline), studies = nrow(used)))
+  trace <- gr_trace(meta = c(list(stage = "synthesise", question = question,
+                                  sections = length(outline), studies = nrow(used)),
+                             if (!is.null(chosen))
+                               list(outline_alternative = chosen$alternative,
+                                    outline_of = chosen$of)))
   if (!is.null(parent)) on.exit(trace_absorb(parent, trace), add = TRUE)
 
   # The writing model is NOT shown who wrote each study. Adding bibliographic
@@ -659,7 +671,7 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
   cited <- setdiff(cited_ids(final_marked, "study"), left)
   refs <- if (isTRUE(references)) reference_list(used, keys, cited, cols, resolved) else NULL
 
-  structure(list(
+  out <- structure(list(
     text = append_references(published, refs),
     text_marked = final_marked,
     draft = append_references(drafted, refs),
@@ -684,6 +696,10 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
     unrendered = if (identical(resolved, "marker")) integer(0) else unrendered,
     trace = trace
   ), class = "gr_synthesis")
+  # Added only when there is something to say, so a write-up from a single
+  # outline is the object it always was.
+  if (!is.null(chosen)) out$outline_alternative <- chosen
+  out
 }
 
 #' Which citation style can actually be honoured.
@@ -765,6 +781,17 @@ print.gr_synthesis <- function(x, ...) {
     cat(sprintf(paste0("  study %s: cited honestly, but left as a marker in the revised text where ",
                        "the revision made that citation impossible to tell from the one the check ",
                        "reported; see $draft\n"), paste(unr, collapse = ", ")))
+  }
+  # Which of several outlines the sections follow; see gr_outline_pick().
+  alt <- x[["outline_alternative", exact = TRUE]]
+  if (is.data.frame(alt) && nrow(alt)) {
+    j <- as.integer(alt$alternative[1])
+    cat(sprintf("  outline: alternative %d of the %d gr_outline() was asked for%s\n",
+                j, as.integer(alt$of[1]),
+                if (isTRUE(j > 1L))
+                  sprintf(", grouping %.0f%% of pairs of claims unlike the first",
+                          100 * as.numeric(alt$distance[1]))
+                else ""))
   }
   lost <- x$claims$lost %||% integer(0)
   if (length(lost)) {

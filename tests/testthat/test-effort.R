@@ -278,10 +278,13 @@ test_that("gr_screen() and gr_extract() take it through `...`", {
   expect_true(all(e[names(e) == "extract.chunk"] == "minimal"))
 })
 
-test_that("gr_claims(), gr_outline() and gr_synthesise() take it as their last argument", {
-  for (fn in list(gr_claims, gr_outline, gr_synthesise)) {
+test_that("gr_claims(), gr_outline() and gr_synthesise() take it at the end of their arguments", {
+  for (fn in list(gr_claims, gr_synthesise)) {
     expect_identical(utils::tail(names(formals(fn)), 1L), "effort")
   }
+  # gr_outline() gained `alternatives` after it; both are past every argument
+  # an existing call can reach by position.
+  expect_identical(utils::tail(names(formals(gr_outline)), 2L), c("effort", "alternatives"))
   tab <- data.frame(
     document = c("a.pdf", "b.pdf"), status = "ok", duplicate_of = NA_character_,
     n_filled = 2L, n_unverified = 0L, conflicts = NA_character_,
@@ -291,12 +294,14 @@ test_that("gr_claims(), gr_outline() and gr_synthesise() take it as their last a
     seen <- paste(vapply(messages, function(m) as.character(m$content), character(1)),
                   collapse = " ")
     if (grepl("<claims>", seen, fixed = TRUE)) {
-      return('{"sections":[{"heading":"Findings","brief":"What was found","claims":[1],"rationale":"All of it."}]}')
+      return('{"sections":[{"heading":"Findings","brief":"What was found","claims":[1,2],"rationale":"All of it."}]}')
     }
     if (grepl("<studies>", seen, fixed = TRUE) && grepl("claim", messages[[1]]$content)) {
       return(paste0('{"claims":[{"claim":"The effect appears in trials but not in surveys.",',
                     '"kind":"finding","supported_by":[1],"contradicted_by":[2],',
-                    '"moderator":"design","scope":"one trial, one survey"}]}'))
+                    '"moderator":"design","scope":"one trial, one survey"},',
+                    '{"claim":"Both studies measured it the same way.","kind":"measurement",',
+                    '"supported_by":[1,2],"contradicted_by":[],"moderator":null,"scope":null}]}'))
     }
     "One trial found it [study 1] and one survey did not [study 2]."
   })
@@ -304,12 +309,18 @@ test_that("gr_claims(), gr_outline() and gr_synthesise() take it as their last a
                         effort = c(claims = "high")))
   expect_true(nrow(cm$claims) > 0L)
   quiet(gr_outline(cm, client = cl, model = reasoner, effort = "medium"))
+  # The further outlines are calls of their own, and a name of
+  # "outline.derive" covers them: asked without the effort, they went out at
+  # the provider's default while the first went out at the one set.
+  quiet(gr_outline(cm, client = cl, model = reasoner, alternatives = 2L,
+                   effort = c(outline.derive = "low")))
   quiet(gr_synthesise(tab, question = "Does it work?", outline = c(Findings = "What was found"),
                       client = cl, model = reasoner,
                       effort = c(synthesise = "low", "synthesise.section" = "xhigh")))
   e <- efforts_by_label(cl)
   expect_identical(unname(e[names(e) == "claims.draw"]), "high")
-  expect_identical(unname(e[names(e) == "outline.derive"]), "medium")
+  expect_identical(unname(e[names(e) == "outline.derive"]), c("medium", "low"))
+  expect_identical(unname(e[names(e) == "outline.derive.alt2"]), "low")
   expect_true(all(e[names(e) == "synthesise.section"] == "xhigh"))
 })
 

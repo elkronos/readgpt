@@ -281,7 +281,10 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims 
 #' (`coherence`) was kept, "What was written" shows the published text and the
 #' studies each of its headings cites, then the sections as first drafted,
 #' with their checks, under "Draft before revision", and the passes that ran,
-#' with the words of prose each was given and gave back.
+#' with the words of prose each was given and gave back. When the outline was
+#' one of several [gr_outline()] compared and chosen with [gr_outline_pick()],
+#' "What was written" says which one, and how far its grouping of the claims
+#' lies from the first proposal's.
 #' The cost table includes the calls [gr_claims()] made and, when it was left
 #' to record on the claims' trace, [gr_outline()]. When any request was sent
 #' with a reasoning effort (`effort` in [gr_read_spec()]), the cost table says
@@ -894,8 +897,25 @@ audit_synthesis <- function(synthesis) {
   # `%||%` for a synthesis made before the field existed.
   unrendered <- synthesis$unrendered %||% integer(0)
   drafts <- unlist(lapply(seq_len(nrow(s)), per), use.names = FALSE)
+  # The sections below are one of several groupings gr_outline() proposed, and
+  # which one is a choice the reader should be able to see was made. `[[`
+  # exact, and data-frame-checked, for a synthesis made before the field.
+  alt <- synthesis[["outline_alternative", exact = TRUE]]
+  alt_note <- if (is.data.frame(alt) && nrow(alt)) {
+    j <- as.integer(alt$alternative[1])
+    sprintf(paste0("<p class='sub'>The sections follow outline %d of the %d gr_outline() was ",
+                   "asked for, of which %d came back distinct.%s The outlines were compared by ",
+                   "counting, and which one to write from was the author's choice.</p>"),
+            j, as.integer(alt$of[1]), as.integer(alt$distinct[1]),
+            if (isTRUE(j > 1L))
+              sprintf(paste0(" It groups the claims differently from the first proposal for %s ",
+                             "of the pairs of claims."),
+                      sprintf("%.0f%%", 100 * as.numeric(alt$distance[1])))
+            else "")
+  }
   c(if (revised) "<h2>What was written, and what it rests on</h2>"
     else "<h2>What was written, and what each section rests on</h2>",
+    alt_note,
     # Every section can be complete against claims that are not: claims drawn
     # from a third of the corpus give a review of a third of the corpus.
     if (length(lost))

@@ -511,9 +511,13 @@ output. `effort` sets how much of it each stage does, keyed by the call's trace
 label, and is sent only to reasoning models:
 
 ```r
-sp <- gr_read_spec("map_reduce", effort = c(map = "low", reduce = "high"))
-gr_extract(papers, protocol, effort = c(extract = "low"))
-gr_synthesise(x, protocol, client = cl, effort = c(synthesise = "high"))
+# Little reasoning for each chunk's request, more for the merge that answers.
+ans <- answer_document(readgpt_example(), "What was revenue?", "thorough",
+                       client = cl, effort = c(map = "low", reduce = "high"))
+
+# In a review: the writing at high effort. gr_screen() and gr_extract() take
+# `effort` the same way, so the per-chunk extraction can run low.
+review <- gr_synthesise(x, protocol, client = cl, effort = c(synthesise = "high"))
 ```
 
 It is off by default, so nothing is sent and every cache and recording made

@@ -24,16 +24,21 @@
   few that judge.
 
   It is sent as `reasoning = {effort}` on the Responses API and as
-  `reasoning_effort` on Chat Completions, and only to a model the registry lists
-  as a reasoning model, since others refuse the field. A mock or backend handler
-  sees it as `params$effort`. An ellmer chat cannot take it per call, so it is
-  not sent there, and a warning says so once (`gr_effort_unsupported`). Unset,
-  nothing changes: no body field, no handler parameter, no key part, so every
-  cache, recording and corpus store made before still answers. Set, it is part
-  of the response-cache key, the corpus store key, what `gr_compare()` counts as
-  a different recipe, and the key a replay matches on; a replay under another
-  effort misses and says it was recorded at a different one. Each request's
-  effort is on its trace step and in an `effort` column of
+  `reasoning_effort` on Chat Completions (replacing an effort a client's own
+  `reasoning` object carries), and only to a model the registry lists as a
+  reasoning model, since others refuse the field. A mock or backend handler sees
+  it as `params$effort`. An ellmer chat cannot take it per call, so it is not
+  sent there, and a warning says so once (`gr_effort_unsupported`); its trace
+  steps keep the effort asked for as `params$unsent_effort`, so the trace and
+  `gr_audit_report()` do not count it as sent. Unset, nothing changes: no body
+  field, no handler parameter, no key part, so every cache, recording and corpus
+  store made before still answers. Set, it is part of the response-cache key,
+  the corpus store key, what `gr_compare()` counts as a different recipe
+  (recipes whose segmenter is sent the same effort still share their chunks),
+  and the key a replay matches on; a replay under another effort misses and says
+  it was recorded at a different one, and one under the same effort matches even
+  in a session that has not registered the recording's model as a reasoning
+  model. Each request's effort is on its trace step and in an `effort` column of
   `as.data.frame(trace)`, and `gr_audit_report()` shows it beside what each
   stage cost.
 
@@ -73,19 +78,24 @@
   Every number in every sentence is now looked for in what the writer was shown
   for that sentence: the rows it cites as the prompt showed them, the question
   and the brief, and with claims the claims resting on those rows. This runs on
-  the draft and again on a kept revision. A figure found nowhere is listed in
-  `$figures`, counted in `$sections$n_unbacked`, shown by `print()` and the
-  audit report, and warned about (`gr_synth_unbacked_figures`). It does not mark
-  a section partial, which is about citations. The check sends nothing, so it is
-  always on.
+  the draft and again on a kept revision that changed it. A figure found nowhere
+  is listed in `$figures`, counted in `$sections$n_unbacked`, shown by `print()`
+  and the audit report, and warned about (`gr_synth_unbacked_figures`). It does
+  not mark a section partial, which is about citations. The check sends nothing,
+  so it is always on.
 
-  It is forgiving about form and strict about precision. `.61`, `1204`, `45.2
-  million` and `45%` are found as 0.61, 1,204, 45,200,000 and 0.45, but a figure
-  is compared at the places it was written to, so "30%" is not a row's 0.32
-  rounded. Totals of a numeric field over the cited rows, arithmetic shown in
-  the sentence ("120 of 1,020 (11.8%)"), differences in points, years, counts of
-  studies and qualified figures ("about 1,200") are allowed. A revision pass
-  that writes a figure its draft did not have, in any form, is now discarded
+  It is forgiving about form and strict about precision. `.61`, `1204`, `12
+  450`, `45.2 million` and `45%` are found as 0.61, 1,204, 12,450, 45,200,000
+  and 0.45, and a field the writer was shown as `1e+05` backs "100,000", but a
+  figure is compared at the places it was written to, so "30%" is not a row's
+  0.32 rounded. Totals of a numeric field over the cited rows, arithmetic shown
+  in the sentence ("120 of 1,020 (11.8%)", or "HR 0.78, a 22% lower hazard"),
+  differences in points between two figures of one finding, years, counts of
+  studies ("10 of the 12 were randomised trials") and qualified figures ("about
+  1,200", "c. 1,200") are allowed. Ids written bare in prose ("studies 12 to
+  15"), significance thresholds ("p value below 0.05", "at the 5% level") and
+  age decades ("in their 60s") are not read as figures. A revision pass that
+  writes a figure its draft did not have, in any form, is now discarded
   (`gr_revision_new_figure`), because the passes may not add anything.
 
 * **`gr_outline(alternatives =)`: more than one way to organise the review,
@@ -103,14 +113,16 @@
   Each alternative is verified as the first is. How far apart two outlines are
   is counted, not asked: the share of pairs of claims grouped together in one
   and apart in the other. One that groups the claims exactly as an earlier one
-  did is dropped, as is one whose call failed or was cut off, and a warning
+  did is dropped, as is one whose call failed or was cut off or none of whose
+  sections held a claim once verified, and a warning
   (`gr_outline_alternatives_short`) says why. The first proposal comes back as
   before, with `attr(, "comparison")` laying the outlines side by side:
   sections, claims and contested claims per section, and distance from the
   first. No model picks the winner. `gr_outline_pick()` hands back the one you
   choose with its own claim assignment, and `gr_synthesise()`, its print method,
   its trace and `gr_audit_report()` say which outline the review was written
-  from.
+  from, unless you have since moved claims between its sections, which makes it
+  an outline of your own (renaming its headings does not).
 
 * **A `cut` pass that cut nothing is no longer kept as a cut.** Every check
   `gr_synthesise(coherence = )` made on a revision asked whether it was safe:
@@ -120,12 +132,12 @@
   passed them all and was reported as a kept cut. The `cut` pass must now return
   strictly fewer words of prose than the text it was given, or it is discarded
   with a `gr_revision_uncut` warning and a reason such as "the cut pass did not
-  shorten the review: 812 words before, 815 after". Headings and citation
-  markers are not counted, so deleting a heading or writing three markers as a
-  range is not a cut. The count is in words rather than tokens because a token
-  count follows whichever tokenizer the session has set and moves with markup a
-  reader never sees. There is no minimum: a tight draft may have nothing to lose
-  but a filler phrase.
+  shorten the review: 812 words before, 815 after". Headings, list markers and
+  citation markers are not counted, so deleting a heading, turning a numbered
+  list into bullets or writing three markers as a range is not a cut. The count
+  is in words rather than tokens because a token count follows whichever
+  tokenizer the session has set and moves with markup a reader never sees. There
+  is no minimum: a tight draft may have nothing to lose but a filler phrase.
 
   The `structure` and `register` passes are not held to a length. A
   sentence-by-sentence polish of padded prose removed half its words while

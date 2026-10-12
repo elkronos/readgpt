@@ -14,7 +14,8 @@ gr_claims(
   max_claim_tokens = 1600L,
   include_unclear = FALSE,
   trace = NULL,
-  bib = NULL
+  bib = NULL,
+  effort = NULL
 )
 }
 \arguments{
@@ -44,6 +45,14 @@ same as \code{\link[=gr_synthesise]{gr_synthesise()}}.}
 cannot attribute a finding to a name, and cannot be moderated by one.
 Omitted, only the conventional names are withheld. Pass the same \code{bib} to
 \code{\link[=gr_synthesise]{gr_synthesise()}} and \code{\link[=gr_gaps]{gr_gaps()}}.}
+
+\item{effort}{Reasoning effort, or \code{NULL} (the default) to send none: one
+string, or a character vector named by stage, as \code{effort} in
+\code{\link[=gr_read_spec]{gr_read_spec()}}. The calls here are labelled \code{claims.draw} and
+\code{claims.reconcile}, so \code{c(claims = "high")} covers both. Drawing claims is
+judgement, the stage most worth a higher effort. The reasoning counts
+against the same reply limit, so a high effort can leave a batch's reply
+cut off, which is reported as such (\code{gr_claims_truncated}).}
 }
 \value{
 An object of class \code{gr_claims}:

@@ -18,7 +18,9 @@ gr_backend_client(
 \item{handler}{Function of \verb{(messages, params)}. \code{messages} is a list of
 \code{list(role=, content=)} with roles \code{"system"}, \code{"developer"}, \code{"user"} or
 \code{"assistant"}. \code{params} carries \code{model}, \code{max_output}, \code{temperature},
-\code{schema}, \code{schema_name} and \code{prompt_tokens}. Return a single string, or a
+\code{schema}, \code{schema_name} and \code{prompt_tokens}, and \code{effort} when the call has
+a reasoning effort to send (see \code{effort} in \code{\link[=gr_read_spec]{gr_read_spec()}}); passing it
+on is the handler's business. Return a single string, or a
 \link{gr_result} for full control over token usage and failure reporting.}
 
 \item{embed}{Optional function of \verb{(texts, params)} returning a numeric

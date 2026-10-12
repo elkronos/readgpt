@@ -55,7 +55,8 @@ read_stuff <- function(chunks, question, client, spec, trace) {
   res <- gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite,
                                     restate = spec$restate),
                  model = spec$model, max_output = spec$max_answer_tokens,
-                 temperature = spec$temperature, trace = trace, label = "stuff.answer")
+                 temperature = spec$temperature, trace = trace, label = "stuff.answer",
+                 effort = spec$effort)
   ok <- usable_text(res)
   # An answer cut off at the output cap is still text, and still partial.
   cut <- as.integer(ok && reply_cut_off(res))
@@ -90,7 +91,8 @@ read_map_reduce <- function(chunks, question, client, spec, trace) {
     r <- gr_call(client, answer_messages(question, render_chunks(d[i, , drop = FALSE]),
                                          cite = spec$cite, restate = spec$restate),
                  model = spec$model, max_output = spec$max_chunk_tokens,
-                 temperature = spec$temperature, trace = trace, label = "map.answer")
+                 temperature = spec$temperature, trace = trace, label = "map.answer",
+                 effort = spec$effort)
     if (spec$delay_between_calls > 0) Sys.sleep(spec$delay_between_calls)
     list(ok = usable_text(r), text = r$text, capped = FALSE, cut = reply_cut_off(r))
   }, parallel = spec$parallel, label = "chunk", trace = trace, client = client, item_usd = worst)
@@ -196,7 +198,8 @@ read_refine <- function(chunks, question, client, spec, trace) {
     }
     res <- gr_call(client, msgs, model = spec$model, max_output = spec$max_answer_tokens,
                    temperature = spec$temperature, trace = trace,
-                   label = if (is.null(draft)) "refine.draft" else "refine.revise")
+                   label = if (is.null(draft)) "refine.draft" else "refine.revise",
+                   effort = spec$effort)
     if (!usable_text(res)) { failures <- failures + 1L; next }
     # A draft cut off at the output cap is carried forward as the draft, so
     # whatever it lost is lost from every revision after it.
@@ -239,7 +242,7 @@ read_skim <- function(chunks, question, client, spec, trace) {
       list(role = "user", content = paste0("<excerpt>\n", render_chunks(d[i, , drop = FALSE]),
                                            "\n</excerpt>"))
     ), model = skim_model, max_output = spec$max_chunk_tokens,
-       temperature = spec$temperature, trace = trace, label = "skim.extract")
+       temperature = spec$temperature, trace = trace, label = "skim.extract", effort = spec$effort)
     if (spec$delay_between_calls > 0) Sys.sleep(spec$delay_between_calls)
     list(ok = usable_text(r), text = r$text, cut = reply_cut_off(r))
   }, parallel = spec$parallel, label = "skim chunk", trace = trace,
@@ -305,7 +308,8 @@ read_skim <- function(chunks, question, client, spec, trace) {
     gr_call(client, answer_messages(question, body, cite = cite, label = "Evidence",
                                     restate = spec$restate),
             model = spec$model, max_output = spec$max_answer_tokens,
-            temperature = spec$temperature, trace = trace, label = "skim.answer")
+            temperature = spec$temperature, trace = trace, label = "skim.answer",
+            effort = spec$effort)
   } else gr_result(FALSE, error = paste(cap_name(trace), "reached before the synthesis step"))
   if (usable_text(res2) && reply_cut_off(res2)) cut <- cut + 1L
   # No answer, no evidence; see stuff. The passages found are counted in the
@@ -388,7 +392,8 @@ read_retrieve <- function(chunks, question, client, spec, trace) {
     gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite,
                                     restate = spec$restate),
             model = spec$model, max_output = spec$max_answer_tokens,
-            temperature = spec$temperature, trace = trace, label = "retrieve.answer")
+            temperature = spec$temperature, trace = trace, label = "retrieve.answer",
+            effort = spec$effort)
   } else gr_result(FALSE, error = paste(cap_name(trace), "reached before the answer step"))
   cut <- as.integer(res$ok && reply_cut_off(res))
   new_answer(if (res$ok) res$text else .NOT_FOUND, "retrieve", question, sub$chunk_id, trace,
@@ -511,7 +516,7 @@ read_rerank <- function(chunks, question, client, spec, trace) {
       list(role = "user", content = paste0("<excerpt>\n", d$text[i], "\n</excerpt>"))
     ), schema = schema, schema_name = "relevance",
        model = score_model, max_output = 200L,
-       temperature = spec$temperature, trace = trace, label = "rerank.score")
+       temperature = spec$temperature, trace = trace, label = "rerank.score", effort = spec$effort)
     # NA, not 0. A failed call judged nothing, and scoring it 0 put it through
     # the threshold at rerank_min_score = 0 as a model-judged score for a chunk
     # no model had read -- and kept it out of the "was anything judged?" test
@@ -614,7 +619,8 @@ read_rerank <- function(chunks, question, client, spec, trace) {
     gr_call(client, answer_messages(question, render_chunks(sub), cite = spec$cite,
                                     restate = spec$restate),
             model = spec$model, max_output = spec$max_answer_tokens,
-            temperature = spec$temperature, trace = trace, label = "rerank.answer")
+            temperature = spec$temperature, trace = trace, label = "rerank.answer",
+            effort = spec$effort)
   } else gr_result(FALSE, error = paste(cap_name(trace), "reached before the answer step"))
   cut <- as.integer(res$ok && reply_cut_off(res))
   # No answer, no evidence; see stuff.
@@ -658,7 +664,7 @@ read_hierarchical <- function(chunks, question, client, spec, trace) {
         list(role = "user", content = paste0("<text>\n", texts[i], "\n</text>"))
       ), model = summary_model, max_output = spec$max_summary_tokens,
          temperature = spec$temperature, trace = trace,
-         label = sprintf("hier.summarise.L%d", level))
+         label = sprintf("hier.summarise.L%d", level), effort = spec$effort)
       list(text = if (usable_text(r)) r$text else "", capped = FALSE,
            cut = usable_text(r) && reply_cut_off(r))
     }, parallel = spec$parallel, label = sprintf("summary L%d", level), trace = trace,
@@ -732,7 +738,8 @@ read_hierarchical <- function(chunks, question, client, spec, trace) {
     gr_call(client, answer_messages(question, body, cite = FALSE, label = "Summaries",
                                     restate = spec$restate),
             model = spec$model, max_output = spec$max_answer_tokens,
-            temperature = spec$temperature, trace = trace, label = "hier.answer")
+            temperature = spec$temperature, trace = trace, label = "hier.answer",
+            effort = spec$effort)
   } else gr_result(FALSE, error = paste(cap_name(trace), "reached before the answer step"))
   if (usable_text(res) && reply_cut_off(res)) cut <- cut + 1L
   new_answer(if (usable_text(res)) res$text else body, "hierarchical", question, d$chunk_id, trace,
@@ -868,7 +875,7 @@ read_iterative <- function(chunks, question, client, spec, trace) {
                                            restate_tail(body, question, spec$restate)))
     ), schema = schema, schema_name = "iterative_step", model = spec$model,
        max_output = spec$max_answer_tokens, temperature = spec$temperature,
-       trace = trace, label = "iterative.step")
+       trace = trace, label = "iterative.step", effort = spec$effort)
 
     if (!out$ok) {
       # A reply cut off at the cap is not parsable JSON, and saying so is more
@@ -938,7 +945,8 @@ read_iterative <- function(chunks, question, client, spec, trace) {
     gr_call(client, answer_messages(question, final$body, cite = spec$cite,
                                     restate = spec$restate),
             model = spec$model, max_output = spec$max_answer_tokens,
-            temperature = spec$temperature, trace = trace, label = "iterative.final")
+            temperature = spec$temperature, trace = trace, label = "iterative.final",
+            effort = spec$effort)
   } else gr_result(FALSE, error = paste(cap_name(trace), "reached before the answer step"))
   # Partial already, since the loop did not finish; the count says why as well.
   cut <- as.integer(res$ok && reply_cut_off(res))
@@ -1049,7 +1057,7 @@ read_ensemble <- function(chunks, question, client, spec, trace) {
       list(role = "user", content = body),
       list(role = "user", content = paste0("Question: ", question))
     ), model = spec$model, max_output = spec$max_answer_tokens, temperature = spec$temperature,
-       trace = trace, label = "ensemble.adjudicate")
+       trace = trace, label = "ensemble.adjudicate", effort = spec$effort)
   } else gr_result(FALSE, error = paste(cap_name(trace), "reached before adjudication"))
 
   ev <- rbind_evidence(lapply(results[usable], function(r) r$evidence))
@@ -1226,7 +1234,7 @@ read_preview <- function(chunks, question, client, spec, trace) {
         "Return one entry for each of the %d sections, using the ids shown.", n_units))
     ), schema = schema, schema_name = "reading_plan", model = spec$model,
        max_output = spec$max_answer_tokens, temperature = spec$temperature,
-       trace = trace, label = "preview.plan")
+       trace = trace, label = "preview.plan", effort = spec$effort)
   } else list(ok = FALSE, value = NULL)
 
   # The default is READ, not skip. An unplanned section is one the planner did
@@ -1324,7 +1332,8 @@ read_preview <- function(chunks, question, client, spec, trace) {
         list(role = "user", content = paste0("Question: ", question)),
         list(role = "user", content = paste0("<excerpt>\n", body, "\n</excerpt>"))
       ), model = skim_model, max_output = spec$max_chunk_tokens,
-         temperature = spec$temperature, trace = trace, label = "preview.skim")
+         temperature = spec$temperature, trace = trace, label = "preview.skim",
+         effort = spec$effort)
       list(ok = usable_text(r), text = r$text, rows = rows, lost = lost, cut = reply_cut_off(r))
     }, parallel = spec$parallel, label = "preview section", trace = trace,
        client = client, item_usd = worst)
@@ -1426,7 +1435,8 @@ read_preview <- function(chunks, question, client, spec, trace) {
   res2 <- if (trace_can_call(trace)) {
     gr_call(client, answer_messages(question, body, cite = spec$cite, restate = spec$restate),
             model = spec$model, max_output = spec$max_answer_tokens,
-            temperature = spec$temperature, trace = trace, label = "preview.answer")
+            temperature = spec$temperature, trace = trace, label = "preview.answer",
+            effort = spec$effort)
   } else gr_result(FALSE, error = paste(cap_name(trace), "reached before the answer step"))
   if (usable_text(res2) && reply_cut_off(res2)) cut <- cut + 1L
 

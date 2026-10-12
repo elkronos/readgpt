@@ -20,9 +20,11 @@
 #
 # WHAT IS AND IS NOT IN THE KEY
 # In: the messages, the model, the resolved `max_output`, the temperature, the
-# JSON schema and its name, the API shape and base URL, and any extra body
-# fields. Out: the API key, the timeout, the retry policy, the trace and the
-# label -- none of which can change what the model returns.
+# JSON schema and its name, the API shape and base URL, any extra body fields,
+# and the reasoning effort when the request carries one. Out: the API key, the
+# timeout, the retry policy, the trace and the label -- none of which can change
+# what the model returns. (A label can choose an effort; the effort it chose is
+# what goes in.)
 #
 # FAILURES ARE NEVER CACHED. A transport error, a rate limit or a refusal is a
 # property of the moment, not of the request. Caching one would turn a blip into
@@ -264,7 +266,7 @@ cache_files <- function(dir) {
 #' directory.
 #' @noRd
 cache_key <- function(client, messages, model, max_output, temperature,
-                      schema, schema_name, extra) {
+                      schema, schema_name, extra, effort = NULL) {
   parts <- c(
     # v2: gr_hash() now carries names at every depth, and `temperature` reaches
     # this function resolved. Both change what a key is, so old entries must not
@@ -283,6 +285,13 @@ cache_key <- function(client, messages, model, max_output, temperature,
     if (is.null(schema)) "<no-schema>" else gr_hash(schema),
     gr_hash(client$extra_body %||% list()),
     gr_hash(extra %||% list()),
+    # The reasoning effort the request carries, which changes the reply as a
+    # temperature does. A part only when there is one: a request without an
+    # effort keys as it always has, so a cache filled before the setting
+    # existed still answers, and two runs at different efforts never trade
+    # replies. The prefix keeps it apart from a message's role, which is the
+    # part that comes next in a key without one.
+    if (!is.null(effort)) paste0("effort:", as_chr1(effort)),
     key_text(unlist(lapply(messages, function(m) c(as_chr1(m$role), as_chr1(m$content))),
                     use.names = FALSE))
   )

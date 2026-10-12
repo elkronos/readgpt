@@ -37,7 +37,9 @@
 #' @param handler Function of `(messages, params)`. `messages` is a list of
 #'   `list(role=, content=)` with roles `"system"`, `"developer"`, `"user"` or
 #'   `"assistant"`. `params` carries `model`, `max_output`, `temperature`,
-#'   `schema`, `schema_name` and `prompt_tokens`. Return a single string, or a
+#'   `schema`, `schema_name` and `prompt_tokens`, and `effort` when the call has
+#'   a reasoning effort to send (see `effort` in [gr_read_spec()]); passing it
+#'   on is the handler's business. Return a single string, or a
 #'   [gr_result] for full control over token usage and failure reporting.
 #' @param embed Optional function of `(texts, params)` returning a numeric
 #'   matrix with one row per input. Without it, readers that embed
@@ -184,6 +186,13 @@ print.gr_backend_client <- function(x, ...) {
 #' once (`gr_ellmer_temperature`). Build a second chat if you need a second
 #' temperature.
 #'
+#' Reasoning effort is the same. An `effort` in a [gr_read_spec()], or given to
+#' [gr_claims()], [gr_outline()] or [gr_synthesise()], is not sent through an
+#' ellmer chat; it is warned about once (`gr_effort_unsupported`) and the
+#' chat's own setting applies. (Like every client, the adapter is handed an
+#' effort only for a model the registry lists as a reasoning model, so for any
+#' other there is nothing to warn about.)
+#'
 #' The output cap does carry over, with ellmer 0.5.0 or later: each call runs on
 #' a chat rebuilt from yours (same provider, settings, system prompt and tools)
 #' with `max_tokens` set to that call's cap, as the built-in client sends it.
@@ -258,6 +267,19 @@ gr_ellmer_client <- function(chat, embed = NULL, model = NULL) {
                      "requested temperature of ", format(params$temperature),
                      " is being ignored. Construct the chat with the temperature you want."),
               class = "gr_ellmer_temperature")
+    }
+    # Reasoning effort is a chat setting too. The one route to a per-call
+    # setting, rebuilding the chat as ellmer_capped() does for the cap, would
+    # have to know where each ellmer version and provider keeps an effort and
+    # what it calls it, and a guess that is wrong is either refused by the
+    # provider or silently ignored. So it is not sent, and said once; the
+    # chat's own effort, which is part of this client's identity, applies.
+    if (!is.null(params$effort) && is.null(warned$effort)) {
+      warned$effort <- TRUE
+      gr_warn(sprintf(paste0("Reasoning effort is set on the ellmer chat object, not per call, so ",
+                             "the requested effort of '%s' is not sent. Construct the chat with ",
+                             "the effort you want."), as_chr1(params$effort, "?")),
+              class = c("gr_effort_unsupported", "gr_ellmer_effort"))
     }
     parts <- ellmer_split_messages(messages)
     sys <- parts$system

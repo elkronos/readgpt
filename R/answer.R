@@ -119,7 +119,7 @@ answer_document <- function(source, question, recipe = "auto", client = NULL,
     for (w in cand[[pick]]$warnings) warning(w)
     rec <- cand[[pick]]$recipe
   }
-  chunks <- gr_segment(doc, rec$segment, client = client, trace = trace)
+  chunks <- gr_segment(doc, segment_effort(rec$segment, rec$read), client = client, trace = trace)
   ans <- finish_answer(gr_read(chunks, question, client, rec$read, trace = trace),
                        doc, chunks, rec$name)
   if (auto) ans$notes$auto_recipe <- rec$name
@@ -375,10 +375,14 @@ gr_compare <- function(source, question, recipes = c("fast", "needle", "thorough
       # And on what the document could not give: chunks carry the unread pages
       # and the warnings of the ingestion that produced them, so two ingestions
       # with the same text but different losses must not share chunks.
-      skey <- gr_hash(list(d$text, unclass(r$segment), d$stats$unread_pages, d$warnings))
+      # With the run's reasoning effort, which a segmenter that calls a model
+      # sends: two recipes differing only in effort must not share chunks
+      # one of them cut at the other's effort. Unchanged without one.
+      seg <- segment_effort(r$segment, r$read)
+      skey <- gr_hash(list(d$text, unclass(seg), d$stats$unread_pages, d$warnings))
       hit <- seg_cache[[skey]]
       if (is.null(hit)) {
-        ch <- gr_segment(d, r$segment, client = client, trace = sub)
+        ch <- gr_segment(d, seg, client = client, trace = sub)
         seg_steps <- length(sub$steps)
         # A chunking a limit cut short is this recipe's, not the one another
         # recipe with the same segment spec would get on its own.

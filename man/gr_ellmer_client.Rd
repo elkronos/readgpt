@@ -55,6 +55,13 @@ sampling parameters when the chat is constructed, so a \code{temperature} in a
 once (\code{gr_ellmer_temperature}). Build a second chat if you need a second
 temperature.
 
+Reasoning effort is the same. An \code{effort} in a \code{\link[=gr_read_spec]{gr_read_spec()}}, or given to
+\code{\link[=gr_claims]{gr_claims()}}, \code{\link[=gr_outline]{gr_outline()}} or \code{\link[=gr_synthesise]{gr_synthesise()}}, is not sent through an
+ellmer chat; it is warned about once (\code{gr_effort_unsupported}) and the
+chat's own setting applies. (Like every client, the adapter is handed an
+effort only for a model the registry lists as a reasoning model, so for any
+other there is nothing to warn about.)
+
 The output cap does carry over, with ellmer 0.5.0 or later: each call runs on
 a chat rebuilt from yours (same provider, settings, system prompt and tools)
 with \code{max_tokens} set to that call's cap, as the built-in client sends it.

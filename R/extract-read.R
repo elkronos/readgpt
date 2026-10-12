@@ -61,7 +61,8 @@ read_extract <- function(chunks, question, client, spec, trace) {
     out <- gr_call_json(client, c(fixed, list(list(role = "user", content = excerpts[i]))),
                         schema = schema, schema_name = "extraction", allow_empty = TRUE,
                         model = model, max_output = spec$max_chunk_tokens,
-                        temperature = spec$temperature, trace = trace, label = "extract.chunk")
+                        temperature = spec$temperature, trace = trace, label = "extract.chunk",
+                        effort = spec$effort)
     if (spec$delay_between_calls > 0) Sys.sleep(spec$delay_between_calls)
     list(ok = isTRUE(out$ok), value = out$value, chunk = i)
   }, parallel = spec$parallel, label = "extract chunk", trace = trace,
@@ -1453,7 +1454,8 @@ resolve_conflict <- function(nm, field, hits, client, spec, trace) {
                    properties = list(choice = list(type = "integer", minimum = 0,
                                                    maximum = length(hits)))),
      schema_name = "conflict", model = spec$model, max_output = 100L,
-     temperature = spec$temperature, trace = trace, label = "extract.resolve")
+     temperature = spec$temperature, trace = trace, label = "extract.resolve",
+     effort = spec$effort)
   if (!isTRUE(out$ok)) {
     # The field falls back to the first value, as with resolve = "first", and
     # every excerpt was still read: the failure is recovered. Counted as a

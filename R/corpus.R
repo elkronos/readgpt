@@ -628,7 +628,7 @@ gr_read_many <- function(sources, question, recipe = "thorough", client = NULL,
         structure(list(of = prior, hash = h, warnings = doc$warnings),
                   class = "gr_corpus_duplicate")
       } else {
-        ch <- gr_segment(doc, rec$segment, client = client, trace = sub)
+        ch <- gr_segment(doc, segment_effort(rec$segment, rec$read), client = client, trace = sub)
         a <- finish_answer(gr_read(ch, question, client, rec$read, trace = sub),
                            doc, ch, rec$name)
         attr(a, "doc_hash") <- h

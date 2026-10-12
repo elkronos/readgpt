@@ -141,6 +141,13 @@
 #'   cannot attribute a finding to a name, and cannot be moderated by one.
 #'   Omitted, only the conventional names are withheld. Pass the same `bib` to
 #'   [gr_synthesise()] and [gr_gaps()].
+#' @param effort Reasoning effort, or `NULL` (the default) to send none: one
+#'   string, or a character vector named by stage, as `effort` in
+#'   [gr_read_spec()]. The calls here are labelled `claims.draw` and
+#'   `claims.reconcile`, so `c(claims = "high")` covers both. Drawing claims is
+#'   judgement, the stage most worth a higher effort. The reasoning counts
+#'   against the same reply limit, so a high effort can leave a batch's reply
+#'   cut off, which is reported as such (`gr_claims_truncated`).
 #' @return An object of class `gr_claims`:
 #'   \describe{
 #'     \item{`claims`}{One row per claim: `claim_id`, `claim`, `kind`,
@@ -178,7 +185,7 @@
 #' cm$support
 gr_claims <- function(extraction, question = NULL, protocol = NULL, client = NULL,
                       model = NULL, temperature = NULL, max_claim_tokens = 1600L,
-                      include_unclear = FALSE, trace = NULL, bib = NULL) {
+                      include_unclear = FALSE, trace = NULL, bib = NULL, effort = NULL) {
   tab <- if (inherits(extraction, "gr_extraction")) extraction$table else extraction
   if (!is.data.frame(tab) || !nrow(tab)) {
     gr_abort("`extraction` must be a gr_extraction, or a data frame shaped like its $table.",
@@ -211,7 +218,7 @@ gr_claims <- function(extraction, question = NULL, protocol = NULL, client = NUL
   max_claim_tokens <- clamp_warn(na_default(max_claim_tokens, 1600L, "max_claim_tokens"),
                                  16, 1e6, "max_claim_tokens")
   spec <- gr_read_spec("stuff", model = model, temperature = temperature,
-                       max_answer_tokens = max_claim_tokens)
+                       max_answer_tokens = max_claim_tokens, effort = effort)
   # One model for the batch sizing and the requests. Left NULL, gr_budget()
   # sized batches for gr_options("model") while gr_call() asked the client's.
   spec <- resolve_read_model(spec, client)
@@ -389,7 +396,7 @@ claims_batch <- function(block, question, client, spec, trace, shown = NULL) {
                                          "\n</studies>"))
   ), schema = .gr_claims_schema, schema_name = "claims", model = spec$model,
      max_output = spec$max_answer_tokens, temperature = spec$temperature,
-     trace = trace, label = "claims.draw")
+     trace = trace, label = "claims.draw", effort = spec$effort)
   if (!isTRUE(res$ok)) {
     return(list(rows = NULL, status = if (reply_cut_off(res$result)) "cut_off" else "failed"))
   }
@@ -696,7 +703,7 @@ claims_reconcile <- function(claims, question, client, spec, trace) {
     list(role = "user", content = paste0("<claims>\n", listed, "\n</claims>")))
   res <- gr_call_json(client, msgs, schema = .gr_reconcile_schema, schema_name = "claim_groups",
                       model = spec$model, max_output = cap, temperature = spec$temperature,
-                      trace = trace, label = "claims.reconcile")
+                      trace = trace, label = "claims.reconcile", effort = spec$effort)
   if (!isTRUE(res$ok)) {
     # Said, as the capped case above is. Batches sized by their reply make this
     # pass the normal route for a large corpus, and its reply names every claim.
@@ -1019,6 +1026,10 @@ claim_order <- function(claims, support, weights) {
 #'   which spends part of the same limit before it writes. Clamped to what the
 #'   model can emit. A reply cut off at it puts every claim in one section,
 #'   with a warning.
+#' @param effort Reasoning effort, or `NULL` (the default) to send none: one
+#'   string, or a character vector named by stage, as `effort` in
+#'   [gr_read_spec()]. The call here is labelled `outline.derive`. A higher
+#'   effort spends more of `max_outline_tokens` before the reply starts.
 #' @return A named character vector shaped exactly like the `outline` argument of
 #'   [gr_synthesise()] (headings as names, briefs as values), carrying
 #'   `attr(, "claims")` (a `section`/`claim_id` frame), `attr(, "rationale")`,
@@ -1049,7 +1060,7 @@ claim_order <- function(claims, support, weights) {
 gr_outline <- function(claims, question = NULL, client = NULL, model = NULL,
                        temperature = NULL, max_sections = 6L,
                        closing = "What is missing", trace = NULL,
-                       max_outline_tokens = NULL) {
+                       max_outline_tokens = NULL, effort = NULL) {
   if (!inherits(claims, "gr_claims")) {
     gr_abort("`claims` must come from gr_claims().", class = "gr_bad_claims")
   }
@@ -1066,7 +1077,8 @@ gr_outline <- function(claims, question = NULL, client = NULL, model = NULL,
   if (!is_nonblank(question)) gr_abort("`question` must be a non-empty string.")
   client <- client %||% gr_client(model = model %||% gr_options("model"))
   # The model first, because the default reply limit depends on it.
-  spec <- resolve_read_model(gr_read_spec("stuff", model = model, temperature = temperature),
+  spec <- resolve_read_model(gr_read_spec("stuff", model = model, temperature = temperature,
+                                          effort = effort),
                              client)
   cw <- claims$claims
   # A fixed 1200 tokens, with no way to raise it, cut off the outline from about
@@ -1099,7 +1111,8 @@ gr_outline <- function(claims, question = NULL, client = NULL, model = NULL,
   res <- if (!capped) {
     gr_call_json(client, msgs, schema = .gr_outline_schema, schema_name = "outline",
                  model = spec$model, max_output = spec$max_answer_tokens,
-                 temperature = spec$temperature, trace = trace, label = "outline.derive")
+                 temperature = spec$temperature, trace = trace, label = "outline.derive",
+                 effort = spec$effort)
   } else list(ok = FALSE, value = NULL)
 
   secs <- if (isTRUE(res$ok)) outline_rows(json_field(res$value, "sections", scalar = FALSE)) else NULL

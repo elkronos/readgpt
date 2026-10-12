@@ -572,7 +572,8 @@ revise_once <- function(drafted, question, client, spec, trace, style, pass) {
     list(role = "user", content = paste0("Review question: ", question)),
     list(role = "user", content = paste0("<draft>\n", drafted, "\n</draft>"))
   ), model = spec$model, max_output = need, temperature = spec$temperature,
-     trace = trace, label = paste0("synthesise.revise.", pass))
+     trace = trace, label = paste0("synthesise.revise.", pass),
+     effort = spec$effort)
 
   # Before usable_text(): a reply cut off at the limit is truncated whether or
   # not the client counts it as a success, and saying "the call failed" about it

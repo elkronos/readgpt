@@ -497,7 +497,10 @@ synth_revise <- function(drafted, question, client, spec, trace, style = NULL,
       # an audit report and read back out of a CSV, and a list column survives
       # none of that.
       lost = as_chr1(step$lost, NA_character_), added = as_chr1(step$added, NA_character_),
-      reason = as_chr1(step$reason, NA_character_), stringsAsFactors = FALSE)
+      reason = as_chr1(step$reason, NA_character_),
+      # NA for a pass refused before its length was measured, or never sent.
+      words_before = as_int1(step$words_before, NA_integer_),
+      words_after = as_int1(step$words_after, NA_integer_), stringsAsFactors = FALSE)
     if (isTRUE(step$kept)) {
       text <- step$text
       steps <- c(steps, text)
@@ -506,7 +509,7 @@ synth_revise <- function(drafted, question, client, spec, trace, style = NULL,
   rep_df <- if (length(report)) do.call(rbind, report) else
     data.frame(pass = character(0), ran = logical(0), kept = logical(0),
                lost = character(0), added = character(0), reason = character(0),
-               stringsAsFactors = FALSE)
+               words_before = integer(0), words_after = integer(0), stringsAsFactors = FALSE)
   rownames(rep_df) <- NULL
   list(text = if (identical(text, as_chr1(drafted))) NULL else text, report = rep_df,
        steps = steps)
@@ -631,5 +634,17 @@ revise_once <- function(drafted, question, client, spec, trace, style, pass) {
             class = "gr_revision_escalated")
     return(list(ran = TRUE, kept = FALSE, reason = st$reason))
   }
-  list(ran = TRUE, kept = TRUE, text = res$text, reason = NA_character_)
+  # Safe is not the same as done. A 'cut' handed back as long as it went out
+  # passed every check above and was kept as a cut. Last, so a revision that
+  # is unsafe as well is reported for that.
+  len <- revision_length(drafted, res$text, pass, trace)
+  words <- len[c("words_before", "words_after")]
+  if (!is.na(len$reason)) {
+    gr_warn(sprintf(paste0("The '%s' pass was discarded because it did not shorten the review: ",
+                           "%d words of prose before, %d after."),
+                    pass, len$words_before, len$words_after),
+            class = "gr_revision_uncut")
+    return(c(list(ran = TRUE, kept = FALSE, reason = len$reason), words))
+  }
+  c(list(ran = TRUE, kept = TRUE, text = res$text, reason = NA_character_), words)
 }

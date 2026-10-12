@@ -100,11 +100,14 @@ test_that("a cut that deletes the fabricated citation still renders the honest o
 test_that("a reported clause moved into an honest sentence stays a marker, and is disclosed", {
   # The cut pass removes Trials' fabricated clause and writes it into the
   # Replication sentence, whose marker count does not change. Rendering there
-  # would print the fabricated 40% as Lee & Petrov's finding.
+  # would print the fabricated 40% as Lee & Petrov's finding. It also drops
+  # Replication's restatement, so it is a cut: a pass that only moved words
+  # is not shorter, and is no longer kept as one.
   write <- c(Trials = "A benefit [study 1], with a 40% cut in deaths [study 3].",
-             Replication = "It replicated [study 3].")
+             Replication = "It replicated [study 3]. In other words, it was found again.")
   swap <- function(d) {
     d <- sub(", with a 40% cut in deaths [study 3]", "", d, fixed = TRUE)
+    d <- sub(" In other words, it was found again.", "", d, fixed = TRUE)
     sub("It replicated [study 3].", "It replicated, with a 40% cut in deaths [study 3].", d,
         fixed = TRUE)
   }

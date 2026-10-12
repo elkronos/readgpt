@@ -237,8 +237,54 @@ gr_reader_signature <- function(reader) {
 #'   `"default"`, covers the labels no name does, and a label nothing covers is
 #'   sent no effort. It reaches the segmenters that call a model too, when the
 #'   spec is part of a recipe. See the section on reasoning effort.
+#' @param premise Check the question's assumptions against the document. A
+#'   question can take for granted something the document contradicts ("Why
+#'   did revenue fall?" of a report in which it rose). Without this check a
+#'   reader answers it on its own terms or reports `NOT_IN_DOCUMENT`, and
+#'   either way what the document does say is lost. With `premise = TRUE` the
+#'   prompts that answer the question tell the model that, when the excerpts
+#'   state the contrary of an assumption in it, it is to say so in one
+#'   sentence giving what they state instead, rather than answer. That
+#'   sentence becomes `$answer` and `$premise` (see [gr_answer]), and
+#'   [is_not_found()] is `FALSE` for it. Excerpts that are merely silent are
+#'   still `NOT_IN_DOCUMENT`. See "Checking the premise" below for how each
+#'   reader combines what its requests report. The verdict is the model's
+#'   reading of the excerpts, not a check readgpt makes, so weigh it as you
+#'   would any answer. Off by default because it changes what is sent: the
+#'   prompts are longer, so a cache, a recorded replay or a [gr_read_many()]
+#'   store made without it does not answer a run with it, and the reverse.
+#'   `screen` and `extract`, which answer no question, ignore it.
 #' @param ... Extra fields for custom readers.
 #' @return A list of class `gr_read_spec`.
+#'
+#' @section Checking the premise:
+#' With `premise = TRUE`, every request that answers the question carries the
+#' rule: the single answering request of `stuff`, `retrieve`, `rerank`,
+#' `skim`, `hierarchical` and `preview`; each chunk's request and the merge of
+#' `map_reduce`; the draft and every revision of `refine`; each step and the
+#' final answer of `iterative`; and the adjudication of `ensemble`. Requests
+#' that only pick, score, summarise or copy out passages do not.
+#'
+#' `map_reduce` treats a chunk that contradicts the premise differently from
+#' one that only lacks the answer. The second is dropped, as it always was.
+#' The first is passed to the merge as a finding that says the premise is
+#' contradicted and what the excerpt states instead, and the merge, told the
+#' same rule, weighs it against the chunks that did answer and may itself
+#' report the premise false. `notes$premise_chunks` lists the chunks that
+#' reported it, whatever the merge decided. `ensemble` does the same with its
+#' members (`notes$premise_members`). `refine` carries the verdict in its
+#' draft, so a later excerpt can add to the correction or overturn it.
+#' `iterative`'s step reports it in a `false_premise` field of its reply,
+#' which is in the schema only when the premise is checked, and stops there.
+#' A merge or adjudication that failed returns the findings joined, which is
+#' no verdict: `$premise` is `NA`, and the notes still name the chunks or
+#' members that reported it.
+#'
+#' The answer records the check: `$premise` is `NA` when nothing contradicted
+#' the question, and the correction when something did. [gr_compare()] and
+#' [gr_read_many()] add a `premise` column to their summaries, `print()` and
+#' [gr_audit_report()] say when the model reported the premise false, and the
+#' trace has a `read.premise` step with the outcome.
 #'
 #' @section Out-of-range values:
 #' Numeric arguments are clamped into a usable range and the change is warned
@@ -325,6 +371,15 @@ gr_reader_signature <- function(reader) {
 #' tr <- gr_trace()
 #' invisible(gr_read(ch, "What was revenue?", cl, sp, trace = tr))
 #' unique(as.data.frame(tr)[, c("stage", "effort")])
+#' # A loaded question, checked against the document. The mock plays a model
+#' # that finds the excerpts contradict it.
+#' cl <- gr_mock_client(function(m, p)
+#'   "FALSE_PREMISE: Revenue rose 12% in 2023, to 45.2 million.")
+#' ch <- gr_segment(readgpt_example(), list(method = "sentence", max_tokens = 400))
+#' ans <- gr_read(ch, "Why did revenue fall in 2023?", cl,
+#'                gr_read_spec("stuff", premise = TRUE))
+#' ans$premise
+#' is_not_found(ans$answer)
 gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL,
                          max_answer_tokens = 1500L, max_chunk_tokens = 700L,
                          max_summary_tokens = 500L, top_k = 6L, min_score = -Inf,
@@ -335,10 +390,16 @@ gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL
                          members = NULL, cite = FALSE,
                          skim_model = NULL, summary_model = NULL,
                          parallel = NULL, delay_between_calls = 0,
-                         on_overflow = c("warn", "error"), effort = NULL, ...) {
+                         on_overflow = c("warn", "error"), effort = NULL, premise = FALSE,
+                         ...) {
   on_overflow <- match.arg(on_overflow)
   context_order <- match.arg(context_order)
   restate <- match.arg(restate)
+  # Refused rather than read with isTRUE(): premise = "yes" or NA would turn a
+  # check the caller asked for into none, and nothing in the answer would say.
+  if (!is.logical(premise) || length(premise) != 1L || is.na(premise)) {
+    gr_abort("`premise` must be TRUE or FALSE.", class = "gr_bad_setting")
+  }
   warn_near_miss(list(...), names(formals(gr_read_spec)), "read")
   effort <- check_effort(effort)
   spec <- structure(c(list(
@@ -386,8 +447,20 @@ gr_read_spec <- function(reader = "map_reduce", model = NULL, temperature = NULL
   # would be a new element in every spec, so every store made before the
   # setting existed would have missed and every document been paid for again.
   if (!is.null(effort)) list(effort = effort),
+  # In the spec only when it is TRUE. The whole spec is hashed into the keys a
+  # corpus store files answers under (corpus_key()) and gr_compare() tells
+  # recipes apart by, so a field present in every spec, FALSE or not, would
+  # have moved every store entry ever written to a key no run asks for.
+  if (isTRUE(premise)) list(premise = TRUE),
   list(...)), class = "gr_read_spec")
   registry_get("readers", spec$reader, "readers")   # fail fast on a typo
+  # Asked of a reader that answers no question, the check would silently do
+  # nothing; say so once, where the spec is made.
+  if (isTRUE(premise) && as_chr1(reader, "") %in% c("screen", "extract")) {
+    gr_warn(sprintf(paste0("premise = TRUE has no effect on '%s', which answers no question. ",
+                           "It applies to the readers that do; see gr_readers()."), reader),
+            class = "gr_read_premise_ignored")
+  }
   spec
 }
 
@@ -462,6 +535,10 @@ gr_read <- function(chunks, question, client, spec = NULL, trace = NULL) {
   if (!inherits(out, "gr_answer")) {
     gr_abort(sprintf("Reader '%s' did not return a gr_answer object.", spec$reader))
   }
+  # That the premise was checked, and what came of it, on the answer and in the
+  # trace (read-premise.R). Before `trace_steps` is set, so the step is this
+  # run's. Nothing at all when the spec did not ask.
+  out <- premise_record(out, spec, trace)
   # Only for an answer on this trace: a custom reader that kept a trace of its
   # own has steps numbered in that one.
   if (inherits(trace, "gr_trace") && identical(out[["trace", exact = TRUE]], trace)) {
@@ -581,14 +658,16 @@ preflight <- function(chunks, spec, trace, client = NULL, question = "",
     base <- list(calls = calls_for(r), input = 0)
     got <- switch(r,
       map_reduce = {
+        # The prompts the reader sends, the premise rule included when the
+        # spec checks it: a longer system prompt leaves each merge less room.
         m <- merge_tree_worst(n, out_cap(spec$model, spec$max_chunk_tokens),
                               out_cap(spec$model, spec$max_answer_tokens),
-                              room(.gr_prompts$merge_system))
+                              room(merge_system_prompt(spec$premise)))
         if (!is.null(m)) list(calls = n + m$calls, input = m$input)
       },
       skim = {
         piece <- out_cap(spec$skim_model %||% spec$model, spec$max_chunk_tokens)
-        fit <- room(answer_system(spec$cite), spec$restate)
+        fit <- room(answer_system(spec$cite, spec$premise), spec$restate)
         body <- n * piece
         m <- if (is.na(fit)) NULL
              else if (body <= fit) list(calls = 0, input = 0)
@@ -598,7 +677,7 @@ preflight <- function(chunks, spec, trace, client = NULL, question = "",
       },
       hierarchical = summary_levels_worst(
         n, out_cap(spec$summary_model %||% spec$model, spec$max_summary_tokens),
-        room(answer_system(FALSE), spec$restate), spec$fan_in, spec$max_levels),
+        room(answer_system(FALSE, spec$premise), spec$restate), spec$fan_in, spec$max_levels),
       NULL)
     got %||% base
   }

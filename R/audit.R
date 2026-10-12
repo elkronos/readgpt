@@ -1336,6 +1336,12 @@ answer_summary <- function(x, listed = TRUE) {
            "sent, so this says nothing about whether the document holds one.</strong></p>")
   } else if (is_not_found(x$answer)) {
     sprintf("<p><strong>%s</strong></p>", esc(not_found_wording(x)))
+  } else if (premise_flagged(x)) {
+    # The model's reading, said to be one: the answer is a correction of the
+    # question, and nothing here checked it against the document.
+    paste0("<p><strong>The model reports that the document contradicts an assumption in ",
+           "the question.</strong> What it says the document states instead:</p>",
+           sprintf("<blockquote class='passage'>%s</blockquote>", esc(x$answer)))
   } else sprintf("<blockquote class='passage'>%s</blockquote>", esc(x$answer))
   # Not from `partial` alone. Several readers leave it FALSE after a request
   # failed, and the green "every request succeeded" line then sat above the
@@ -1368,8 +1374,12 @@ answer_summary <- function(x, listed = TRUE) {
   auto <- as.list(x$notes %||% list())[["auto_recipe", exact = TRUE]]
   if (!is.na(recipe) && !is.null(auto)) recipe <- sprintf("%s (chosen by \"auto\")", recipe)
   used <- unique(x$chunks_used %||% integer(0))
+  # A row only for an answer whose reader was asked to check the premise, so a
+  # page about one that was not asked says what it always said.
+  checked <- !is.null(x[["premise", exact = TRUE]])
   facts <- fact_table(
-    c("Document", "Recipe", "Reader", "Chunks", "Chunks used", "Requests", "Cost"),
+    c("Document", "Recipe", "Reader", "Chunks", "Chunks used", "Requests", "Cost",
+      if (checked) "Premise"),
     c(report_doc_name(x$document$source), recipe, as_chr1(x$reader, NA_character_),
       as_chr1(x$segmentation$n, NA_character_),
       as.character(length(used)),
@@ -1378,7 +1388,11 @@ answer_summary <- function(x, listed = TRUE) {
                 if (isTRUE(tr$cached > 0L)) sprintf(" (%d from a cache)", as.integer(tr$cached))
                 else "")
       else NA_character_,
-      if (inherits(tr, "gr_trace")) format_trace_cost(tr) else NA_character_))
+      if (inherits(tr, "gr_trace")) format_trace_cost(tr) else NA_character_,
+      if (checked) {
+        if (premise_flagged(x)) "checked; the model reports the document contradicts it"
+        else "checked; the model reported nothing contradicting it"
+      }))
   w <- x[["warnings", exact = TRUE]] %||% character(0)
   c(said, status, facts,
     if (length(w)) c(sprintf("<p class='flag'>%d warning(s) while reading:</p>", length(w)),
@@ -1666,6 +1680,10 @@ audit_corpus <- function(x) {
     nf <- if (is.null(s$not_found)) rep(FALSE, nrow(s)) else isTRUE_vec(s$not_found)
     a <- as.character(tab$answer)
     a <- ifelse(!is.na(a) & nchar(a) > 200L, paste0(substr(a, 1, 200), " [...]"), a)
+    # A correction of the question reads as an answer to it unless the cell
+    # says what it is.
+    contra <- if (is.null(s[["premise"]])) rep(FALSE, nrow(s)) else !is.na(s$premise)
+    a <- ifelse(contra & !is.na(a), paste0("premise contradicted, per the model: ", a), a)
     tab$answer <- ifelse(nf, "not found", a)
   }
   if (!is.null(tab$cost_usd)) {

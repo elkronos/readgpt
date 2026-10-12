@@ -30,6 +30,7 @@ gr_read_spec(
   delay_between_calls = 0,
   on_overflow = c("warn", "error"),
   effort = NULL,
+  premise = FALSE,
   ...
 )
 }
@@ -161,6 +162,24 @@ longest name that covers a label wins; an unnamed element, or one named
 sent no effort. It reaches the segmenters that call a model too, when the
 spec is part of a recipe. See the section on reasoning effort.}
 
+\item{premise}{Check the question's assumptions against the document. A
+question can take for granted something the document contradicts ("Why
+did revenue fall?" of a report in which it rose). Without this check a
+reader answers it on its own terms or reports \code{NOT_IN_DOCUMENT}, and
+either way what the document does say is lost. With \code{premise = TRUE} the
+prompts that answer the question tell the model that, when the excerpts
+state the contrary of an assumption in it, it is to say so in one
+sentence giving what they state instead, rather than answer. That
+sentence becomes \verb{$answer} and \verb{$premise} (see \link{gr_answer}), and
+\code{\link[=is_not_found]{is_not_found()}} is \code{FALSE} for it. Excerpts that are merely silent are
+still \code{NOT_IN_DOCUMENT}. See "Checking the premise" below for how each
+reader combines what its requests report. The verdict is the model's
+reading of the excerpts, not a check readgpt makes, so weigh it as you
+would any answer. Off by default because it changes what is sent: the
+prompts are longer, so a cache, a recorded replay or a \code{\link[=gr_read_many]{gr_read_many()}}
+store made without it does not answer a run with it, and the reverse.
+\code{screen} and \code{extract}, which answer no question, ignore it.}
+
 \item{...}{Extra fields for custom readers.}
 }
 \value{
@@ -169,6 +188,37 @@ A list of class \code{gr_read_spec}.
 \description{
 Describe a reading configuration
 }
+\section{Checking the premise}{
+
+With \code{premise = TRUE}, every request that answers the question carries the
+rule: the single answering request of \code{stuff}, \code{retrieve}, \code{rerank},
+\code{skim}, \code{hierarchical} and \code{preview}; each chunk's request and the merge of
+\code{map_reduce}; the draft and every revision of \code{refine}; each step and the
+final answer of \code{iterative}; and the adjudication of \code{ensemble}. Requests
+that only pick, score, summarise or copy out passages do not.
+
+\code{map_reduce} treats a chunk that contradicts the premise differently from
+one that only lacks the answer. The second is dropped, as it always was.
+The first is passed to the merge as a finding that says the premise is
+contradicted and what the excerpt states instead, and the merge, told the
+same rule, weighs it against the chunks that did answer and may itself
+report the premise false. \code{notes$premise_chunks} lists the chunks that
+reported it, whatever the merge decided. \code{ensemble} does the same with its
+members (\code{notes$premise_members}). \code{refine} carries the verdict in its
+draft, so a later excerpt can add to the correction or overturn it.
+\code{iterative}'s step reports it in a \code{false_premise} field of its reply,
+which is in the schema only when the premise is checked, and stops there.
+A merge or adjudication that failed returns the findings joined, which is
+no verdict: \verb{$premise} is \code{NA}, and the notes still name the chunks or
+members that reported it.
+
+The answer records the check: \verb{$premise} is \code{NA} when nothing contradicted
+the question, and the correction when something did. \code{\link[=gr_compare]{gr_compare()}} and
+\code{\link[=gr_read_many]{gr_read_many()}} add a \code{premise} column to their summaries, \code{print()} and
+\code{\link[=gr_audit_report]{gr_audit_report()}} say when the model reported the premise false, and the
+trace has a \code{read.premise} step with the outcome.
+}
+
 \section{Out-of-range values}{
 
 Numeric arguments are clamped into a usable range and the change is warned
@@ -253,6 +303,15 @@ sp <- gr_read_spec("map_reduce", model = "gpt-5.6-luna",
 tr <- gr_trace()
 invisible(gr_read(ch, "What was revenue?", cl, sp, trace = tr))
 unique(as.data.frame(tr)[, c("stage", "effort")])
+# A loaded question, checked against the document. The mock plays a model
+# that finds the excerpts contradict it.
+cl <- gr_mock_client(function(m, p)
+  "FALSE_PREMISE: Revenue rose 12\% in 2023, to 45.2 million.")
+ch <- gr_segment(readgpt_example(), list(method = "sentence", max_tokens = 400))
+ans <- gr_read(ch, "Why did revenue fall in 2023?", cl,
+               gr_read_spec("stuff", premise = TRUE))
+ans$premise
+is_not_found(ans$answer)
 }
 \seealso{
 \code{\link[=gr_readers]{gr_readers()}} for the available readers and their call costs,

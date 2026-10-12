@@ -1001,7 +1001,7 @@ tree_merge <- function(client, question, pieces, spec, trace, label = "merge",
         list(role = "user", content = body),
         list(role = "user", content = paste0("Question: ", question))
       ), model = spec$model, max_output = spec$max_answer_tokens, temperature = spec$temperature,
-         trace = trace, label = label)
+         trace = trace, label = label, effort = spec$effort)
       if (!res$ok) {
         # Concatenation is a documented, visible degradation -- not a silent one.
         return(list(text = merge_giveup(pieces, spec), ok = FALSE, levels = level,
@@ -1030,7 +1030,7 @@ tree_merge <- function(client, question, pieces, spec, trace, label = "merge",
         list(role = "user", content = body),
         list(role = "user", content = paste0("Question: ", question))
       ), model = spec$model, max_output = spec$max_answer_tokens, temperature = spec$temperature,
-         trace = trace, label = paste0(label, ".level", level))
+         trace = trace, label = paste0(label, ".level", level), effort = spec$effort)
       # A failed group goes up unmerged, which keeps its findings and says
       # nothing of the failure, so it is counted.
       if (res$ok) list(text = res$text, cut = reply_cut_off(res), failed = FALSE)

@@ -87,6 +87,9 @@ trace written by a version of readgpt that did not time requests.}
 \item{\code{error}}{The error, or \code{NA}.}
 \item{\code{prompt}, \code{reply}}{The messages sent, each as \code{"[role] text"}, and
 the text that came back.}
+\item{\code{effort}}{The reasoning effort the request was sent with, \code{NA} for
+one sent none. Present only when some request in the trace carried one
+(see \code{effort} in \code{\link[=gr_read_spec]{gr_read_spec()}}).}
 }
 }
 

@@ -32,7 +32,10 @@ gr_client(
 
 \item{timeout}{Per-request timeout in seconds.}
 
-\item{extra_body}{Named list merged into every request body.}
+\item{extra_body}{Named list merged into every request body. A reasoning
+effort set here (\code{list(reasoning = list(effort = "low"))}) is the client's
+default; the \code{effort} setting of \code{\link[=gr_read_spec]{gr_read_spec()}} replaces it for the
+calls it covers.}
 
 \item{headers}{Named character vector of extra HTTP headers, for endpoints
 that do not authenticate with a bearer token. Defaults to the \code{api_headers}

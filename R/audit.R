@@ -282,7 +282,10 @@ gr_flow <- function(screening = NULL, extraction = NULL, records = NULL, claims 
 #' studies each of its headings cites, then the sections as first drafted,
 #' with their checks, under "Draft before revision", and the passes that ran.
 #' The cost table includes the calls [gr_claims()] made and, when it was left
-#' to record on the claims' trace, [gr_outline()].
+#' to record on the claims' trace, [gr_outline()]. When any request was sent
+#' with a reasoning effort (`effort` in [gr_read_spec()]), the cost table says
+#' which efforts each stage's requests carried, and the table of requests has
+#' an `effort` column.
 #' @seealso [gr_flow()], [gr_screen()], [gr_extract()], [gr_synthesise()],
 #'   [gr_verify_evidence()], [answer_document()], [gr_read_many()]
 #' @export
@@ -973,6 +976,11 @@ audit_cost <- function(screening = NULL, extraction = NULL, synthesis = NULL, re
                stringsAsFactors = FALSE)
   })
   tab <- do.call(rbind, rows)
+  # What reasoning effort each stage's requests carried, beside what the stage
+  # cost, since that is the cost it changes. Only when some request carried
+  # one, so a report on a run without the setting is the report it was.
+  effort <- vapply(traces, function(x) trace_effort_text(x$trace), character(1))
+  if (any(!is.na(effort))) tab$effort <- ifelse(is.na(effort), "none", unname(effort))
   c("<h2>What the run cost</h2>",
     if ("claims" %in% names(traces))
       paste0("<p class='sub'>The claims row is the calls gr_claims() made and, where it ",
@@ -1631,8 +1639,9 @@ request_table <- function(trace) {
                        if (all(timed)) "" else sprintf(" for the %d that were timed", sum(timed)))
   df$usd <- ifelse(is.na(df$usd), NA_character_, formatC(df$usd, format = "f", digits = 6))
   df$seconds <- round(df$seconds, 2)
-  keep <- c("step", "stage", "model", "ok", "cached", "tokens_in", "tokens_out", "usd",
-            "seconds", "error")
+  # `effort` is there only when a request carried one (as.data.frame.gr_trace).
+  keep <- intersect(c("step", "stage", "model", "effort", "ok", "cached", "tokens_in",
+                      "tokens_out", "usd", "seconds", "error"), names(df))
   c(sprintf(paste0("<p class='sub'>%d request(s), %s. The prompts and replies ",
                    "are in <code>as.data.frame(answer$trace)</code>.</p>"),
             nrow(df), took),

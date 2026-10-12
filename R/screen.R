@@ -92,7 +92,8 @@ read_screen <- function(chunks, question, client, spec, trace) {
                             "decision, answer 'unclear'.)") else ""))
   ), schema = .gr_screen_schema, schema_name = "screening",
      model = spec$model, max_output = spec$max_answer_tokens,
-     temperature = spec$temperature, trace = trace, label = "screen.decide")
+     temperature = spec$temperature, trace = trace, label = "screen.decide",
+     effort = spec$effort)
 
   v <- if (isTRUE(out$ok)) out$value else list()
   failed <- !isTRUE(out$ok) && !capped

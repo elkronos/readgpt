@@ -254,7 +254,10 @@ stop_if_no_credentials <- function(client) {
 #' @param embedding_model Default embedding model id.
 #' @param max_retries,retry_pause_base Retry policy for transient failures.
 #' @param timeout Per-request timeout in seconds.
-#' @param extra_body Named list merged into every request body.
+#' @param extra_body Named list merged into every request body. A reasoning
+#'   effort set here (`list(reasoning = list(effort = "low"))`) is the client's
+#'   default; the `effort` setting of [gr_read_spec()] replaces it for the
+#'   calls it covers.
 #' @param headers Named character vector of extra HTTP headers, for endpoints
 #'   that do not authenticate with a bearer token. Defaults to the `api_headers`
 #'   option. `NA` as a value suppresses a header rather than sending it, which
@@ -562,6 +565,13 @@ print.gr_result <- function(x, ...) {
 #' @param trace Optional `gr_trace` to record this call into.
 #' @param label Short label for the trace entry.
 #' @param ... Extra top-level body fields.
+#' @param effort Reasoning effort for this call, or `NULL` (the default) to
+#'   send none. One string, or a character vector named by label prefix,
+#'   resolved against `label` as [gr_read_spec()] describes. Sent only when
+#'   `model` is a reasoning model (see [gr_model_info()]), as `reasoning =
+#'   {effort}` on the Responses API and `reasoning_effort` on Chat Completions;
+#'   a [gr_mock_client()] or [gr_backend_client()] handler finds it in
+#'   `params$effort`. Must be named in full, since it follows `...`.
 #' @return A [gr_result]. **Never** `NULL`; `$text` is always a single string,
 #'   `""` on failure. A successful HTTP call that returned no text (a refusal, a
 #'   content filter) is reported as `ok = FALSE`, so an empty completion is never
@@ -583,13 +593,23 @@ print.gr_result <- function(x, ...) {
 #' # A failed call still returns a usable object.
 #' bad <- gr_call(gr_mock_client(function(m, p) stop("network down")), "hi")
 #' c(ok = bad$ok, text = sprintf("<%s>", bad$text), error = bad$error)
+#'
+#' # A reasoning effort reaches a reasoning model, and the handler sees it.
+#' seen <- gr_mock_client(function(m, p) {
+#'   paste("effort:", if (is.null(p$effort)) "none" else p$effort)
+#' })
+#' gr_call(seen, "hi", model = "gpt-5.6-luna", effort = "low")$text
+#' gr_call(seen, "hi", model = "gpt-4o", effort = "low")$text   # not a reasoning model
 gr_call <- function(client, messages, model = NULL, max_output = NULL,
                     temperature = NULL, schema = NULL, schema_name = "result",
-                    trace = NULL, label = "call", ...) {
+                    trace = NULL, label = "call", ..., effort = NULL) {
   # Checked here too, so the error names the function the user called.
   if (!inherits(client, "gr_client")) gr_abort("`client` must come from gr_client() or gr_mock_client().")
+  # After `...`, so it is matched only by its full name: `...` is the request
+  # body's own fields, and a field a gateway happens to call `eff` must still
+  # go to the gateway.
   model_call(client, messages, model, max_output, temperature, schema, schema_name,
-             trace, label, list(...))
+             trace, label, list(...), effort = check_effort(effort))
 }
 
 #' gr_call(), with a test a reply must pass before it is cached.
@@ -604,7 +624,8 @@ gr_call <- function(client, messages, model = NULL, max_output = NULL,
 #' @noRd
 model_call <- function(client, messages, model = NULL, max_output = NULL,
                        temperature = NULL, schema = NULL, schema_name = "result",
-                       trace = NULL, label = "call", extra = list(), accept = NULL) {
+                       trace = NULL, label = "call", extra = list(), accept = NULL,
+                       effort = NULL) {
   if (!inherits(client, "gr_client")) gr_abort("`client` must come from gr_client() or gr_mock_client().")
   messages <- normalise_messages(messages)
   model <- as_chr1(model %||% client$model)
@@ -641,6 +662,12 @@ model_call <- function(client, messages, model = NULL, max_output = NULL,
 
   params <- list(model = model, max_output = max_output, temperature = temperature,
                  schema = schema, schema_name = schema_name, prompt_tokens = prompt_tokens)
+  # Resolved for this call's label here, where the label is the one the trace
+  # records, and added only when there is one to send: params is what a
+  # handler is given and what the trace keeps, and a NULL entry would change
+  # both for every run that never asked for an effort.
+  effort <- effort_to_send(effort, label, info)
+  if (!is.null(effort)) params$effort <- effort
 
   # One dispatch, one exit, one trace entry. The mock and HTTP paths each used
   # to `return()` after recording their own trace entry, so every feature that
@@ -685,7 +712,7 @@ client_dispatch <- function(client, messages, model, max_output, temperature,
   usable <- function(r) is.null(accept) || isTRUE(tryCatch(accept(r$text), error = function(e) FALSE))
   if (inherits(cache, "gr_cache")) {
     key <- cache_key(client, messages, model, max_output, temperature,
-                     schema, schema_name, extra)
+                     schema, schema_name, extra, effort = params$effort)
     hit <- cache_get(cache, key)
     if (!is.null(hit) && !usable(hit)) {
       # Stored before the caller's test existed. Asked again, and overwritten
@@ -708,7 +735,8 @@ client_dispatch <- function(client, messages, model, max_output, temperature,
   } else {
     body <- build_request_body(client, messages, model,
                                reasoning_output_cap(max_output, info, params$prompt_tokens),
-                               temperature, schema, schema_name, info, extra)
+                               temperature, schema, schema_name, info, extra,
+                               effort = params$effort)
     url <- paste0(client$base_url,
                   if (identical(client$api, "responses")) "/responses" else "/chat/completions")
     out <- http_call(client, url, body)
@@ -888,7 +916,7 @@ normalise_messages <- function(messages) {
 
 #' @noRd
 build_request_body <- function(client, messages, model, max_output, temperature,
-                               schema, schema_name, info, extra) {
+                               schema, schema_name, info, extra, effort = NULL) {
   temperature <- temperature %||% gr_options("temperature")
   # Reasoning models reject `temperature`; sending it is a hard 400.
   if (isTRUE(info$reasoning) || !isTRUE(info$supports_temperature)) temperature <- NULL
@@ -929,7 +957,10 @@ build_request_body <- function(client, messages, model, max_output, temperature,
                                                       schema = schema))
     }
   }
-  utils::modifyList(utils::modifyList(body, client$extra_body %||% list()), extra %||% list())
+  # The effort between the two: over the client's default, under a field the
+  # call names itself (see effort_body()). NULL leaves the body as it was.
+  body <- effort_body(utils::modifyList(body, client$extra_body %||% list()), effort, client$api)
+  utils::modifyList(body, extra %||% list())
 }
 
 # Status codes worth retrying. 400 is NOT here: a malformed request will be
@@ -1317,9 +1348,10 @@ gr_call_json <- function(client, messages, schema, schema_name = "result",
   accept <- function(txt) json_reply(txt, schema, allow_empty)$ok
   # gr_call()'s own arguments, so `...` is matched exactly as it was.
   send <- function(client, messages, model = NULL, max_output = NULL, temperature = NULL,
-                   schema = NULL, schema_name = "result", trace = NULL, label = "call", ...) {
+                   schema = NULL, schema_name = "result", trace = NULL, label = "call", ...,
+                   effort = NULL) {
     model_call(client, messages, model, max_output, temperature, schema, schema_name,
-               trace, label, list(...), accept = accept)
+               trace, label, list(...), accept = accept, effort = effort)
   }
   res <- send(client, messages, schema = schema, schema_name = schema_name, ...)
   if (!res$ok) return(list(ok = FALSE, value = NULL, result = res))

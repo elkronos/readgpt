@@ -13,7 +13,8 @@ gr_outline(
   max_sections = 6L,
   closing = "What is missing",
   trace = NULL,
-  max_outline_tokens = NULL
+  max_outline_tokens = NULL,
+  effort = NULL
 )
 }
 \arguments{
@@ -39,6 +40,11 @@ never below 1200, plus 4000 on a model registered as a reasoning model,
 which spends part of the same limit before it writes. Clamped to what the
 model can emit. A reply cut off at it puts every claim in one section,
 with a warning.}
+
+\item{effort}{Reasoning effort, or \code{NULL} (the default) to send none: one
+string, or a character vector named by stage, as \code{effort} in
+\code{\link[=gr_read_spec]{gr_read_spec()}}. The call here is labelled \code{outline.derive}. A higher
+effort spends more of \code{max_outline_tokens} before the reply starts.}
 }
 \value{
 A named character vector shaped exactly like the \code{outline} argument of

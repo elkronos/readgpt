@@ -77,6 +77,9 @@
 #'   \item{`error`}{The error, or `NA`.}
 #'   \item{`prompt`, `reply`}{The messages sent, each as `"[role] text"`, and
 #'     the text that came back.}
+#'   \item{`effort`}{The reasoning effort the request was sent with, `NA` for
+#'     one sent none. Present only when some request in the trace carried one
+#'     (see `effort` in [gr_read_spec()]).}
 #' }
 #' @param x A `gr_trace`.
 #' @param row.names Optional row names for the result.
@@ -539,6 +542,11 @@ as.data.frame.gr_trace <- function(x, row.names = NULL, optional = FALSE, ...) {
     prompt = prompt,
     reply = chr(function(s) s$response),
     stringsAsFactors = FALSE)
+  # The reasoning effort each request was sent with, last and only when some
+  # request carried one: a run without the setting keeps the columns, in the
+  # places, it always had.
+  effort <- chr(function(s) if (is.list(s$params)) s$params[["effort", exact = TRUE]])
+  if (any(!is.na(effort))) out$effort <- effort
   if (!is.null(row.names)) rownames(out) <- row.names
   out
 }

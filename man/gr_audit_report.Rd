@@ -160,7 +160,10 @@ which section each claim was given to. When a revision pass
 studies each of its headings cites, then the sections as first drafted,
 with their checks, under "Draft before revision", and the passes that ran.
 The cost table includes the calls \code{\link[=gr_claims]{gr_claims()}} made and, when it was left
-to record on the claims' trace, \code{\link[=gr_outline]{gr_outline()}}.
+to record on the claims' trace, \code{\link[=gr_outline]{gr_outline()}}. When any request was sent
+with a reasoning effort (\code{effort} in \code{\link[=gr_read_spec]{gr_read_spec()}}), the cost table says
+which efforts each stage's requests carried, and the table of requests has
+an \code{effort} column.
 }
 
 \examples{

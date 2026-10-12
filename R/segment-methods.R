@@ -612,7 +612,8 @@ seg_contextual <- function(doc, spec, client, trace) {
       r <- gr_call(client, list(
         list(role = "system", content = sys_prompt),
         list(role = "user", content = ask(d$text[i]))
-      ), max_output = 90L, trace = trace, label = "segment.context")
+      ), max_output = 90L, trace = trace, label = "segment.context",
+         effort = spec$effort)
       if (!isTRUE(r$ok)) return(list(text = "", why = "failed"))
       txt <- trimws(as_chr1(r$text, ""))
       list(text = txt, why = if (nzchar(txt)) "" else "empty")
@@ -721,7 +722,7 @@ seg_proposition <- function(doc, spec, client, trace) {
       list(role = "system", content = sys_prompt),
       list(role = "user", content = batches$text[i])
     ), schema = schema, schema_name = "propositions", trace = trace,
-       label = "segment.proposition", max_output = 2000L)
+       label = "segment.proposition", max_output = 2000L, effort = spec$effort)
     if (!out$ok) return(keep(i))
     # as.character() on whatever simplifyVector made of it flattened a matrix
     # column-major (transposing the propositions) and deparsed a data frame

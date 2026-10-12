@@ -141,6 +141,15 @@
 #'   after a hyphen ("in press-a"). Under `"author-year"`, an entry whose key
 #'   came from a `citation` field leads with that key, so the prose can be
 #'   followed to it.
+#' @param effort Reasoning effort, or `NULL` (the default) to send none: one
+#'   string, or a character vector named by stage, as `effort` in
+#'   [gr_read_spec()]. The calls here are labelled `synthesise.section`,
+#'   `synthesise.batch`, `synthesise.merge` and, with `coherence`,
+#'   `synthesise.revise.structure`, `.cut` and `.register`; `c(synthesise =
+#'   "medium", "synthesise.section" = "high")` writes the sections at high and
+#'   does the rest at medium. The reasoning counts against each call's reply
+#'   limit (`max_section_tokens` for a section), and a section cut off at it is
+#'   reported as one.
 #'
 #' @return An object of class `gr_synthesis`:
 #'   \describe{
@@ -251,7 +260,7 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
                           cite_style = c("auto", "marker", "author-year", "numeric"),
                           bib = NULL, style = NULL, coherence = FALSE,
                           references = TRUE, claims = NULL, gaps = NULL,
-                          trace = NULL) {
+                          trace = NULL, effort = NULL) {
   cite_style <- match.arg(cite_style)
   tab <- if (inherits(extraction, "gr_extraction")) extraction$table else extraction
   if (!is.data.frame(tab) || !nrow(tab)) {
@@ -400,7 +409,7 @@ gr_synthesise <- function(extraction, protocol = NULL, outline = NULL, question 
   max_section_tokens <- clamp_warn(na_default(max_section_tokens, 1200L, "max_section_tokens"),
                                    16, 1e6, "max_section_tokens")
   spec <- gr_read_spec("stuff", model = model, temperature = temperature,
-                       max_answer_tokens = max_section_tokens)
+                       max_answer_tokens = max_section_tokens, effort = effort)
   # gr_read_spec() leaves the model NULL when none is named, and gr_budget() and
   # gr_call() fall back to different models on NULL: sections were sized for
   # gr_options("model") and sent to the client's, so a small model got a prompt
@@ -984,7 +993,8 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
                                                          restate_tail(body, again, spec$restate)))
     }
     res <- gr_call(client, msgs, model = spec$model, max_output = spec$max_answer_tokens,
-                   temperature = spec$temperature, trace = trace, label = "synthesise.section")
+                   temperature = spec$temperature, trace = trace, label = "synthesise.section",
+                   effort = spec$effort)
     if (usable_text(res) && reply_cut_off(res)) cut_off <- cut_off + 1L
     if (usable_text(res)) res$text else ""
   } else {
@@ -1027,7 +1037,8 @@ synth_section <- function(heading, brief, question, rendered, used, client, spec
         list(role = "user", content = paste0("<studies>\n", paste(all_rows[j$rows], collapse = "\n\n"),
                                              "\n</studies>"))
       ), model = spec$model, max_output = spec$max_answer_tokens,
-         temperature = spec$temperature, trace = trace, label = "synthesise.batch")
+         temperature = spec$temperature, trace = trace, label = "synthesise.batch",
+         effort = spec$effort)
       # Kept for the merge, as the one-call section keeps its text: part of a
       # batch's draft beats none of it. Counted, so the section says it.
       if (usable_text(res) && reply_cut_off(res)) cut_off <<- cut_off + 1L

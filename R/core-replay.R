@@ -76,7 +76,10 @@ gr_trace_save <- function(trace, path) {
 #'
 #' @section Matching:
 #' A response is matched on the exact prompt messages plus the model id the
-#' call asked for. That can differ from the model the trace records as
+#' call asked for, and the reasoning effort it was sent with when it had one
+#' (see `effort` in [gr_read_spec()]), so a replay under another effort misses
+#' rather than passing for the recording. The model id can differ from the
+#' model the trace records as
 #' answering: a [gr_ellmer_client()] answers with its chat's model whatever the
 #' recipe asked for, and its runs replay all the same.
 #'
@@ -184,11 +187,15 @@ gr_replay_client <- function(source, strict = TRUE) {
   idx$misses <- list()
   idx$auto_used <- rep(FALSE, nrow(auto_choices))
 
+  idx$effort <- list()    # prompt + model  -> efforts seen, for diagnostics
+
   for (st in steps) {
-    kf <- replay_key(st$prompt, st$model)
+    kf <- replay_key(st$prompt, st$model, st$effort)
     kp <- replay_key(st$prompt, NULL)
+    km <- replay_key(st$prompt, st$model)
     idx$full[[kf]] <- c(idx$full[[kf]], list(st))
     idx$prompt[[kp]] <- unique(c(idx$prompt[[kp]], as_chr1(st$model, "?")))
+    idx$effort[[km]] <- unique(c(idx$effort[[km]], as_chr1(st$effort, "<none>")))
   }
 
   # The model a replayed read asks for when it names none is this client's, so
@@ -369,6 +376,10 @@ replay_steps <- function(source) {
       # reproduction of a run it had not reproduced.
       finish_reason = as_chr1(st$finish_reason, NA_character_),
       label = as_chr1(st$label, "call"),
+      # The reasoning effort the request was sent with, or NULL for none, which
+      # is every step recorded without the setting. Part of the key a replayed
+      # call is looked up by: see replay_key().
+      effort = replay_step_effort(params),
       # What the call counted against max_cost_usd when it was recorded, which
       # the replayed call counts again (see trace_record()).
       budget_usd = replay_step_budget(st, if (!is.na(answered)) answered else requested)
@@ -533,23 +544,43 @@ replay_prompt <- function(p) {
 }
 
 #' @noRd
-replay_key <- function(messages, model) {
+replay_key <- function(messages, model, effort = NULL) {
   # key_text() is what makes a trace replayable from a FILE. A saved trace comes
   # back through jsonlite, which does not necessarily hand back a string labelled
   # the way the original was, and `digest()` hashes the label along with the
   # bytes -- so before this every non-ASCII prompt missed on replay-from-file
   # while every ASCII one hit. See the note on key_text() in core-cache.R.
+  #
+  # The reasoning effort, when the call has one, for the reason the model is
+  # here: it is part of what the call asked for. Left out, a run replayed at
+  # another effort would be answered with the recorded replies and report 0
+  # misses, certifying a run it had not reproduced. Only when there is one, so
+  # every recording made without it keeps the keys it was made with.
   gr_hash(c("readgpt-replay-v1",
             if (is.null(model)) "<any-model>" else as_chr1(model, "?"),
+            if (!is.null(effort)) paste0("effort:", as_chr1(effort)),
             key_text(unlist(lapply(messages, function(m) c(as_chr1(m$role), as_chr1(m$content))),
                             use.names = FALSE))))
+}
+
+#' The effort a recorded step's request carried, or NULL.
+#'
+#' NULL for a step with none, and for anything a hand-edited or damaged trace
+#' holds there that is not one string: a recording that cannot say what effort
+#' it used is a recording made without one.
+#' @noRd
+replay_step_effort <- function(params) {
+  e <- if (is.list(params)) params[["effort", exact = TRUE]] else NULL
+  e <- as_chr1(e, NA_character_)
+  if (is.na(e) || !has_visible(e)) NULL else e
 }
 
 #' Answer one call from the recording.
 #' @noRd
 replay_lookup <- function(client, messages, model, params) {
   idx <- client$.idx
-  kf <- replay_key(messages, model)
+  effort <- params[["effort", exact = TRUE]]
+  kf <- replay_key(messages, model, effort)
   recorded <- idx$full[[kf]]
   # The recording's other models that calls following a client asked for (see
   # replay_default_models()), for a call that asked for this client's model.
@@ -558,7 +589,7 @@ replay_lookup <- function(client, messages, model, params) {
   alts <- as.character(client[[".alt_models", exact = TRUE]] %||% character(0))
   if (is.null(recorded) && length(alts) &&
       identical(as_chr1(model, ""), as_chr1(client$model, ""))) {
-    ka <- vapply(alts, function(a) replay_key(messages, a), character(1))
+    ka <- vapply(alts, function(a) replay_key(messages, a, effort), character(1))
     ka <- ka[vapply(ka, function(k) !is.null(idx$full[[k]]), logical(1))]
     if (length(ka) == 1L) {
       kf <- ka[[1]]
@@ -568,7 +599,16 @@ replay_lookup <- function(client, messages, model, params) {
 
   if (is.null(recorded)) {
     other <- idx$prompt[[replay_key(messages, NULL)]]
-    detail <- if (!is.null(other)) {
+    # The same prompt for the same model at another effort: said first, since
+    # "replay the run with that model" would name the model it already asked.
+    efforts <- if (is.list(idx$effort)) idx$effort[[replay_key(messages, model)]] else NULL
+    detail <- if (!is.null(efforts)) {
+      say <- function(e) if (identical(e, "<none>")) "no effort" else sprintf("effort '%s'", e)
+      sprintf(paste0(" The same prompt IS recorded for this model at reasoning %s, and this call ",
+                     "asked for %s; replay the run with the `effort` it was recorded with."),
+              paste(vapply(efforts, say, character(1)), collapse = " or "),
+              say(as_chr1(effort, "<none>")))
+    } else if (!is.null(other)) {
       sprintf(" The same prompt IS recorded under model %s; replay the run with that model.",
               paste(sprintf("'%s'", other), collapse = " or "))
     } else {

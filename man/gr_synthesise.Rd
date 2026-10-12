@@ -21,7 +21,8 @@ gr_synthesise(
   references = TRUE,
   claims = NULL,
   gaps = NULL,
-  trace = NULL
+  trace = NULL,
+  effort = NULL
 )
 }
 \arguments{
@@ -148,6 +149,15 @@ warning (\code{gr_gaps_truncated}), and the closing section is then partial.}
 \code{\link[=gr_read_many]{gr_read_many()}}. It is a parent, not this stage's counter: \verb{$trace} is
 still the write-up's own, so \code{gr_options(max_calls =)} bounds the write-up
 rather than being spent by the screening that came before it.}
+
+\item{effort}{Reasoning effort, or \code{NULL} (the default) to send none: one
+string, or a character vector named by stage, as \code{effort} in
+\code{\link[=gr_read_spec]{gr_read_spec()}}. The calls here are labelled \code{synthesise.section},
+\code{synthesise.batch}, \code{synthesise.merge} and, with \code{coherence},
+\code{synthesise.revise.structure}, \code{.cut} and \code{.register}; \code{c(synthesise = "medium", "synthesise.section" = "high")} writes the sections at high and
+does the rest at medium. The reasoning counts against each call's reply
+limit (\code{max_section_tokens} for a section), and a section cut off at it is
+reported as one.}
 }
 \value{
 An object of class \code{gr_synthesis}:

@@ -13,6 +13,14 @@ Returned by \code{\link[=gr_read]{gr_read()}} and, with three extra fields, by \
 \code{"NOT_IN_DOCUMENT"} means the model reported the document does not
 contain the answer. Test it with \code{is_not_found()}-style matching rather
 than substring search.}
+\item{\code{premise}}{Present only when the read spec checked the question's
+premise (\code{premise = TRUE} in \code{\link[=gr_read_spec]{gr_read_spec()}}). \code{NA} when the model
+reported nothing in the document contradicting the question; otherwise
+the sentence in which it said what the document states instead, which
+is then \code{answer} as well, so \code{is_not_found()} is \code{FALSE}. It is the
+model's verdict, not a check readgpt made. Absent (\code{NULL}) for a spec
+that did not ask, and for \code{screen} and \code{extract}, which answer no
+question.}
 \item{\code{partial}}{Logical(1). \code{TRUE} when anything degraded: a call failed,
 chunks were dropped, a cap was hit, a strategy fell back, text was cut to
 fit, or pages of the document never became text (a scan read without
@@ -78,8 +86,11 @@ chunk statistics the reader saw.}
 \section{Methods}{
 
 \code{print()} shows the answer, this run's calls, tokens and cost, where the
-evidence came from, and, when the answer is partial, why; \code{\link[=as_json]{as_json()}}
-serialises the answer together with every prompt and response this run made
+evidence came from, and, when the answer is partial, why. When the model
+reported that the document contradicts the question's premise, it says so
+above the answer, as the model's report. \code{\link[=as_json]{as_json()}}
+serialises the answer (and \code{premise}, when it was checked) together with
+every prompt and response this run made
 (the steps of its \code{trace} that \code{trace_steps} names; for an answer from
 \code{\link[=gr_compare]{gr_compare()}}, its recipe's read alone; see \code{trace} above).
 }

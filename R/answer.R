@@ -259,7 +259,9 @@ finish_answer <- function(ans, doc, chunks, recipe) {
 #' @param ... Overrides applied to every recipe.
 #' @return A list with `answers` (named list of [gr_answer]), `summary` (a data
 #'   frame with columns `recipe`, `segmenter`, `chunks`, `reader`, `signature`,
-#'   `partial`, `chunks_used`, `answer_chars`, `not_found`, `error`), `trace`
+#'   `settings`, `partial`, `chunks_used`, `answer_chars`, `not_found`, `error`,
+#'   and `premise` when a recipe checks the question's premise; see `premise`
+#'   in [gr_read_spec()]), `trace`
 #'   (shared across all recipes, so it records every recipe's calls) and
 #'   `document` (source and ingestion stats).
 #' @seealso [answer_document()], [gr_recipes()], [gr_recipe()], [gr_answer]
@@ -445,6 +447,13 @@ gr_compare <- function(source, question, recipes = c("fast", "needle", "thorough
                error = answer_error(a),
                stringsAsFactors = FALSE)
   }))
+  # What the model said the document states instead of the question's premise,
+  # or NA, when any recipe checked it. Last, and only then, so a comparison that
+  # did not check has the columns, in the places, it always had.
+  if (any(vapply(recs, function(r) isTRUE(r$read$premise), logical(1)))) {
+    summary$premise <- unname(vapply(names(answers), function(nm) answer_premise(answers[[nm]]),
+                                     character(1)))
+  }
   list(answers = answers, summary = summary, trace = trace,
        document = list(source = doc$source, stats = doc$stats))
 }

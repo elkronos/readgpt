@@ -55,6 +55,13 @@
 #'   answered "not in this excerpt", and citing one of those is not an invention.
 #'   Defaults to `chunks_used`.
 #' @param notes Named list of whatever your reader wants to report.
+#' @param premise Whether, and how, the question's premise was checked; see
+#'   `premise` in [gr_read_spec()]. `NULL` (the default) when your reader did
+#'   not check it, which leaves the field out of the answer. `NA` when it
+#'   checked and the model reported nothing contradicting it. Otherwise the
+#'   sentence in which the model said what the document states instead, which
+#'   should then be `text` as well, so that `$answer` says it and
+#'   [is_not_found()] is `FALSE`.
 #' @return A [gr_answer].
 #' @seealso [gr_register_reader()], [gr_answer], [gr_read()], [new_chunks()]
 #' @family reading functions
@@ -67,7 +74,7 @@
 #' a$partial
 #' a$notes$strategy
 new_answer <- function(text, reader, question, chunks_used, trace, evidence = NULL,
-                       partial = FALSE, notes = list(), chunks_sent = NULL) {
+                       partial = FALSE, notes = list(), chunks_sent = NULL, premise = NULL) {
   text <- as_chr1(text)
 
   # A citation pointing at a chunk that was never sent is a fabrication, and the
@@ -106,7 +113,7 @@ new_answer <- function(text, reader, question, chunks_used, trace, evidence = NU
     }
   }
 
-  structure(list(
+  out <- structure(list(
     answer = text,
     reader = as_chr1(reader),
     question = as_chr1(question),
@@ -125,6 +132,15 @@ new_answer <- function(text, reader, question, chunks_used, trace, evidence = NU
     trace_steps = if (inherits(trace, "gr_trace"))
       c(first = 1L, last = length(trace$steps)) else NULL
   ), class = "gr_answer")
+  # Only when the reader checked the premise (read-premise.R): an answer from a
+  # run that did not ask has no such field, as it never had, so it prints,
+  # serialises and compares exactly as it did. NA is "checked, nothing
+  # flagged", which a blank sentence is too.
+  if (!is.null(premise)) {
+    p <- as_chr1(premise, NA_character_)
+    out$premise <- if (is_nonblank(p)) p else NA_character_
+  }
+  out
 }
 
 #' The part of an answer's trace that is this answer's run.
@@ -210,6 +226,12 @@ print.gr_answer <- function(x, ...) {
                 format_trace_cost(tr)))
   }
   cat("  ---\n")
+  # The model's verdict, and said to be the model's: nothing checked it against
+  # the document, and "the premise is false" would claim that something had.
+  if (premise_flagged(x)) {
+    cat("  The model reports that the document contradicts an assumption in the question. ",
+        "What it says the document states instead:\n", sep = "")
+  }
   if (is_not_found(x$answer)) cat(not_found_wording(x), "\n", sep = "") else cat(x$answer, "\n")
   cat("  ---\n")
   if (!is.null(x$evidence) && nrow(x$evidence)) {
@@ -372,7 +394,8 @@ is_recovered_error <- function(e) is.list(e) && isTRUE(e[["recovered", exact = T
 .gr_answer_note_arrays <- c(
   "cited_unknown", "cited_unparsed", "unread_pages", "queries",
   "members", "signatures", "answered", "partial_members",
-  "not_reported", "unknown", "unsupported", "dropped_unverified", "unreadable", "unresolved")
+  "not_reported", "unknown", "unsupported", "dropped_unverified", "unreadable", "unresolved",
+  "premise_chunks", "premise_members")
 
 #' An answer's notes as as_json() writes them: an object, with each field that
 #' lists things an array at every length (json_arrays()), an ensemble's
@@ -395,8 +418,13 @@ answer_notes_json <- function(notes) {
 as_json.gr_answer <- function(x, pretty = TRUE, ...) {
   w <- x[["warnings", exact = TRUE]] %||% character(0)
   used <- x$chunks_used %||% integer(0)
-  as_json.default(list(
-    answer = x$answer, reader = x$reader, question = x$question,
+  # Written only when the premise was checked, so the record of a run that did
+  # not check it is the one it always was. NA, checked and not flagged, is null.
+  premise <- x[["premise", exact = TRUE]]
+  as_json.default(c(list(answer = x$answer),
+                    if (!is.null(premise)) list(premise = as_chr1(premise, NA_character_)),
+                    list(
+    reader = x$reader, question = x$question,
     # Arrays at every length: `auto_unbox` wrote one chunk id as a number and
     # two as an array, and no notes at all as `[]` rather than an object, so a
     # consumer that iterated over them broke on the short case.
@@ -413,7 +441,7 @@ as_json.gr_answer <- function(x, pretty = TRUE, ...) {
     # the whole of it put other documents' text, in their prompts, into this
     # answer's record, and runs made after it too.
     trace = trace_as_list(answer_trace(x))
-  ), pretty = pretty, ...)
+  )), pretty = pretty, ...)
 }
 
 # ---------------------------------------------------------------------------
@@ -722,15 +750,19 @@ restate_tail <- function(body, question, how = "auto") {
 #' string the call sends. Budgeting with `answer_system` and then sending
 #' `answer_system_cited` understates the overhead by 22 tokens whenever
 #' `cite = TRUE`, and the excerpts are then sized to fill the gap.
+#'
+#' `premise`: the premise rule (read-premise.R) is appended here, so every
+#' reader that budgets with this string budgets for it.
 #' @noRd
-answer_system <- function(cite = FALSE) {
-  if (isTRUE(cite)) .gr_prompts$answer_system_cited else .gr_prompts$answer_system
+answer_system <- function(cite = FALSE, premise = FALSE) {
+  base <- if (isTRUE(cite)) .gr_prompts$answer_system_cited else .gr_prompts$answer_system
+  if (isTRUE(premise)) paste0(base, .gr_premise_prompts$answer) else base
 }
 
 #' Build the standard question-answering message list.
 #' @noRd
 answer_messages <- function(question, body, cite = FALSE, label = "Excerpts",
-                            restate = "auto") {
+                            restate = "auto", premise = FALSE) {
   # The question is already LAST here, which is the position that gets followed.
   # What was missing is the other end: over a few thousand tokens of excerpt, an
   # instruction that appears once at the bottom is easy to lose track of on the
@@ -738,7 +770,7 @@ answer_messages <- function(question, body, cite = FALSE, label = "Excerpts",
   # nothing that indexes these positionally shifts.
   lead <- if (restate_now(body, restate)) paste0("Question: ", question, "\n\n") else ""
   list(
-    list(role = "system", content = answer_system(cite)),
+    list(role = "system", content = answer_system(cite, premise)),
     list(role = "user", content = paste0(lead, "<", tolower(label), ">\n", body,
                                          "\n</", tolower(label), ">")),
     list(role = "user", content = paste0("Question: ", question))
